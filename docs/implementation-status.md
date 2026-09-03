@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 4, embedded-track and live-sidecar inventory
-- Next task: Task 5, provider registry, coordinator, and throttling
+- Current task: Task 5, provider registry, coordinator, and throttling
+- Next task: Task 6, OpenSubtitles adapter
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -45,3 +45,16 @@ This file is the resumable implementation ledger. The approved design and plan r
 - The application wiring will create/ensure configured Arr instance rows before reconciliation starts.
 - HTTP webhook token validation belongs to the HTTP API task; catalog normalization deliberately accepts bytes only after transport authentication.
 - Reconciliation currently hydrates history rows that still identify a live file. Deletions are handled by delete webhooks; if an Arr history endpoint exposes reliable deletion tombstones, add them behind a contract fixture before changing this rule.
+
+### Task 4 — embedded and sidecar inventory
+
+- Commit: `0f69f8d feat: cache embedded subtitle inventory`
+
+- FFprobe is invoked through an injectable runner with the exact approved arguments. JSON stdout is bounded to 8 MiB; failure text does not expose captured stderr.
+- Every subtitle stream is inventoried, including image codecs such as PGS. Unknown/missing languages remain visible with an empty canonical language but never satisfy a configured language.
+- `Inventory.Satisfies` requires an equivalent known language and a full subtitle. Forced-only tracks never satisfy the normal-language request; SDH satisfies only when hearing-impaired subtitles are allowed.
+- The cached embedded inventory is reused only when path, Arr file ID, byte size, and nanosecond modification time match. `forceProbe` always bypasses the cache.
+- Sidecars are rescanned on every refresh, only for the exact media stem and `.srt`, `.ass`, `.ssa`, or `.vtt`; directory recursion and symlink following are forbidden.
+- An external file is considered managed only when both normalized path and SHA-256 checksum match installation provenance. All other external tracks are protected.
+- Fingerprint update and complete track replacement occur in one SQLite transaction so a crash cannot pair a new fingerprint with stale embedded rows.
+- Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
