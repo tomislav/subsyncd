@@ -190,13 +190,16 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, f
 		return fmt.Errorf("begin track replacement: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var path string
-	var fileID, size, modTime int64
-	if err := tx.QueryRowContext(ctx, `SELECT path, file_id, size, mod_time_ns FROM media WHERE id = ?`, mediaID).Scan(&path, &fileID, &size, &modTime); err != nil {
-		return fmt.Errorf("read media fingerprint: %w", err)
+	result, err := tx.ExecContext(ctx, `UPDATE media SET path=?, file_id=?, size=?, mod_time_ns=?, updated_at_ns=? WHERE id=?`, fingerprint.Path, fingerprint.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), time.Now().UTC().UnixNano(), mediaID)
+	if err != nil {
+		return fmt.Errorf("update inventory fingerprint: %w", err)
 	}
-	if path != fingerprint.Path || fileID != fingerprint.FileID || size != fingerprint.Size || modTime != fingerprint.ModTime.UnixNano() {
-		return fmt.Errorf("media fingerprint changed while replacing track inventory")
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count inventory fingerprint update: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("media %d not found while replacing track inventory", mediaID)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE media_id = ?`, mediaID); err != nil {
 		return fmt.Errorf("delete old tracks: %w", err)

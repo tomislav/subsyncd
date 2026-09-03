@@ -1,0 +1,12 @@
+{
+  "streams": [
+    {"index": 1, "codec_name": "subrip", "codec_type": "subtitle", "tags": {"language": "eng", "title": "English"}, "disposition": {"default": 1}},
+    {"index": 2, "codec_name": "ass", "codec_type": "subtitle", "tags": {"language": "hrv", "title": "Croatian SDH"}, "disposition": {"hearing_impaired": 1}},
+    {"index": 3, "codec_name": "subrip", "codec_type": "subtitle", "tags": {"language": "scr"}, "disposition": {"forced": 1}},
+    {"index": 4, "codec_name": "hdmv_pgs_subtitle", "codec_type": "subtitle", "tags": {"language": "eng"}, "disposition": {}},
+    {"index": 5, "codec_name": "webvtt", "codec_type": "subtitle", "tags": {"language": "und"}, "disposition": {}},
+    {"index": 6, "codec_name": "subrip", "codec_type": "subtitle", "tags": {}, "disposition": {}},
+    {"index": 7, "codec_name": "h264", "codec_type": "video", "tags": {}, "disposition": {}}
+  ],
+  "format": {"duration": "2520.5"}
+}
