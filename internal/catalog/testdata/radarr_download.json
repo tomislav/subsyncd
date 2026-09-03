@@ -1,0 +1,6 @@
+{
+  "eventType": "Download",
+  "isUpgrade": true,
+  "movie": {"id": 20, "title": "Example Movie", "year": 2024, "imdbId": "tt1234567", "tmdbId": 7654},
+  "movieFile": {"id": 2001, "path": "D:\\Movies\\Example Movie (2024)\\Example.Movie.2024.mkv", "sceneName": "Example.Movie.2024.2160p.WEB-DL-GROUP", "quality": "WEBDL-2160p", "releaseGroup": "GROUP"}
+}

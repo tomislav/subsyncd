@@ -20,8 +20,8 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 1 {
-			t.Errorf("migration count = %d, want 1", count)
+		if count != 2 {
+			t.Errorf("migration count = %d, want 2", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
@@ -183,6 +183,93 @@ func TestRecordInstallationRollsBackAuditWhenInsertFails(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("audit event count = %d, want rollback", count)
+	}
+}
+
+func TestApplyMediaEventIsIdempotentAndResetsConfiguredLanguages(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	media := testMedia()
+	media.Fingerprint = domain.MediaFingerprint{Path: "/media/episode.mkv", FileID: media.Ref.FileID, Size: 100, ModTime: now}
+	mutation := MediaEventMutation{EventID: "event-1", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr", "en"}, At: now}
+
+	applied, err := repo.ApplyMediaEvent(context.Background(), mutation)
+	if err != nil || !applied {
+		t.Fatalf("first apply = %v, %v", applied, err)
+	}
+	applied, err = repo.ApplyMediaEvent(context.Background(), mutation)
+	if err != nil || applied {
+		t.Fatalf("duplicate apply = %v, %v", applied, err)
+	}
+
+	var events, searches int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM events WHERE event_id='event-1'`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM search_states`).Scan(&searches); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || searches != 2 {
+		t.Fatalf("events/searches = %d/%d, want 1/2", events, searches)
+	}
+}
+
+func TestChangedImportInvalidatesCandidatesAndDeleteCancelsSearches(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	media := testMedia()
+	media.Fingerprint = domain.MediaFingerprint{Path: "/media/episode.mkv", FileID: media.Ref.FileID, Size: 100, ModTime: now}
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-1", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	var mediaID int64
+	if err := repo.store.db.QueryRow(`SELECT id FROM media`).Scan(&mediaID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.db.Exec(`INSERT INTO candidates(media_id, language, provider_id, result_id, metadata_json, score_json, created_at_ns) VALUES (?, 'hr', 'titlovi', '1', '{}', '{}', ?)`, mediaID, now.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+
+	media.Fingerprint.Size++
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-2", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	var candidates int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM candidates`).Scan(&candidates); err != nil {
+		t.Fatal(err)
+	}
+	if candidates != 0 {
+		t.Fatalf("candidate count = %d, want 0 after fingerprint change", candidates)
+	}
+
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "delete-1", Type: "delete", Ref: media.Ref, At: now.Add(2 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	var state, outcome string
+	if err := repo.store.db.QueryRow(`SELECT state, last_outcome FROM search_states WHERE media_id=? AND language='hr'`, mediaID).Scan(&state, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if state != "complete" || outcome != "deleted" {
+		t.Fatalf("delete state = %q/%q", state, outcome)
+	}
+}
+
+func TestReconciliationCursorAdvancesOnlyWithCommittedPage(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := context.Background()
+	start := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr:8989", start); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !got.IsZero() {
+		t.Fatalf("initial cursor = %s, %v", got, err)
+	}
+	if err := repo.CommitReconciliationCursor(ctx, "sonarr-main", end); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !got.Equal(end) {
+		t.Fatalf("cursor = %s, %v; want %s", got, err, end)
 	}
 }
 

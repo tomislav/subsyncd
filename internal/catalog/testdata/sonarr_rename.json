@@ -1,0 +1,5 @@
+{
+  "eventType": "Rename",
+  "series": {"id": 10, "title": "Example Show"},
+  "renamedEpisodeFiles": [{"id": 1001, "previousPath": "/tv/old.mkv", "path": "/tv/Example Show/Season 01/new.mkv"}]
+}

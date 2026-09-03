@@ -126,6 +126,17 @@ type Installation struct {
 	RollbackPath   string
 }
 
+// MediaEventMutation is the persistence-level representation of an Arr event.
+// Event IDs are globally unique so replayed webhooks remain no-ops.
+type MediaEventMutation struct {
+	EventID   string
+	Type      string
+	Media     domain.Media
+	Ref       domain.MediaRef
+	Languages []domain.Language
+	At        time.Time
+}
+
 func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64, bool, error) {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -477,6 +488,193 @@ func (r *Repository) RecordInstallation(ctx context.Context, installation Instal
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit installation: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMutation) (bool, error) {
+	if mutation.EventID == "" || mutation.Ref.Instance == "" || mutation.Ref.FileID <= 0 {
+		return false, fmt.Errorf("media event identity is incomplete")
+	}
+	if mutation.At.IsZero() {
+		mutation.At = time.Now().UTC()
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin media event: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `INSERT INTO events(event_id, event_type, instance, kind, file_id, outcome, created_at_ns) VALUES (?, ?, ?, ?, ?, 'applied', ?) ON CONFLICT DO NOTHING`, mutation.EventID, mutation.Type, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID, mutation.At.UnixNano())
+	if err != nil {
+		return false, fmt.Errorf("record media event: %w", err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count media event insertion: %w", err)
+	}
+	if inserted == 0 {
+		return false, nil
+	}
+
+	switch mutation.Type {
+	case "import", "rename":
+		mediaID, contentChanged, err := upsertMediaTx(ctx, tx, mutation.Media, mutation.At)
+		if err != nil {
+			return false, err
+		}
+		if contentChanged {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM candidates WHERE media_id=?`, mediaID); err != nil {
+				return false, fmt.Errorf("invalidate media candidates: %w", err)
+			}
+		}
+		for _, language := range mutation.Languages {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns) VALUES (?, ?, 'pending', 0, 0, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, last_outcome='', lease_owner=NULL, lease_until_ns=NULL`, mediaID, language.String(), mutation.At.UnixNano()); err != nil {
+				return false, fmt.Errorf("reset media search: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE events SET media_id=? WHERE event_id=?`, mediaID, mutation.EventID); err != nil {
+			return false, fmt.Errorf("link media event: %w", err)
+		}
+	case "delete":
+		var mediaID int64
+		err := tx.QueryRowContext(ctx, `SELECT id FROM media WHERE instance=? AND kind=? AND file_id=?`, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID).Scan(&mediaID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("find deleted media: %w", err)
+		}
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', lease_owner=NULL, lease_until_ns=NULL WHERE media_id=?`, mediaID); err != nil {
+				return false, fmt.Errorf("cancel deleted media searches: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE events SET media_id=? WHERE event_id=?`, mediaID, mutation.EventID); err != nil {
+				return false, fmt.Errorf("link delete event: %w", err)
+			}
+		}
+	default:
+		return false, fmt.Errorf("unsupported media event type %q", mutation.Type)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY created_at_ns DESC, id DESC LIMIT -1 OFFSET 10000)`); err != nil {
+		return false, fmt.Errorf("bound media audit log: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit media event: %w", err)
+	}
+	return true, nil
+}
+
+func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.Time) (int64, bool, error) {
+	var id, existingFileID, existingSize, existingModTime int64
+	var existingPath string
+	err := tx.QueryRowContext(ctx, `SELECT id, path, file_id, size, mod_time_ns FROM media WHERE instance=? AND kind=? AND file_id=?`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID).Scan(&id, &existingPath, &existingFileID, &existingSize, &existingModTime)
+	changed := true
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, false, fmt.Errorf("find media for event: %w", err)
+	}
+	if err == nil {
+		changed = existingFileID != media.Fingerprint.FileID || existingSize != media.Fingerprint.Size || existingModTime != media.Fingerprint.ModTime.UnixNano()
+	}
+	alternateTitles, err := json.Marshal(media.AlternateTitles)
+	if err != nil {
+		return 0, false, fmt.Errorf("encode media alternate titles: %w", err)
+	}
+	if id == 0 {
+		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano())
+		if err != nil {
+			return 0, false, fmt.Errorf("insert media for event: %w", err)
+		}
+		id, err = result.LastInsertId()
+		if err != nil {
+			return 0, false, fmt.Errorf("read media ID for event: %w", err)
+		}
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, updated_at_ns=? WHERE id=?`, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano(), id)
+		if err != nil {
+			return 0, false, fmt.Errorf("update media for event: %w", err)
+		}
+	}
+	_ = existingPath
+	return id, changed, nil
+}
+
+func (r *Repository) EnsureInstance(ctx context.Context, name, instanceType, baseURL string, now time.Time) error {
+	_, err := r.store.db.ExecContext(ctx, `INSERT INTO instances(name, type, base_url, updated_at_ns) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET type=excluded.type, base_url=excluded.base_url, updated_at_ns=excluded.updated_at_ns`, name, instanceType, baseURL, now.UnixNano())
+	if err != nil {
+		return fmt.Errorf("ensure Arr instance: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) GetReconciliationCursor(ctx context.Context, instance string) (time.Time, error) {
+	var raw string
+	if err := r.store.db.QueryRowContext(ctx, `SELECT reconciliation_cursor FROM instances WHERE name=?`, instance).Scan(&raw); err != nil {
+		return time.Time{}, fmt.Errorf("get reconciliation cursor: %w", err)
+	}
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse reconciliation cursor: %w", err)
+	}
+	return parsed, nil
+}
+
+func (r *Repository) CommitReconciliationCursor(ctx context.Context, instance string, cursor time.Time) error {
+	result, err := r.store.db.ExecContext(ctx, `UPDATE instances SET reconciliation_cursor=?, updated_at_ns=? WHERE name=?`, cursor.UTC().Format(time.RFC3339Nano), time.Now().UTC().UnixNano(), instance)
+	if err != nil {
+		return fmt.Errorf("commit reconciliation cursor: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count reconciliation cursor update: %w", err)
+	}
+	if count != 1 {
+		return fmt.Errorf("Arr instance %q not found", instance)
+	}
+	return nil
+}
+
+// CommitReconciliation applies a complete history page and advances its cursor
+// in one transaction. A failed media mutation therefore cannot create a gap in
+// the next history request.
+func (r *Repository) CommitReconciliation(ctx context.Context, instance string, cursor time.Time, media []domain.Media, languages []domain.Language) error {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin reconciliation commit: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, item := range media {
+		mediaID, changed, err := upsertMediaTx(ctx, tx, item, cursor)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM candidates WHERE media_id=?`, mediaID); err != nil {
+				return fmt.Errorf("invalidate reconciled candidates: %w", err)
+			}
+		}
+		for _, language := range languages {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns) VALUES (?, ?, 'pending', 0, 0, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, last_outcome='', lease_owner=NULL, lease_until_ns=NULL`, mediaID, language.String(), cursor.UnixNano()); err != nil {
+				return fmt.Errorf("reset reconciled media search: %w", err)
+			}
+		}
+		eventID := fmt.Sprintf("reconcile:%s:%s:%d:%d", instance, item.Ref.Kind, item.Ref.FileID, item.Fingerprint.ModTime.UnixNano())
+		if _, err := tx.ExecContext(ctx, `INSERT INTO events(event_id, event_type, instance, kind, file_id, media_id, outcome, created_at_ns) VALUES (?, 'reconcile', ?, ?, ?, ?, 'applied', ?) ON CONFLICT DO NOTHING`, eventID, instance, item.Ref.Kind, item.Ref.FileID, mediaID, cursor.UnixNano()); err != nil {
+			return fmt.Errorf("audit reconciled media: %w", err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE instances SET reconciliation_cursor=?, updated_at_ns=? WHERE name=?`, cursor.UTC().Format(time.RFC3339Nano), cursor.UnixNano(), instance)
+	if err != nil {
+		return fmt.Errorf("advance reconciliation cursor: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count reconciliation update: %w", err)
+	}
+	if count != 1 {
+		return fmt.Errorf("Arr instance %q not found", instance)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit reconciliation page: %w", err)
 	}
 	return nil
 }

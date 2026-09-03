@@ -1,0 +1,5 @@
+{
+  "eventType": "EpisodeFileDelete",
+  "series": {"id": 10},
+  "episodeFile": {"id": 1001, "path": "/tv/Example Show/Season 01/new.mkv"}
+}

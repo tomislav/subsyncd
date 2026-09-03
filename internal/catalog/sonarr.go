@@ -1,0 +1,173 @@
+package catalog
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strconv"
+	"time"
+
+	"subsyncd/internal/config"
+	"subsyncd/internal/domain"
+)
+
+type Sonarr struct {
+	client     *arrClient
+	mappings   []config.PathMapping
+	mediaRoots []string
+}
+
+func NewSonarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string) (*Sonarr, error) {
+	client, err := newArrClient(instance, rawURL, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &Sonarr{client: client, mappings: mappings, mediaRoots: mediaRoots}, nil
+}
+
+type arrQuality struct {
+	Quality struct {
+		Name       string `json:"name"`
+		Resolution int    `json:"resolution"`
+		Source     string `json:"source"`
+	} `json:"quality"`
+}
+
+type arrMediaInfo struct {
+	RunTime string `json:"runTime"`
+}
+
+type sonarrEpisodeFile struct {
+	ID           int64        `json:"id"`
+	SeriesID     int64        `json:"seriesId"`
+	Path         string       `json:"path"`
+	RelativePath string       `json:"relativePath"`
+	Size         int64        `json:"size"`
+	DateAdded    time.Time    `json:"dateAdded"`
+	SceneName    string       `json:"sceneName"`
+	ReleaseGroup string       `json:"releaseGroup"`
+	Quality      arrQuality   `json:"quality"`
+	MediaInfo    arrMediaInfo `json:"mediaInfo"`
+}
+
+type sonarrEpisode struct {
+	ID                    int64  `json:"id"`
+	SeriesID              int64  `json:"seriesId"`
+	SeasonNumber          int    `json:"seasonNumber"`
+	EpisodeNumber         int    `json:"episodeNumber"`
+	AbsoluteEpisodeNumber int    `json:"absoluteEpisodeNumber"`
+	Title                 string `json:"title"`
+}
+
+type arrAlternateTitle struct {
+	Title string `json:"title"`
+}
+
+type sonarrSeries struct {
+	ID              int64               `json:"id"`
+	Title           string              `json:"title"`
+	AlternateTitles []arrAlternateTitle `json:"alternateTitles"`
+	Year            int                 `json:"year"`
+	IMDbID          string              `json:"imdbId"`
+	TVDBID          int64               `json:"tvdbId"`
+}
+
+func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Media, error) {
+	if ref.Instance != s.client.instance || ref.Kind != domain.MediaEpisode || ref.FileID <= 0 {
+		return domain.Media{}, fmt.Errorf("invalid Sonarr media reference")
+	}
+	var file sonarrEpisodeFile
+	if err := s.client.getJSON(ctx, "/api/v3/episodefile/"+strconv.FormatInt(ref.FileID, 10), nil, &file); err != nil {
+		return domain.Media{}, err
+	}
+	var episodes []sonarrEpisode
+	if err := s.client.getJSON(ctx, "/api/v3/episode", url.Values{"episodeFileId": {strconv.FormatInt(ref.FileID, 10)}}, &episodes); err != nil {
+		return domain.Media{}, err
+	}
+	if len(episodes) == 0 {
+		return domain.Media{}, fmt.Errorf("Sonarr file %d has no episode", ref.FileID)
+	}
+	episode := episodes[0]
+	seriesID := file.SeriesID
+	if seriesID == 0 {
+		seriesID = episode.SeriesID
+	}
+	var series sonarrSeries
+	if err := s.client.getJSON(ctx, "/api/v3/series/"+strconv.FormatInt(seriesID, 10), nil, &series); err != nil {
+		return domain.Media{}, err
+	}
+	path, err := MapPath(file.Path, s.mappings, s.mediaRoots)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("map Sonarr file %d: %w", ref.FileID, err)
+	}
+	return domain.Media{
+		Ref:              ref,
+		Fingerprint:      domain.MediaFingerprint{Path: path, FileID: ref.FileID, Size: file.Size, ModTime: file.DateAdded},
+		Title:            series.Title,
+		AlternateTitles:  alternateTitleStrings(series.AlternateTitles),
+		Year:             series.Year,
+		Season:           episode.SeasonNumber,
+		Episode:          episode.EpisodeNumber,
+		AbsoluteEpisode:  episode.AbsoluteEpisodeNumber,
+		ExternalIDs:      domain.ExternalIDs{IMDb: series.IMDbID, TVDB: series.TVDBID},
+		OriginalFilename: file.SceneName,
+		ReleaseName:      file.SceneName,
+		ReleaseGroup:     file.ReleaseGroup,
+		Source:           file.Quality.Quality.Source,
+		Resolution:       resolutionName(file.Quality.Quality.Resolution),
+		Quality:          file.Quality.Quality.Name,
+		Duration:         parseRuntime(file.MediaInfo.RunTime),
+	}, nil
+}
+
+func (s *Sonarr) ListMediaChangedSince(ctx context.Context, since time.Time) ([]domain.Media, error) {
+	var history []struct {
+		EpisodeFileID int64 `json:"episodeFileId"`
+	}
+	query := url.Values{"date": {since.UTC().Format(time.RFC3339Nano)}, "includeEpisode": {"true"}, "includeSeries": {"true"}}
+	if err := s.client.getJSON(ctx, "/api/v3/history/since", query, &history); err != nil {
+		return nil, err
+	}
+	seen := make(map[int64]struct{}, len(history))
+	media := make([]domain.Media, 0, len(history))
+	for _, record := range history {
+		if record.EpisodeFileID <= 0 {
+			continue
+		}
+		if _, exists := seen[record.EpisodeFileID]; exists {
+			continue
+		}
+		seen[record.EpisodeFileID] = struct{}{}
+		item, err := s.GetMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: record.EpisodeFileID})
+		if err != nil {
+			return nil, fmt.Errorf("hydrate Sonarr history file %d: %w", record.EpisodeFileID, err)
+		}
+		media = append(media, item)
+	}
+	return media, nil
+}
+
+func alternateTitleStrings(titles []arrAlternateTitle) []string {
+	result := make([]string, 0, len(titles))
+	for _, title := range titles {
+		if title.Title != "" {
+			result = append(result, title.Title)
+		}
+	}
+	return result
+}
+
+func resolutionName(value int) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.Itoa(value) + "p"
+}
+
+func parseRuntime(raw string) time.Duration {
+	parsed, err := time.Parse("15:04:05", raw)
+	if err != nil {
+		return 0
+	}
+	return time.Duration(parsed.Hour())*time.Hour + time.Duration(parsed.Minute())*time.Minute + time.Duration(parsed.Second())*time.Second
+}

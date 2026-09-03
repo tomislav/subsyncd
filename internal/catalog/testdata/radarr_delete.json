@@ -1,0 +1,5 @@
+{
+  "eventType": "MovieFileDelete",
+  "movie": {"id": 20},
+  "movieFile": {"id": 2001, "path": "/movies/Example Movie (2024)/new.mkv"}
+}
