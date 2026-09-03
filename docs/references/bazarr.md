@@ -1,0 +1,31 @@
+# Bazarr Behavioral Reference
+
+Bazarr is a behavioral reference for `subsyncd`, not a runtime dependency or source-code donor.
+
+- Repository: <https://github.com/morpheus65535/bazarr>
+- Pinned commit: [`da73aeaf5e4d89ad86c8d559d3abd0e4129b24b2`](https://github.com/morpheus65535/bazarr/tree/da73aeaf5e4d89ad86c8d559d3abd0e4129b24b2)
+- Retrieved: 2026-09-04
+- License: [GPL-3.0](https://github.com/morpheus65535/bazarr/blob/da73aeaf5e4d89ad86c8d559d3abd0e4129b24b2/LICENSE)
+
+No Bazarr module or fixture may be copied into the Go source tree. Provider documentation and independently captured responses are authoritative when they differ from Bazarr. Every adopted behavior receives an independently authored test.
+
+## Task-indexed observations
+
+| Area and source paths | Observed behavior | Decision and proving test |
+|---|---|---|
+| Sonarr/Radarr discovery: `bazarr/sonarr/`, `bazarr/radarr/`, `bazarr/app/signalr_client.py` | Arr is the media catalog; imported file metadata is hydrated from Arr rather than inferred only from disk. | **Adopt.** Catalog contract tests cover IDs, release metadata, renames, upgrades, deletes, and missed-event reconciliation. |
+| Embedded/external inventory: `custom_libs/subliminal_patch/providers/embeddedsubtitles.py`, `bazarr/subtitles/indexer/` | FFprobe-derived streams and external files are normalized into language/variant state. | **Tighten.** Cache embedded tracks by a four-part media fingerprint, rescan sidecars before every remote search, and protect unmanaged files. Inventory tests count probe calls and exercise language/forced/SDH cases. |
+| Provider pool: `custom_libs/subliminal_patch/core.py`, `bazarr/subtitles/pool.py` | Providers share a common search/download boundary and failures are isolated. | **Adopt.** Registry/coordinator tests verify exact-first ordering, broad fan-out, deterministic merge, and failure isolation. |
+| Languages: `custom_libs/subliminal_patch/converters/`, `bazarr/languages/` | Providers map their own identifiers to normalized language objects, including variants. | **Adopt with BCP 47.** Configuration and provider tests cover `hr`, `en`, `pt-BR`, ISO-639 aliases, Serbian scripts, forced, and HI variants. |
+| Titlovi: `custom_libs/subliminal_patch/providers/titlovi.py` | Auth token is cached; search is paginated; episode zero denotes a season pack; pack members are matched by `SxxEyy`/`xxXyy`; 429 is typed. | **Tighten.** Preserve episode-zero as pack scope, reject wrong seasons and ambiguous archives, never choose the first pack member, and persist a 5-minute no-header 429 fallback. Titlovi fixtures cover every branch. |
+| OpenSubtitles.com: `custom_libs/subliminal_patch/providers/opensubtitlescom.py` | Hash matches are explicit; tokens refresh after 401; downloads use temporary links; 406 and 429 have distinct meanings. | **Adopt.** Contract tests cover exact-hash short circuit, one auth refresh, scoped quota state, redaction, and temporary-link streaming. |
+| SubDL: `custom_libs/subliminal_patch/providers/subdl.py` | Episode search can combine standard, absolute, season-only, and title fallback queries; ranges and `unpack_files` describe packs; quota payloads are typed. | **Tighten.** Deduplicate stable result IDs, require target containment, prefer an exact direct member, and otherwise use strict pack selection. Tests cover range/release fallback, direct files, daily quota, rate limit, and service busy. |
+| Matching/scoring: `custom_libs/subliminal_patch/subtitle.py`, `custom_libs/subliminal_patch/score.py`, provider `get_matches` methods | Providers expose match evidence and shared code assigns signal weights. | **Tighten.** Use hard identity gates and one explainable 0–100 score across all providers. Table tests independently verify every gate, weight, and tie-break. |
+| Archive/pack selection: `custom_libs/subliminal_patch/providers/utils.py` and provider-specific archive methods | Archive helpers filter extensions and select episode members by number/title; some single-file paths fall back to the first member. | **Reject arbitrary fallback.** Safe extraction rejects traversal/symlinks/limits; packs require one direct, numbered, ranged, absolute, or high-confidence title match. Hostile and ambiguous fixtures prove fail-closed behavior. |
+| Adaptive search/backoff: `bazarr/subtitles/wanted/`, `bazarr/subtitles/upgrade.py` | Repeated searches are delayed and provider availability affects whether work proceeds. | **Tighten.** Persist the approved deterministic missing/failure/upgrade schedules independently of provider cooldown. Fake-clock tests verify restart behavior and no-result indexes. |
+| HTTP and throttling: `custom_libs/subliminal_patch/http.py`, `custom_libs/subliminal_patch/global_rate_limiter.py`, `bazarr/app/get_providers.py` | Rate-limit headers influence pacing; exceptions map to provider-specific cooldowns; some paths sleep/retry inline. | **Adopt headers, reject long sleeps.** Parse standard and `X-RateLimit-*` headers, persist operation-scoped resets, use per-instance token buckets plus shared-origin concurrency, and release worker leases during cooldown. Parser/worker tests prove precedence and restart recovery. |
+| Upgrades/install: `bazarr/subtitles/upgrade.py`, `bazarr/subtitles/download.py` | Existing scores influence upgrades and saved subtitle state is tracked. | **Tighten.** Upgrade only owned, checksum-unchanged files for exact hash or a score delta of at least 10; use same-filesystem atomic replace and rollback. Fault-injection tests cover every write boundary. |
+
+## Refresh procedure
+
+Before changing behavior, compare the relevant upstream file at the pinned commit and current Bazarr HEAD. Record material drift here, then validate it against the provider's current public contract. Do not silently change `subsyncd` behavior merely to match Bazarr.
