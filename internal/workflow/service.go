@@ -354,7 +354,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		for tierEnd < len(eligible) && eligible[tierEnd].Score.Total == eligible[tierStart].Score.Total {
 			tierEnd++
 		}
-		finalized := make([]finalizedCandidate, 0, tierEnd-tierStart)
+		analyzedTier := make([]analyzedCandidate, 0, tierEnd-tierStart)
 		for index := tierStart; index < tierEnd; index++ {
 			if err := ctx.Err(); err != nil {
 				return result, err
@@ -382,19 +382,22 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 				result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: syncErr.Error()})
 				continue
 			}
-			ready, syncErr := s.finalizeCandidate(ctx, request, analyzed, workspace, index)
+			analyzedTier = append(analyzedTier, analyzed)
+		}
+		sortAnalyzed(analyzedTier)
+		for index, analyzed := range analyzedTier {
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			ready, syncErr := s.finalizeCandidate(ctx, request, analyzed, workspace, tierStart+index)
 			if syncErr != nil {
-				if err := s.handleCandidateFailure(ctx, request, item.Candidate, path, syncErr, &candidateFailures); err != nil {
+				if err := s.handleCandidateFailure(ctx, request, analyzed.candidate, analyzed.path, syncErr, &candidateFailures); err != nil {
 					return result, err
 				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: syncErr.Error()})
+				result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: syncErr.Error()})
 				continue
 			}
-			finalized = append(finalized, ready)
-		}
-		if len(finalized) != 0 {
-			sortFinalized(finalized)
-			return s.install(ctx, request, finalized[0], existing, installed, result)
+			return s.install(ctx, request, ready, existing, installed, result)
 		}
 		tierStart = tierEnd
 	}
@@ -793,14 +796,11 @@ func candidateRecord(candidate domain.Candidate, score domain.Score, eligible bo
 	return store.CandidateRecord{ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, MetadataJSON: metadata, ScoreJSON: scoreJSON, ValidationJSON: validation}, nil
 }
 
-func sortFinalized(candidates []finalizedCandidate) {
+func sortAnalyzed(candidates []analyzedCandidate) {
 	sort.SliceStable(candidates, func(left, right int) bool {
 		a, b := candidates[left], candidates[right]
-		if a.score.Total != b.score.Total {
-			return a.score.Total > b.score.Total
-		}
-		if a.sync.Confidence != b.sync.Confidence {
-			return a.sync.Confidence > b.sync.Confidence
+		if a.analysis.Confidence != b.analysis.Confidence {
+			return a.analysis.Confidence > b.analysis.Confidence
 		}
 		if a.priority != b.priority {
 			return a.priority < b.priority

@@ -181,7 +181,7 @@ func TestServiceExactHashSkipsLapseAndBroadCandidatesAreLimitedToThree(t *testin
 		service := testService(t, inventory.Inventory{}, searcher, nil, sync, installer)
 		service.Providers = map[string]provider.Provider{"provider": providerFake}
 		result, err := service.Run(context.Background(), serviceRequest(t))
-		if err != nil || result.Candidate.ResultID != "four" || sync.analyzeCalls != 3 || sync.synchronizeCalls != 3 || !slices.Equal(providerFake.downloaded, []string{"five", "four", "one"}) {
+		if err != nil || result.Candidate.ResultID != "four" || sync.analyzeCalls != 3 || sync.synchronizeCalls != 1 || !slices.Equal(providerFake.downloaded, []string{"five", "four", "one"}) {
 			t.Fatalf("Run() = %#v, %v, analyzed/synced=%d/%d downloads=%#v", result, err, sync.analyzeCalls, sync.synchronizeCalls, providerFake.downloaded)
 		}
 	})
@@ -211,6 +211,54 @@ func TestRunStopsAfterUniqueHighestScoreInstalls(t *testing.T) {
 		!slices.Equal(synchronizer.synchronized, []string{"leader"}) {
 		t.Fatalf("download/analyze/sync = %#v/%#v/%#v", providerFake.downloaded, synchronizer.analyzed, synchronizer.synchronized)
 	}
+}
+
+func TestRunAnalyzesEqualScoreTierBeforeFinalizing(t *testing.T) {
+	low := broadCandidate("low-confidence")
+	low.ProviderID = "first"
+	high := broadCandidate("high-confidence")
+	high.ProviderID = "second"
+	firstProvider := &fakeProvider{id: "first"}
+	secondProvider := &fakeProvider{id: "second"}
+	synchronizer := &fakeSynchronizer{confidence: map[string]float64{"low-confidence": 0.76, "high-confidence": 0.91}}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{low, high}}}, nil, synchronizer, &fakeInstaller{})
+	service.ProviderOrder = []string{"first", "second"}
+	service.Providers = map[string]provider.Provider{"first": firstProvider, "second": secondProvider}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Candidate.ResultID != "high-confidence" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(firstProvider.downloaded, []string{"low-confidence"}) || !slices.Equal(secondProvider.downloaded, []string{"high-confidence"}) {
+		t.Fatalf("downloads = %#v/%#v", firstProvider.downloaded, secondProvider.downloaded)
+	}
+	if !slices.Equal(synchronizer.analyzed, []string{"low-confidence", "high-confidence"}) || !slices.Equal(synchronizer.synchronized, []string{"high-confidence"}) {
+		t.Fatalf("analyzed/synchronized = %#v/%#v", synchronizer.analyzed, synchronizer.synchronized)
+	}
+}
+
+func TestAnalyzedTierOrderingIsDeterministic(t *testing.T) {
+	items := []analyzedCandidate{
+		analyzedTestCandidate("provider-b", "result-b", 1, 9, 0.8),
+		analyzedTestCandidate("provider-a", "result-b", 1, 9, 0.8),
+		analyzedTestCandidate("provider-a", "result-a", 1, 9, 0.8),
+		analyzedTestCandidate("provider-a", "low-rating", 1, 1, 0.8),
+		analyzedTestCandidate("provider-z", "priority-wins", 0, 1, 0.8),
+		analyzedTestCandidate("provider-z", "confidence-wins", 2, 1, 0.9),
+	}
+	sortAnalyzed(items)
+	got := make([]string, len(items))
+	for index, item := range items {
+		got[index] = item.candidate.ResultID
+	}
+	want := []string{"confidence-wins", "priority-wins", "result-a", "result-b", "result-b", "low-rating"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("analyzed order = %v, want %v", got, want)
+	}
+}
+
+func analyzedTestCandidate(providerID, resultID string, priority int, rating, confidence float64) analyzedCandidate {
+	return analyzedCandidate{downloadedCandidate: downloadedCandidate{candidate: domain.Candidate{ProviderID: providerID, ResultID: resultID, Rating: rating}, priority: priority}, analysis: domain.SyncResult{Confidence: confidence}}
 }
 
 func TestServiceStrongAnchoredFirstInstallBypassesLapse(t *testing.T) {
