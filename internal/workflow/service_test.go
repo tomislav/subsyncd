@@ -376,6 +376,59 @@ func TestTournamentStopsOnCancellation(t *testing.T) {
 	}
 }
 
+func TestTournamentReachesSeasonPackLazilyAndExtractsOnce(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Season, request.Media.Episode = 1, 2
+	request.Media.ReleaseGroup = "GROUP"
+	leader := broadCandidate("leader")
+	leader.Kind, leader.Season, leader.Episode = domain.MediaEpisode, 1, 2
+	leader.ReleaseNames = []string{"Movie.S01E02-GROUP"}
+	packCandidate := broadCandidate("pack")
+	packCandidate.Kind, packCandidate.Season, packCandidate.Episode = domain.MediaEpisode, 1, 2
+	packCandidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: 1}
+	providerFake := &fakeProvider{id: "provider", payloads: map[string][]byte{"pack": workflowZIP(t, map[string]string{"Movie.S01E02.srt": installSRT})}, filenames: map[string]string{"pack": "season.zip"}}
+	cache := &fakePackCache{}
+	synchronizer := &fakeSynchronizer{verdicts: map[string]string{"leader": "unsure"}}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{packCandidate, leader}}}, cache, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.LapsePolicy.Mode = "always"
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Candidate.ResultID != "pack" || cache.puts != 1 || !slices.Equal(providerFake.downloaded, []string{"leader", "pack"}) {
+		t.Fatalf("Run() = %#v/%v cache puts=%d downloads=%#v", result, err, cache.puts, providerFake.downloaded)
+	}
+}
+
+func TestTournamentAlwaysRemovesTemporaryWorkspace(t *testing.T) {
+	tests := []struct {
+		name string
+		sync *fakeSynchronizer
+		ctx  func() context.Context
+	}{
+		{name: "success", sync: &fakeSynchronizer{}},
+		{name: "rejection", sync: &fakeSynchronizer{rejectAll: true}},
+		{name: "error", sync: &fakeSynchronizer{analyzeErr: errors.New("lapse crashed")}},
+		{name: "cancellation", sync: &fakeSynchronizer{analyzeErr: context.Canceled}, ctx: func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := serviceRequest(t)
+			service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("candidate")}}}, nil, test.sync, &fakeInstaller{})
+			service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+			ctx := context.Background()
+			if test.ctx != nil {
+				ctx = test.ctx()
+			}
+			_, _ = service.Run(ctx, request)
+			matches, err := filepath.Glob(filepath.Join(filepath.Dir(request.Media.Fingerprint.Path), ".subsyncd-work-*"))
+			if err != nil || len(matches) != 0 {
+				t.Fatalf("temporary workspaces = %#v, %v", matches, err)
+			}
+		})
+	}
+}
+
 func hasDecisionStage(decisions []Decision, stage string) bool {
 	for _, decision := range decisions {
 		if decision.Stage == stage {

@@ -161,15 +161,16 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	webhook := `{"eventType":"Download","isUpgrade":false,"movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608,"sceneName":"Movie.2024.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}}`
+	countingRunner := &countingLapseRunner{}
 	build := func() *app.App {
-		application, err := app.New(context.Background(), cfg, app.Options{LapseRunner: lapseRunner{}, ProbeRunner: probeRunner{}, HTTPClient: providerServer.Client(), Catalogs: map[string]catalog.Catalog{"radarr-main": arrCatalog}})
+		application, err := app.New(context.Background(), cfg, app.Options{LapseRunner: countingRunner, ProbeRunner: probeRunner{}, HTTPClient: providerServer.Client(), Catalogs: map[string]catalog.Catalog{"radarr-main": arrCatalog}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return application
 	}
 
-	webhook := `{"eventType":"Download","isUpgrade":false,"movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608,"sceneName":"Movie.2024.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}}`
 	first := build()
 	postWebhook(t, first.Handler, webhook)
 	if err := first.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
@@ -182,6 +183,9 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	}
 	if providerCounts.download.Load() != 1 || providerCounts.exact.Load() != 1 || providerCounts.broad.Load() != 1 || siloCalls.Load() != 1 {
 		t.Fatalf("first run counts exact/broad/download/silo = %d/%d/%d/%d", providerCounts.exact.Load(), providerCounts.broad.Load(), providerCounts.download.Load(), siloCalls.Load())
+	}
+	if countingRunner.work.Load() != 2 {
+		t.Fatalf("LAPSE work calls = %d, want one analysis and one synchronization", countingRunner.work.Load())
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
