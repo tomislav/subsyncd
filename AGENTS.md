@@ -6,6 +6,7 @@ Read these documents before changing behavior:
 2. `../docs/superpowers/plans/2026-09-04-focused-subtitle-service.md`
 3. `docs/implementation-status.md`
 4. `docs/references/bazarr.md` for the task being implemented
+5. `docs/references/silo.md` before changing Silo notification behavior
 
 The design is authoritative. Bazarr commit `da73aeaf5e4d89ad86c8d559d3abd0e4129b24b2` is a GPL-3.0 behavioral reference only. Do not copy, vendor, execute, or translate its Python implementation or fixtures.
 
@@ -29,6 +30,10 @@ Important invariants:
 - The workflow persists every scored candidate without download references, analyzes at most the best three eligible non-hash files, and installs only an exact hash or LAPSE `solid` result. Exact-hash installations are terminal; nonexact upgrades require the configured score delta (default 10).
 - Only unchanged files owned by this service may be upgraded. A content fingerprint change invalidates old score/sync provenance; a path-only media rename rebases managed paths and retains it.
 - Every media write is root-contained, syntax-validated, staged beside its destination, fsynced, atomically renamed, checksum-recorded, and auditable. Managed replacements retain a rollback copy and restore it if the post-rename database commit fails.
+- Search workers lease at most 10 jobs for five minutes, renew once per minute (including queued leases), and execute at most two media/language workflows concurrently. Renewal must stop before compare-and-swap completion. Cancellation stops new polling, permits a bounded drain, then cancels active work so leases can recover.
+- Missing/rejected results advance only the missing-attempt schedule; technical failures advance only the failure schedule; provider throttles advance neither and are scheduled at or after the provider reset. Successful/installed outcomes reset both counters.
+- A committed installation enqueues a checksum-deduplicated notification before its search lease completes. Notification leases, attempts, and retry times are independent from subtitle acquisition; Silo failure never rolls back a valid subtitle.
+- Silo integration is limited to its documented Jellyfin-compatible `POST /Library/Media/Updated` contract on the compatibility listener (normally port 8096), authenticated with `X-Emby-Token`. Send the mapped media-file path as `Modified`, reject redirects, and never persist or surface the API key.
 
 Local verification uses writable caches:
 

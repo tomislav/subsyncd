@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 13, durable workers and Silo notifications
-- Next task: Task 14, daemon, webhook API, and operational CLI
+- Current task: Task 14, daemon, webhook API, and operational CLI
+- Next task: Task 15, packaging and service documentation
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -123,6 +123,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Installation validates a regular UTF-8 SRT/ASS/SSA/VTT source, cue order, and duration bounds; stages it beside a root-contained destination; fsyncs content; applies configured mode/ownership; rechecks ownership immediately before rename; atomically publishes and fsyncs the directory; and commits checksum, provider, candidate, score, sync result, and media fingerprint. A managed replacement keeps a rollback copy and restores it after any post-rename failure. User-modified, unmanaged, special, and symlink destinations are protected.
 - Remote cooldown/quota/disabled results become a nonblocking throttled outcome with the earliest known reset. A partial provider outage can still yield a normal no-result or successful installation; a generic failure from every assigned provider returns a technical workflow error. Manual requests still honor provider cooldown and protected-file rules.
 - Verification: focused red/green tests cover inventory ownership/HI policy, cached-pack fallback, exact bypass, three-candidate limit, confidence tie-breaks, outages, throttles, manual search, cancellation, ambiguity, LAPSE rejection, score upgrades, secret-free persistence, download limits, cache-write degradation, installation fault restoration, fingerprint invalidation, and rename rebasing. Final `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Task 13 — durable workers and Silo notifications
+
+- Commit: `f50b76c feat: add durable worker and Silo notifications`
+
+- Search leasing now carries independent missing-result and technical-failure attempt indexes. SQLite compare-and-swap renewal/completion APIs prevent an old job owner from renewing or completing a lease reclaimed by another worker. Missing/rejected work advances only the jittered missing schedule; technical errors advance only the 1m/5m/15m/60m failure schedule; successful work resets both; provider throttles release immediately and reschedule at the reported reset plus up to 10% positive jitter without advancing either counter.
+- Each cycle leases no more than 10 searches for five minutes, starts renewal for every claimed job (including jobs queued behind the semaphore), and runs no more than two media/language workflows concurrently. Renewal stops and joins before completion, closing the renewal-versus-completion race. Polling uses ±10% jitter. Graceful shutdown stops polling, allows a configurable drain, then cancels active work so unfinished leases remain recoverable.
+- Multiple workers sharing SQLite cannot process the same lease. A crash/failure after a committed installation but before search completion leaves the lease recoverable; the next inventory pass sees the installed sidecar and does not perform a second installation. Repository media hydration now supplies the complete persisted `domain.Media` to workflow jobs.
+- Per-instance reconcilers run immediately at startup and then every six hours. Each `catalog.Reconciler` continues to read and atomically advance its own persisted SQLite cursor, so a failed instance is retried independently while successful instances retain their progress.
+- Migration `006_notification_leases.sql` adds partial unique notification deduplication plus a due-work index. Notification enqueue, lease, renewal, retry, and terminal completion are persistent. A committed installation enqueues one checksum-derived job per configured notifier before the search lease completes; deliveries run independently with bounded concurrency. Retryable failures use the technical backoff and never change acquisition state or revert a subtitle.
+- The optional Silo adapter follows the current official Jellyfin-compatible contract: `POST /Library/Media/Updated`, `X-Emby-Token`, one `Modified` media-file path, and 2xx success (Silo documents 204). It supports boundary-aware longest-prefix mount rewrites, rejects redirects and credential-bearing/invalid base URLs, uses a 15-second default timeout, treats timeout/408/429/5xx as retryable, and never includes the API key or response body in errors. The example now targets Silo's compatibility listener on port 8096. See `docs/references/silo.md`.
+- Bazarr was not used for Silo behavior; official Silo documentation is authoritative. The worker design independently tightens the nonblocking cooldown and durable-lease requirements from the approved service design.
+- Verification: race-enabled tests cover renewal, completion ordering, two-worker exclusion, two-workflow concurrency, crash recovery, missing/failure/throttle accounting, poll/reset jitter, six-hour reconciliation, bounded shutdown, notification dedupe/retry isolation, disabled Silo, request contract, path mapping, authentication/status classification, timeout, redirect rejection, and secret redaction. Final `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
 
