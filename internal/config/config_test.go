@@ -78,6 +78,45 @@ languages:
 	}
 }
 
+func TestWorkerMaxConcurrentDefaultsAndAcceptsExplicitValue(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct {
+		name  string
+		block string
+		want  int
+	}{
+		{name: "omitted", want: 1},
+		{name: "explicit", block: "worker:\n  max_concurrent: 4\n", want: 4},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := loadText(t, validConfig(root, test.block+`languages:
+  en: {providers: [subdl-main]}
+`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Worker.MaxConcurrent != test.want {
+				t.Fatalf("worker max_concurrent = %d, want %d", cfg.Worker.MaxConcurrent, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkerMaxConcurrentRejectsExplicitOutOfRangeValues(t *testing.T) {
+	root := t.TempDir()
+	for _, value := range []int{0, -1, 9} {
+		t.Run(fmt.Sprintf("value_%d", value), func(t *testing.T) {
+			_, err := loadText(t, validConfig(root, fmt.Sprintf(`worker:
+  max_concurrent: %d
+languages:
+  en: {providers: [subdl-main]}
+`, value)))
+			assertErrorContains(t, err, "worker", "max_concurrent", "1", "8")
+		})
+	}
+}
+
 func TestLoadParsesLapseConfidencePolicy(t *testing.T) {
 	root := t.TempDir()
 	text := strings.Replace(validConfig(root, `

@@ -22,6 +22,7 @@ import (
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
+	"subsyncd/internal/worker"
 )
 
 type fakeProvider struct{ id string }
@@ -83,8 +84,26 @@ func testConfig(t *testing.T) config.Config {
 		Providers:            map[string]config.ProviderSpec{"english": {Type: "fake", RequestsPerSecond: 1, Burst: 1, MaxConcurrent: 1}},
 		Languages:            map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"english"}}},
 		AllowHearingImpaired: true, MinimumReleaseScore: 35,
+		Worker:       config.WorkerConfig{MaxConcurrent: 1},
 		ProviderHTTP: config.ProviderHTTPConfig{SharedOriginMaxConcurrent: 1}, PackCache: config.PackCacheConfig{TTL: time.Hour, MaxBytes: 1 << 20},
 		Sync: config.SyncConfig{LapsePath: "/usr/local/bin/lapse", Timeout: time.Minute}, Install: config.InstallConfig{FileMode: 0o644},
+	}
+}
+
+func TestNewWiresConfiguredWorkflowConcurrency(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Worker.MaxConcurrent = 4
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	background, ok := application.Worker.(*worker.Worker)
+	if !ok {
+		t.Fatalf("default worker type = %T", application.Worker)
+	}
+	if background.MaxWorkflows != 4 {
+		t.Fatalf("worker max workflows = %d, want 4", background.MaxWorkflows)
 	}
 }
 

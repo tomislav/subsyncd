@@ -28,12 +28,14 @@ const (
 	defaultPackCacheMaxBytes         int64 = 512 * 1024 * 1024
 	defaultSyncPolicy                      = "confidence"
 	defaultSyncBypassScore                 = 75
+	defaultWorkerMaxConcurrent             = 1
 )
 
 type Config struct {
 	DataDir              string
 	MediaRoots           []string
 	Server               ServerConfig
+	Worker               WorkerConfig
 	Instances            []InstanceConfig
 	Providers            map[string]ProviderSpec
 	Languages            map[domain.Language]LanguageConfig
@@ -48,6 +50,10 @@ type Config struct {
 
 type ServerConfig struct {
 	Listen string `yaml:"listen"`
+}
+
+type WorkerConfig struct {
+	MaxConcurrent int `yaml:"max_concurrent"`
 }
 
 type PathMapping struct {
@@ -119,6 +125,7 @@ type rawConfig struct {
 	DataDir              string                    `yaml:"data_dir"`
 	MediaRoots           []string                  `yaml:"media_roots"`
 	Server               ServerConfig              `yaml:"server"`
+	Worker               rawWorkerConfig           `yaml:"worker"`
 	Instances            []InstanceConfig          `yaml:"instances"`
 	Providers            map[string]yaml.Node      `yaml:"providers"`
 	Languages            map[string]LanguageConfig `yaml:"languages"`
@@ -133,6 +140,10 @@ type rawConfig struct {
 
 type rawProviderHTTPConfig struct {
 	SharedOriginMaxConcurrent *int `yaml:"shared_origin_max_concurrent"`
+}
+
+type rawWorkerConfig struct {
+	MaxConcurrent *int `yaml:"max_concurrent"`
 }
 
 type rawPackCacheConfig struct {
@@ -275,6 +286,11 @@ func normalize(raw rawConfig) (Config, error) {
 	if cfg.MinimumReleaseScore == 0 {
 		cfg.MinimumReleaseScore = defaultMinimumReleaseScore
 	}
+	workerMaxConcurrent := defaultWorkerMaxConcurrent
+	if raw.Worker.MaxConcurrent != nil {
+		workerMaxConcurrent = *raw.Worker.MaxConcurrent
+	}
+	cfg.Worker = WorkerConfig{MaxConcurrent: workerMaxConcurrent}
 
 	shared := defaultSharedOriginMaxConcurrent
 	if raw.ProviderHTTP.SharedOriginMaxConcurrent != nil {
@@ -386,6 +402,9 @@ func (c Config) Validate() error {
 	}
 	if c.ProviderHTTP.SharedOriginMaxConcurrent <= 0 {
 		return fmt.Errorf("provider_http shared_origin_max_concurrent must be positive")
+	}
+	if c.Worker.MaxConcurrent < 1 || c.Worker.MaxConcurrent > 8 {
+		return fmt.Errorf("worker max_concurrent must be between 1 and 8")
 	}
 	if c.PackCache.TTL <= 0 {
 		return fmt.Errorf("pack cache ttl must be positive")

@@ -204,7 +204,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	workerRunner := options.Worker
 	if workerRunner == nil {
-		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, OnError: func(err error) { logger.Error("background cycle failed", "error", redactedError(err, cfg)) }}
+		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, OnError: func(err error) { logger.Error("background cycle failed", "error", redactedError(err, cfg)) }}
 	}
 
 	application := &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Logger: logger, Clock: clock}
