@@ -7,7 +7,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Branch: `feat/subsyncd`
 - Current task: complete through Task 15
 - Next task: none; the approved implementation plan ends after Task 15
-- Latest follow-up: configurable rootless container identity in `ce023d5`
+- Latest follow-up: hearing-impaired subtitles default off in `5a42290`
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -134,7 +134,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Commit: `fce31ab feat: orchestrate subtitle acquisition and upgrades`
 
 - The workflow refreshes embedded/sidecar inventory before every attempt, stops for acceptable embedded or protected/user-managed subtitles, checks a reusable season pack before remote providers, and otherwise consumes the provider coordinator's exact-first/broad-fan-out result. A stale exact-phase error is cleared when that provider's broad phase succeeds.
-- Every search result is identity-gated, explainably scored, and transactionally persisted without raw candidate or direct-member download references. Disallowed hearing-impaired candidates carry a persisted rejection reason; `allow_hearing_impaired` now correctly defaults to `true` while honoring explicit `false`.
+- Every search result is identity-gated, explainably scored, and transactionally persisted without raw candidate or direct-member download references. Disallowed hearing-impaired candidates carry a persisted rejection reason. Task 12 originally defaulted `allow_hearing_impaired` to `true`; follow-up `5a42290` supersedes that policy, so the current default is `false` and only explicit `true` opts in.
 - Exact hashes bypass LAPSE and reduce the download shortlist to that terminal result. Nonexact acquisition analyzes and synchronizes at most the top three eligible candidates. Final ordering is release score, LAPSE analysis confidence, configured provider priority, rating, then stable provider/result ID.
 - Provider output is capped at 20 MiB at the workflow writer boundary even if an adapter ignores a short-write error, then sent through the common ZIP/RAR/plain extractor and strict episode selector. Ambiguous packs fail closed. Normalized season packs are cached only after successful selection; cache persistence failure is recorded but does not discard a valid candidate.
 - Cache reuse now reloads the immutable manifest and reruns strict selection for the requested episode instead of trusting the first indexed member. Missing, malformed, symlinked, or checksum-mismatched entries are invalidated through root-contained cleanup. Ambiguity remains a typed rejection rather than a cache miss.
@@ -174,6 +174,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Red/green Compose checks proved that standalone and root-stack definitions previously ignored `PUID=1234 PGID=2345 TZ=UTC`, then rendered `user: 1234:2345`, matching tmpfs ownership, and `TZ=UTC` after the change. Default renders were separately checked as `1000:1000` and `Europe/Zagreb`.
 - Verification on 2026-09-04: native arm64 image build; image metadata and runtime UID/GID checks; Zagreb timezone offset; default and arbitrary-identity `subsyncd --version` smoke runs; `go test ./... -race`; `go vet ./...`; tagged e2e tests; and `git diff --check`. The local image ID is recorded in `docs/release-notes.md`; it is not a registry digest.
 - Next task: none. Before publication, retain the existing native-amd64 build gate from the initial release notes.
+
+### Follow-up — hearing-impaired subtitles default off
+
+- Commit: `5a42290 fix: default hearing-impaired subtitles off`
+- Omitted `allow_hearing_impaired` now resolves to `false`; the shipped example also sets it to `false`. Explicit `allow_hearing_impaired: true` remains the opt-in for users who want SDH/HI tracks and candidates.
+- With the default policy, an embedded SDH track does not satisfy an ordinary language request and a provider result marked hearing-impaired is rejected during candidate evaluation. Explicit opt-in restores both behaviors. Forced-only and unknown-language behavior is unchanged.
+- Red/green coverage changed the configuration contract test before production code: it failed because omission still yielded `true`, then passed after the default changed while also proving explicit `true` is honored. Existing inventory and workflow policy tests passed unchanged.
+- Verification on 2026-09-04: focused configuration/workflow/inventory race tests, complete `go test ./... -race -count=1`, `go vet ./...`, tagged e2e tests with `-count=1`, and `git diff --check` all passed.
+- Next task: none.
 
 ### Task 14 — daemon, webhook API, and operational CLI
 
