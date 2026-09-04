@@ -1,6 +1,6 @@
 # subsyncd
 
-`subsyncd` is a small, headless subtitle service for one or more Sonarr and Radarr instances. It indexes embedded and external subtitles, searches ordered providers per language, scores release compatibility, synchronizes non-hash matches with LAPSE, installs sidecars atomically, and can notify Silo through its Jellyfin-compatible API.
+`subsyncd` is a small, headless subtitle service for one or more Sonarr and Radarr instances. It indexes embedded and external subtitles, searches ordered providers per language, scores release compatibility, uses LAPSE when release evidence is uncertain, installs sidecars atomically, and can notify Silo through its Jellyfin-compatible API.
 
 It intentionally has no browser UI and no management API. The HTTP surface is limited to Arr webhooks plus liveness/readiness checks; inspection and manual actions use the CLI.
 
@@ -10,7 +10,7 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 - Each language has an explicit ordered provider list. The example routes Croatian only to Titlovi and English to OpenSubtitles followed by SubDL.
 - Embedded tracks are fingerprint-cached in SQLite; sidecars are rescanned before every search.
 - OpenSubtitles file hashes are calculated lazily once per exact file fingerprint and persisted.
-- Exact-hash matches skip LAPSE. Every other install requires LAPSE's strict `solid` verdict.
+- Exact-hash matches skip LAPSE. A first install with a score of at least 75 plus identity, release-group, and episode evidence can also skip it; uncertain matches, packs, and upgrades require LAPSE's strict `solid` verdict by default.
 - Season packs use one bounded extractor and fail closed when the target member is ambiguous.
 - Provider cooldowns, search schedules, leases, candidate evidence, install provenance, and notifications survive restarts.
 

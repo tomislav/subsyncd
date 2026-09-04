@@ -72,6 +72,15 @@ sync:
   # The production image installs the pinned LAPSE release here.
   lapse_path: /opt/lapse/lapse
   timeout: 30m
+  # "confidence" avoids reading the media when strong release evidence is enough.
+  # Use "always" to send every non-exact candidate through LAPSE.
+  policy: confidence
+  bypass_score: 75
+  require_identity_anchor: true
+  require_episode_evidence: true
+  require_release_group: true
+  lapse_for_packs: true
+  lapse_for_upgrades: true
 
 install:
   file_mode: "0644"

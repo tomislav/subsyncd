@@ -26,6 +26,8 @@ const (
 	defaultSharedOriginMaxConcurrent       = 1
 	defaultPackCacheTTL                    = 24 * time.Hour
 	defaultPackCacheMaxBytes         int64 = 512 * 1024 * 1024
+	defaultSyncPolicy                      = "confidence"
+	defaultSyncBypassScore                 = 75
 )
 
 type Config struct {
@@ -84,8 +86,15 @@ type PackCacheConfig struct {
 }
 
 type SyncConfig struct {
-	LapsePath string
-	Timeout   time.Duration
+	LapsePath              string
+	Timeout                time.Duration
+	Policy                 string
+	BypassScore            int
+	RequireIdentityAnchor  bool
+	RequireEpisodeEvidence bool
+	RequireReleaseGroup    bool
+	LapseForPacks          bool
+	LapseForUpgrades       bool
 }
 
 type InstallConfig struct {
@@ -132,8 +141,15 @@ type rawPackCacheConfig struct {
 }
 
 type rawSyncConfig struct {
-	LapsePath string    `yaml:"lapse_path"`
-	Timeout   *duration `yaml:"timeout"`
+	LapsePath              string    `yaml:"lapse_path"`
+	Timeout                *duration `yaml:"timeout"`
+	Policy                 string    `yaml:"policy"`
+	BypassScore            int       `yaml:"bypass_score"`
+	RequireIdentityAnchor  *bool     `yaml:"require_identity_anchor"`
+	RequireEpisodeEvidence *bool     `yaml:"require_episode_evidence"`
+	RequireReleaseGroup    *bool     `yaml:"require_release_group"`
+	LapseForPacks          *bool     `yaml:"lapse_for_packs"`
+	LapseForUpgrades       *bool     `yaml:"lapse_for_upgrades"`
 }
 
 type rawInstallConfig struct {
@@ -150,6 +166,10 @@ type providerCommon struct {
 }
 
 type duration time.Duration
+
+func boolDefaultTrue(value *bool) bool {
+	return value == nil || *value
+}
 
 func (d *duration) UnmarshalYAML(node *yaml.Node) error {
 	parsed, err := time.ParseDuration(node.Value)
@@ -276,7 +296,25 @@ func normalize(raw rawConfig) (Config, error) {
 	if raw.Sync.Timeout != nil {
 		syncTimeout = time.Duration(*raw.Sync.Timeout)
 	}
-	cfg.Sync = SyncConfig{LapsePath: raw.Sync.LapsePath, Timeout: syncTimeout}
+	syncPolicy := raw.Sync.Policy
+	if syncPolicy == "" {
+		syncPolicy = defaultSyncPolicy
+	}
+	bypassScore := raw.Sync.BypassScore
+	if bypassScore == 0 {
+		bypassScore = defaultSyncBypassScore
+	}
+	cfg.Sync = SyncConfig{
+		LapsePath:              raw.Sync.LapsePath,
+		Timeout:                syncTimeout,
+		Policy:                 syncPolicy,
+		BypassScore:            bypassScore,
+		RequireIdentityAnchor:  boolDefaultTrue(raw.Sync.RequireIdentityAnchor),
+		RequireEpisodeEvidence: boolDefaultTrue(raw.Sync.RequireEpisodeEvidence),
+		RequireReleaseGroup:    boolDefaultTrue(raw.Sync.RequireReleaseGroup),
+		LapseForPacks:          boolDefaultTrue(raw.Sync.LapseForPacks),
+		LapseForUpgrades:       boolDefaultTrue(raw.Sync.LapseForUpgrades),
+	}
 	installMode := os.FileMode(0o644)
 	if raw.Install.FileMode != "" {
 		parsed, err := strconv.ParseUint(strings.TrimPrefix(raw.Install.FileMode, "0o"), 8, 9)
@@ -433,6 +471,12 @@ func (c Config) Validate() error {
 	}
 	if c.Sync.Timeout <= 0 {
 		return fmt.Errorf("sync timeout must be positive")
+	}
+	if c.Sync.Policy != "" && c.Sync.Policy != "always" && c.Sync.Policy != "confidence" {
+		return fmt.Errorf("sync policy must be always or confidence")
+	}
+	if c.Sync.BypassScore != 0 && (c.Sync.BypassScore < 1 || c.Sync.BypassScore > 100) {
+		return fmt.Errorf("sync bypass_score must be between 1 and 100")
 	}
 	if c.Silo.Enabled {
 		parsedURL, err := url.ParseRequestURI(c.Silo.URL)

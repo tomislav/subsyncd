@@ -86,6 +86,28 @@ type WorkflowRepository interface {
 
 type WorkflowClock interface{ Now() time.Time }
 
+type LapsePolicy struct {
+	Mode                   string
+	BypassScore            int
+	RequireIdentityAnchor  bool
+	RequireEpisodeEvidence bool
+	RequireReleaseGroup    bool
+	LapseForPacks          bool
+	LapseForUpgrades       bool
+}
+
+func DefaultLapsePolicy() LapsePolicy {
+	return LapsePolicy{
+		Mode:                   "confidence",
+		BypassScore:            75,
+		RequireIdentityAnchor:  true,
+		RequireEpisodeEvidence: true,
+		RequireReleaseGroup:    true,
+		LapseForPacks:          true,
+		LapseForUpgrades:       true,
+	}
+}
+
 type Service struct {
 	Inventory            InventoryRefresher
 	Searcher             Searcher
@@ -98,6 +120,7 @@ type Service struct {
 	MinimumScore         int
 	MinimumUpgradeDelta  int
 	PackTTL              time.Duration
+	LapsePolicy          LapsePolicy
 	AllowHearingImpaired bool
 	Clock                WorkflowClock
 }
@@ -354,6 +377,9 @@ func (s *Service) synchronize(ctx context.Context, request Request, candidate do
 	if candidate.ExactHash {
 		return preparedCandidate{candidate: candidate, score: score, sync: domain.SyncResult{Verdict: "exact_hash", Mode: "bypass", Reference: "provider_hash", Ratio: 1, Confidence: 1, Agreement: 1, Coverage: 1, Parts: 1}, path: source}, nil
 	}
+	if canBypassLapse(request.Media, candidate, score, installed, s.LapsePolicy.normalized()) {
+		return preparedCandidate{candidate: candidate, score: score, sync: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, path: source}, nil
+	}
 	analysis, err := s.Synchronizer.AnalyzeCandidate(ctx, candidate, request.Media.Fingerprint.Path, source)
 	if err != nil || analysis.Verdict != "solid" {
 		if err != nil {
@@ -374,6 +400,58 @@ func (s *Service) synchronize(ctx context.Context, request Request, candidate do
 	// the same stage; retain the synchronization metadata that produced the file.
 	synchronized.Confidence = analysis.Confidence
 	return preparedCandidate{candidate: candidate, score: score, sync: synchronized, path: output}, nil
+}
+
+func (p LapsePolicy) normalized() LapsePolicy {
+	if p.Mode == "" {
+		return DefaultLapsePolicy()
+	}
+	if p.BypassScore == 0 {
+		p.BypassScore = DefaultLapsePolicy().BypassScore
+	}
+	return p
+}
+
+func canBypassLapse(media domain.Media, candidate domain.Candidate, score domain.Score, installed bool, policy LapsePolicy) bool {
+	if policy.Mode != "confidence" ||
+		(installed && policy.LapseForUpgrades) ||
+		(candidate.Pack != nil && policy.LapseForPacks) ||
+		score.Total < policy.BypassScore {
+		return false
+	}
+	identity, releaseGroup := false, false
+	for _, contribution := range score.Contributions {
+		switch contribution.Signal {
+		case "external_id", "title_year":
+			identity = identity || contribution.Points > 0
+		case "release_group":
+			releaseGroup = contribution.Points > 0
+		}
+	}
+	if (policy.RequireIdentityAnchor && !identity) || (policy.RequireReleaseGroup && !releaseGroup) {
+		return false
+	}
+	return !policy.RequireEpisodeEvidence || media.Ref.Kind != domain.MediaEpisode || candidateHasEpisodeEvidence(media, candidate)
+}
+
+func candidateHasEpisodeEvidence(media domain.Media, candidate domain.Candidate) bool {
+	if candidate.Season == media.Season && candidate.Episode == media.Episode && media.Season > 0 && media.Episode > 0 {
+		return true
+	}
+	if media.AbsoluteEpisode > 0 && candidate.AbsoluteEpisode == media.AbsoluteEpisode {
+		return true
+	}
+	for _, name := range candidate.ReleaseNames {
+		release := match.ParseRelease(name)
+		end := release.EpisodeEnd
+		if end == 0 {
+			end = release.Episode
+		}
+		if release.Season == media.Season && release.Episode > 0 && release.Episode <= media.Episode && media.Episode <= end {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) install(ctx context.Context, request Request, prepared preparedCandidate, existing store.Installation, installed bool, result Result) (Result, error) {

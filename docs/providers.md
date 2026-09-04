@@ -72,8 +72,9 @@ For one media/language job:
 4. Ask hash-capable providers sequentially in configured order. The first verified exact match is terminal.
 5. If no exact match exists, query every assigned provider broadly and merge results in configured order.
 6. Persist score and rejection evidence for every result, but never a signed download URL or provider token.
-7. Download/analyze no more than the best three eligible non-hash candidates.
-8. Install only an exact hash or a LAPSE `solid` result.
+7. Download/prepare no more than the best three eligible non-hash candidates.
+8. For a first-install candidate scoring at least 75, bypass LAPSE only when identity, release group, and (for TV) episode evidence are all present.
+9. Otherwise require a LAPSE `solid` result; packs and upgrades always take this path by default.
 
 Search-result cache entries live for six hours. Season packs default to 24 hours and a total 512 MiB LRU ceiling. Pack downloads are content-addressed and immutable; every cache hit reloads the manifest, verifies checksums, and reruns strict member selection for the current episode.
 
@@ -94,7 +95,9 @@ Known identity conflicts reject before points are considered. Conflicts include 
 | Provider rating | 0–3 |
 | Popularity/downloads | 0–2 |
 
-Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). Final ordering is release score, LAPSE analysis confidence, configured provider priority, provider rating, popularity, then stable provider/result identity. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10.
+Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). The LAPSE bypass threshold is separate: `sync.bypass_score` defaults to 75. Reaching it is necessary but not sufficient; with the safe defaults, the candidate also needs an external-ID or title/year anchor, release-group evidence, and matching season/episode evidence for TV. Rating and popularity never substitute for these anchors.
+
+Final ordering is release score, synchronization confidence/provenance, configured provider priority, provider rating, popularity, then stable provider/result identity. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default.
 
 ## Rate limits and cooldowns
 

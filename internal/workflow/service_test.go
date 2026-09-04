@@ -156,6 +156,93 @@ func TestServiceExactHashSkipsLapseAndBroadCandidatesAreLimitedToThree(t *testin
 	})
 }
 
+func TestServiceStrongAnchoredFirstInstallBypassesLapse(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.ReleaseGroup = "GROUP"
+	request.Media.Source = "WEB-DL"
+	candidate := broadCandidate("strong")
+	candidate.ReleaseNames = []string{"Movie.2024.1080p.WEB-DL-GROUP"}
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{}
+	installer := &fakeInstaller{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, installer)
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || result.Score.Total != 75 {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if synchronizer.analyzeCalls != 0 || synchronizer.synchronizeCalls != 0 {
+		t.Fatalf("strong anchored match invoked LAPSE: analyze/synchronize=%d/%d", synchronizer.analyzeCalls, synchronizer.synchronizeCalls)
+	}
+	if installer.request.SyncResult.Verdict != "score_bypass" || installer.request.SyncResult.Reference != "release_evidence" || installer.request.SyncResult.Confidence != 0 {
+		t.Fatalf("sync provenance = %#v", installer.request.SyncResult)
+	}
+}
+
+func TestServiceConfidencePolicyThresholdCanRequireLapse(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.ReleaseGroup = "GROUP"
+	request.Media.Source = "WEB-DL"
+	candidate := broadCandidate("below-bypass-threshold")
+	candidate.ReleaseNames = []string{"Movie.2024.1080p.WEB-DL-GROUP"}
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}
+	synchronizer := &fakeSynchronizer{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	service.LapsePolicy.BypassScore = 80
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if synchronizer.analyzeCalls != 1 || synchronizer.synchronizeCalls != 1 {
+		t.Fatalf("below-threshold candidate did not invoke LAPSE: analyze/synchronize=%d/%d", synchronizer.analyzeCalls, synchronizer.synchronizeCalls)
+	}
+}
+
+func TestLapseConfidencePolicySafetyBoundaries(t *testing.T) {
+	strongScore := domain.Score{Total: 75, Contributions: []domain.Contribution{
+		{Signal: "external_id", Points: 20},
+		{Signal: "title_year", Points: 15},
+		{Signal: "release_group", Points: 25},
+		{Signal: "source", Points: 15},
+	}}
+	movie := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}}
+	episode := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Season: 1, Episode: 2}
+	policy := DefaultLapsePolicy()
+
+	tests := []struct {
+		name      string
+		media     domain.Media
+		candidate domain.Candidate
+		score     domain.Score
+		installed bool
+		policy    LapsePolicy
+		want      bool
+	}{
+		{name: "strong movie", media: movie, score: strongScore, policy: policy, want: true},
+		{name: "always policy", media: movie, score: strongScore, policy: func() LapsePolicy { p := policy; p.Mode = "always"; return p }()},
+		{name: "below threshold", media: movie, score: domain.Score{Total: 74, Contributions: strongScore.Contributions}, policy: policy},
+		{name: "missing identity", media: movie, score: domain.Score{Total: 75, Contributions: []domain.Contribution{{Signal: "release_group", Points: 25}}}, policy: policy},
+		{name: "missing release group", media: movie, score: domain.Score{Total: 75, Contributions: []domain.Contribution{{Signal: "external_id", Points: 20}}}, policy: policy},
+		{name: "episode without episode evidence", media: episode, score: strongScore, policy: policy},
+		{name: "episode with explicit evidence", media: episode, candidate: domain.Candidate{Season: 1, Episode: 2}, score: strongScore, policy: policy, want: true},
+		{name: "episode with release-name evidence", media: episode, candidate: domain.Candidate{ReleaseNames: []string{"Show.S01E02.1080p.WEB-DL-GROUP"}}, score: strongScore, policy: policy, want: true},
+		{name: "pack", media: episode, candidate: domain.Candidate{Season: 1, Episode: 2, Pack: &domain.PackInfo{Scope: domain.PackSeason, Season: 1}}, score: strongScore, policy: policy},
+		{name: "upgrade", media: movie, score: strongScore, installed: true, policy: policy},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := canBypassLapse(test.media, test.candidate, test.score, test.installed, test.policy); got != test.want {
+				t.Fatalf("canBypassLapse() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestServiceHandlesProviderOutagesThrottlesZeroResultsAndCancellation(t *testing.T) {
 	reset := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
 	t.Run("all throttled", func(t *testing.T) {
@@ -346,7 +433,7 @@ func testService(t *testing.T, current inventory.Inventory, searcher *fakeSearch
 	if installer == nil {
 		installer = &fakeInstaller{}
 	}
-	return &Service{Inventory: &fakeInventory{current: current}, Searcher: searcher, PackCache: cache, Synchronizer: sync, Installer: installer, Repository: &workflowRepository{}, Providers: map[string]provider.Provider{}, ProviderOrder: []string{"provider"}, MinimumScore: 35, PackTTL: 24 * time.Hour, Clock: fixedWorkflowClock{at: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)}}
+	return &Service{Inventory: &fakeInventory{current: current}, Searcher: searcher, PackCache: cache, Synchronizer: sync, Installer: installer, Repository: &workflowRepository{}, Providers: map[string]provider.Provider{}, ProviderOrder: []string{"provider"}, MinimumScore: 35, PackTTL: 24 * time.Hour, LapsePolicy: DefaultLapsePolicy(), Clock: fixedWorkflowClock{at: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)}}
 }
 
 func serviceRequest(t *testing.T) Request {

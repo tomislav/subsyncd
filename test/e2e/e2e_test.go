@@ -59,6 +59,9 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	defer silo.Close()
 
 	cfg := e2eConfig(t, root, arr.URL, providerServer.URL, silo.URL)
+	// Keep this black-box path focused on LAPSE and exercise the compatibility
+	// policy explicitly; score-bypass behavior is covered by workflow tests.
+	cfg.Sync.Policy = "always"
 	arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root})
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +247,7 @@ func e2eConfig(t *testing.T, root, arrURL, providerURL, siloURL string) config.C
 		Providers: map[string]config.ProviderSpec{"opensubtitles-main": {Type: "opensubtitles", RequestsPerSecond: 100, Burst: 10, MaxConcurrent: 1, Settings: *providerNode.Content[0]}},
 		Languages: map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"opensubtitles-main"}}}, AllowHearingImpaired: true, MinimumReleaseScore: 35,
 		ProviderHTTP: config.ProviderHTTPConfig{SharedOriginMaxConcurrent: 1}, PackCache: config.PackCacheConfig{TTL: 24 * time.Hour, MaxBytes: 16 << 20},
-		Sync: config.SyncConfig{LapsePath: "/fake/lapse", Timeout: time.Minute}, Install: config.InstallConfig{FileMode: 0o640},
+		Sync: config.SyncConfig{LapsePath: "/fake/lapse", Timeout: time.Minute, Policy: "confidence", BypassScore: 75, RequireIdentityAnchor: true, RequireEpisodeEvidence: true, RequireReleaseGroup: true, LapseForPacks: true, LapseForUpgrades: true}, Install: config.InstallConfig{FileMode: 0o640},
 		Silo: config.SiloConfig{Enabled: true, URL: siloURL, APIKey: "silo-key"},
 	}
 }

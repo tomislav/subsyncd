@@ -78,6 +78,59 @@ languages:
 	}
 }
 
+func TestLoadParsesLapseConfidencePolicy(t *testing.T) {
+	root := t.TempDir()
+	text := strings.Replace(validConfig(root, `
+languages:
+  en: {providers: [subdl-main]}
+`), "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m}", `sync:
+  lapse_path: /usr/local/bin/lapse
+  timeout: 30m
+  policy: confidence
+  bypass_score: 80
+  require_identity_anchor: false
+  require_episode_evidence: false
+  require_release_group: false
+  lapse_for_packs: false
+  lapse_for_upgrades: false`, 1)
+	cfg, err := loadText(t, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.Policy != "confidence" || cfg.Sync.BypassScore != 80 || cfg.Sync.RequireIdentityAnchor || cfg.Sync.RequireEpisodeEvidence || cfg.Sync.RequireReleaseGroup || cfg.Sync.LapseForPacks || cfg.Sync.LapseForUpgrades {
+		t.Fatalf("sync confidence policy = %#v", cfg.Sync)
+	}
+}
+
+func TestLoadDefaultsToConservativeLapseConfidencePolicy(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := loadText(t, validConfig(root, `
+languages:
+  en: {providers: [subdl-main]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.Policy != "confidence" || cfg.Sync.BypassScore != 75 || !cfg.Sync.RequireIdentityAnchor || !cfg.Sync.RequireEpisodeEvidence || !cfg.Sync.RequireReleaseGroup || !cfg.Sync.LapseForPacks || !cfg.Sync.LapseForUpgrades {
+		t.Fatalf("default sync confidence policy = %#v", cfg.Sync)
+	}
+}
+
+func TestLoadRejectsInvalidLapseConfidencePolicy(t *testing.T) {
+	root := t.TempDir()
+	base := validConfig(root, `
+languages:
+  en: {providers: [subdl-main]}
+`)
+	for _, replacement := range []string{
+		"sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, policy: sometimes}",
+		"sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, bypass_score: 101}",
+	} {
+		_, err := loadText(t, strings.Replace(base, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m}", replacement, 1))
+		assertErrorContains(t, err, "sync")
+	}
+}
+
 func TestLoadParsesInstallModeAndOwnership(t *testing.T) {
 	root := t.TempDir()
 	text := validConfig(root, `
