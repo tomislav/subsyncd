@@ -110,6 +110,47 @@ func TestWorkflowLogsDebugScoringAndTypedLapsePhases(t *testing.T) {
 	}
 }
 
+func TestWorkflowLogsBoundedArchiveSelectionDiagnostics(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Title = "Ozark"
+	request.Media.Season = 3
+	request.Media.Episode = 1
+	candidate := broadCandidate("306201")
+	candidate.Kind = domain.MediaEpisode
+	candidate.Title = "Ozark"
+	candidate.Season = 3
+	candidate.Episode = 1
+	providerFake := &fakeProvider{
+		id: "provider",
+		payloads: map[string][]byte{"306201": workflowZIP(t, map[string]string{
+			"Ozark.S03E03.iNTERNAL.1080p.WEB.x264-GHOSTS.cyr_utf8.srt": installSRT,
+			"Ozark.S03E03.iNTERNAL.1080p.WEB.x264-GHOSTS.srt":          installSRT,
+		})},
+		filenames: map[string]string{"306201": "306201.zip"},
+	}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "debug", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.Events = events
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeRejected {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	rejected := workflowEvents(workflowLogRecords(t, logs.String()), "candidate.rejected")
+	if len(rejected) != 1 || rejected[0]["provider"] != "provider" || rejected[0]["candidate_id"] != "306201" || rejected[0]["reason_code"] != "pack_selection" || rejected[0]["selection_rule"] != "none" || rejected[0]["archive_type"] != "zip" || rejected[0]["subtitle_member_count"] != float64(2) || rejected[0]["matching_member_count"] != float64(0) {
+		t.Fatalf("candidate rejection event = %#v; logs=%s", rejected, logs.String())
+	}
+	if strings.Contains(logs.String(), "Ozark.S03E03") || strings.Contains(logs.String(), request.Media.Fingerprint.Path) {
+		t.Fatalf("archive diagnostics leaked filenames or absolute paths: %s", logs.String())
+	}
+}
+
 func TestWorkflowLogsLapseFailureOnceAndSanitizesIt(t *testing.T) {
 	request := serviceRequest(t)
 	var logs bytes.Buffer

@@ -64,7 +64,7 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		}
 		return Manifest{}, &ContentError{Err: err}
 	}
-	manifest := Manifest{ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, Language: candidate.Language, Checksum: checksum(payload), Candidate: candidate}
+	manifest := Manifest{ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, Language: candidate.Language, Checksum: checksum(payload), ArchiveType: payloadType(payload), Candidate: candidate}
 	parent := filepath.Dir(dst)
 	if err := os.MkdirAll(parent, 0o750); err != nil {
 		return Manifest{}, fmt.Errorf("create extraction parent: %w", err)
@@ -127,6 +127,17 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		manifest.Members[index].NormalizedPath = filepath.Join(dst, manifest.Members[index].SafeName)
 	}
 	return manifest, nil
+}
+
+func payloadType(payload []byte) string {
+	switch {
+	case bytes.HasPrefix(payload, zipMagic):
+		return "zip"
+	case bytes.HasPrefix(payload, rarMagic):
+		return "rar"
+	default:
+		return "plain"
+	}
 }
 
 func validateLimits(limits Limits) error {

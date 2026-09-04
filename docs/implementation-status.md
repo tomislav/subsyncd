@@ -7,11 +7,18 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Branch: `main`
 - Current task: conventional review repairs executing inline; Tasks 1–7 complete
 - Next task: none; push, image publication, and Hades deployment remain separate user-approved actions
-- Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
+- Latest follow-up: candidate-local rejection and bounded diagnostics for wrong-episode archives
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — wrong-episode archive hardening
+
+- Episode archives now always pass episode-member validation. A non-pack archive containing one generically named subtitle retains compatibility, but a filename with explicit season/episode, range, or absolute evidence must match the requested episode before LAPSE or installation.
+- The concrete Titlovi catalog issue #104 case (`306201`, requested Ozark S03E01, archive containing only S03E03 members) remains a candidate-local `pack_selection` rejection. It does not alter provider cooldown state and the workflow continues through the remaining shortlist.
+- Debug-only `candidate.rejected` events now add bounded `reason_code`, `selection_rule`, `archive_type`, `subtitle_member_count`, and `matching_member_count` fields. Filenames, subtitle content, and absolute paths remain excluded.
+- TDD red evidence: the singleton regression installed `306201`, and the issue reproduction lacked every required diagnostic field. Fresh verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/pack ./internal/workflow -race -count=1`, `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, and `git diff --check` pass. Next task: none inside this hardening change.
 
 ### Conventional repairs Task 7 — integration coverage and durable documentation
 

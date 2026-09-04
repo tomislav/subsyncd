@@ -22,7 +22,7 @@ Hearing-impaired/SDH tracks and candidates are disallowed by default. Set `allow
 
 ### Titlovi
 
-Titlovi uses the supported Kodi API with an API-enabled account. It supports `bs`, `en`, `hr`, `mk`, `sr`, `sr-Cyrl`, and `sl`. Search is broad-only and paginated (five pages by default). Episode-zero results become season-pack evidence only when the returned season matches; they are never treated as the requested episode automatically.
+Titlovi uses the supported Kodi API with an API-enabled account. It supports `bs`, `en`, `hr`, `mk`, `sr`, `sr-Cyrl`, and `sl`. Search is broad-only and paginated (five pages by default). Episode-zero results become season-pack evidence only when the returned season matches; they are never treated as the requested episode automatically. Downloaded episode archives are checked independently of that search metadata: explicit wrong-episode filenames reject only that candidate, including a one-subtitle archive, while one generic filename remains usable for an exact episode result.
 
 ```yaml
 titlovi-main:
@@ -81,7 +81,7 @@ For one media/language job:
 
 Search-result cache entries live for six hours. Season packs default to 24 hours and a total 512 MiB LRU ceiling. Pack downloads are content-addressed and immutable; every cache hit reloads the manifest, verifies checksums, and reruns strict member selection for the current episode.
 
-Candidate rejections are not provider blacklists. They are scoped to one media/language/provider result and expire after 30 days. Media fingerprint, stable release metadata, selected member checksum, LAPSE compatibility version, or synchronization-policy changes invalidate the applicable match. Volatile provider rating, popularity, download counts, and temporary download URLs deliberately do not change the rejection identity.
+Candidate rejections are not provider blacklists. They are scoped to one media/language/provider result and expire after 30 days. Media fingerprint, stable release metadata, selected member checksum, LAPSE compatibility version, or synchronization-policy changes invalidate the applicable match. Volatile provider rating, popularity, download counts, and temporary download URLs deliberately do not change the rejection identity. A downloaded archive with no unique member for the requested episode is recorded as `pack_selection`; the workflow continues through its remaining shortlist without opening a provider cooldown.
 
 ## Score model
 

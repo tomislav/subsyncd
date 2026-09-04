@@ -10,9 +10,15 @@ import (
 	"subsyncd/internal/domain"
 )
 
-type SelectionError struct{ Reason string }
+type SelectionError struct {
+	Reason              string
+	Rule                string
+	ArchiveType         string
+	MemberCount         int
+	MatchingMemberCount int
+}
 
-func (e *SelectionError) Error() string { return "season-pack member rejected: " + e.Reason }
+func (e *SelectionError) Error() string { return "subtitle archive member rejected: " + e.Reason }
 
 var (
 	episodeTokenPattern = regexp.MustCompile(`(?i)(?:s(\d{1,3})e(\d{1,4})|(\d{1,3})x(\d{1,4}))`)
@@ -24,7 +30,7 @@ var (
 func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, wantForced bool) (Member, error) {
 	members := eligibleMembers(manifest.Members, wantForced)
 	if len(members) == 0 {
-		return Member{}, &SelectionError{Reason: "no members satisfy the forced-subtitle policy"}
+		return Member{}, selectionError(manifest, "forced_policy", 0, "no members satisfy the forced-subtitle policy")
 	}
 	if candidate.Pack != nil && len(candidate.Pack.DirectMembers) != 0 {
 		var matches []Member
@@ -44,7 +50,7 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 				}
 			}
 		}
-		if selected, done, err := uniqueRule(matches, "provider_direct", "provider supplied a direct member for the target episode"); done {
+		if selected, done, err := uniqueRule(manifest, matches, "provider_direct", "provider supplied a direct member for the target episode"); done {
 			return selected, err
 		}
 	}
@@ -59,7 +65,7 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 			episodeMatches = append(episodeMatches, member)
 		}
 	}
-	if selected, done, err := uniqueRule(episodeMatches, "episode_token", fmt.Sprintf("filename identifies S%02dE%02d", media.Season, media.Episode)); done {
+	if selected, done, err := uniqueRule(manifest, episodeMatches, "episode_token", fmt.Sprintf("filename identifies S%02dE%02d", media.Season, media.Episode)); done {
 		return selected, err
 	}
 
@@ -70,7 +76,7 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 			rangeMatches = append(rangeMatches, member)
 		}
 	}
-	if selected, done, err := uniqueRule(rangeMatches, "episode_range", fmt.Sprintf("filename range contains S%02dE%02d", media.Season, media.Episode)); done {
+	if selected, done, err := uniqueRule(manifest, rangeMatches, "episode_range", fmt.Sprintf("filename range contains S%02dE%02d", media.Season, media.Episode)); done {
 		return selected, err
 	}
 
@@ -81,7 +87,7 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 				absoluteMatches = append(absoluteMatches, member)
 			}
 		}
-		if selected, done, err := uniqueRule(absoluteMatches, "absolute_episode", fmt.Sprintf("filename identifies absolute episode %d", media.AbsoluteEpisode)); done {
+		if selected, done, err := uniqueRule(manifest, absoluteMatches, "absolute_episode", fmt.Sprintf("filename identifies absolute episode %d", media.AbsoluteEpisode)); done {
 			return selected, err
 		}
 	}
@@ -95,11 +101,29 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 				titleMatches = append(titleMatches, member)
 			}
 		}
-		if selected, done, err := uniqueRule(titleMatches, "episode_title", "normalized episode title similarity is at least 0.98"); done {
+		if selected, done, err := uniqueRule(manifest, titleMatches, "episode_title", "normalized episode title similarity is at least 0.98"); done {
 			return selected, err
 		}
 	}
-	return Member{}, &SelectionError{Reason: "no unique member identifies the target episode"}
+	return Member{}, selectionError(manifest, "none", 0, "no unique member identifies the target episode")
+}
+
+// SelectSingleEpisode preserves compatibility with providers that return one
+// generically named subtitle while rejecting any explicit conflicting episode
+// evidence through the normal strict selector.
+func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media domain.Media, wantForced bool) (Member, error) {
+	selected, err := Select(manifest, candidate, media, wantForced)
+	if err == nil {
+		return selected, nil
+	}
+	members := eligibleMembers(manifest.Members, wantForced)
+	if candidate.Pack == nil && len(members) == 1 && !hasEpisodeEvidence(members[0].SafeName) {
+		selected = members[0]
+		selected.SelectionRule = "single_generic"
+		selected.SelectionEvidence = "single subtitle member has no conflicting episode evidence"
+		return selected, nil
+	}
+	return Member{}, err
 }
 
 func eligibleMembers(members []Member, wantForced bool) []Member {
@@ -121,7 +145,7 @@ func directMatchesMedia(direct domain.PackMemberRef, media domain.Media) bool {
 	return standard || absolute
 }
 
-func uniqueRule(matches []Member, rule, evidence string) (Member, bool, error) {
+func uniqueRule(manifest Manifest, matches []Member, rule, evidence string) (Member, bool, error) {
 	switch len(matches) {
 	case 0:
 		return Member{}, false, nil
@@ -131,8 +155,12 @@ func uniqueRule(matches []Member, rule, evidence string) (Member, bool, error) {
 		selected.SelectionEvidence = evidence
 		return selected, true, nil
 	default:
-		return Member{}, true, &SelectionError{Reason: rule + " matched multiple members"}
+		return Member{}, true, selectionError(manifest, rule, len(matches), rule+" matched multiple members")
 	}
+}
+
+func selectionError(manifest Manifest, rule string, matchingMembers int, reason string) *SelectionError {
+	return &SelectionError{Reason: reason, Rule: rule, ArchiveType: manifest.ArchiveType, MemberCount: len(manifest.Members), MatchingMemberCount: matchingMembers}
 }
 
 func episodeToken(name string) (int, int, bool) {

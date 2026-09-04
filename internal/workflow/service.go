@@ -45,10 +45,15 @@ type Request struct {
 }
 
 type Decision struct {
-	Stage      string
-	ProviderID string
-	ResultID   string
-	Reason     string
+	Stage               string
+	ProviderID          string
+	ResultID            string
+	Reason              string
+	ReasonCode          string
+	SelectionRule       string
+	ArchiveType         string
+	SubtitleMemberCount int
+	MatchingMemberCount int
 }
 
 type Result struct {
@@ -426,7 +431,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				if !recorded && !isMediaValidationRejection(prepareErr) {
 					candidateFailures = append(candidateFailures, prepareErr)
 				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "candidate", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: prepareErr.Error()})
+				result.Decisions = append(result.Decisions, candidateFailureDecision("candidate", item.Candidate, prepareErr))
 				continue
 			}
 			downloaded := downloadedCandidate{candidate: item.Candidate, score: item.Score, priority: item.ProviderPriority, path: path}
@@ -597,7 +602,29 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 	if decision.ResultID != "" {
 		attrs = append(attrs, slog.String("candidate_id", observability.SafeText(decision.ResultID)))
 	}
+	if decision.ReasonCode != "" {
+		attrs = append(attrs,
+			slog.String("reason_code", observability.SafeText(decision.ReasonCode)),
+			slog.String("selection_rule", observability.SafeText(decision.SelectionRule)),
+			slog.String("archive_type", observability.SafeText(decision.ArchiveType)),
+			slog.Int("subtitle_member_count", decision.SubtitleMemberCount),
+			slog.Int("matching_member_count", decision.MatchingMemberCount),
+		)
+	}
 	s.workflowEvents().Log(ctx, slog.LevelDebug, event, "subtitle candidate decision", attrs...)
+}
+
+func candidateFailureDecision(stage string, candidate domain.Candidate, failure error) Decision {
+	decision := Decision{Stage: stage, ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, Reason: failure.Error()}
+	var selection *pack.SelectionError
+	if errors.As(failure, &selection) {
+		decision.ReasonCode = "pack_selection"
+		decision.SelectionRule = selection.Rule
+		decision.ArchiveType = selection.ArchiveType
+		decision.SubtitleMemberCount = selection.MemberCount
+		decision.MatchingMemberCount = selection.MatchingMemberCount
+	}
+	return decision
 }
 
 func safeStrings(values []string) []string {
@@ -826,13 +853,18 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 		return "", nil, err
 	}
 	var member pack.Member
-	if candidate.Pack == nil && len(manifest.Members) == 1 {
-		member = manifest.Members[0]
+	if request.Media.Ref.Kind == domain.MediaEpisode && candidate.Pack == nil && len(manifest.Members) == 1 {
+		member, err = pack.SelectSingleEpisode(manifest, extractionCandidate, request.Media, false)
+		if err != nil {
+			return "", nil, err
+		}
 	} else if request.Media.Ref.Kind == domain.MediaEpisode {
 		member, err = pack.Select(manifest, extractionCandidate, request.Media, false)
 		if err != nil {
 			return "", nil, err
 		}
+	} else if len(manifest.Members) == 1 {
+		member = manifest.Members[0]
 	} else {
 		return "", nil, fmt.Errorf("movie candidate archive contains multiple subtitle files")
 	}

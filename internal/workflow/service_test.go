@@ -781,6 +781,47 @@ func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {
 	})
 }
 
+func TestServiceRejectsSingleArchiveMemberForWrongEpisodeAndContinues(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Title = "Ozark"
+	request.Media.Season = 3
+	request.Media.Episode = 1
+	bad := broadCandidate("306201")
+	bad.Kind = domain.MediaEpisode
+	bad.Title = "Ozark"
+	bad.Season = 3
+	bad.Episode = 1
+	good := bad
+	good.ResultID = "306202"
+	good.DownloadRef = "/secret/306202"
+	providerFake := &fakeProvider{
+		id: "provider",
+		payloads: map[string][]byte{
+			"306201": workflowZIP(t, map[string]string{"Ozark.S03E03.iNTERNAL.1080p.WEB.x264-GHOSTS.srt": installSRT}),
+			"306202": workflowZIP(t, map[string]string{"Ozark.S03E01.iNTERNAL.1080p.WEB.x264-GHOSTS.srt": installSRT}),
+		},
+		filenames: map[string]string{"306201": "306201.zip", "306202": "306202.zip"},
+	}
+	synchronizer := &fakeSynchronizer{}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{bad, good}}}, nil, synchronizer, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.LapsePolicy.Mode = "always"
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "306202" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(providerFake.downloaded, []string{"306201", "306202"}) || !slices.Equal(synchronizer.analyzed, []string{"306202"}) {
+		t.Fatalf("downloads/analyzed = %#v/%#v", providerFake.downloaded, synchronizer.analyzed)
+	}
+	if len(repository.rejections) != 1 || repository.rejections[0].ResultID != "306201" || repository.rejections[0].ReasonCode != "pack_selection" {
+		t.Fatalf("candidate rejections = %#v", repository.rejections)
+	}
+}
+
 func TestServicePersistsDeterministicLapseRejectionsBeforeTheShortlist(t *testing.T) {
 	candidates := []domain.Candidate{broadCandidate("1-bad"), broadCandidate("2-bad"), broadCandidate("3-bad"), broadCandidate("4-good")}
 	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: candidates}}

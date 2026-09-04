@@ -30,10 +30,11 @@ type Member struct {
 }
 
 type Manifest struct {
-	ProviderID string
-	ResultID   string
-	Language   domain.Language
-	Checksum   string
-	Candidate  domain.Candidate
-	Members    []Member
+	ProviderID  string
+	ResultID    string
+	Language    domain.Language
+	Checksum    string
+	ArchiveType string
+	Candidate   domain.Candidate
+	Members     []Member
 }
