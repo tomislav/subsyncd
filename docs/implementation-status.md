@@ -7,6 +7,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Branch: `feat/subsyncd`
 - Current task: complete through Task 15
 - Next task: none; the approved implementation plan ends after Task 15
+- Latest follow-up: score/evidence-gated LAPSE in `a8887ef`
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -67,6 +68,16 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Search and download understand daily quota, rate-limit, and service-busy payloads without sleeping. Cooldowns persist by provider instance and operation. Downloads attach the API key only to an allowlisted origin, reject unsafe redirects, and stream through the compressed-byte ceiling.
 - Current official contract was checked at <https://subdl.com/api-doc>; Bazarr was used only to compare multi-query/range behavior. We retain the official `full_season`, `unpack_files`, `client`, and optional authenticated-download behavior while rejecting Bazarr's arbitrary archive-member fallback.
 - Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Follow-up — score/evidence-gated LAPSE
+
+- Commit: `a8887ef feat: gate LAPSE by release confidence`
+- The default `sync.policy: confidence` avoids a LAPSE media read for a non-pack first install only when the internally computed release score is at least 75 and contains an identity anchor (`external_id` or `title_year`) plus `release_group`; TV also requires direct, absolute, or parsed release-name episode evidence. Provider rating/popularity points cannot replace the anchors.
+- Exact hashes retain the existing `exact_hash` bypass. Confidence-qualified installs persist `SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}` with zero LAPSE metrics so `explain` remains honest about what was and was not measured.
+- Candidates below threshold or missing required evidence still run LAPSE. Packs and managed-subtitle upgrades run LAPSE by default regardless of score. `sync.policy: always` restores the previous every-nonexact behavior; the threshold and evidence/pack/upgrade guards are configurable, default true, and strict YAML validated.
+- LAPSE remains installed and capability-checked because any uncertain candidate can need it. Its persistent speech profile cache remains under `<data_dir>/lapse-cache`; on network media storage, the first required analysis may read much or nearly all of the media file, while a score bypass performs no LAPSE media read.
+- The existing broad-search black-box test explicitly selects `policy: always`, preserving coverage of real LAPSE analysis/synchronization. Workflow tests cover the score bypass, adjustable threshold, `always` mode, missing anchors, TV ambiguity, packs, and upgrades. Configuration tests cover defaults, explicit switches, invalid policy, and invalid thresholds.
+- Verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./... -race`, `go vet ./...`, tagged e2e tests, and `git diff --check` passed on 2026-09-04.
 
 ### Task 9 — candidate matching and scoring
 
