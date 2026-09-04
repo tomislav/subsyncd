@@ -125,7 +125,9 @@ These are policy constants, not YAML settings. `subsyncd retry --provider NAME` 
 
 ## Search and upgrade schedules
 
-Missing results run immediately, then at approximately 30 minutes, 2 hours, 8 hours, 24 hours, 3 days, 7 days, and every 14 days (±10% jitter). Technical failures use 1, 5, 15, then 60 minutes without changing the missing counter.
+Missing results reach absolute milestones from import or schedule reset: immediately, then at approximately 30 minutes, 2 hours, 8 hours, 24 hours, 3 days, 7 days, 14 days, and every 14 days thereafter. The scheduler applies ±10% jitter to the interval between adjacent milestones. Technical failures use 1, 5, 15, then 60 minutes without changing the missing counter.
+
+Every due workflow refreshes local sidecar inventory, but a retry does not necessarily contact a provider. Normalized search results, including an empty result set, remain cached for six hours. With the default milestones, provider traffic for a continuously missing subtitle is therefore normally around import, 8 hours, 24 hours, 3 days, 7 days, and 14 days; the 30-minute and 2-hour checks usually reuse cached results while still detecting a sidecar added by another tool.
 
 Managed nonexact subtitles are reconsidered after 7 days for scores 35–59, 30 days for 60–84, and 90 days for 85–99. Exact-hash installations are terminal until the media fingerprint changes.
 

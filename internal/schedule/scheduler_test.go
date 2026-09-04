@@ -20,7 +20,7 @@ func TestSchedulerBuildsMissingCompletionFromInjectedClock(t *testing.T) {
 	if !completion.AdvanceMissingAttempt {
 		t.Fatal("missing result must advance the missing-attempt index")
 	}
-	if want := now.Add(2 * time.Hour); !completion.NextAttemptAt.Equal(want) {
+	if want := now.Add(90 * time.Minute); !completion.NextAttemptAt.Equal(want) {
 		t.Fatalf("next attempt = %s, want %s", completion.NextAttemptAt, want)
 	}
 }

@@ -7,13 +7,16 @@ import (
 	"time"
 )
 
-var missingDelays = [...]time.Duration{
+// missingIntervals are the gaps between the absolute missing-subtitle
+// milestones: 0, 30m, 2h, 8h, 24h, 3d, 7d, 14d, then every 14d.
+var missingIntervals = [...]time.Duration{
 	0,
 	30 * time.Minute,
-	2 * time.Hour,
-	8 * time.Hour,
-	24 * time.Hour,
-	72 * time.Hour,
+	90 * time.Minute,
+	6 * time.Hour,
+	16 * time.Hour,
+	48 * time.Hour,
+	96 * time.Hour,
 	168 * time.Hour,
 	336 * time.Hour,
 }
@@ -29,8 +32,8 @@ func MissingDelay(attempt int, randomUnit float64) time.Duration {
 	if attempt <= 0 {
 		return 0
 	}
-	if attempt >= len(missingDelays) {
-		attempt = len(missingDelays) - 1
+	if attempt >= len(missingIntervals) {
+		attempt = len(missingIntervals) - 1
 	}
 	if randomUnit < 0 {
 		randomUnit = 0
@@ -38,7 +41,7 @@ func MissingDelay(attempt int, randomUnit float64) time.Duration {
 		randomUnit = 1
 	}
 	factor := 0.9 + 0.2*randomUnit
-	return time.Duration(float64(missingDelays[attempt]) * factor)
+	return time.Duration(float64(missingIntervals[attempt]) * factor)
 }
 
 func FailureDelay(attempt int) time.Duration {

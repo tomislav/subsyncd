@@ -6,11 +6,26 @@ import (
 	"time"
 )
 
-func TestMissingDelayUsesApprovedSequenceWithoutJitter(t *testing.T) {
-	wants := []time.Duration{0, 30 * time.Minute, 2 * time.Hour, 8 * time.Hour, 24 * time.Hour, 72 * time.Hour, 168 * time.Hour, 336 * time.Hour, 336 * time.Hour}
+func TestMissingDelayProducesAbsoluteMilestonesAcrossAttempts(t *testing.T) {
+	if got := MissingDelay(0, 0.5); got != 0 {
+		t.Fatalf("MissingDelay(0, .5) = %s, want 0s", got)
+	}
+
+	wants := []time.Duration{
+		30 * time.Minute,
+		2 * time.Hour,
+		8 * time.Hour,
+		24 * time.Hour,
+		72 * time.Hour,
+		168 * time.Hour,
+		336 * time.Hour,
+		672 * time.Hour,
+	}
+	elapsed := time.Duration(0)
 	for attempt, want := range wants {
-		if got := MissingDelay(attempt, 0.5); got != want {
-			t.Errorf("MissingDelay(%d, .5) = %s, want %s", attempt, got, want)
+		elapsed += MissingDelay(attempt+1, 0.5)
+		if elapsed != want {
+			t.Errorf("elapsed after missing attempt %d = %s, want %s", attempt+1, elapsed, want)
 		}
 	}
 }
