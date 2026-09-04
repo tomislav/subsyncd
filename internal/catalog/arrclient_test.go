@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestArrClientAuthenticatesAndCapsErrorBodies(t *testing.T) {
+func TestArrClientAuthenticatesAndOmitsErrorBodies(t *testing.T) {
 	const apiKey = "do-not-leak-this-key"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Api-Key"); got != apiKey {
@@ -32,7 +32,7 @@ func TestArrClientAuthenticatesAndCapsErrorBodies(t *testing.T) {
 	if strings.Contains(message, apiKey) {
 		t.Fatal("error leaked API key")
 	}
-	if len(message) > 5*1024 {
-		t.Fatalf("error was not capped: %d bytes", len(message))
+	if strings.Contains(message, "xxxx") {
+		t.Fatal("error surfaced untrusted response body")
 	}
 }

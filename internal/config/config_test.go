@@ -122,6 +122,16 @@ languages:
 	assertErrorContains(t, err, "pack cache", "ttl")
 }
 
+func TestValidateRejectsInvalidListenAddress(t *testing.T) {
+	root := t.TempDir()
+	text := strings.Replace(validConfig(root, `
+languages:
+  en: {providers: [subdl-main]}
+`), `server: {listen: "127.0.0.1:8097"}`, `server: {listen: "missing-port"}`, 1)
+	_, err := loadText(t, text)
+	assertErrorContains(t, err, "listen", "invalid")
+}
+
 func TestValidateRejectsInvalidProviderRateLimits(t *testing.T) {
 	root := t.TempDir()
 	text := strings.Replace(validConfig(root, `

@@ -79,6 +79,24 @@ func TestNormalizeWebhookPreservesUpgradeReleaseMetadata(t *testing.T) {
 	}
 }
 
+func TestNormalizeWebhookDistinguishesLaterRenameOfSameFile(t *testing.T) {
+	first, err := NormalizeWebhook("main", "radarr", []byte(`{"eventType":"Rename","movieFile":{"id":2001,"path":"/movies/one.mkv"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	redelivery, err := NormalizeWebhook("main", "radarr", []byte(`{"eventType":"Rename","movieFile":{"id":2001,"path":"/movies/one.mkv"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := NormalizeWebhook("main", "radarr", []byte(`{"eventType":"Rename","movieFile":{"id":2001,"path":"/movies/two.mkv"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first[0].EventID != redelivery[0].EventID || first[0].EventID == later[0].EventID {
+		t.Fatalf("event IDs do not distinguish redelivery from later rename: %q %q %q", first[0].EventID, redelivery[0].EventID, later[0].EventID)
+	}
+}
+
 type fakeEventCatalog struct {
 	media domain.Media
 	calls int

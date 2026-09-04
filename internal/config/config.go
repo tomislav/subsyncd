@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -308,6 +310,14 @@ func (c Config) Validate() error {
 	if len(c.MediaRoots) == 0 {
 		return fmt.Errorf("at least one media root is required")
 	}
+	_, port, err := net.SplitHostPort(c.Server.Listen)
+	if err != nil {
+		return fmt.Errorf("server listen address %q is invalid", c.Server.Listen)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 0 || portNumber > 65535 {
+		return fmt.Errorf("server listen port %q is invalid", port)
+	}
 	for _, root := range c.MediaRoots {
 		if !filepath.IsAbs(root) {
 			return fmt.Errorf("media root %q must be absolute", root)
@@ -373,7 +383,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("instance %q must have a name and type sonarr or radarr", instance.Name)
 		}
 		parsedURL, err := url.ParseRequestURI(instance.URL)
-		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		if err != nil || parsedURL.Scheme != "http" && parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
 			return fmt.Errorf("instance %s url is invalid", instance.Name)
 		}
 		if instance.APIKey == "" || instance.WebhookToken == "" {

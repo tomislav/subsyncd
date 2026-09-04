@@ -14,7 +14,10 @@ import (
 	"subsyncd/internal/store"
 )
 
-var ErrIgnoredEvent = errors.New("ignored Arr event")
+var (
+	ErrIgnoredEvent   = errors.New("ignored Arr event")
+	ErrInvalidWebhook = errors.New("invalid Arr webhook")
+)
 
 type webhookPayload struct {
 	EventType           string        `json:"eventType"`
@@ -27,6 +30,7 @@ type webhookPayload struct {
 
 type webhookFile struct {
 	ID           int64  `json:"id"`
+	Size         int64  `json:"size"`
 	Path         string `json:"path"`
 	RelativePath string `json:"relativePath"`
 	PreviousPath string `json:"previousPath"`
@@ -38,7 +42,7 @@ type webhookFile struct {
 func NormalizeWebhook(instance, instanceType string, body []byte) ([]WebhookEvent, error) {
 	var payload webhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode %s webhook: %w", instanceType, err)
+		return nil, fmt.Errorf("%w: decode %s payload: %v", ErrInvalidWebhook, instanceType, err)
 	}
 	if strings.EqualFold(payload.EventType, "test") {
 		return nil, ErrIgnoredEvent
@@ -46,7 +50,7 @@ func NormalizeWebhook(instance, instanceType string, body []byte) ([]WebhookEven
 
 	kind, files, eventType, err := webhookFiles(instanceType, payload)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrInvalidWebhook, err)
 	}
 	events := make([]WebhookEvent, 0, len(files))
 	for _, file := range files {
@@ -67,11 +71,11 @@ func NormalizeWebhook(instance, instanceType string, body []byte) ([]WebhookEven
 			Quality:          file.Quality,
 			ReleaseGroup:     file.ReleaseGroup,
 		}
-		event.EventID = stableEventID(instance, payload.EventType, kind, file.ID)
+		event.EventID = stableEventID(instance, payload.EventType, kind, file, payload.IsUpgrade)
 		events = append(events, event)
 	}
 	if len(events) == 0 {
-		return nil, fmt.Errorf("%s webhook %q has no file identity", instanceType, payload.EventType)
+		return nil, fmt.Errorf("%w: %s webhook %q has no file identity", ErrInvalidWebhook, instanceType, payload.EventType)
 	}
 	return events, nil
 }
@@ -103,8 +107,8 @@ func webhookFiles(instanceType string, payload webhookPayload) (domain.MediaKind
 	return "", nil, "", fmt.Errorf("unsupported %s webhook event %q", instanceType, payload.EventType)
 }
 
-func stableEventID(instance, eventType string, kind domain.MediaKind, fileID int64) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", instance, strings.ToLower(eventType), kind, fileID)))
+func stableEventID(instance, eventType string, kind domain.MediaKind, file webhookFile, upgrade bool) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%t", instance, strings.ToLower(eventType), kind, file.ID, file.Size, file.Path, file.RelativePath, file.PreviousPath, file.SceneName, file.ReleaseGroup, upgrade)))
 	return hex.EncodeToString(sum[:16])
 }
 

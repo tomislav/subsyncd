@@ -105,6 +105,19 @@ type CandidateRecord struct {
 	ValidationJSON []byte
 }
 
+type SearchStatus struct {
+	State          string
+	Attempt        int
+	FailureAttempt int
+	NextAttemptAt  time.Time
+	LastOutcome    string
+}
+
+type MediaRecord struct {
+	ID    int64
+	Media domain.Media
+}
+
 type PackLookup struct {
 	ProviderID      string
 	SeriesIDs       domain.ExternalIDs
@@ -252,6 +265,79 @@ func (r *Repository) GetMedia(ctx context.Context, mediaID int64) (domain.Media,
 		return domain.Media{}, fmt.Errorf("decode media %d alternate titles: %w", mediaID, err)
 	}
 	return media, nil
+}
+
+func (r *Repository) FindMedia(ctx context.Context, ref domain.MediaRef) (int64, domain.Media, error) {
+	var mediaID int64
+	err := r.store.db.QueryRowContext(ctx, `SELECT id FROM media WHERE instance=? AND kind=? AND file_id=?`, ref.Instance, string(ref.Kind), ref.FileID).Scan(&mediaID)
+	if err != nil {
+		return 0, domain.Media{}, fmt.Errorf("find media %s/%s/%d: %w", ref.Instance, ref.Kind, ref.FileID, err)
+	}
+	media, err := r.GetMedia(ctx, mediaID)
+	return mediaID, media, err
+}
+
+func (r *Repository) ListMediaByInstance(ctx context.Context, instance string) ([]MediaRecord, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id FROM media WHERE instance=? ORDER BY id`, instance)
+	if err != nil {
+		return nil, fmt.Errorf("list media for instance: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan media ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate media IDs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close media IDs: %w", err)
+	}
+	items := make([]MediaRecord, 0, len(ids))
+	for _, id := range ids {
+		media, err := r.GetMedia(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, MediaRecord{ID: id, Media: media})
+	}
+	return items, nil
+}
+
+func (r *Repository) GetSearchStatus(ctx context.Context, mediaID int64, language domain.Language) (SearchStatus, error) {
+	var status SearchStatus
+	var next int64
+	err := r.store.db.QueryRowContext(ctx, `SELECT state, attempt, failure_attempt, next_attempt_at_ns, last_outcome FROM search_states WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&status.State, &status.Attempt, &status.FailureAttempt, &next, &status.LastOutcome)
+	if err != nil {
+		return SearchStatus{}, fmt.Errorf("get search status: %w", err)
+	}
+	status.NextAttemptAt = fromUnixNano(next)
+	return status, nil
+}
+
+func (r *Repository) ListCandidates(ctx context.Context, mediaID int64, language domain.Language) ([]CandidateRecord, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT provider_id, result_id, metadata_json, score_json, validation_json FROM candidates WHERE media_id=? AND language=? ORDER BY id`, mediaID, language.String())
+	if err != nil {
+		return nil, fmt.Errorf("list candidates: %w", err)
+	}
+	defer rows.Close()
+	var candidates []CandidateRecord
+	for rows.Next() {
+		var candidate CandidateRecord
+		if err := rows.Scan(&candidate.ProviderID, &candidate.ResultID, &candidate.MetadataJSON, &candidate.ScoreJSON, &candidate.ValidationJSON); err != nil {
+			return nil, fmt.Errorf("scan candidate: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate candidates: %w", err)
+	}
+	return candidates, nil
 }
 
 // GetMediaHash returns a cached content hash only when it was calculated for
@@ -610,6 +696,38 @@ func (r *Repository) PutProviderState(ctx context.Context, state ProviderState) 
 		return fmt.Errorf("put provider state: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) ClearProviderState(ctx context.Context, providerID string) error {
+	if strings.TrimSpace(providerID) == "" {
+		return fmt.Errorf("provider ID is required")
+	}
+	if _, err := r.store.db.ExecContext(ctx, `DELETE FROM provider_states WHERE provider_id=?`, providerID); err != nil {
+		return fmt.Errorf("clear provider state: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ListProviderStates(ctx context.Context, providerID string) ([]ProviderState, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT provider_id, scope, reason, quota_limit, quota_remaining, reset_at_ns, disabled, failure_attempt FROM provider_states WHERE provider_id=? ORDER BY scope`, providerID)
+	if err != nil {
+		return nil, fmt.Errorf("list provider states: %w", err)
+	}
+	defer rows.Close()
+	var states []ProviderState
+	for rows.Next() {
+		var state ProviderState
+		var reset int64
+		if err := rows.Scan(&state.ProviderID, &state.Scope, &state.Reason, &state.Limit, &state.Remaining, &reset, &state.Disabled, &state.FailureAttempt); err != nil {
+			return nil, fmt.Errorf("scan provider state: %w", err)
+		}
+		state.ResetAt = fromUnixNano(reset)
+		states = append(states, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate provider states: %w", err)
+	}
+	return states, nil
 }
 
 func (r *Repository) GetProviderCache(ctx context.Context, key string, now time.Time) (ProviderCacheEntry, bool, error) {
