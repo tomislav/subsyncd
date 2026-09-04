@@ -125,8 +125,23 @@ func TestRunOnceSchedulesThrottleAfterResetWithoutAdvancingAttempts(t *testing.T
 		t.Fatal(err)
 	}
 	completion := repository.searchCompletions[0]
-	if !completion.NextAttemptAt.Equal(reset.Add(30*time.Second)) || completion.AdvanceMissingAttempt || completion.AdvanceFailureAttempt {
+	if !completion.NextAttemptAt.Equal(reset.Add(30*time.Second)) || completion.AdvanceMissingAttempt || completion.AdvanceFailureAttempt || completion.Priority != 0 {
 		t.Fatalf("throttle completion = %#v", completion)
+	}
+}
+
+func TestRunOnceSchedulesNoResultAsMissingPriority(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeNoResult}}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	completion := repository.searchCompletions[0]
+	if completion.Priority != store.SearchPriorityMissing || !completion.AdvanceMissingAttempt {
+		t.Fatalf("no-result completion = %#v", completion)
 	}
 }
 
@@ -141,7 +156,7 @@ func TestRunOnceSchedulesNonExactSatisfiedReassessmentForUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	completion := repository.searchCompletions[0]
-	if !completion.NextAttemptAt.Equal(nextUpgrade) || !completion.ResetMissingAttempt || !completion.ResetFailureAttempt {
+	if !completion.NextAttemptAt.Equal(nextUpgrade) || !completion.ResetMissingAttempt || !completion.ResetFailureAttempt || completion.Priority != store.SearchPriorityUpgrade {
 		t.Fatalf("satisfied reassessment completion = %#v", completion)
 	}
 }

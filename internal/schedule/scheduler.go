@@ -29,6 +29,7 @@ func (s Scheduler) Missing(jobID string, attempt int) store.SearchCompletion {
 		NextAttemptAt:         s.Clock.Now().Add(MissingDelay(attempt, randomUnit)),
 		AdvanceMissingAttempt: true,
 		ResetFailureAttempt:   true,
+		Priority:              store.SearchPriorityMissing,
 	}
 }
 

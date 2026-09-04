@@ -173,6 +173,9 @@ func (w *Worker) completeWorkflow(ctx context.Context, lease store.SearchLease, 
 	switch result.Outcome {
 	case workflow.OutcomeSatisfied:
 		completion.NextAttemptAt = result.NextUpgrade
+		if !result.NextUpgrade.IsZero() {
+			completion.Priority = store.SearchPriorityUpgrade
+		}
 		completion.ResetMissingAttempt = true
 		completion.ResetFailureAttempt = true
 	case workflow.OutcomeInstalled:
@@ -180,11 +183,15 @@ func (w *Worker) completeWorkflow(ctx context.Context, lease store.SearchLease, 
 			return err
 		}
 		completion.NextAttemptAt = result.NextUpgrade
+		if !result.NextUpgrade.IsZero() {
+			completion.Priority = store.SearchPriorityUpgrade
+		}
 		completion.ResetMissingAttempt = true
 		completion.ResetFailureAttempt = true
 	case workflow.OutcomeNoResult, workflow.OutcomeRejected:
 		completion = schedule.Scheduler{Clock: w.Clock, RandomUnit: w.RandomUnit}.Missing(lease.JobID, lease.Attempt+1)
 		completion.Outcome = string(result.Outcome)
+		completion.Priority = store.SearchPriorityMissing
 	case workflow.OutcomeThrottled:
 		completion.NextAttemptAt = w.throttleRetryAt(result.RetryAt)
 	default:

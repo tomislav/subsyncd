@@ -1347,7 +1347,7 @@ func (r *Repository) CommitReconciliation(ctx context.Context, instance string, 
 			}
 		}
 		for _, language := range languages {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns) VALUES (?, ?, 'pending', 0, 0, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, last_outcome='', lease_owner=NULL, lease_until_ns=NULL`, mediaID, language.String(), cursor.UnixNano()); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, priority) VALUES (?, ?, 'pending', 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, last_outcome='', priority=excluded.priority, rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL`, mediaID, language.String(), cursor.UnixNano(), SearchPriorityMissing); err != nil {
 				return fmt.Errorf("reset reconciled media search: %w", err)
 			}
 		}

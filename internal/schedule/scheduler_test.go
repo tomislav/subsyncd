@@ -3,6 +3,8 @@ package schedule
 import (
 	"testing"
 	"time"
+
+	"subsyncd/internal/store"
 )
 
 type fixedClock struct{ now time.Time }
@@ -19,6 +21,9 @@ func TestSchedulerBuildsMissingCompletionFromInjectedClock(t *testing.T) {
 	}
 	if !completion.AdvanceMissingAttempt {
 		t.Fatal("missing result must advance the missing-attempt index")
+	}
+	if completion.Priority != store.SearchPriorityMissing {
+		t.Fatalf("missing priority = %d, want %d", completion.Priority, store.SearchPriorityMissing)
 	}
 	if want := now.Add(90 * time.Minute); !completion.NextAttemptAt.Equal(want) {
 		t.Fatalf("next attempt = %s, want %s", completion.NextAttemptAt, want)
@@ -38,6 +43,9 @@ func TestSchedulerBuildsFailureCompletionWithoutAdvancingMissingAttempt(t *testi
 	}
 	if completion.Outcome != "transport_error" {
 		t.Fatalf("outcome = %q", completion.Outcome)
+	}
+	if completion.Priority != 0 {
+		t.Fatalf("failure priority = %d, want retained priority marker 0", completion.Priority)
 	}
 	if want := now.Add(time.Hour); !completion.NextAttemptAt.Equal(want) {
 		t.Fatalf("next attempt = %s, want %s", completion.NextAttemptAt, want)

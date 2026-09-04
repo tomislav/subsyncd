@@ -795,6 +795,25 @@ func TestReconciliationCursorAdvancesOnlyWithCommittedPage(t *testing.T) {
 	}
 }
 
+func TestCommitReconciliationSchedulesMissingPriority(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr:8989", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", now, []domain.Media{testMedia()}, []domain.Language{"hr"}); err != nil {
+		t.Fatal(err)
+	}
+	var priority SearchPriority
+	if err := repo.store.db.QueryRow(`SELECT priority FROM search_states WHERE language='hr'`).Scan(&priority); err != nil {
+		t.Fatal(err)
+	}
+	if priority != SearchPriorityMissing {
+		t.Fatalf("reconciliation priority = %d, want %d", priority, SearchPriorityMissing)
+	}
+}
+
 func TestMediaHashCacheIsBoundToExactFingerprint(t *testing.T) {
 	repo := openTestRepository(t)
 	media := testMedia()
