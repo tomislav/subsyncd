@@ -19,9 +19,13 @@ func (f *fakeReconcileCatalog) GetMedia(context.Context, domain.MediaRef) (domai
 	return domain.Media{}, errors.New("not used")
 }
 
-func (f *fakeReconcileCatalog) ListMediaChangedSince(_ context.Context, since time.Time) ([]domain.Media, error) {
+func (f *fakeReconcileCatalog) ListChangesSince(_ context.Context, since time.Time) ([]HistoryChange, error) {
 	f.since = since
-	return f.media, f.err
+	changes := make([]HistoryChange, 0, len(f.media))
+	for index, media := range f.media {
+		changes = append(changes, HistoryChange{HistoryID: int64(index + 1), Type: EventImport, Ref: media.Ref, Media: media, OccurredAt: since})
+	}
+	return changes, f.err
 }
 
 type fakeReconcileStore struct {

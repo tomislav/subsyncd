@@ -78,7 +78,7 @@ func (c wakeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Me
 	return domain.Media{Ref: ref, Fingerprint: domain.MediaFingerprint{Path: fmt.Sprintf("/media/%d.mkv", ref.FileID), FileID: ref.FileID, Size: 100, ModTime: c.now}, Title: "Movie"}, nil
 }
 
-func (wakeCatalog) ListMediaChangedSince(context.Context, time.Time) ([]domain.Media, error) {
+func (wakeCatalog) ListChangesSince(context.Context, time.Time) ([]catalog.HistoryChange, error) {
 	return nil, nil
 }
 

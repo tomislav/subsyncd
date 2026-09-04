@@ -82,29 +82,25 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	}, nil
 }
 
-func (r *Radarr) ListMediaChangedSince(ctx context.Context, since time.Time) ([]domain.Media, error) {
-	var history []struct {
-		MovieFileID int64 `json:"movieFileId"`
-	}
+func (r *Radarr) ListChangesSince(ctx context.Context, since time.Time) ([]HistoryChange, error) {
+	var history []arrHistoryRecord
 	query := url.Values{"date": {since.UTC().Format(time.RFC3339Nano)}, "includeMovie": {"true"}}
 	if err := r.client.getJSON(ctx, "/api/v3/history/since", query, &history); err != nil {
 		return nil, err
 	}
-	seen := make(map[int64]struct{}, len(history))
-	media := make([]domain.Media, 0, len(history))
-	for _, record := range history {
-		if record.MovieFileID <= 0 {
-			continue
-		}
-		if _, exists := seen[record.MovieFileID]; exists {
-			continue
-		}
-		seen[record.MovieFileID] = struct{}{}
-		item, err := r.GetMedia(ctx, domain.MediaRef{Instance: r.client.instance, Kind: domain.MediaMovie, FileID: record.MovieFileID})
-		if err != nil {
-			return nil, fmt.Errorf("hydrate Radarr history file %d: %w", record.MovieFileID, err)
-		}
-		media = append(media, item)
+	changes, err := reduceHistory(r.client.instance, domain.MediaMovie, history, func(record arrHistoryRecord) int64 { return record.MovieFileID }, radarrHistoryEvent)
+	if err != nil {
+		return nil, err
 	}
-	return media, nil
+	for index := range changes {
+		if changes[index].Type == EventDelete {
+			continue
+		}
+		item, err := r.GetMedia(ctx, changes[index].Ref)
+		if err != nil {
+			return nil, fmt.Errorf("hydrate Radarr history file %d: %w", changes[index].Ref.FileID, err)
+		}
+		changes[index].Media = item
+	}
+	return changes, nil
 }

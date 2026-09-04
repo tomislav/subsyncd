@@ -121,31 +121,27 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	}, nil
 }
 
-func (s *Sonarr) ListMediaChangedSince(ctx context.Context, since time.Time) ([]domain.Media, error) {
-	var history []struct {
-		EpisodeFileID int64 `json:"episodeFileId"`
-	}
+func (s *Sonarr) ListChangesSince(ctx context.Context, since time.Time) ([]HistoryChange, error) {
+	var history []arrHistoryRecord
 	query := url.Values{"date": {since.UTC().Format(time.RFC3339Nano)}, "includeEpisode": {"true"}, "includeSeries": {"true"}}
 	if err := s.client.getJSON(ctx, "/api/v3/history/since", query, &history); err != nil {
 		return nil, err
 	}
-	seen := make(map[int64]struct{}, len(history))
-	media := make([]domain.Media, 0, len(history))
-	for _, record := range history {
-		if record.EpisodeFileID <= 0 {
-			continue
-		}
-		if _, exists := seen[record.EpisodeFileID]; exists {
-			continue
-		}
-		seen[record.EpisodeFileID] = struct{}{}
-		item, err := s.GetMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: record.EpisodeFileID})
-		if err != nil {
-			return nil, fmt.Errorf("hydrate Sonarr history file %d: %w", record.EpisodeFileID, err)
-		}
-		media = append(media, item)
+	changes, err := reduceHistory(s.client.instance, domain.MediaEpisode, history, func(record arrHistoryRecord) int64 { return record.EpisodeFileID }, sonarrHistoryEvent)
+	if err != nil {
+		return nil, err
 	}
-	return media, nil
+	for index := range changes {
+		if changes[index].Type == EventDelete {
+			continue
+		}
+		item, err := s.GetMedia(ctx, changes[index].Ref)
+		if err != nil {
+			return nil, fmt.Errorf("hydrate Sonarr history file %d: %w", changes[index].Ref.FileID, err)
+		}
+		changes[index].Media = item
+	}
+	return changes, nil
 }
 
 func alternateTitleStrings(titles []arrAlternateTitle) []string {

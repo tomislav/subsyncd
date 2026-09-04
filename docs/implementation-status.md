@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repairs executing inline; Task 1 complete
-- Next task: decode typed Sonarr and Radarr history changes
+- Current task: conventional review repairs executing inline; Tasks 1–2 complete
+- Next task: apply typed reconciliation mutations transactionally and preserve leases
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 2 — typed Arr history decoding
+
+- `Catalog.ListChangesSince` returns stable history identity, normalized import/rename/delete type, media reference, event time, and hydrated media only for live final states.
+- Sonarr and Radarr sort history deterministically, ignore unrelated events, retain each file's newest relevant state before hydration, reject malformed relevant identity, and never hydrate explicit deletion tombstones.
+- Sanitized contract tests cover rename/ignored-event reduction, import-then-delete, delete-then-import, missing history/file/date identity, stable ordering evidence, and request counts.
+- Verification: the focused red build failed on the missing typed method; unrestricted loopback runs of `go test ./internal/catalog ./internal/app -race -count=1`, `go test ./test/e2e -tags=e2e -race -count=1`, and `git diff --check` pass. The plan's untagged `test/e2e` command was corrected during execution because all files in that package require the `e2e` build tag. Next task: atomic typed reconciliation.
 
 ### Conventional repairs Task 1 — persisted unsupported media state
 

@@ -9,7 +9,15 @@ import (
 
 type Catalog interface {
 	GetMedia(context.Context, domain.MediaRef) (domain.Media, error)
-	ListMediaChangedSince(context.Context, time.Time) ([]domain.Media, error)
+	ListChangesSince(context.Context, time.Time) ([]HistoryChange, error)
+}
+
+type HistoryChange struct {
+	HistoryID  int64
+	Type       EventType
+	Ref        domain.MediaRef
+	Media      domain.Media
+	OccurredAt time.Time
 }
 
 type EventType string

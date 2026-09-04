@@ -107,7 +107,7 @@ func (f *fakeEventCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Me
 	return f.media, nil
 }
 
-func (f *fakeEventCatalog) ListMediaChangedSince(context.Context, time.Time) ([]domain.Media, error) {
+func (f *fakeEventCatalog) ListChangesSince(context.Context, time.Time) ([]HistoryChange, error) {
 	return nil, nil
 }
 
