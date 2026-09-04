@@ -1,0 +1,1 @@
+{"mode":"auto/shifted","reference":"vad","offset_ms":0,"ratio":1,"confidence":0.11,"margin":0.01,"sigma":1.2,"agreement":0.125,"verdict":"nothing","coverage":0.4,"cues":220,"ignored_cues":0,"parts":1,"written":false,"why":"the audio does not back this up, so it is a guess","output":"/temporary/input.srt","splits":[]}
