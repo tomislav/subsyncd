@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repairs executing inline; Tasks 1–2 complete
-- Next task: apply typed reconciliation mutations transactionally and preserve leases
+- Current task: conventional review repairs executing inline; Tasks 1–3 complete
+- Next task: index and terminalize multi-episode Sonarr files
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 3 — atomic typed reconciliation
+
+- The reconciler converts typed catalog history into stable `reconcile:<instance>:<history-id>` mutations at missing priority and submits the full page once.
+- Webhooks and reconciliation share one idempotent transaction helper for import, rename, delete, candidate/provenance invalidation, support-state scheduling, audit linking, and bounded event retention.
+- A reconciled same-key change preserves lease owner/expiry and the greater existing priority, then coalesces one immediate rerun. Known and unknown deletes are audited; a later malformed/mismatched mutation rolls back all earlier page writes and the cursor.
+- Verification: focused tests failed on the old media-only commit contract and missing mutation priority; unrestricted `go test ./internal/catalog ./internal/store -race -count=1` and `git diff --check` pass. Next task: multi-episode fail-closed dispatch and explanation.
 
 ### Conventional repairs Task 2 — typed Arr history decoding
 

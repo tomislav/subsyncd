@@ -948,7 +948,9 @@ func TestCommitReconciliationSchedulesMissingPriority(t *testing.T) {
 	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr:8989", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", now, []domain.Media{testMedia()}, []domain.Language{"hr"}); err != nil {
+	media := testMedia()
+	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:1", Type: "import", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now, Priority: SearchPriorityMissing}
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", now, []MediaEventMutation{mutation}); err != nil {
 		t.Fatal(err)
 	}
 	var priority SearchPriority
@@ -957,6 +959,100 @@ func TestCommitReconciliationSchedulesMissingPriority(t *testing.T) {
 	}
 	if priority != SearchPriorityMissing {
 		t.Fatalf("reconciliation priority = %d, want %d", priority, SearchPriorityMissing)
+	}
+}
+
+func TestCommitReconciliationPreservesActiveLeaseAndRequestsOneRerun(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr:8989", now); err != nil {
+		t.Fatal(err)
+	}
+	media := testMedia()
+	initial := MediaEventMutation{EventID: "webhook-import", Type: "import", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now}
+	if _, err := repo.ApplyMediaEvent(ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := repo.LeaseDueSearches(ctx, now, 1, 5*time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("initial lease = %#v, %v", leases, err)
+	}
+	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:51", Type: "rename", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute), Priority: SearchPriorityMissing}
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", now.Add(2*time.Minute), []MediaEventMutation{mutation}); err != nil {
+		t.Fatal(err)
+	}
+	var owner string
+	var leaseUntil int64
+	var rerun bool
+	var priority SearchPriority
+	if err := repo.store.db.QueryRow(`SELECT lease_owner, lease_until_ns, rerun_requested, priority FROM search_states WHERE media_id=? AND language='hr'`, leases[0].MediaID).Scan(&owner, &leaseUntil, &rerun, &priority); err != nil {
+		t.Fatal(err)
+	}
+	if owner != leases[0].JobID || leaseUntil != leases[0].LeaseUntil.UnixNano() || !rerun || priority != SearchPriorityImport {
+		t.Fatalf("owner/until/rerun/priority = %q/%d/%v/%d", owner, leaseUntil, rerun, priority)
+	}
+	result, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: leases[0].JobID, Outcome: "satisfied"})
+	if err != nil || !result.RerunScheduled {
+		t.Fatalf("completion = %#v, %v", result, err)
+	}
+	if rerunLease, err := repo.LeaseDueSearches(ctx, now.Add(3*time.Minute), 2, 5*time.Minute); err != nil || len(rerunLease) != 1 {
+		t.Fatalf("rerun lease = %#v, %v", rerunLease, err)
+	}
+}
+
+func TestCommitReconciliationAppliesDeletesAndCursorAtomically(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr:8989", now); err != nil {
+		t.Fatal(err)
+	}
+	media := testMedia()
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "initial", Type: "import", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	pageEnd := now.Add(time.Hour)
+	mutations := []MediaEventMutation{
+		{EventID: "reconcile:sonarr-main:61", Type: "delete", Ref: media.Ref, At: now.Add(time.Minute), Priority: SearchPriorityMissing},
+		{EventID: "reconcile:sonarr-main:62", Type: "delete", Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 999}, At: now.Add(2 * time.Minute), Priority: SearchPriorityMissing},
+	}
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", pageEnd, mutations); err != nil {
+		t.Fatal(err)
+	}
+	mediaID, _, err := repo.FindMedia(ctx, media.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := repo.GetSearchStatus(ctx, mediaID, "hr")
+	if err != nil || status.State != "complete" || status.LastOutcome != "deleted" {
+		t.Fatalf("deleted status = %#v, %v", status, err)
+	}
+	if cursor, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !cursor.Equal(pageEnd) {
+		t.Fatalf("cursor = %s, %v", cursor, err)
+	}
+	var audits int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM events WHERE event_id IN ('reconcile:sonarr-main:61','reconcile:sonarr-main:62')`).Scan(&audits); err != nil || audits != 2 {
+		t.Fatalf("reconciliation audits = %d, %v", audits, err)
+	}
+
+	newMedia := media
+	newMedia.Ref.FileID = 77
+	newMedia.Fingerprint.FileID = 77
+	newMedia.Fingerprint.Path = "/media/new.mkv"
+	valid := MediaEventMutation{EventID: "reconcile:sonarr-main:63", Type: "import", Ref: newMedia.Ref, Media: newMedia, Languages: []domain.Language{"hr"}, At: pageEnd, Priority: SearchPriorityMissing}
+	bad := MediaEventMutation{EventID: "reconcile:other:64", Type: "delete", Ref: domain.MediaRef{Instance: "other", Kind: domain.MediaEpisode, FileID: 5}, At: pageEnd.Add(time.Minute), Priority: SearchPriorityMissing}
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", pageEnd.Add(time.Hour), []MediaEventMutation{valid, bad}); err == nil {
+		t.Fatal("mismatched instance reconciliation error = nil")
+	}
+	if cursor, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !cursor.Equal(pageEnd) {
+		t.Fatalf("cursor after failed page = %s, %v", cursor, err)
+	}
+	if _, _, err := repo.FindMedia(ctx, newMedia.Ref); err == nil {
+		t.Fatal("earlier media mutation survived failed page")
+	}
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM events WHERE event_id='reconcile:sonarr-main:63'`).Scan(&audits); err != nil || audits != 0 {
+		t.Fatalf("earlier audit survived failed page = %d, %v", audits, err)
 	}
 }
 
