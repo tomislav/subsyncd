@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"io/fs"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,8 +24,8 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 7 {
-			t.Errorf("migration count = %d, want 7", count)
+		if count != 8 {
+			t.Errorf("migration count = %d, want 8", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
@@ -86,6 +90,66 @@ func TestUpsertSearchStateKeepsOneRowPerMediaLanguage(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("search state count = %d, want 1", count)
+	}
+}
+
+func TestLeaseDueSearchesOrdersByPriorityBeforeDueTime(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repo := openTestRepository(t)
+	upgrade := insertTestMedia(t, repo, 1, now)
+	missing := insertTestMedia(t, repo, 2, now)
+	imported := insertTestMedia(t, repo, 3, now)
+	requireSearchState(t, repo, upgrade, "en", now.Add(-3*time.Hour), SearchPriorityUpgrade)
+	requireSearchState(t, repo, missing, "en", now.Add(-2*time.Hour), SearchPriorityMissing)
+	requireSearchState(t, repo, imported, "en", now.Add(-time.Hour), SearchPriorityImport)
+
+	leases, err := repo.LeaseDueSearches(context.Background(), now, 3, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 3 {
+		t.Fatalf("lease count = %d, want 3", len(leases))
+	}
+	got := []int64{leases[0].MediaID, leases[1].MediaID, leases[2].MediaID}
+	want := []int64{imported, missing, upgrade}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("lease order = %v, want %v", got, want)
+		}
+	}
+	if leases[0].Priority != SearchPriorityImport || leases[1].Priority != SearchPriorityMissing || leases[2].Priority != SearchPriorityUpgrade {
+		t.Fatalf("lease priorities = %v, %v, %v", leases[0].Priority, leases[1].Priority, leases[2].Priority)
+	}
+}
+
+func TestSearchPriorityMigrationDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	legacy := openDatabaseThroughMigration(t, path, "007_candidate_rejections.sql")
+	repo := (&Store{db: legacy}).Repository()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	if _, err := legacy.Exec(`INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns) VALUES (?, 'en', 'pending', 0, 0, ?)`, mediaID, now.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = upgraded.Close() })
+	var priority int
+	var rerunRequested bool
+	if err := upgraded.db.QueryRow(`SELECT priority, rerun_requested FROM search_states WHERE media_id=? AND language='en'`, mediaID).Scan(&priority, &rerunRequested); err != nil {
+		t.Fatal(err)
+	}
+	if priority != int(SearchPriorityMissing) || rerunRequested {
+		t.Fatalf("migrated priority/rerun = %d/%v, want %d/false", priority, rerunRequested, SearchPriorityMissing)
 	}
 }
 
@@ -622,6 +686,56 @@ func TestApplyMediaEventIsIdempotentAndResetsConfiguredLanguages(t *testing.T) {
 	}
 }
 
+func TestApplyMediaEventDuringLeaseRequestsOneRerun(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	media := testMedia()
+	media.Fingerprint = domain.MediaFingerprint{Path: "/media/episode.mkv", FileID: media.Ref.FileID, Size: 100, ModTime: now}
+	firstEvent := MediaEventMutation{EventID: "import-1", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
+	if applied, err := repo.ApplyMediaEvent(context.Background(), firstEvent); err != nil || !applied {
+		t.Fatalf("first event = %v, %v", applied, err)
+	}
+	leases, err := repo.LeaseDueSearches(context.Background(), now, 1, 5*time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("first lease = %#v, %v", leases, err)
+	}
+
+	secondEvent := firstEvent
+	secondEvent.EventID = "import-2"
+	secondEvent.At = now.Add(time.Minute)
+	if applied, err := repo.ApplyMediaEvent(context.Background(), secondEvent); err != nil || !applied {
+		t.Fatalf("second event = %v, %v", applied, err)
+	}
+	var owner string
+	var rerunRequested bool
+	if err := repo.store.db.QueryRow(`SELECT lease_owner, rerun_requested FROM search_states WHERE media_id=? AND language='hr'`, leases[0].MediaID).Scan(&owner, &rerunRequested); err != nil {
+		t.Fatal(err)
+	}
+	if owner != leases[0].JobID || !rerunRequested {
+		t.Fatalf("active owner/rerun = %q/%v, want %q/true", owner, rerunRequested, leases[0].JobID)
+	}
+	if competing, err := repo.LeaseDueSearches(context.Background(), secondEvent.At, 1, 5*time.Minute); err != nil || len(competing) != 0 {
+		t.Fatalf("competing lease = %#v, %v", competing, err)
+	}
+
+	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "installed", NextAttemptAt: now.Add(24 * time.Hour), Priority: SearchPriorityUpgrade}); err != nil {
+		t.Fatal(err)
+	}
+	rerun, err := repo.LeaseDueSearches(context.Background(), now.Add(2*time.Minute), 1, 5*time.Minute)
+	if err != nil || len(rerun) != 1 {
+		t.Fatalf("rerun lease = %#v, %v", rerun, err)
+	}
+	if rerun[0].Priority != SearchPriorityImport {
+		t.Fatalf("rerun priority = %d, want %d", rerun[0].Priority, SearchPriorityImport)
+	}
+	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: rerun[0].JobID, Outcome: "satisfied"}); err != nil {
+		t.Fatal(err)
+	}
+	if third, err := repo.LeaseDueSearches(context.Background(), now.Add(48*time.Hour), 1, 5*time.Minute); err != nil || len(third) != 0 {
+		t.Fatalf("unexpected third lease = %#v, %v", third, err)
+	}
+}
+
 func TestChangedImportInvalidatesCandidatesAndDeleteCancelsSearches(t *testing.T) {
 	repo := openTestRepository(t)
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
@@ -711,6 +825,62 @@ func openTestRepository(t *testing.T) *Repository {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store.Repository()
+}
+
+func openDatabaseThroughMigration(t *testing.T, path, through string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > through {
+			continue
+		}
+		contents, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(contents)); err != nil {
+			t.Fatalf("apply migration %s: %v", entry.Name(), err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version) VALUES (?)`, entry.Name()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return db
+}
+
+func insertTestMedia(t *testing.T, repo *Repository, fileID int64, now time.Time) int64 {
+	t.Helper()
+	media := testMedia()
+	media.Ref.FileID = fileID
+	media.Fingerprint.FileID = fileID
+	media.Fingerprint.Path = filepath.Join("/media", "show-"+time.Unix(fileID, 0).UTC().Format("150405")+".mkv")
+	media.Fingerprint.ModTime = now
+	id, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func requireSearchState(t *testing.T, repo *Repository, mediaID int64, language domain.Language, next time.Time, priority SearchPriority) {
+	t.Helper()
+	if err := repo.UpsertSearchStateWithPriority(context.Background(), mediaID, language, next, priority); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testMedia() domain.Media {
