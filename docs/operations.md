@@ -107,6 +107,8 @@ silo:
 
 After a committed install, a durable notification sends `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped media-file path. Silo resolves this to a targeted file scan, which refreshes its external-subtitle inventory. Notification failure never rolls back a subtitle. Timeout, 408, 429, and 5xx responses retry independently; other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
 
+This adapter targets Silo's current pre-1.0 native API. Silo plans to retire `/api/v1` at 1.0, and the v2 scan route is not yet published. Check the protocol ledger and upgrade `subsyncd` before moving Silo past its dual-API bridge release; `subsyncd` deliberately does not guess or fall back between mutating API versions.
+
 ## Backup, restart, and recovery
 
 For a consistent backup, stop the service and copy `/data` as one unit. It contains the SQLite database and both caches. Restoring only the database can leave pack manifests missing; those entries are detected and invalidated safely, but the cache benefit is lost.

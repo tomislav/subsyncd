@@ -7,7 +7,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Branch: `feat/subsyncd`
 - Current task: complete through Task 15
 - Next task: none; the approved implementation plan ends after Task 15
-- Latest follow-up: persistent candidate rejection quarantine in `42943d3`
+- Latest follow-up: current native Silo scan API integration in `4a394b1`
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -152,9 +152,18 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Multiple workers sharing SQLite cannot process the same lease. A crash/failure after a committed installation but before search completion leaves the lease recoverable; the next inventory pass sees the installed sidecar and does not perform a second installation. Repository media hydration now supplies the complete persisted `domain.Media` to workflow jobs.
 - Per-instance reconcilers run immediately at startup and then every six hours. Each `catalog.Reconciler` continues to read and atomically advance its own persisted SQLite cursor, so a failed instance is retried independently while successful instances retain their progress.
 - Migration `006_notification_leases.sql` adds partial unique notification deduplication plus a due-work index. Notification enqueue, lease, renewal, retry, and terminal completion are persistent. A committed installation enqueues one checksum-derived job per configured notifier before the search lease completes; deliveries run independently with bounded concurrency. Retryable failures use the technical backoff and never change acquisition state or revert a subtitle.
-- The optional Silo adapter follows the current official Jellyfin-compatible contract: `POST /Library/Media/Updated`, `X-Emby-Token`, one `Modified` media-file path, and 2xx success (Silo documents 204). It supports boundary-aware longest-prefix mount rewrites, rejects redirects and credential-bearing/invalid base URLs, uses a 15-second default timeout, treats timeout/408/429/5xx as retryable, and never includes the API key or response body in errors. The example now targets Silo's compatibility listener on port 8096. See `docs/references/silo.md`.
+- The optional Silo adapter follows the documented current pre-1.0 native contract: `POST /api/v1/scan`, `Authorization: Bearer …`, one mapped media-file `path`, and 2xx success (Silo documents 202). It supports boundary-aware longest-prefix mount rewrites, rejects redirects and credential-bearing/invalid base URLs, uses a 15-second default timeout, treats timeout/408/429/5xx as retryable, and never includes the API key or response body in errors. The example targets Silo's main API listener on port 8090. See `docs/references/silo.md`.
 - Bazarr was not used for Silo behavior; official Silo documentation is authoritative. The worker design independently tightens the nonblocking cooldown and durable-lease requirements from the approved service design.
 - Verification: race-enabled tests cover renewal, completion ordering, two-worker exclusion, two-workflow concurrency, crash recovery, missing/failure/throttle accounting, poll/reset jitter, six-hour reconciliation, bounded shutdown, notification dedupe/retry isolation, disabled Silo, request contract, path mapping, authentication/status classification, timeout, redirect rejection, and secret redaction. Final `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Follow-up — native Silo scan API and focused README
+
+- Commit: `4a394b1 feat: use Silo native scan API`
+- Replaced the Jellyfin-compatibility notification with Silo's current native `POST /api/v1/scan` contract on the main listener: bearer admin API key, JSON media-file `path`, and accepted 2xx response. Durable retry isolation, path mapping, redirect rejection, and credential redaction are unchanged.
+- Reworked `README.md` around a general feature list and removed its Bazarr references. Internal provenance/reference notes remain where they are useful to maintainers. Arr webhook connections remain deliberately manual; `subsyncd` neither creates nor modifies Sonarr/Radarr settings, while startup and six-hour reconciliation cover missed deliveries.
+- Silo's API-v2 program plans a dual-API bridge followed by a Silo 1.0 `/api/v1` tombstone. The current migration ledger says the scan operation will be ported but leaves its v2 method, path, and operation ID unset. Do not guess or automatically replay the mutating request across versions; add an explicit versioned adapter with contract tests once Silo publishes the route and schema.
+- Verification on 2026-09-04: `go test ./internal/notifier -race -v`, `go test ./... -race`, `go vet ./...`, `go test ./test/e2e -tags=e2e -v`, and `git diff --check` passed. The end-to-end flow asserts the native route, bearer header, mapped media path, accepted response, durable deduplication, and restart behavior.
+- Next task: monitor Silo API-v2 issue #135, cutover issue #886, and migration-ledger PR #902; implement v2 only after the scan contract is assigned and published.
 
 ### Task 14 — daemon, webhook API, and operational CLI
 
