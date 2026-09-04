@@ -25,7 +25,8 @@ const (
 	defaultShutdownTimeout   = 30 * time.Second
 	defaultReconcileInterval = 6 * time.Hour
 	defaultSearchBatch       = 10
-	defaultMaxWorkflows      = 2
+	defaultMaxWorkflows      = 1
+	maximumWorkflows         = 8
 	defaultNotificationBatch = 10
 )
 
@@ -78,29 +79,75 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	workCtx, cancelWork := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelWork()
-	for {
-		cycleDone := make(chan error, 1)
-		go func() { cycleDone <- w.RunOnce(workCtx) }()
-		select {
-		case err := <-cycleDone:
-			w.report(err)
-		case <-ctx.Done():
-			return w.drain(cycleDone, cancelWork)
-		}
+	searchesDone := make(chan searchDone, w.MaxWorkflows)
+	maintenanceDone := make(chan error, 1)
+	activeSearches := 0
+	maintenanceActive := false
 
-		timer := time.NewTimer(w.pollDelay())
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return nil
+	dispatch := func() {
+		available := w.MaxWorkflows - activeSearches
+		if available <= 0 {
+			return
+		}
+		leases, err := w.Repository.LeaseDueSearches(workCtx, w.Clock.Now(), available, w.LeaseDuration)
+		if err != nil {
+			w.report(err)
+			return
+		}
+		for _, lease := range leases {
+			activeSearches++
+			go func(lease store.SearchLease) {
+				searchesDone <- searchDone{err: w.runSearchLease(workCtx, lease)}
+			}(lease)
 		}
 	}
+	startMaintenance := func() {
+		if maintenanceActive {
+			return
+		}
+		maintenanceActive = true
+		go func() { maintenanceDone <- w.runMaintenance(workCtx) }()
+	}
+
+	dispatch()
+	startMaintenance()
+	timer := time.NewTimer(w.pollDelay())
+	defer timer.Stop()
+	for {
+		select {
+		case result := <-searchesDone:
+			activeSearches--
+			w.reportUnlessCanceled(result.err)
+			dispatch()
+		case err := <-maintenanceDone:
+			maintenanceActive = false
+			w.reportUnlessCanceled(err)
+		case <-w.Wake:
+			dispatch()
+		case <-timer.C:
+			dispatch()
+			startMaintenance()
+			timer.Reset(w.pollDelay())
+		case <-ctx.Done():
+			return w.drainDaemon(activeSearches, maintenanceActive, searchesDone, maintenanceDone, cancelWork)
+		}
+	}
+}
+
+type searchDone struct{ err error }
+
+func (w *Worker) runMaintenance(ctx context.Context) error {
+	var failures []error
+	if err := w.reconcileDue(ctx); err != nil {
+		failures = append(failures, err)
+	}
+	notifications, err := w.Repository.LeaseDueNotifications(ctx, w.Clock.Now(), w.NotificationBatch, w.LeaseDuration)
+	if err != nil {
+		failures = append(failures, err)
+	} else if err := w.processNotifications(ctx, notifications); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
 }
 
 func (w *Worker) RunOnce(ctx context.Context) error {
@@ -142,20 +189,24 @@ func (w *Worker) processSearches(ctx context.Context, leases []store.SearchLease
 }
 
 func (w *Worker) processSearchLease(ctx context.Context, lease store.SearchLease, semaphore chan struct{}) error {
+	select {
+	case semaphore <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-semaphore }()
+	return w.runSearchLease(ctx, lease)
+}
+
+func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) error {
 	jobCtx, cancelJob := context.WithCancel(ctx)
 	defer cancelJob()
 	renewal := w.renewSearchLease(jobCtx, cancelJob, lease.JobID)
-	select {
-	case semaphore <- struct{}{}:
-	case <-jobCtx.Done():
-		return errors.Join(renewal.finish(), jobCtx.Err())
-	}
 	media, err := w.Repository.GetMedia(jobCtx, lease.MediaID)
 	var result workflow.Result
 	if err == nil {
 		result, err = w.Workflow.Run(jobCtx, workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)})
 	}
-	<-semaphore
 	if renewErr := renewal.finish(); renewErr != nil {
 		return renewErr
 	}
@@ -403,8 +454,8 @@ func (w *Worker) prepare() error {
 	if w.MaxWorkflows <= 0 {
 		w.MaxWorkflows = defaultMaxWorkflows
 	}
-	if w.MaxWorkflows > defaultMaxWorkflows {
-		w.MaxWorkflows = defaultMaxWorkflows
+	if w.MaxWorkflows > maximumWorkflows {
+		w.MaxWorkflows = maximumWorkflows
 	}
 	if w.NotificationBatch <= 0 {
 		w.NotificationBatch = defaultNotificationBatch
@@ -429,6 +480,34 @@ func (w *Worker) drain(done <-chan error, cancel context.CancelFunc) error {
 			w.report(err)
 		}
 		return nil
+	}
+}
+
+func (w *Worker) drainDaemon(activeSearches int, maintenanceActive bool, searchesDone <-chan searchDone, maintenanceDone <-chan error, cancel context.CancelFunc) error {
+	timer := time.NewTimer(w.ShutdownTimeout)
+	defer timer.Stop()
+	timedOut := false
+	for activeSearches > 0 || maintenanceActive {
+		select {
+		case result := <-searchesDone:
+			activeSearches--
+			w.reportUnlessCanceled(result.err)
+		case err := <-maintenanceDone:
+			maintenanceActive = false
+			w.reportUnlessCanceled(err)
+		case <-timer.C:
+			if !timedOut {
+				timedOut = true
+				cancel()
+			}
+		}
+	}
+	return nil
+}
+
+func (w *Worker) reportUnlessCanceled(err error) {
+	if err != nil && !errors.Is(err, context.Canceled) {
+		w.report(err)
 	}
 }
 

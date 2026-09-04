@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -223,6 +224,93 @@ func TestRunOnceReconcilesEachInstanceAtSixHourIntervals(t *testing.T) {
 	}
 }
 
+func TestRunWakeFillsFreeSlotBeforeActiveWorkflowCompletes(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := newControlledWorkflow()
+	wake := make(chan struct{}, 1)
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.MaxWorkflows = 2
+	worker.PollInterval = time.Hour
+	worker.Wake = wake
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	first := waitForWorkflowStart(t, service.started)
+	repository.enqueueSearch(testSearchLease(2, now))
+	wake <- struct{}{}
+	second := waitForWorkflowStart(t, service.started)
+	if first == second {
+		t.Fatalf("started media IDs = %d and %d", first, second)
+	}
+	service.release(first)
+	service.release(second)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if service.maximumActive() > 2 {
+		t.Fatalf("maximum active workflows = %d, want at most 2", service.maximumActive())
+	}
+}
+
+func TestRunCompletionRefillsSingleSlotWithoutWaitingForPoll(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := newControlledWorkflow()
+	wake := make(chan struct{}, 1)
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.MaxWorkflows = 1
+	worker.PollInterval = time.Hour
+	worker.Wake = wake
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+
+	first := waitForWorkflowStart(t, service.started)
+	repository.enqueueSearch(testSearchLease(2, now))
+	wake <- struct{}{}
+	service.release(first)
+	second := waitForWorkflowStart(t, service.started)
+	if second == first {
+		t.Fatalf("completion restarted media %d instead of queued media", first)
+	}
+	service.release(second)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if service.maximumActive() != 1 {
+		t.Fatalf("maximum active workflows = %d, want 1", service.maximumActive())
+	}
+}
+
+func TestRunRecoveryPollFindsSearchWithoutWake(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(0, now)
+	repository.leaseCalls = make(chan struct{}, 8)
+	service := newControlledWorkflow()
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.MaxWorkflows = 1
+	worker.PollInterval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+	select {
+	case <-repository.leaseCalls:
+	case <-time.After(time.Second):
+		t.Fatal("startup dispatch did not check persisted searches")
+	}
+	repository.enqueueSearch(testSearchLease(2, now))
+	started := waitForWorkflowStart(t, service.started)
+	service.release(started)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunAllowsBoundedGracefulDrain(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
@@ -270,7 +358,7 @@ func TestRunCancelsWorkflowAfterDrainTimeout(t *testing.T) {
 	}
 }
 
-func testWorker(repository *workerRepository, service *workerWorkflow, clock *testutil.Clock) *Worker {
+func testWorker(repository *workerRepository, service Workflow, clock *testutil.Clock) *Worker {
 	return &Worker{Repository: repository, Workflow: service, Clock: clock, PollInterval: 10 * time.Millisecond, LeaseDuration: 5 * time.Minute, RenewInterval: time.Minute, ShutdownTimeout: time.Second, SearchBatch: 10, MaxWorkflows: 2, NotificationBatch: 10}
 }
 
@@ -288,6 +376,7 @@ type workerRepository struct {
 	dedupe                  map[string]bool
 	notifications           []store.NotificationLease
 	notificationCompletions []store.NotificationCompletion
+	leaseCalls              chan struct{}
 }
 
 func newWorkerRepository(searches int, now time.Time) *workerRepository {
@@ -302,12 +391,28 @@ func newWorkerRepository(searches int, now time.Time) *workerRepository {
 	return repository
 }
 
-func (r *workerRepository) LeaseDueSearches(context.Context, time.Time, int, time.Duration) ([]store.SearchLease, error) {
+func (r *workerRepository) LeaseDueSearches(_ context.Context, _ time.Time, limit int, _ time.Duration) ([]store.SearchLease, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	result := append([]store.SearchLease(nil), r.searches...)
-	r.searches = nil
+	if r.leaseCalls != nil {
+		select {
+		case r.leaseCalls <- struct{}{}:
+		default:
+		}
+	}
+	if limit > len(r.searches) {
+		limit = len(r.searches)
+	}
+	result := append([]store.SearchLease(nil), r.searches[:limit]...)
+	r.searches = append([]store.SearchLease(nil), r.searches[limit:]...)
 	return result, nil
+}
+
+func (r *workerRepository) enqueueSearch(lease store.SearchLease) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.searches = append(r.searches, lease)
+	r.media[lease.MediaID] = domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaMovie, FileID: lease.MediaID}, Fingerprint: domain.MediaFingerprint{Path: "/media/movie.mkv", FileID: lease.MediaID, Size: 100, ModTime: lease.LeaseUntil.Add(-5 * time.Minute)}, Title: "Movie"}
 }
 func (r *workerRepository) RenewSearchLease(context.Context, string, time.Time, time.Duration) error {
 	r.mu.Lock()
@@ -340,6 +445,8 @@ func (r *workerRepository) CompleteSearch(_ context.Context, completion store.Se
 	return nil
 }
 func (r *workerRepository) GetMedia(_ context.Context, mediaID int64) (domain.Media, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.media[mediaID], nil
 }
 func (r *workerRepository) EnqueueNotification(_ context.Context, request store.NotificationRequest) error {
@@ -381,6 +488,70 @@ type workerWorkflow struct {
 	release         <-chan struct{}
 	outcome         workflow.Result
 	outcomes        []workflow.Result
+}
+
+type controlledWorkflow struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	started   chan int64
+	releases  map[int64]chan struct{}
+}
+
+func newControlledWorkflow() *controlledWorkflow {
+	return &controlledWorkflow{started: make(chan int64, 8), releases: make(map[int64]chan struct{})}
+}
+
+func (w *controlledWorkflow) Run(ctx context.Context, request workflow.Request) (workflow.Result, error) {
+	w.mu.Lock()
+	release := make(chan struct{})
+	w.releases[request.MediaID] = release
+	w.active++
+	if w.active > w.maxActive {
+		w.maxActive = w.active
+	}
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.active--
+		delete(w.releases, request.MediaID)
+		w.mu.Unlock()
+	}()
+	w.started <- request.MediaID
+	select {
+	case <-release:
+	case <-ctx.Done():
+		return workflow.Result{}, ctx.Err()
+	}
+	return workflow.Result{Outcome: workflow.OutcomeSatisfied}, nil
+}
+
+func (w *controlledWorkflow) release(mediaID int64) {
+	w.mu.Lock()
+	release := w.releases[mediaID]
+	w.mu.Unlock()
+	close(release)
+}
+
+func (w *controlledWorkflow) maximumActive() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxActive
+}
+
+func testSearchLease(mediaID int64, now time.Time) store.SearchLease {
+	return store.SearchLease{MediaID: mediaID, Language: "en", JobID: fmt.Sprintf("job-%d", mediaID), LeaseUntil: now.Add(5 * time.Minute), Priority: store.SearchPriorityImport}
+}
+
+func waitForWorkflowStart(t *testing.T, started <-chan int64) int64 {
+	t.Helper()
+	select {
+	case mediaID := <-started:
+		return mediaID
+	case <-time.After(time.Second):
+		t.Fatal("workflow did not start")
+		return 0
+	}
 }
 
 func (w *workerWorkflow) Run(ctx context.Context, _ workflow.Request) (workflow.Result, error) {
