@@ -6,6 +6,9 @@ media_roots:
 server:
   listen: 0.0.0.0:8097
 
+logging:
+  level: info
+
 worker:
   max_concurrent: 1
 

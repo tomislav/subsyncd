@@ -42,7 +42,12 @@ languages:
 }
 
 func TestExampleConfigurationLoads(t *testing.T) {
-	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"), func(string) (string, bool) { return "example-secret", true })
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"), func(name string) (string, bool) {
+		if name == "SUBSYNCD_LOG_LEVEL" {
+			return "", false
+		}
+		return "example-secret", true
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +120,98 @@ languages:
 			assertErrorContains(t, err, "worker", "max_concurrent", "1", "8")
 		})
 	}
+}
+
+func TestLoadLoggingLevelDefaultsNormalizesAndHonorsEnvironmentOverride(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct {
+		name      string
+		yamlLevel string
+		envLevel  string
+		want      string
+	}{
+		{name: "default", want: "info"},
+		{name: "yaml debug", yamlLevel: "DeBuG", want: "debug"},
+		{name: "yaml info", yamlLevel: "info", want: "info"},
+		{name: "yaml warn", yamlLevel: "WARN", want: "warn"},
+		{name: "yaml error", yamlLevel: "error", want: "error"},
+		{name: "environment wins", yamlLevel: "warn", envLevel: "error", want: "error"},
+		{name: "empty environment is ignored", yamlLevel: "warn", envLevel: " ", want: "warn"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			block := ""
+			if test.yamlLevel != "" {
+				block = fmt.Sprintf("logging:\n  level: %s\n", test.yamlLevel)
+			}
+			cfg, err := loadTextWithLookup(t, validConfig(root, block+`languages:
+  en: {providers: [subdl-main]}
+`), func(name string) (string, bool) {
+				switch name {
+				case "TEST_SUBDL_KEY":
+					return "secret", true
+				case "SUBSYNCD_LOG_LEVEL":
+					if test.envLevel != "" {
+						return test.envLevel, true
+					}
+				}
+				return "", false
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Logging.Level != test.want {
+				t.Fatalf("logging level = %q, want %q", cfg.Logging.Level, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadLoggingLevelRejectsUnknownValuesWithoutEchoingEnvironment(t *testing.T) {
+	root := t.TempDir()
+	_, err := loadTextWithLookup(t, validConfig(root, `logging:
+  level: trace
+languages:
+  en: {providers: [subdl-main]}
+`), func(name string) (string, bool) {
+		if name == "TEST_SUBDL_KEY" {
+			return "secret", true
+		}
+		return "", false
+	})
+	assertErrorContains(t, err, "log level", "debug", "info", "warn", "error")
+
+	const invalidOverride = "verbose-SENSITIVE-SENTINEL"
+	_, err = loadTextWithLookup(t, validConfig(root, `logging:
+  level: info
+languages:
+  en: {providers: [subdl-main]}
+`), func(name string) (string, bool) {
+		switch name {
+		case "TEST_SUBDL_KEY":
+			return "secret", true
+		case "SUBSYNCD_LOG_LEVEL":
+			return invalidOverride, true
+		default:
+			return "", false
+		}
+	})
+	assertErrorContains(t, err, "subsyncd_log_level", "invalid")
+	if strings.Contains(err.Error(), invalidOverride) {
+		t.Fatalf("error echoed invalid environment value: %v", err)
+	}
+}
+
+func TestValidateRejectsManuallyConstructedUnknownLoggingLevel(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := loadText(t, validConfig(root, `languages:
+  en: {providers: [subdl-main]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Logging.Level = "trace"
+	assertErrorContains(t, cfg.Validate(), "log level")
 }
 
 func TestLoadParsesLapseConfidencePolicy(t *testing.T) {
@@ -298,6 +395,7 @@ func TestValidateRejectsUnsafeSiloURLAndRelativePathMapping(t *testing.T) {
 
 func loadText(t *testing.T, text string) (Config, error) {
 	t.Helper()
+	t.Setenv("SUBSYNCD_LOG_LEVEL", "")
 	if _, ok := os.LookupEnv("TEST_SUBDL_KEY"); !ok {
 		t.Setenv("TEST_SUBDL_KEY", "secret")
 	}
@@ -306,6 +404,15 @@ func loadText(t *testing.T, text string) (Config, error) {
 		t.Fatal(err)
 	}
 	return Load(path, os.LookupEnv)
+}
+
+func loadTextWithLookup(t *testing.T, text string, lookup func(string) (string, bool)) (Config, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return Load(path, lookup)
 }
 
 func validConfig(root, languageBlock string) string {

@@ -29,12 +29,14 @@ const (
 	defaultSyncPolicy                      = "confidence"
 	defaultSyncBypassScore                 = 75
 	defaultWorkerMaxConcurrent             = 1
+	defaultLogLevel                        = "info"
 )
 
 type Config struct {
 	DataDir              string
 	MediaRoots           []string
 	Server               ServerConfig
+	Logging              LoggingConfig
 	Worker               WorkerConfig
 	Instances            []InstanceConfig
 	Providers            map[string]ProviderSpec
@@ -50,6 +52,10 @@ type Config struct {
 
 type ServerConfig struct {
 	Listen string `yaml:"listen"`
+}
+
+type LoggingConfig struct {
+	Level string `yaml:"level"`
 }
 
 type WorkerConfig struct {
@@ -125,6 +131,7 @@ type rawConfig struct {
 	DataDir              string                    `yaml:"data_dir"`
 	MediaRoots           []string                  `yaml:"media_roots"`
 	Server               ServerConfig              `yaml:"server"`
+	Logging              LoggingConfig             `yaml:"logging"`
 	Worker               rawWorkerConfig           `yaml:"worker"`
 	Instances            []InstanceConfig          `yaml:"instances"`
 	Providers            map[string]yaml.Node      `yaml:"providers"`
@@ -223,6 +230,13 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if value, ok := lookupEnv("SUBSYNCD_LOG_LEVEL"); ok && strings.TrimSpace(value) != "" {
+		level, err := normalizeLogLevel(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("SUBSYNCD_LOG_LEVEL is invalid")
+		}
+		cfg.Logging.Level = level
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -280,6 +294,11 @@ func normalize(raw rawConfig) (Config, error) {
 		MinimumReleaseScore:  raw.MinimumReleaseScore,
 		Silo:                 raw.Silo,
 	}
+	logLevel, err := normalizeLogLevel(raw.Logging.Level)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Logging = LoggingConfig{Level: logLevel}
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = defaultListen
 	}
@@ -381,6 +400,9 @@ func normalize(raw rawConfig) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if _, err := normalizeLogLevel(c.Logging.Level); err != nil {
+		return err
+	}
 	if !filepath.IsAbs(c.DataDir) {
 		return fmt.Errorf("data_dir must be absolute")
 	}
@@ -509,6 +531,19 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func normalizeLogLevel(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return defaultLogLevel, nil
+	}
+	switch value {
+	case "debug", "info", "warn", "error":
+		return value, nil
+	default:
+		return "", fmt.Errorf("log level must be debug, info, warn, or error")
+	}
 }
 
 func withinAnyRoot(path string, roots []string) bool {
