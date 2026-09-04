@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: priority dispatch and LAPSE score-tier tournament implemented locally
-- Next task: publish the verified main branch and prepare—but do not run—the Hades comparison
-- Latest follow-up: lazy score-tier LAPSE evaluation and one-winner synchronization
+- Current task: approved structured Loki logging design; implementation planning in progress
+- Next task: complete and review the structured logging implementation plan
+- Latest follow-up: comprehensive newline-delimited JSON observability for Grafana Alloy and Loki
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
