@@ -2,22 +2,32 @@
 
 ## Filesystem and container permissions
 
-The image runs as UID/GID `10001:10001` and expects:
+The image defaults to UID/GID `1000:1000`. The Compose examples select the runtime identity from host-side interpolation variables:
+
+```dotenv
+PUID=1000
+PGID=1000
+TZ=Europe/Zagreb
+```
+
+Compose resolves `PUID` and `PGID` before the container starts and applies them to both `user:` and `/tmp` tmpfs ownership. Put them in the project's `.env` file or export them in the invoking shell. Adding them only to the service's `environment:` mapping would not change the process identity. `TZ` is passed into the container, whose image includes timezone data.
+
+The selected identity expects:
 
 - `/config/config.yaml`: readable configuration, normally a read-only mount.
 - `/data`: writable SQLite database, LAPSE speech cache, pack cache, and process lock.
 - Every configured media root: readable for probing/hashing and writable for atomic sidecar installation.
 - `/tmp`: writable ephemeral space; the Compose examples provide a bounded tmpfs.
 
-Create host directories before starting and grant UID/GID 10001 access. Overriding the container user is possible but then the mounted paths and optional `install.uid`/`install.gid` must agree. Chown is omitted unless those optional settings are configured; unprivileged containers normally leave them unset.
+Create host directories before starting and grant the selected UID/GID access. The container remains rootless and does not create users or change ownership at startup. The mounted paths and optional `install.uid`/`install.gid` must agree. Chown is omitted unless those optional settings are configured; unprivileged containers normally leave them unset.
 
 `install.file_mode` defaults to `0644`, accepts an octal non-executable mode, and is applied before atomic publication:
 
 ```yaml
 install:
   file_mode: "0640"
-  # uid: 10001
-  # gid: 10001
+  # uid: 1000
+  # gid: 1000
 ```
 
 ## Startup and health

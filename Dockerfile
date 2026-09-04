@@ -42,11 +42,11 @@ LABEL org.opencontainers.image.title="subsyncd" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.lapse.version="${LAPSE_VERSION}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl ffmpeg libfftw3-double3 \
+      ca-certificates curl ffmpeg libfftw3-double3 tzdata \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 subsyncd \
-    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin subsyncd \
-    && install -d -o 10001 -g 10001 -m 0750 /config /data /media
+    && groupadd --gid 1000 subsyncd \
+    && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin subsyncd \
+    && install -d -o 1000 -g 1000 -m 0750 /config /data /media
 COPY --from=go-build /out/subsyncd /usr/local/bin/subsyncd
 COPY --from=lapse-release /out/lapse /opt/lapse
 RUN chmod 0755 /usr/local/bin/subsyncd /opt/lapse/lapse \
@@ -54,7 +54,7 @@ RUN chmod 0755 /usr/local/bin/subsyncd /opt/lapse/lapse \
     && cp /opt/lapse/LICENSE /usr/share/licenses/lapse/LICENSE
 COPY config.example.yaml /usr/share/doc/subsyncd/config.example.yaml
 ENV LD_LIBRARY_PATH=/opt/lapse
-USER 10001:10001
+USER 1000:1000
 EXPOSE 8097
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["curl", "-fsS", "http://127.0.0.1:8097/readyz"]

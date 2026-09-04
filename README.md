@@ -21,8 +21,9 @@ See [providers.md](docs/providers.md) for search/scoring behavior and [operation
 
 1. Copy `config.example.yaml` to `config/config.yaml`.
 2. Set the credential variables used by that file.
-3. Ensure UID/GID `10001:10001` can write the mounted data, movies, and TV directories.
-4. Make the external `media` network (or change the network in the example) and start the service:
+3. Optionally set `PUID`, `PGID`, and `TZ` in `.env`; they default to `1000`, `1000`, and `Europe/Zagreb`.
+4. Ensure that UID/GID can write the mounted data, movies, and TV directories.
+5. Make the external `media` network (or change the network in the example) and start the service:
 
 ```bash
 docker compose -f compose.example.yml build
@@ -30,7 +31,7 @@ docker compose -f compose.example.yml up -d
 docker compose -f compose.example.yml exec subsyncd subsyncd doctor --config /config/config.yaml
 ```
 
-The production image contains Go 1.27-built `subsyncd`, FFmpeg/FFprobe from Debian 13.2, and checksummed LAPSE v2.0.5 release assets for Linux amd64 and arm64. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image runs as fixed unprivileged UID/GID `10001:10001`. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
+The production image contains Go 1.27-built `subsyncd`, FFmpeg/FFprobe and timezone data from Debian 13.2, and checksummed LAPSE v2.0.5 release assets for Linux amd64 and arm64. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image defaults to unprivileged UID/GID `1000:1000`; Compose can select another existing host identity through `PUID` and `PGID` without starting the container as root. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
 
 The root stack exposes the same service behind an opt-in profile:
 

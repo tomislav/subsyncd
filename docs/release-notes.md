@@ -36,3 +36,11 @@ Verification passed:
 - complete Go module graph inspection with no Bazarr module/runtime dependency
 
 The attempted linux/amd64 smoke build on this arm64 host reached the amd64 Go toolchain but its legacy Docker/QEMU environment crashed inside `go mod download`. The amd64 LAPSE archive itself was downloaded and checksum-verified. Run a native amd64 or BuildKit/buildx CI build before publishing the amd64 image.
+
+## Rootless identity defaults — 2026-09-04
+
+The image now defaults to UID/GID `1000:1000`. Standalone and root-stack Compose definitions interpolate `PUID` and `PGID` from the host environment or project `.env` file into both `user:` and `/tmp` tmpfs ownership, defaulting each to `1000`. This is a rootless runtime override: the container does not interpret those names, start as root, create arbitrary users, or change mounted-path ownership.
+
+Compose also passes `TZ`, defaulting to `Europe/Zagreb`, and the image explicitly includes Debian timezone data. Operators must ensure `/data` and mapped media roots are accessible to the selected numeric identity.
+
+Both Compose files rendered successfully with defaults and with `PUID=1234 PGID=2345 TZ=UTC`. The native arm64 image built successfully and reported `sha256:27a06cd026c0445c69dfb91f50c512315e51f8dfbeba65a2627c62d3a4ea000a` (218,820,223 bytes, configured user `1000:1000`). A container runtime check confirmed UID/GID `1000:1000` and the Zagreb UTC offset. This is a local content ID, not a published registry digest.

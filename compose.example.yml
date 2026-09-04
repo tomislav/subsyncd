@@ -8,12 +8,13 @@ services:
     init: true
     restart: unless-stopped
     read_only: true
-    user: "10001:10001"
+    user: "${PUID:-1000}:${PGID:-1000}"
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     environment:
+      TZ: ${TZ:-Europe/Zagreb}
       SONARR_MAIN_API_KEY: ${SONARR_MAIN_API_KEY:-}
       SONARR_MAIN_WEBHOOK_TOKEN: ${SONARR_MAIN_WEBHOOK_TOKEN:-}
       RADARR_MAIN_API_KEY: ${RADARR_MAIN_API_KEY:-}
@@ -31,7 +32,7 @@ services:
       - ${MOVIES_PATH:-./media/movies}:/media/movies:rw
       - ${TV_PATH:-./media/tv}:/media/tv:rw
     tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=512m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,nodev,size=512m,uid=${PUID:-1000},gid=${PGID:-1000}
     expose:
       - "8097"
     stop_grace_period: 45s
