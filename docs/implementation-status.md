@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 7, Titlovi adapter
-- Next task: Task 8, SubDL adapter
+- Current task: Task 8, SubDL adapter
+- Next task: Task 9, candidate matching and scoring
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -45,6 +45,18 @@ This file is the resumable implementation ledger. The approved design and plan r
 - The application wiring will create/ensure configured Arr instance rows before reconciliation starts.
 - HTTP webhook token validation belongs to the HTTP API task; catalog normalization deliberately accepts bytes only after transport authentication.
 - Reconciliation currently hydrates history rows that still identify a live file. Deletions are handled by delete webhooks; if an Arr history endpoint exposes reliable deletion tombstones, add them behind a contract fixture before changing this rule.
+
+### Task 7 — Titlovi adapter
+
+- Commit: `b803647 feat: add Titlovi provider`
+
+- Strict provider configuration requires credentials, defaults to the HTTPS Kodi API and Titlovi download origin, and permits alternate origins only through an explicit host allowlist. Local HTTP is available solely through an unexported YAML test flag.
+- Tokens and user IDs are cached until one minute before expiry. Search/download permit one 401-triggered refresh; common transport keeps credential-bearing URLs out of errors and persists no-header 429 responses as a five-minute provider-instance cooldown.
+- The broad-only adapter maps every supported Titlovi language independently (`bs`, `en`, `hr`, `mk`, `sr`, `sr-Cyrl`, `sl`), paginates to a configured ceiling, and retains title, release, rating, download count, and opaque result/download identity.
+- Episode-zero results become season-pack evidence only when the returned season matches the target. They retain episode zero and never masquerade as a direct episode; wrong-season and wrong-episode rows are rejected.
+- Downloads accept only configured HTTPS origins and redirects, stream through a compressed-byte ceiling, and leave ZIP/RAR member selection to the later common fail-closed extractor.
+- Bazarr behavior adopted: token contract, provider language names, pagination, episode-zero pack signal, and typed 429 handling. Tightened: explicit pack scope, wrong-season rejection, bounded pages/bytes, host-safe redirects, and no archive extraction inside the provider.
+- Verification: `go test ./... -race`, `go vet ./internal/provider/titlovi`, and scoped `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
 
