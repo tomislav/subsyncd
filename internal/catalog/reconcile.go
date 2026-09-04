@@ -14,11 +14,12 @@ type ReconciliationStore interface {
 }
 
 type Reconciler struct {
-	Instance  string
-	Catalog   Catalog
-	Store     ReconciliationStore
-	Languages []domain.Language
-	Now       func() time.Time
+	Instance    string
+	Catalog     Catalog
+	Store       ReconciliationStore
+	Languages   []domain.Language
+	Now         func() time.Time
+	OnCommitted func()
 }
 
 func (r Reconciler) Run(ctx context.Context) error {
@@ -33,6 +34,9 @@ func (r Reconciler) Run(ctx context.Context) error {
 	}
 	if err := r.Store.CommitReconciliation(ctx, r.Instance, pageEnd, media, r.Languages); err != nil {
 		return fmt.Errorf("commit %s reconciliation page: %w", r.Instance, err)
+	}
+	if r.OnCommitted != nil {
+		r.OnCommitted()
 	}
 	return nil
 }

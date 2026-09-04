@@ -125,6 +125,7 @@ type WebhookHandler struct {
 	Store        MediaEventStore
 	Languages    []domain.Language
 	Now          func() time.Time
+	OnApplied    func()
 }
 
 func (h WebhookHandler) Handle(ctx context.Context, body []byte) error {
@@ -132,6 +133,12 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) error {
 	if err != nil {
 		return err
 	}
+	appliedAny := false
+	defer func() {
+		if appliedAny && h.OnApplied != nil {
+			h.OnApplied()
+		}
+	}()
 	now := h.Now().UTC()
 	for _, event := range events {
 		mutation := store.MediaEventMutation{
@@ -148,9 +155,11 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) error {
 			}
 			mutation.Media = media
 		}
-		if _, err := h.Store.ApplyMediaEvent(ctx, mutation); err != nil {
+		applied, err := h.Store.ApplyMediaEvent(ctx, mutation)
+		if err != nil {
 			return fmt.Errorf("apply %s event %s: %w", h.Instance, event.EventID, err)
 		}
+		appliedAny = appliedAny || applied
 	}
 	return nil
 }

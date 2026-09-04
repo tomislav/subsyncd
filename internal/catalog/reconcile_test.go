@@ -56,3 +56,22 @@ func TestReconcilerDoesNotAdvanceCursorWhenPageCommitFails(t *testing.T) {
 		t.Fatalf("cursor advanced to %s after failed commit", store.committed)
 	}
 }
+
+func TestReconcilerCallsOnCommittedOnlyAfterSuccessfulCommit(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	wakes := 0
+	reconciler := Reconciler{Instance: "sonarr-main", Catalog: &fakeReconcileCatalog{}, Store: &fakeReconcileStore{}, Languages: []domain.Language{"hr"}, Now: func() time.Time { return now }, OnCommitted: func() { wakes++ }}
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if wakes != 1 {
+		t.Fatalf("successful reconciliation callbacks = %d, want 1", wakes)
+	}
+	reconciler.Store = &fakeReconcileStore{commitErr: errors.New("disk full")}
+	if err := reconciler.Run(context.Background()); err == nil {
+		t.Fatal("failed reconciliation error = nil")
+	}
+	if wakes != 1 {
+		t.Fatalf("failed reconciliation changed callbacks to %d", wakes)
+	}
+}

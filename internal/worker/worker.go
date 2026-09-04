@@ -66,6 +66,7 @@ type Worker struct {
 	SearchBatch       int
 	MaxWorkflows      int
 	NotificationBatch int
+	Wake              <-chan struct{}
 
 	reconcileMu   sync.Mutex
 	lastReconcile map[string]time.Time

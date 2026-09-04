@@ -113,10 +113,19 @@ func (f *fakeEventCatalog) ListMediaChangedSince(context.Context, time.Time) ([]
 
 type fakeEventStore struct {
 	mutations []store.MediaEventMutation
+	results   []bool
+	errors    []error
 }
 
 func (f *fakeEventStore) ApplyMediaEvent(_ context.Context, mutation store.MediaEventMutation) (bool, error) {
 	f.mutations = append(f.mutations, mutation)
+	index := len(f.mutations) - 1
+	if index < len(f.errors) && f.errors[index] != nil {
+		return false, f.errors[index]
+	}
+	if index < len(f.results) {
+		return f.results[index], nil
+	}
 	return true, nil
 }
 
@@ -148,5 +157,47 @@ func TestWebhookHandlerHydratesImportsAndAppliesDeletesWithoutHydration(t *testi
 	}
 	if len(store.mutations[0].Languages) != 2 || !store.mutations[0].At.Equal(now) {
 		t.Fatalf("import scheduling metadata = %#v", store.mutations[0])
+	}
+}
+
+func TestWebhookHandlerOnAppliedTracksCommittedWork(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	catalog := &fakeEventCatalog{media: domain.Media{Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
+	eventStore := &fakeEventStore{results: []bool{true, false}}
+	wakes := 0
+	handler := WebhookHandler{Instance: "main", InstanceType: "sonarr", Catalog: catalog, Store: eventStore, Languages: []domain.Language{"hr"}, Now: func() time.Time { return now }, OnApplied: func() { wakes++ }}
+	body, err := os.ReadFile(filepath.Join("testdata", "sonarr_download.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if wakes != 1 {
+		t.Fatalf("wake callbacks = %d, want 1", wakes)
+	}
+	if err := handler.Handle(context.Background(), []byte(`{"eventType":"Test"}`)); !errors.Is(err, ErrIgnoredEvent) {
+		t.Fatalf("test event error = %v", err)
+	}
+	if wakes != 1 {
+		t.Fatalf("ignored event changed wake callbacks to %d", wakes)
+	}
+}
+
+func TestWebhookHandlerOnAppliedSurvivesLaterFileFailure(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	catalog := &fakeEventCatalog{media: domain.Media{Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
+	eventStore := &fakeEventStore{results: []bool{true}, errors: []error{nil, errors.New("disk full")}}
+	wakes := 0
+	handler := WebhookHandler{Instance: "main", InstanceType: "sonarr", Catalog: catalog, Store: eventStore, Languages: []domain.Language{"hr"}, Now: func() time.Time { return now }, OnApplied: func() { wakes++ }}
+	body := []byte(`{"eventType":"Download","episodeFiles":[{"id":1001,"path":"/tv/one.mkv"},{"id":1002,"path":"/tv/two.mkv"}]}`)
+	if err := handler.Handle(context.Background(), body); err == nil {
+		t.Fatal("Handle() error = nil")
+	}
+	if wakes != 1 {
+		t.Fatalf("wake callbacks = %d, want 1 after partial commit", wakes)
 	}
 }

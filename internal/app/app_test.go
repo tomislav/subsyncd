@@ -107,6 +107,25 @@ func TestNewWiresConfiguredWorkflowConcurrency(t *testing.T) {
 	}
 }
 
+func TestNewWiresNonblockingCatalogWake(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	background := application.Worker.(*worker.Worker)
+	if cap(background.Wake) != 1 {
+		t.Fatalf("wake capacity = %d, want 1", cap(background.Wake))
+	}
+	reconciler := application.Reconcilers["tv"]
+	reconciler.OnCommitted()
+	reconciler.OnCommitted()
+	if len(background.Wake) != 1 {
+		t.Fatalf("queued wakes = %d, want coalesced wake", len(background.Wake))
+	}
+}
+
 func TestNewAssemblesLanguageWorkflowWithoutContactingRemoteServices(t *testing.T) {
 	cfg := testConfig(t)
 	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
