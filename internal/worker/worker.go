@@ -589,19 +589,35 @@ func (w *Worker) drain(done <-chan error, cancel context.CancelFunc) error {
 		w.report(err)
 		return nil
 	case <-timer.C:
+		w.Events.For("worker").Log(context.Background(), slog.LevelWarn, "worker.drain_timed_out", "worker drain timed out",
+			slog.Int("active_searches", 1), slog.Bool("maintenance_active", false))
 		cancel()
-		err := <-done
-		if err != nil && !errors.Is(err, context.Canceled) {
-			w.report(err)
+		hardTimer := time.NewTimer(w.ShutdownTimeout)
+		defer hardTimer.Stop()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				w.report(err)
+			}
+		case <-hardTimer.C:
+			w.Events.For("worker").Log(context.Background(), slog.LevelWarn, "worker.drain_abandoned", "worker returning with work still active after cancellation",
+				slog.Int("active_searches", 1), slog.Bool("maintenance_active", false))
 		}
 		return nil
 	}
 }
 
 func (w *Worker) drainDaemon(activeSearches int, maintenanceActive bool, searchesDone <-chan searchDone, maintenanceDone <-chan error, cancel context.CancelFunc) error {
-	timer := time.NewTimer(w.ShutdownTimeout)
-	defer timer.Stop()
-	timedOut := false
+	gracefulTimer := time.NewTimer(w.ShutdownTimeout)
+	defer gracefulTimer.Stop()
+	graceful := gracefulTimer.C
+	var hardTimer *time.Timer
+	var hard <-chan time.Time
+	defer func() {
+		if hardTimer != nil {
+			hardTimer.Stop()
+		}
+	}()
 	for activeSearches > 0 || maintenanceActive {
 		select {
 		case result := <-searchesDone:
@@ -610,13 +626,17 @@ func (w *Worker) drainDaemon(activeSearches int, maintenanceActive bool, searche
 		case err := <-maintenanceDone:
 			maintenanceActive = false
 			w.reportUnlessCanceled(err)
-		case <-timer.C:
-			if !timedOut {
-				timedOut = true
-				w.Events.For("worker").Log(context.Background(), slog.LevelWarn, "worker.drain_timed_out", "worker drain timed out",
-					slog.Int("active_searches", activeSearches), slog.Bool("maintenance_active", maintenanceActive))
-				cancel()
-			}
+		case <-graceful:
+			graceful = nil
+			w.Events.For("worker").Log(context.Background(), slog.LevelWarn, "worker.drain_timed_out", "worker drain timed out",
+				slog.Int("active_searches", activeSearches), slog.Bool("maintenance_active", maintenanceActive))
+			cancel()
+			hardTimer = time.NewTimer(w.ShutdownTimeout)
+			hard = hardTimer.C
+		case <-hard:
+			w.Events.For("worker").Log(context.Background(), slog.LevelWarn, "worker.drain_abandoned", "worker returning with work still active after cancellation",
+				slog.Int("active_searches", activeSearches), slog.Bool("maintenance_active", maintenanceActive))
+			return nil
 		}
 	}
 	return nil

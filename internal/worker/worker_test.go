@@ -63,7 +63,7 @@ func TestRunOnceLogsCorrelatedSearchJobLifecycle(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
 	repository.searches[0].Priority = store.SearchPriorityImport
-	var logs bytes.Buffer
+	var logs synchronizedBuffer
 	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -471,6 +471,61 @@ func TestRunCancelsWorkflowAfterDrainTimeout(t *testing.T) {
 	findWorkerEvent(t, workerLogRecords(t, logs.String()), "worker.drain_timed_out")
 }
 
+func TestRunReturnsAfterCanceledDrainDeadline(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := &stubbornWorkflow{started: make(chan struct{}), release: make(chan struct{})}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	var logs synchronizedBuffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.Events = events
+	worker.ShutdownTimeout = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+	<-service.started
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(service.release)
+		<-done
+		t.Fatal("worker remained blocked after canceled drain deadline")
+	}
+	close(service.release)
+	findWorkerEvent(t, workerLogRecords(t, logs.String()), "worker.drain_timed_out")
+	findWorkerEvent(t, workerLogRecords(t, logs.String()), "worker.drain_abandoned")
+}
+
+func TestDrainReturnsAfterCanceledDeadline(t *testing.T) {
+	worker := &Worker{ShutdownTimeout: 20 * time.Millisecond, Events: observability.Discard()}
+	done := make(chan error, 1)
+	canceled := make(chan struct{})
+	returned := make(chan error, 1)
+	go func() { returned <- worker.drain(done, func() { close(canceled) }) }()
+	select {
+	case <-canceled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("drain did not cancel after graceful deadline")
+	}
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		done <- nil
+		<-returned
+		t.Fatal("drain remained blocked after canceled deadline")
+	}
+}
+
 func testWorker(repository *workerRepository, service Workflow, clock *testutil.Clock) *Worker {
 	return &Worker{Repository: repository, Workflow: service, Clock: clock, PollInterval: 10 * time.Millisecond, LeaseDuration: 5 * time.Minute, RenewInterval: time.Minute, ShutdownTimeout: time.Second, SearchBatch: 10, MaxWorkflows: 2, NotificationBatch: 10}
 }
@@ -608,6 +663,34 @@ type workerWorkflow struct {
 	outcome         workflow.Result
 	outcomes        []workflow.Result
 	err             error
+}
+
+type stubbornWorkflow struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(payload []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(payload)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+func (w *stubbornWorkflow) Run(context.Context, workflow.Request) (workflow.Result, error) {
+	close(w.started)
+	<-w.release
+	return workflow.Result{Outcome: workflow.OutcomeSatisfied}, nil
 }
 
 type controlledWorkflow struct {

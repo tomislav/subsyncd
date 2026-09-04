@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repairs executing inline; Tasks 1–4 complete
-- Next task: put a hard second deadline on canceled worker shutdown
+- Current task: conventional review repairs executing inline; Tasks 1–5 complete
+- Next task: surface incomplete installation rollback failures
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 5 — bounded forced shutdown
+
+- Daemon and deterministic drain paths now wait one graceful `ShutdownTimeout`, cancel once, then wait at most one additional `ShutdownTimeout` before returning.
+- The first deadline emits `worker.drain_timed_out`; the second emits `worker.drain_abandoned` with bounded active-search and maintenance counts. Neither path clears durable leases.
+- Completion channels remain buffered, and a race-safe regression harness proves a cancellation-insensitive workflow cannot hold daemon shutdown indefinitely or block on its late result.
+- Verification: both focused tests reproduced the old unbounded wait; `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/worker -race -count=1` and `git diff --check` pass. Next task: installation rollback failure visibility.
 
 ### Conventional repairs Task 4 — fail-closed multi-episode indexing
 
