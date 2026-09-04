@@ -67,10 +67,15 @@ type Dependencies struct {
 	HTTPClient *http.Client
 	Store      *store.Store
 	Clock      Clock
+	Gate       *Gate
 }
 
 type Clock interface {
 	Now() time.Time
 }
+
+type SystemClock struct{}
+
+func (SystemClock) Now() time.Time { return time.Now().UTC() }
 
 type Factory func(id string, node yaml.Node, deps Dependencies) (Provider, error)

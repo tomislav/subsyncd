@@ -1,0 +1,16 @@
+{
+  "total_pages": 2,
+  "data": [{
+    "id": "subtitle-1",
+    "attributes": {
+      "language": "en",
+      "hearing_impaired": false,
+      "ratings": 8.5,
+      "download_count": 120,
+      "release": "Example.Show.S01E02.1080p.WEB-DL-GROUP",
+      "moviehash_match": true,
+      "feature_details": {"movie_name":"Example Show", "year":2024, "season_number":1, "episode_number":2, "imdb_id":1234567, "tmdb_id":7654},
+      "files": [{"file_id": 501, "file_name":"Example.Show.S01E02.en.srt"}]
+    }
+  }]
+}

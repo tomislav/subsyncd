@@ -33,7 +33,10 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 	defer release()
 	response, err := c.HTTP.Do(request.WithContext(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("provider %s request failed: %w", c.ProviderID, err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("provider %s request failed", c.ProviderID)
 	}
 	now := c.Clock.Now()
 	window, found := ParseRateLimit(now, response.Header)
@@ -61,6 +64,10 @@ func (c Client) PersistCooldown(ctx context.Context, operation Operation, kind C
 		resetAt = FallbackReset(c.Clock.Now(), c.ProviderType, kind)
 	}
 	return c.Gate.Persist(ctx, Throttle{ProviderID: c.ProviderID, Scope: operation, Reason: string(kind), Remaining: 0, ResetAt: resetAt})
+}
+
+func (c Client) DisableAuthentication(ctx context.Context, reason string) error {
+	return c.Gate.Persist(ctx, Throttle{ProviderID: c.ProviderID, Scope: OperationAuth, Reason: reason, Remaining: 0, Disabled: true})
 }
 
 func FallbackReset(now time.Time, providerType string, kind CooldownKind) time.Time {

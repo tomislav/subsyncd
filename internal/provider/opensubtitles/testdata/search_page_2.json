@@ -1,0 +1,16 @@
+{
+  "total_pages": 2,
+  "data": [{
+    "id": "subtitle-2",
+    "attributes": {
+      "language": "en",
+      "hearing_impaired": true,
+      "ratings": 7.0,
+      "download_count": 30,
+      "release": "Example.Show.S01E02.720p.WEBRip-OTHER",
+      "moviehash_match": false,
+      "feature_details": {"movie_name":"Example Show", "year":2024, "season_number":1, "episode_number":2},
+      "files": [{"file_id": 502, "file_name":"Example.Show.S01E02.HI.en.srt"}]
+    }
+  }]
+}

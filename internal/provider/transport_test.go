@@ -92,3 +92,19 @@ func TestFallbackResetMatchesProviderPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportErrorDoesNotExposeRequestURLOrSignedQuery(t *testing.T) {
+	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	states := &memoryStateStore{states: map[string]store.ProviderState{}}
+	gate := NewGate(states, clock, 1)
+	gate.Configure("provider", 1000, 1, 1)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("request to https://signed.example/file?token=secret failed")
+	})}
+	transport := Client{HTTP: client, Gate: gate, Clock: clock, ProviderID: "provider", ProviderType: "subdl"}
+	request, _ := http.NewRequest(http.MethodGet, "https://signed.example/file?token=secret", nil)
+	_, err := transport.Do(context.Background(), OperationDownload, request)
+	if err == nil || strings.Contains(err.Error(), "signed.example") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("unsafe transport error = %v", err)
+	}
+}
