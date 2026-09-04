@@ -18,6 +18,7 @@ import (
 	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
+	"subsyncd/internal/syncer"
 )
 
 func TestServiceStopsForEmbeddedOrProtectedSubtitle(t *testing.T) {
@@ -121,6 +122,36 @@ func TestServiceUsesCachedPackBeforeProvidersAndFallsThroughAfterLapseRejection(
 	result, err = service.Run(context.Background(), request)
 	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "remote" || searcher.calls != 1 || providerFake.downloads != 1 {
 		t.Fatalf("fallback Run() = %#v, %v, search=%d downloads=%d", result, err, searcher.calls, providerFake.downloads)
+	}
+}
+
+func TestServiceSkipsARejectedCachedPackMember(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Season = 1
+	request.Media.Episode = 2
+	cachedPath := writeInstallFile(t, filepath.Join(t.TempDir(), "cached.srt"), installSRT)
+	candidate := broadCandidate("pack")
+	candidate.Kind = domain.MediaEpisode
+	candidate.Season = 1
+	candidate.Episode = 2
+	candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: 1}
+	cache := &fakePackCache{member: pack.CachedMember{Path: cachedPath, Checksum: "member-checksum", Candidate: candidate}, found: true}
+	repository := &workflowRepository{}
+	synchronizer := &fakeSynchronizer{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, cache, synchronizer, &fakeInstaller{})
+	service.Repository = repository
+	signature, err := candidateSignature(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := service.Clock.Now()
+	fingerprint := request.Media.Fingerprint
+	repository.rejections = append(repository.rejections, store.CandidateRejection{MediaID: request.MediaID, Language: "en", ProviderID: "provider", ResultID: "pack", CandidateSignature: signature, ArtifactChecksum: "member-checksum", ReasonCode: "lapse_unsure", ToolSignature: service.rejectionToolSignature(), MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(time.Hour)})
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeNoResult || synchronizer.analyzeCalls != 0 || len(result.Decisions) != 1 || result.Decisions[0].Stage != "candidate_rejection" {
+		t.Fatalf("Run() = %#v/%v analyze=%d", result, err, synchronizer.analyzeCalls)
 	}
 }
 
@@ -243,6 +274,34 @@ func TestLapseConfidencePolicySafetyBoundaries(t *testing.T) {
 	}
 }
 
+func TestCandidateRejectionSignatureIgnoresVolatileProviderMetrics(t *testing.T) {
+	candidate := broadCandidate("stable")
+	candidate.ReleaseNames = []string{"Movie.2024.1080p.WEB-DL-GROUP"}
+	first, err := candidateSignature(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Rating = 0.9
+	candidate.Popularity = 0.8
+	candidate.DownloadCount = 12345
+	candidate.DownloadRef = "/different/temporary/url"
+	second, err := candidateSignature(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first {
+		t.Fatalf("volatile metrics changed candidate signature: %q != %q", second, first)
+	}
+	candidate.ReleaseNames = []string{"Movie.2024.1080p.BluRay-OTHER"}
+	third, err := candidateSignature(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third == first {
+		t.Fatal("changed release evidence retained candidate signature")
+	}
+}
+
 func TestServiceHandlesProviderOutagesThrottlesZeroResultsAndCancellation(t *testing.T) {
 	reset := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
 	t.Run("all throttled", func(t *testing.T) {
@@ -295,11 +354,13 @@ func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {
 		candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: 1}
 		providerFake := &fakeProvider{id: "provider", payloads: map[string][]byte{"pack": workflowZIP(t, map[string]string{"one.S01E02.srt": installSRT, "two.S01E02.srt": installSRT})}, filenames: map[string]string{"pack": "season.zip"}}
 		cache := &fakePackCache{}
+		repository := &workflowRepository{}
 		service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, cache, &fakeSynchronizer{}, &fakeInstaller{})
+		service.Repository = repository
 		service.Providers = map[string]provider.Provider{"provider": providerFake}
 		result, err := service.Run(context.Background(), request)
-		if err != nil || result.Outcome != OutcomeRejected || cache.puts != 0 {
-			t.Fatalf("Run() = %#v, %v, cache puts=%d", result, err, cache.puts)
+		if err != nil || result.Outcome != OutcomeRejected || cache.puts != 0 || len(repository.rejections) != 1 || repository.rejections[0].ReasonCode != "pack_selection" {
+			t.Fatalf("Run() = %#v, %v, cache puts=%d rejections=%#v", result, err, cache.puts, repository.rejections)
 		}
 	})
 
@@ -313,6 +374,62 @@ func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {
 			t.Fatalf("Run() = %#v, %v, downloads=%d", result, err, providerFake.downloads)
 		}
 	})
+}
+
+func TestServicePersistsDeterministicLapseRejectionsBeforeTheShortlist(t *testing.T) {
+	candidates := []domain.Candidate{broadCandidate("1-bad"), broadCandidate("2-bad"), broadCandidate("3-bad"), broadCandidate("4-good")}
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: candidates}}
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{verdicts: map[string]string{"1-bad": "unsure", "2-bad": "nothing", "3-bad": "unsure"}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	request := serviceRequest(t)
+
+	first, err := service.Run(context.Background(), request)
+	if err != nil || first.Outcome != OutcomeRejected || !slices.Equal(providerFake.downloaded, []string{"1-bad", "2-bad", "3-bad"}) || len(repository.rejections) != 3 || repository.rejections[0].ExpiresAt.Sub(repository.rejections[0].RejectedAt) != 30*24*time.Hour {
+		t.Fatalf("first Run() = %#v/%v downloads=%#v rejections=%#v", first, err, providerFake.downloaded, repository.rejections)
+	}
+	providerFake.downloaded = nil
+	second, err := service.Run(context.Background(), request)
+	if err != nil || second.Outcome != OutcomeInstalled || second.Candidate.ResultID != "4-good" || !slices.Equal(providerFake.downloaded, []string{"4-good"}) {
+		t.Fatalf("second Run() = %#v/%v downloads=%#v", second, err, providerFake.downloaded)
+	}
+}
+
+func TestServiceReturnsOperationalLapseFailureWithoutRejectingCandidate(t *testing.T) {
+	candidate := broadCandidate("candidate")
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{analyzeErr: errors.New("LAPSE process crashed")}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, synchronizer, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err == nil || !strings.Contains(err.Error(), "process crashed") || result.Outcome != "" || len(repository.rejections) != 0 {
+		t.Fatalf("Run() = %#v/%v rejections=%#v", result, err, repository.rejections)
+	}
+}
+
+func TestServiceQuarantinesInvalidSubtitlePayload(t *testing.T) {
+	candidate := broadCandidate("invalid")
+	providerFake := &fakeProvider{id: "provider", payloads: map[string][]byte{"invalid": []byte("this is not a subtitle")}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	request := serviceRequest(t)
+
+	first, err := service.Run(context.Background(), request)
+	if err != nil || first.Outcome != OutcomeRejected || providerFake.downloads != 1 || len(repository.rejections) != 1 || repository.rejections[0].ReasonCode != "invalid_subtitle" {
+		t.Fatalf("first Run() = %#v/%v downloads=%d rejections=%#v", first, err, providerFake.downloads, repository.rejections)
+	}
+	second, err := service.Run(context.Background(), request)
+	if err != nil || second.Outcome != OutcomeRejected || providerFake.downloads != 1 {
+		t.Fatalf("second Run() = %#v/%v downloads=%d", second, err, providerFake.downloads)
+	}
 }
 
 func TestServiceTreatsPackCacheWriteAsBestEffort(t *testing.T) {
@@ -550,17 +667,25 @@ func (zeroReader) Read(payload []byte) (int, error) {
 
 type fakeSynchronizer struct {
 	confidence       map[string]float64
+	verdicts         map[string]string
+	analyzeErr       error
 	rejectText       string
 	rejectAll        bool
 	analyzeCalls     int
 	synchronizeCalls int
 }
 
-func (f *fakeSynchronizer) AnalyzeCandidate(_ context.Context, _ domain.Candidate, _ string, subtitle string) (domain.SyncResult, error) {
+func (f *fakeSynchronizer) AnalyzeCandidate(_ context.Context, candidate domain.Candidate, _ string, subtitle string) (domain.SyncResult, error) {
 	f.analyzeCalls++
+	if f.analyzeErr != nil {
+		return domain.SyncResult{}, f.analyzeErr
+	}
+	if verdict := f.verdicts[candidate.ResultID]; verdict != "" {
+		return domain.SyncResult{}, &syncer.VerdictError{Verdict: verdict, Reason: "test verdict"}
+	}
 	payload, _ := os.ReadFile(subtitle)
 	if f.rejectAll || f.rejectText != "" && strings.Contains(string(payload), f.rejectText) {
-		return domain.SyncResult{}, errors.New("rejected")
+		return domain.SyncResult{}, &syncer.VerdictError{Verdict: "unsure", Reason: "test rejection"}
 	}
 	confidence := 0.5
 	for id, value := range f.confidence {
@@ -604,6 +729,7 @@ type workflowRepository struct {
 	installation store.Installation
 	found        bool
 	candidates   []store.CandidateRecord
+	rejections   []store.CandidateRejection
 }
 
 func (r *workflowRepository) GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error) {
@@ -613,6 +739,20 @@ func (r *workflowRepository) GetInstallation(context.Context, int64, domain.Lang
 func (r *workflowRepository) RecordCandidates(_ context.Context, _ int64, _ domain.Language, candidates []store.CandidateRecord) error {
 	r.candidates = append([]store.CandidateRecord(nil), candidates...)
 	return nil
+}
+
+func (r *workflowRepository) PutCandidateRejection(_ context.Context, rejection store.CandidateRejection) error {
+	r.rejections = append(r.rejections, rejection)
+	return nil
+}
+
+func (r *workflowRepository) GetCandidateRejection(_ context.Context, lookup store.CandidateRejectionLookup) (store.CandidateRejection, bool, error) {
+	for _, rejection := range r.rejections {
+		if rejection.MediaID == lookup.MediaID && rejection.Language == lookup.Language && rejection.ProviderID == lookup.ProviderID && rejection.ResultID == lookup.ResultID && rejection.CandidateSignature == lookup.CandidateSignature && rejection.ToolSignature == lookup.ToolSignature && rejection.MediaPath == lookup.MediaPath && rejection.MediaFileID == lookup.MediaFileID && rejection.MediaSize == lookup.MediaSize && rejection.MediaModTimeNS == lookup.MediaModTimeNS && rejection.ExpiresAt.After(lookup.Now) && (lookup.ArtifactChecksum == "" || rejection.ArtifactChecksum == lookup.ArtifactChecksum) {
+			return rejection, true, nil
+		}
+	}
+	return store.CandidateRejection{}, false, nil
 }
 
 type fixedWorkflowClock struct{ at time.Time }

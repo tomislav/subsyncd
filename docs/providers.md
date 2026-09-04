@@ -72,11 +72,14 @@ For one media/language job:
 4. Ask hash-capable providers sequentially in configured order. The first verified exact match is terminal.
 5. If no exact match exists, query every assigned provider broadly and merge results in configured order.
 6. Persist score and rejection evidence for every result, but never a signed download URL or provider token.
-7. Download/prepare no more than the best three eligible non-hash candidates.
-8. For a first-install candidate scoring at least 75, bypass LAPSE only when identity, release group, and (for TV) episode evidence are all present.
-9. Otherwise require a LAPSE `solid` result; packs and upgrades always take this path by default.
+7. Remove active deterministic rejections before shortlisting, allowing later-ranked candidates to advance.
+8. Download/prepare no more than the best three eligible non-hash candidates.
+9. For a first-install candidate scoring at least 75, bypass LAPSE only when identity, release group, and (for TV) episode evidence are all present.
+10. Otherwise require a LAPSE `solid` result; packs and upgrades always take this path by default.
 
 Search-result cache entries live for six hours. Season packs default to 24 hours and a total 512 MiB LRU ceiling. Pack downloads are content-addressed and immutable; every cache hit reloads the manifest, verifies checksums, and reruns strict member selection for the current episode.
+
+Candidate rejections are not provider blacklists. They are scoped to one media/language/provider result and expire after 30 days. Media fingerprint, stable release metadata, selected member checksum, LAPSE compatibility version, or synchronization-policy changes invalidate the applicable match. Volatile provider rating, popularity, download counts, and temporary download URLs deliberately do not change the rejection identity.
 
 ## Score model
 

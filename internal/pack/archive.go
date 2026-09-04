@@ -28,6 +28,11 @@ var (
 	rarMagic = []byte{'R', 'a', 'r', '!', 0x1a, 0x07}
 )
 
+type ContentError struct{ Err error }
+
+func (e *ContentError) Error() string { return "subtitle payload rejected: " + e.Err.Error() }
+func (e *ContentError) Unwrap() error { return e.Err }
+
 type archiveMember struct {
 	name string
 	mode fs.FileMode
@@ -54,7 +59,10 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 
 	members, err := decodePayload(ctx, payload, candidate, limits)
 	if err != nil {
-		return Manifest{}, err
+		if ctx.Err() != nil {
+			return Manifest{}, ctx.Err()
+		}
+		return Manifest{}, &ContentError{Err: err}
 	}
 	manifest := Manifest{ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, Language: candidate.Language, Checksum: checksum(payload), Candidate: candidate}
 	parent := filepath.Dir(dst)
@@ -79,16 +87,16 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		}
 		safeName, err := safeMemberName(raw.name, limits.MaxDepth)
 		if err != nil {
-			return Manifest{}, err
+			return Manifest{}, &ContentError{Err: err}
 		}
 		lower := strings.ToLower(safeName)
 		if _, exists := seen[lower]; exists {
-			return Manifest{}, fmt.Errorf("archive contains duplicate subtitle name %q", safeName)
+			return Manifest{}, &ContentError{Err: fmt.Errorf("archive contains duplicate subtitle name %q", safeName)}
 		}
 		seen[lower] = struct{}{}
 		text, extension, err := normalizeSubtitle(raw.body, filepath.Ext(safeName))
 		if err != nil {
-			return Manifest{}, fmt.Errorf("validate subtitle %q: %w", safeName, err)
+			return Manifest{}, &ContentError{Err: fmt.Errorf("validate subtitle %q: %w", safeName, err)}
 		}
 		if filepath.Ext(safeName) == "" {
 			safeName += extension
@@ -104,7 +112,7 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		manifest.Members = append(manifest.Members, member)
 	}
 	if len(manifest.Members) == 0 {
-		return Manifest{}, fmt.Errorf("payload contains no supported subtitle files")
+		return Manifest{}, &ContentError{Err: fmt.Errorf("payload contains no supported subtitle files")}
 	}
 	if _, err := os.Lstat(dst); err == nil {
 		return Manifest{}, fmt.Errorf("extraction destination already exists")

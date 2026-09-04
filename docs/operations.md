@@ -58,6 +58,10 @@ Packs and managed-subtitle upgrades still require LAPSE by default, even if thei
 
 When LAPSE is required, analysis runs against a private subtitle copy with `--dry-run --json --strict --no-sidecar`. Synchronization writes a new explicit output with `--output`, `--no-backup`, `--json`, `--strict`, and `--no-sidecar`. `unsure`, `nothing`, malformed JSON, invalid output, and missing speech are rejections; only `solid` can install.
 
+An `unsure` or `nothing` verdict quarantines that provider result for 30 days, scoped to the language, exact media fingerprint, stable candidate/release metadata, selected artifact checksum when known, LAPSE compatibility version, and synchronization policy. Invalid or oversized subtitle payloads and ambiguous pack selection are quarantined too. Rejected candidates are removed before the three-candidate shortlist, so later-ranked results advance on the next job. A rejected cached pack member is skipped by checksum; the pack remains available to other episodes.
+
+Timeouts, crashes, malformed LAPSE protocol output, cancellation, filesystem failures, and provider/network failures do not quarantine the candidate. They surface as technical failures and use the separate failure backoff. No-speech is a media-validation rejection rather than evidence that one particular subtitle is bad. In every failure case, the job workspace is removed and an existing installed subtitle remains untouched.
+
 LAPSE itself makes no internet request, but it reads the media to build a speech profile; on network storage, the first analysis can therefore read much or nearly all of the file. The profile cache is persisted under `/data/lapse-cache`, so later candidates for the unchanged media can reuse it. The confidence gate avoids that media read for strong first-install matches. A normal timeout is 30 minutes. Cancellation kills the entire LAPSE subprocess group.
 
 Diagnostic analysis never installs a sidecar:
@@ -75,6 +79,7 @@ subsyncd serve --config /config/config.yaml
 subsyncd scan --config /config/config.yaml --instance sonarr-main
 subsyncd scan --config /config/config.yaml --instance sonarr-main --force-probe
 subsyncd search --config /config/config.yaml --instance radarr-main --kind movie --file-id 42 --language en
+subsyncd search --config /config/config.yaml --instance radarr-main --kind movie --file-id 42 --language en --retry-rejected
 subsyncd retry --config /config/config.yaml --provider titlovi-main
 subsyncd explain --config /config/config.yaml --instance sonarr-main --kind episode --file-id 1001 --language hr
 subsyncd doctor --config /config/config.yaml
@@ -84,7 +89,7 @@ subsyncd --version
 
 Exit status is 0 for success, 1 for an operational failure, and 2 for invalid command usage. `serve`, `scan`, `search`, and `retry` take the nonblocking `/data/subsyncd.lock`; a second mutator fails immediately instead of racing the daemon. Stop the daemon before running a mutating one-shot command.
 
-`explain` reports the indexed media identity, embedded/sidecar tracks, missing/failure attempts, last outcome and next attempt, candidates with score/identity evidence, managed installation and LAPSE provenance, reusable pack count, and provider cooldowns.
+`explain` reports the indexed media identity, embedded/sidecar tracks, missing/failure attempts, last outcome and next attempt, candidates with score/identity evidence, active candidate rejections with reason and expiry, managed installation and LAPSE provenance, reusable pack count, and provider cooldowns. `search --retry-rejected` clears the rejection records for only the selected media/language before performing the manual search; any candidate that deterministically fails again is immediately re-quarantined.
 
 ## Silo notification
 
@@ -116,5 +121,5 @@ If a user wants to take ownership of a subtitle, edit or replace the sidecar. It
 - `media path is outside configured roots`: fix the Arr path mapping or mount path; do not broaden roots merely to silence the check.
 - no provider call: check `explain` for an embedded/protected track, exact terminal installation, future schedule, pack cache, or provider cooldown.
 - repeated missing result: this is expected backoff, not a worker sleep. Use `search` for a deliberate manual attempt or `retry` only to clear provider throttle/auth state.
-- LAPSE rejection: run `analyze-sync`; `unsure`/`nothing` is intentionally not installable.
+- LAPSE rejection: inspect `candidate_rejections` with `explain`; `unsure`/`nothing` is intentionally not installable. Use `analyze-sync` for diagnosis or `search --retry-rejected` after changing the media, candidate source, LAPSE build, or policy.
 - Silo does not refresh: confirm port 8096 is the Jellyfin-compatible listener and that container-to-Silo path mapping is correct.

@@ -18,7 +18,7 @@ type Backend interface {
 	Close() error
 	Serve(context.Context) error
 	Scan(context.Context, string, bool) (string, error)
-	Search(context.Context, string, string, int64, string) (string, error)
+	Search(context.Context, string, string, int64, string, bool) (string, error)
 	Retry(context.Context, string) (string, error)
 	Explain(context.Context, string, string, int64, string) (string, error)
 	Doctor(context.Context) (string, error)
@@ -70,6 +70,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	language := flags.String("language", "", "subtitle language tag")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
+	retryRejected := flags.Bool("retry-rejected", false, "clear and retry rejected subtitle candidates")
 	media := flags.String("media", "", "media file path")
 	subtitle := flags.String("subtitle", "", "subtitle file path")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -125,7 +126,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "scan":
 		output, err = backend.Scan(ctx, *instance, *forceProbe)
 	case "search":
-		output, err = backend.Search(ctx, *instance, *kind, *fileID, *language)
+		output, err = backend.Search(ctx, *instance, *kind, *fileID, *language, *retryRejected)
 	case "retry":
 		output, err = backend.Retry(ctx, *provider)
 	case "explain":
@@ -153,7 +154,9 @@ func commandFlags(command string) map[string]bool {
 	switch command {
 	case "scan":
 		names = []string{"instance", "force-probe"}
-	case "search", "explain":
+	case "search":
+		names = []string{"instance", "kind", "file-id", "language", "retry-rejected"}
+	case "explain":
 		names = []string{"instance", "kind", "file-id", "language"}
 	case "retry":
 		names = []string{"provider"}

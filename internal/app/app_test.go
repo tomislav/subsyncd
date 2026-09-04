@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
 	"subsyncd/internal/provider"
+	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
 )
 
@@ -40,6 +42,15 @@ func (fakeCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, err
 	return domain.Media{}, nil
 }
 func (fakeCatalog) ListMediaChangedSince(context.Context, time.Time) ([]domain.Media, error) {
+	return nil, nil
+}
+
+type staticCatalog struct{ media domain.Media }
+
+func (c staticCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
+	return c.media, nil
+}
+func (staticCatalog) ListMediaChangedSince(context.Context, time.Time) ([]domain.Media, error) {
 	return nil, nil
 }
 
@@ -89,6 +100,66 @@ func TestNewAssemblesLanguageWorkflowWithoutContactingRemoteServices(t *testing.
 	}
 	if err := application.Ready(context.Background()); err != nil {
 		t.Fatalf("readiness = %v", err)
+	}
+}
+
+func TestExplainListsActiveCandidateRejections(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	now := application.Clock.Now()
+	media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Movie.mkv"), FileID: 7, Size: 100, ModTime: now}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
+	mediaID, _, err := application.Repository.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "bad-1", CandidateSignature: "candidate", ArtifactChecksum: "artifact", ReasonCode: "lapse_unsure", ToolSignature: "tool", MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 100, MediaModTimeNS: now.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := application.Explain(context.Background(), "tv", "movie", 7, "en")
+	if err != nil || !strings.Contains(output, "candidate_rejections: 1") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") {
+		t.Fatalf("Explain() = %q/%v", output, err)
+	}
+}
+
+func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
+	cfg := testConfig(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	mediaPath := filepath.Join(cfg.MediaRoots[0], "Movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: info.Size(), ModTime: info.ModTime()}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: media}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	mediaID, _, err := application.Repository.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, []store.TrackRecord{{Language: "en", Embedded: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "bad", CandidateSignature: "candidate", ReasonCode: "lapse_unsure", ToolSignature: "tool", MediaPath: mediaPath, MediaFileID: 7, MediaSize: info.Size(), MediaModTimeNS: info.ModTime().UnixNano(), RejectedAt: now, ExpiresAt: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := application.Search(context.Background(), "tv", "movie", 7, "en", true); err != nil {
+		t.Fatal(err)
+	}
+	rejections, err := application.Repository.ListCandidateRejections(context.Background(), mediaID, "en", now)
+	if err != nil || len(rejections) != 0 {
+		t.Fatalf("rejections after manual retry = %#v/%v", rejections, err)
 	}
 }
 

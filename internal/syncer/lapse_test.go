@@ -105,6 +105,15 @@ func TestAnalyzeCandidateBypassesLapseForExactHash(t *testing.T) {
 	}
 }
 
+func TestLapseReportsTheCompatibilityVersionUsedByRejectionPolicy(t *testing.T) {
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{}, nil
+	}), t.TempDir())
+	if got := lapse.CompatibilityVersion(); got != "2.0.5" {
+		t.Fatalf("CompatibilityVersion() = %q, want 2.0.5", got)
+	}
+}
+
 func TestAnalyzeRejectsTimeoutNonzeroAndTruncatedOutput(t *testing.T) {
 	media, subtitle := testFiles(t)
 	tests := []struct {

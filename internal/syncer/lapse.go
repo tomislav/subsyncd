@@ -20,11 +20,14 @@ import (
 )
 
 const (
+	CompatibilityVersion   = "2.0.5"
 	defaultTimeout         = 30 * time.Minute
 	maximumSubtitleBytes   = 100 << 20
 	maximumSubtitleCues    = 100_000
 	speechCacheEnvVariable = "LAPSE_CACHE"
 )
+
+func (l *Lapse) CompatibilityVersion() string { return CompatibilityVersion }
 
 type Options struct {
 	Path               string

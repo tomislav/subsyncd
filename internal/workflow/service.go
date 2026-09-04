@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,9 +19,12 @@ import (
 	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
+	"subsyncd/internal/syncer"
 )
 
 type Outcome string
+
+const defaultCandidateRejectionTTL = 30 * 24 * time.Hour
 
 const (
 	OutcomeSatisfied Outcome = "satisfied"
@@ -82,6 +86,8 @@ type CandidateInstaller interface {
 type WorkflowRepository interface {
 	GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error)
 	RecordCandidates(context.Context, int64, domain.Language, []store.CandidateRecord) error
+	GetCandidateRejection(context.Context, store.CandidateRejectionLookup) (store.CandidateRejection, bool, error)
+	PutCandidateRejection(context.Context, store.CandidateRejection) error
 }
 
 type WorkflowClock interface{ Now() time.Time }
@@ -141,6 +147,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 	result := Result{ProviderErrors: map[string]error{}}
+	var candidateFailures []error
 	current, err := s.Inventory.Refresh(ctx, request.MediaID, request.Media, request.ForceProbe)
 	if err != nil {
 		return result, fmt.Errorf("refresh subtitle inventory: %w", err)
@@ -178,12 +185,27 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		if cacheErr != nil {
 			result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", Reason: cacheErr.Error()})
 		} else if found {
-			score := s.evaluate(request.Media, cached.Candidate, request.Language)
-			prepared, prepareErr := s.synchronize(ctx, request, cached.Candidate, score, cached.Path, workspace, 0, installed, existing)
-			if prepareErr == nil {
-				return s.install(ctx, request, prepared, existing, installed, result)
+			rejection, rejected, rejectionErr := s.candidateRejection(ctx, request, cached.Candidate, cached.Checksum)
+			if rejectionErr != nil {
+				return result, rejectionErr
 			}
-			result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: prepareErr.Error()})
+			if rejected {
+				result.Decisions = append(result.Decisions, Decision{Stage: "candidate_rejection", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: rejection.ReasonCode})
+			} else {
+				score := s.evaluate(request.Media, cached.Candidate, request.Language)
+				prepared, prepareErr := s.synchronize(ctx, request, cached.Candidate, score, cached.Path, workspace, 0, installed, existing)
+				if prepareErr == nil {
+					return s.install(ctx, request, prepared, existing, installed, result)
+				}
+				recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
+				if recordErr != nil {
+					return result, recordErr
+				}
+				if !recorded && !isMediaValidationRejection(prepareErr) {
+					candidateFailures = append(candidateFailures, prepareErr)
+				}
+				result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: prepareErr.Error()})
+			}
 		}
 	}
 
@@ -200,6 +222,9 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		}
 		if len(s.ProviderOrder) > 0 && len(search.Errors) >= len(s.ProviderOrder) {
 			return result, fmt.Errorf("all %d assigned subtitle providers failed", len(s.ProviderOrder))
+		}
+		if len(candidateFailures) != 0 {
+			return result, errors.Join(candidateFailures...)
 		}
 		result.Outcome = OutcomeNoResult
 		return result, nil
@@ -239,6 +264,14 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 				continue
 			}
 		}
+		rejection, rejected, rejectionErr := s.candidateRejection(ctx, request, item.Candidate, "")
+		if rejectionErr != nil {
+			return result, rejectionErr
+		}
+		if rejected {
+			result.Decisions = append(result.Decisions, Decision{Stage: "candidate_rejection", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: rejection.ReasonCode})
+			continue
+		}
 		eligible = append(eligible, item)
 	}
 	if len(eligible) == 0 {
@@ -256,7 +289,6 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	}
 
 	prepared := make([]preparedCandidate, 0, len(eligible))
-	var candidateFailures []error
 	for index, item := range eligible {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -264,13 +296,29 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		path, decisions, prepareErr := s.downloadAndSelect(ctx, request, item.Candidate, workspace, index)
 		result.Decisions = append(result.Decisions, decisions...)
 		if prepareErr != nil {
-			candidateFailures = append(candidateFailures, prepareErr)
+			recorded, rejectionErr := s.recordCandidateRejection(ctx, request, item.Candidate, "", prepareErr)
+			if rejectionErr != nil {
+				return result, rejectionErr
+			}
+			if !recorded && !isMediaValidationRejection(prepareErr) {
+				candidateFailures = append(candidateFailures, prepareErr)
+			}
 			result.Decisions = append(result.Decisions, Decision{Stage: "candidate", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: prepareErr.Error()})
 			continue
 		}
 		ready, syncErr := s.synchronize(ctx, request, item.Candidate, item.Score, path, workspace, index, installed, existing)
 		if syncErr != nil {
-			candidateFailures = append(candidateFailures, syncErr)
+			checksum, checksumErr := fileChecksum(path)
+			if checksumErr != nil {
+				return result, checksumErr
+			}
+			recorded, rejectionErr := s.recordCandidateRejection(ctx, request, item.Candidate, checksum, syncErr)
+			if rejectionErr != nil {
+				return result, rejectionErr
+			}
+			if !recorded && !isMediaValidationRejection(syncErr) {
+				candidateFailures = append(candidateFailures, syncErr)
+			}
 			result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: syncErr.Error()})
 			continue
 		}
@@ -283,11 +331,105 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 			result.RetryAt = retry
 			return result, nil
 		}
+		if len(candidateFailures) != 0 {
+			return result, errors.Join(candidateFailures...)
+		}
 		result.Outcome = OutcomeRejected
 		return result, nil
 	}
 	sortPrepared(prepared)
 	return s.install(ctx, request, prepared[0], existing, installed, result)
+}
+
+func (s *Service) candidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, bool, error) {
+	signature, err := candidateSignature(candidate)
+	if err != nil {
+		return store.CandidateRejection{}, false, err
+	}
+	fingerprint := request.Media.Fingerprint
+	return s.Repository.GetCandidateRejection(ctx, store.CandidateRejectionLookup{
+		MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
+		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ToolSignature: s.rejectionToolSignature(),
+		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), Now: s.Clock.Now(),
+	})
+}
+
+func (s *Service) recordCandidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string, failure error) (bool, error) {
+	var verdict *syncer.VerdictError
+	var selection *pack.SelectionError
+	var content *pack.ContentError
+	reasonCode := ""
+	switch {
+	case errors.As(failure, &verdict) && (verdict.Verdict == "unsure" || verdict.Verdict == "nothing"):
+		reasonCode = "lapse_" + verdict.Verdict
+	case errors.As(failure, &selection):
+		reasonCode = "pack_selection"
+	case errors.As(failure, &content):
+		reasonCode = "invalid_subtitle"
+	default:
+		return false, nil
+	}
+	signature, err := candidateSignature(candidate)
+	if err != nil {
+		return false, err
+	}
+	now := s.Clock.Now()
+	fingerprint := request.Media.Fingerprint
+	rejection := store.CandidateRejection{
+		MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
+		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ReasonCode: reasonCode, ToolSignature: s.rejectionToolSignature(),
+		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(defaultCandidateRejectionTTL),
+	}
+	if err := s.Repository.PutCandidateRejection(ctx, rejection); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func isMediaValidationRejection(failure error) bool {
+	var noSpeech *syncer.NoSpeechError
+	return errors.As(failure, &noSpeech)
+}
+
+func candidateSignature(candidate domain.Candidate) (string, error) {
+	safe := candidate
+	safe.DownloadRef = ""
+	safe.Rating = 0
+	safe.Popularity = 0
+	safe.DownloadCount = 0
+	if safe.Pack != nil {
+		packInfo := *safe.Pack
+		packInfo.DirectMembers = append([]domain.PackMemberRef(nil), safe.Pack.DirectMembers...)
+		for index := range packInfo.DirectMembers {
+			packInfo.DirectMembers[index].DownloadRef = ""
+		}
+		safe.Pack = &packInfo
+	}
+	payload, err := json.Marshal(safe)
+	if err != nil {
+		return "", fmt.Errorf("encode candidate signature: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum[:]), nil
+}
+
+func (s *Service) rejectionToolSignature() string {
+	version := "unknown"
+	if versioned, ok := s.Synchronizer.(interface{ CompatibilityVersion() string }); ok {
+		version = versioned.CompatibilityVersion()
+	}
+	payload, _ := json.Marshal(s.LapsePolicy.normalized())
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("lapse-%s/policy-%x", version, sum[:8])
+}
+
+func fileChecksum(path string) (string, error) {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("checksum candidate artifact: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func (s *Service) validate(request Request) error {
@@ -316,7 +458,7 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	syncErr := payload.Sync()
 	closeErr := payload.Close()
 	if bounded.exceeded {
-		return "", nil, fmt.Errorf("provider download exceeds %d bytes", bounded.limit)
+		return "", nil, &pack.ContentError{Err: fmt.Errorf("provider download exceeds %d bytes", bounded.limit)}
 	}
 	if downloadErr != nil {
 		return "", nil, downloadErr

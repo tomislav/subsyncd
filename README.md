@@ -12,7 +12,8 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 - OpenSubtitles file hashes are calculated lazily once per exact file fingerprint and persisted.
 - Exact-hash matches skip LAPSE. A first install with a score of at least 75 plus identity, release-group, and episode evidence can also skip it; uncertain matches, packs, and upgrades require LAPSE's strict `solid` verdict by default.
 - Season packs use one bounded extractor and fail closed when the target member is ambiguous.
-- Provider cooldowns, search schedules, leases, candidate evidence, install provenance, and notifications survive restarts.
+- Deterministic candidate failures are quarantined for the exact media/release evidence, allowing later-ranked results to advance without repeated downloads; operational failures remain retryable.
+- Provider cooldowns, search schedules, leases, candidate evidence/rejections, install provenance, and notifications survive restarts.
 
 See [providers.md](docs/providers.md) for search/scoring behavior and [operations.md](docs/operations.md) for deployment, webhooks, commands, recovery, and upgrades.
 

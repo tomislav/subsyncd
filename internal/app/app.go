@@ -419,7 +419,7 @@ func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (strin
 	return fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", instance, len(items), forceProbe), nil
 }
 
-func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, languageTag string) (string, error) {
+func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, languageTag string, retryRejected bool) (string, error) {
 	release, err := a.acquireMutationLock()
 	if err != nil {
 		return "", err
@@ -441,6 +441,11 @@ func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, l
 	mediaID, _, err := a.Repository.UpsertMedia(ctx, media)
 	if err != nil {
 		return "", err
+	}
+	if retryRejected {
+		if err := a.Repository.ClearCandidateRejections(ctx, mediaID, language); err != nil {
+			return "", err
+		}
 	}
 	result, err := service.Run(ctx, workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true})
 	if err != nil {
@@ -500,6 +505,14 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	fmt.Fprintf(&output, "candidates: %d\n", len(candidates))
 	for _, candidate := range candidates {
 		fmt.Fprintf(&output, "  candidate: provider=%s result=%s score=%s identity=%s\n", candidate.ProviderID, candidate.ResultID, compactJSON(candidate.ScoreJSON), compactJSON(candidate.ValidationJSON))
+	}
+	rejections, err := a.Repository.ListCandidateRejections(ctx, mediaID, language, a.Clock.Now())
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&output, "candidate_rejections: %d\n", len(rejections))
+	for _, rejection := range rejections {
+		fmt.Fprintf(&output, "  rejection: provider=%s result=%s reason=%s artifact=%s expires=%s\n", rejection.ProviderID, rejection.ResultID, rejection.ReasonCode, rejection.ArtifactChecksum, rejection.ExpiresAt.Format(time.RFC3339Nano))
 	}
 	installation, installed, err := a.Repository.GetInstallation(ctx, mediaID, language)
 	if err != nil {

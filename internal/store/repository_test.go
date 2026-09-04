@@ -20,8 +20,8 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 6 {
-			t.Errorf("migration count = %d, want 6", count)
+		if count != 7 {
+			t.Errorf("migration count = %d, want 7", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
@@ -398,6 +398,85 @@ func TestRecordCandidatesAtomicallyReplacesMediaLanguageSet(t *testing.T) {
 	}
 	if count != 1 || providerID != "three" {
 		t.Fatalf("candidate set = %d/%q", count, providerID)
+	}
+}
+
+func TestCandidateRejectionMatchesTheSameCandidateArtifactAndMedia(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	rejection := CandidateRejection{
+		MediaID: mediaID, Language: "en", ProviderID: "opensubtitles", ResultID: "result-1",
+		CandidateSignature: "candidate-a", ArtifactChecksum: "member-a", ReasonCode: "lapse_unsure", ToolSignature: "lapse-2.0.5/policy-a",
+		MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(),
+		RejectedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour),
+	}
+	if err := repo.PutCandidateRejection(context.Background(), rejection); err != nil {
+		t.Fatal(err)
+	}
+
+	lookup := CandidateRejectionLookup{
+		MediaID: mediaID, Language: "en", ProviderID: "opensubtitles", ResultID: "result-1",
+		CandidateSignature: "candidate-a", ArtifactChecksum: "member-a", ToolSignature: "lapse-2.0.5/policy-a",
+		MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(), Now: now,
+	}
+	got, found, err := repo.GetCandidateRejection(context.Background(), lookup)
+	if err != nil || !found || got.ReasonCode != "lapse_unsure" {
+		t.Fatalf("GetCandidateRejection() = %#v/%v/%v", got, found, err)
+	}
+	lookup.ArtifactChecksum = "member-b"
+	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup); err != nil || found {
+		t.Fatalf("different artifact matched = %v/%v", found, err)
+	}
+	lookup.ArtifactChecksum = ""
+	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup); err != nil || !found {
+		t.Fatalf("pre-download candidate lookup = %v/%v", found, err)
+	}
+	lookup.ArtifactChecksum = "member-a"
+	lookup.MediaSize++
+	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup); err != nil || found {
+		t.Fatalf("changed media fingerprint matched = %v/%v", found, err)
+	}
+	lookup.MediaSize--
+	lookup.ToolSignature = "lapse-3/policy-b"
+	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup); err != nil || found {
+		t.Fatalf("changed tool policy matched = %v/%v", found, err)
+	}
+	lookup.ToolSignature = "lapse-2.0.5/policy-a"
+	lookup.Now = rejection.ExpiresAt
+	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup); err != nil || found {
+		t.Fatalf("expired rejection matched = %v/%v", found, err)
+	}
+}
+
+func TestCandidateRejectionsExpireAndCanBeClearedForManualRetry(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, _ := repo.UpsertMedia(context.Background(), media)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	rejection := CandidateRejection{
+		MediaID: mediaID, Language: "en", ProviderID: "subdl", ResultID: "bad", CandidateSignature: "candidate", ArtifactChecksum: "artifact", ReasonCode: "lapse_nothing", ToolSignature: "tool",
+		MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := repo.PutCandidateRejection(context.Background(), rejection); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := repo.ListCandidateRejections(context.Background(), mediaID, "en", now)
+	if err != nil || len(listed) != 1 || listed[0].ResultID != "bad" {
+		t.Fatalf("ListCandidateRejections() = %#v/%v", listed, err)
+	}
+	if listed, err = repo.ListCandidateRejections(context.Background(), mediaID, "en", rejection.ExpiresAt); err != nil || len(listed) != 0 {
+		t.Fatalf("expired rejections = %#v/%v", listed, err)
+	}
+	if err := repo.ClearCandidateRejections(context.Background(), mediaID, "en"); err != nil {
+		t.Fatal(err)
+	}
+	if listed, err = repo.ListCandidateRejections(context.Background(), mediaID, "en", now); err != nil || len(listed) != 0 {
+		t.Fatalf("cleared rejections = %#v/%v", listed, err)
 	}
 }
 

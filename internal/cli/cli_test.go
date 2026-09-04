@@ -26,8 +26,11 @@ func (f *fakeBackend) Scan(_ context.Context, instance string, force bool) (stri
 	}
 	return "scan complete", f.err
 }
-func (f *fakeBackend) Search(_ context.Context, instance, kind string, fileID int64, language string) (string, error) {
+func (f *fakeBackend) Search(_ context.Context, instance, kind string, fileID int64, language string, retryRejected bool) (string, error) {
 	f.call = "search:" + instance + ":" + kind + ":" + language
+	if retryRejected {
+		f.call += ":retry-rejected"
+	}
 	return "outcome: installed", f.err
 }
 func (f *fakeBackend) Retry(_ context.Context, provider string) (string, error) {
@@ -57,6 +60,7 @@ func TestCommandSurface(t *testing.T) {
 		{"serve", []string{"serve", "--config", "/data/config.yaml"}, "serve", ""},
 		{"scan", []string{"scan", "--instance", "tv", "--force-probe"}, "scan:tv:force", "scan complete\n"},
 		{"search", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr"}, "search:tv:episode:hr", "outcome: installed\n"},
+		{"search rejected", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr", "--retry-rejected"}, "search:tv:episode:hr:retry-rejected", "outcome: installed\n"},
 		{"retry", []string{"retry", "--provider", "titlovi"}, "retry:titlovi", "provider retry state reset\n"},
 		{"explain", []string{"explain", "--instance", "movies", "--kind", "movie", "--file-id", "7", "--language", "en"}, "explain:movies:movie:en", "inventory: 2 tracks\nnext attempt: tomorrow\n"},
 		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nLAPSE: ok\n"},
