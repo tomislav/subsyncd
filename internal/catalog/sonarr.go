@@ -104,6 +104,7 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 		Ref:              ref,
 		Fingerprint:      domain.MediaFingerprint{Path: path, FileID: ref.FileID, Size: file.Size, ModTime: file.DateAdded},
 		Title:            series.Title,
+		EpisodeTitle:     episode.Title,
 		AlternateTitles:  alternateTitleStrings(series.AlternateTitles),
 		Year:             series.Year,
 		Season:           episode.SeasonNumber,

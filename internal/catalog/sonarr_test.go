@@ -42,7 +42,7 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if media.Title != "Example Show" || media.Season != 1 || media.Episode != 2 || media.AbsoluteEpisode != 14 {
+	if media.Title != "Example Show" || media.EpisodeTitle != "Second Episode" || media.Season != 1 || media.Episode != 2 || media.AbsoluteEpisode != 14 {
 		t.Fatalf("episode identity = %#v", media)
 	}
 	if media.Fingerprint.Path != filepath.Join(root, "Example Show", "Example.Show.S01E02.mkv") || media.Fingerprint.Size != 1234 {

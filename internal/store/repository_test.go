@@ -20,8 +20,8 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 3 {
-			t.Errorf("migration count = %d, want 3", count)
+		if count != 4 {
+			t.Errorf("migration count = %d, want 4", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
@@ -143,6 +143,20 @@ func TestPackEntriesAreListedExpiredThenLeastRecentlyUsed(t *testing.T) {
 	}
 	if len(got) != 3 || got[0].ResultID != "expired" || got[1].ResultID != "old" || got[2].ResultID != "recent" {
 		t.Fatalf("eviction order = %#v", got)
+	}
+}
+
+func TestPackLookupMatchesAnyKnownSeriesIdentity(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	entry := PackCacheEntry{ProviderID: "titlovi", ResultID: "pack", SeriesKey: "imdb:tt123", Season: 1, Language: "hr", ContentChecksum: "sum", ManifestPath: "/cache/manifest", ByteSize: 10, ExpiresAt: now.Add(time.Hour), LastAccessAt: now}
+	member := PackMemberRecord{SafeName: "show.s01e02.srt", CachePath: "/cache/member", Checksum: "member", Season: 1, EpisodeFrom: 2, EpisodeTo: 2}
+	if err := repo.PutPack(context.Background(), entry, []PackMemberRecord{member}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := repo.GetReusablePackMember(context.Background(), PackLookup{SeriesIDs: domain.ExternalIDs{TVDB: 456, IMDb: "tt123"}, SeriesTitle: "Show", SeriesYear: 2024, Season: 1, Episode: 2, Language: "hr"}, now)
+	if err != nil || !found || got.ResultID != "pack" {
+		t.Fatalf("lookup = %#v/%v/%v", got, found, err)
 	}
 }
 

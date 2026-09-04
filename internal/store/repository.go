@@ -162,8 +162,8 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 	}
 	now := time.Now().UTC().UnixNano()
 	if id == 0 {
-		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), now)
+		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), now)
 		if err != nil {
 			return 0, false, fmt.Errorf("insert media: %w", err)
 		}
@@ -172,8 +172,8 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 			return 0, false, fmt.Errorf("read media id: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, updated_at_ns=? WHERE id=?`,
-			media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), now, id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, updated_at_ns=? WHERE id=?`,
+			media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), now, id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media: %w", err)
 		}
@@ -452,14 +452,19 @@ func (r *Repository) PutProviderCache(ctx context.Context, entry ProviderCacheEn
 }
 
 func (r *Repository) GetReusablePackMember(ctx context.Context, lookup PackLookup, now time.Time) (PackMemberRecord, bool, error) {
-	seriesKey := strongestSeriesKey(lookup.SeriesIDs, lookup.SeriesTitle, lookup.SeriesYear)
+	seriesKeys := allSeriesKeys(lookup.SeriesIDs, lookup.SeriesTitle, lookup.SeriesYear)
 	providerClause := ""
-	args := []any{seriesKey, lookup.Season, lookup.Language, now.UnixNano(), lookup.Episode, lookup.Episode, lookup.AbsoluteEpisode, lookup.AbsoluteEpisode}
+	args := make([]any, 0, len(seriesKeys)+8)
+	for _, key := range seriesKeys {
+		args = append(args, key)
+	}
+	args = append(args, lookup.Season, lookup.Language, now.UnixNano(), lookup.Episode, lookup.Episode, lookup.AbsoluteEpisode, lookup.AbsoluteEpisode)
 	if lookup.ProviderID != "" {
 		providerClause = " AND p.provider_id = ?"
 		args = append(args, lookup.ProviderID)
 	}
-	query := `SELECT m.pack_id, p.provider_id, p.result_id, p.language, p.candidate_json, m.safe_name, m.cache_path, m.checksum, m.season, m.episode_from, m.episode_to, m.absolute_from, m.absolute_to, m.normalized_title, m.forced FROM pack_cache p JOIN pack_members m ON m.pack_id=p.id WHERE p.series_key=? AND p.season=? AND p.language=? AND p.expires_at_ns>? AND ((m.episode_from<=? AND m.episode_to>=? AND m.episode_from>0) OR (m.absolute_from<=? AND m.absolute_to>=? AND m.absolute_from>0))` + providerClause + ` ORDER BY p.last_access_at_ns DESC, m.id LIMIT 1`
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(seriesKeys)), ",")
+	query := `SELECT m.pack_id, p.provider_id, p.result_id, p.language, p.candidate_json, m.safe_name, m.cache_path, m.checksum, m.season, m.episode_from, m.episode_to, m.absolute_from, m.absolute_to, m.normalized_title, m.forced FROM pack_cache p JOIN pack_members m ON m.pack_id=p.id WHERE p.series_key IN (` + placeholders + `) AND p.season=? AND p.language=? AND p.expires_at_ns>? AND m.forced=0 AND ((m.episode_from<=? AND m.episode_to>=? AND m.episode_from>0) OR (m.absolute_from<=? AND m.absolute_to>=? AND m.absolute_from>0))` + providerClause + ` ORDER BY p.last_access_at_ns DESC, m.id LIMIT 1`
 	var member PackMemberRecord
 	err := r.store.db.QueryRowContext(ctx, query, args...).Scan(&member.PackID, &member.ProviderID, &member.ResultID, &member.Language, &member.CandidateJSON, &member.SafeName, &member.CachePath, &member.Checksum, &member.Season, &member.EpisodeFrom, &member.EpisodeTo, &member.AbsoluteFrom, &member.AbsoluteTo, &member.NormalizedTitle, &member.Forced)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -660,7 +665,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		return 0, false, fmt.Errorf("encode media alternate titles: %w", err)
 	}
 	if id == 0 {
-		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano())
+		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano())
 		if err != nil {
 			return 0, false, fmt.Errorf("insert media for event: %w", err)
 		}
@@ -669,7 +674,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 			return 0, false, fmt.Errorf("read media ID for event: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, updated_at_ns=? WHERE id=?`, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, updated_at_ns=? WHERE id=?`, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano(), id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}
@@ -795,4 +800,25 @@ func strongestSeriesKey(ids domain.ExternalIDs, title string, year int) string {
 	default:
 		return fmt.Sprintf("title:%s:%d", strings.ToLower(strings.TrimSpace(title)), year)
 	}
+}
+
+func allSeriesKeys(ids domain.ExternalIDs, title string, year int) []string {
+	keys := make([]string, 0, 4)
+	if ids.TVDB != 0 {
+		keys = append(keys, fmt.Sprintf("tvdb:%d", ids.TVDB))
+	}
+	if ids.TMDB != 0 {
+		keys = append(keys, fmt.Sprintf("tmdb:%d", ids.TMDB))
+	}
+	if ids.IMDb != "" {
+		keys = append(keys, "imdb:"+strings.ToLower(ids.IMDb))
+	}
+	keys = append(keys, fmt.Sprintf("title:%s:%d", strings.ToLower(strings.TrimSpace(title)), year))
+	return keys
+}
+
+// StrongestSeriesKey exposes the canonical pack-cache lookup identity so the
+// filesystem cache and repository cannot drift in how they address a series.
+func StrongestSeriesKey(ids domain.ExternalIDs, title string, year int) string {
+	return strongestSeriesKey(ids, title, year)
 }

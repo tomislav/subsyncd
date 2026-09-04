@@ -32,6 +32,7 @@ type Media struct {
 	Ref              MediaRef         `json:"ref"`
 	Fingerprint      MediaFingerprint `json:"fingerprint"`
 	Title            string           `json:"title"`
+	EpisodeTitle     string           `json:"episode_title,omitempty"`
 	AlternateTitles  []string         `json:"alternate_titles,omitempty"`
 	Year             int              `json:"year,omitempty"`
 	Season           int              `json:"season,omitempty"`
