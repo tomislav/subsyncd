@@ -1,0 +1,8 @@
+{
+  "PagesAvailable": 2,
+  "SubtitleResults": [
+    {"Id":101,"Lang":"Hrvatski","Link":"/download/101","Release":"Example.Show.S01E02.1080p.WEB-DL-GROUP","Title":"Example Show AKA Primjer","Season":1,"Episode":2,"Year":2024,"Rating":9.0,"DownloadCount":120},
+    {"Id":102,"Lang":"Hrvatski","Link":"/download/102","Release":"Example.Show.S01.COMPLETE.1080p.WEB-DL-GROUP","Title":"Example Show","Season":1,"Episode":0,"Year":2024,"Rating":8.0,"DownloadCount":60},
+    {"Id":103,"Lang":"Hrvatski","Link":"/download/103","Release":"Wrong.Season","Title":"Example Show","Season":2,"Episode":0,"Year":2024,"Rating":7.0,"DownloadCount":10}
+  ]
+}
