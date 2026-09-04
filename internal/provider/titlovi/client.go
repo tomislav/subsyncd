@@ -226,7 +226,7 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 			continue
 		}
 		titles := akaPattern.Split(item.Title, 2)
-		candidate := domain.Candidate{ProviderID: c.id, ResultID: strconv.FormatInt(item.ID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: strings.TrimSpace(titles[0]), Year: item.Year, Season: item.Season, Episode: item.Episode, ReleaseNames: []string{item.Release}, Rating: min(max(item.Rating/10, 0), 1), DownloadCount: item.DownloadCount, DownloadRef: downloadRef}
+		candidate := domain.Candidate{ProviderID: c.id, ResultID: strconv.FormatInt(item.ID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: strings.TrimSpace(titles[0]), Year: item.Year, Season: item.Season, Episode: item.Episode, ReleaseNames: []string{item.Release}, Rating: min(max(item.Rating/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount, DownloadRef: downloadRef}
 		if query.Media.Ref.Kind == domain.MediaEpisode && item.Episode == 0 {
 			candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: item.Season}
 		}

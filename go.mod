@@ -3,6 +3,7 @@ module subsyncd
 go 1.27
 
 require (
+	github.com/chill-institute/torrentname v1.4.1
 	golang.org/x/text v0.29.0
 	gopkg.in/yaml.v3 v3.0.1
 )

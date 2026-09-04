@@ -272,7 +272,7 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 		if year == 0 {
 			year = query.Media.Year
 		}
-		candidate := domain.Candidate{ProviderID: c.id, ResultID: downloadRef, DownloadRef: downloadRef, Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: year, ExternalIDs: domain.ExternalIDs{IMDb: item.Identity.IMDb, TMDB: item.Identity.TMDB}, Season: item.Season, Episode: item.Episode, ReleaseNames: releases, HearingImpaired: item.Hearing, Rating: item.Rating, DownloadCount: item.DownloadCount}
+		candidate := domain.Candidate{ProviderID: c.id, ResultID: downloadRef, DownloadRef: downloadRef, Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: year, ExternalIDs: domain.ExternalIDs{IMDb: item.Identity.IMDb, TMDB: item.Identity.TMDB}, Season: item.Season, Episode: item.Episode, ReleaseNames: releases, HearingImpaired: item.Hearing, Rating: min(max(item.Rating, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount}
 		if query.Media.Ref.Kind == domain.MediaEpisode {
 			from, to := item.EpisodeFrom, item.EpisodeEnd
 			if from <= 0 || to <= from {

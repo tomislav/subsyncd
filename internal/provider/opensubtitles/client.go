@@ -344,7 +344,7 @@ func normalizeCandidates(providerID string, query baseprovider.SearchQuery, item
 			if file.FileName != "" && file.FileName != item.Attributes.Release {
 				releases = append(releases, file.FileName)
 			}
-			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: domain.ExternalIDs{TMDB: item.Attributes.FeatureDetails.TMDBID}, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, HearingImpaired: item.Attributes.HearingImpaired, Rating: min(max(item.Attributes.Ratings/10, 0), 1), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10)}
+			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: domain.ExternalIDs{TMDB: item.Attributes.FeatureDetails.TMDBID}, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, HearingImpaired: item.Attributes.HearingImpaired, Rating: min(max(item.Attributes.Ratings/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.Attributes.DownloadCount), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10)}
 			if item.Attributes.FeatureDetails.IMDbID != 0 {
 				candidate.ExternalIDs.IMDb = fmt.Sprintf("tt%07d", item.Attributes.FeatureDetails.IMDbID)
 			}
