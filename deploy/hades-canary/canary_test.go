@@ -50,8 +50,8 @@ func TestDeploymentIsManualPinnedAndRestricted(t *testing.T) {
 	if got := cfg.Languages[domain.Language("en")].Providers; len(got) != 1 || got[0] != "opensubtitles-main" {
 		t.Fatalf("English providers = %#v", got)
 	}
-	if cfg.Sync.Policy != "always" || cfg.Silo.Enabled || cfg.AllowHearingImpaired {
-		t.Fatalf("unsafe canary policy: sync=%q silo=%t hearing_impaired=%t", cfg.Sync.Policy, cfg.Silo.Enabled, cfg.AllowHearingImpaired)
+	if cfg.MinimumReleaseScore != 35 || cfg.Sync.Policy != "always" || cfg.Silo.Enabled || cfg.AllowHearingImpaired {
+		t.Fatalf("unsafe canary policy: minimum_score=%d sync=%q silo=%t hearing_impaired=%t", cfg.MinimumReleaseScore, cfg.Sync.Policy, cfg.Silo.Enabled, cfg.AllowHearingImpaired)
 	}
 	if len(cfg.Instances) != 2 || len(cfg.Instances[0].PathMappings)+len(cfg.Instances[1].PathMappings) != 4 {
 		t.Fatalf("expected two instances and four exact path mappings: %#v", cfg.Instances)

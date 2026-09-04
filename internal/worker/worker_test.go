@@ -130,6 +130,22 @@ func TestRunOnceSchedulesThrottleAfterResetWithoutAdvancingAttempts(t *testing.T
 	}
 }
 
+func TestRunOnceSchedulesNonExactSatisfiedReassessmentForUpgrade(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	nextUpgrade := now.Add(30 * 24 * time.Hour)
+	repository := newWorkerRepository(1, now)
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeSatisfied, NextUpgrade: nextUpgrade}}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	completion := repository.searchCompletions[0]
+	if !completion.NextAttemptAt.Equal(nextUpgrade) || !completion.ResetMissingAttempt || !completion.ResetFailureAttempt {
+		t.Fatalf("satisfied reassessment completion = %#v", completion)
+	}
+}
+
 func TestPollDelayUsesTenPercentJitter(t *testing.T) {
 	worker := &Worker{PollInterval: time.Minute, RandomUnit: func() float64 { return 0 }}
 	if got := worker.pollDelay(); got != 54*time.Second {

@@ -37,7 +37,7 @@ titlovi-main:
 
 ### OpenSubtitles.com
 
-OpenSubtitles supports exact file-hash search followed by broad metadata search. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It is reused until any part of that fingerprint changes. Exact results score 100, stop all remaining provider searches, and bypass LAPSE.
+OpenSubtitles supports exact file-hash search followed by broad metadata search. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It is reused until any part of that fingerprint changes. Exact results score 100, stop all remaining provider searches, and bypass LAPSE. For movies, feature IMDb/TMDB IDs are comparable media identities. For episodes, OpenSubtitles feature IDs identify the episode while Sonarr supplies series IDs, so the adapter compares OpenSubtitles `parent_imdb_id`/`parent_tmdb_id` instead. Missing parent IDs remain neutral; episode feature IDs are never misrepresented as series IDs.
 
 ```yaml
 opensubtitles-main:
@@ -85,13 +85,14 @@ Candidate rejections are not provider blacklists. They are scoped to one media/l
 
 ## Score model
 
-Known identity conflicts reject before points are considered. Conflicts include language, media kind, external IDs, movie year beyond ±1 without an exact external ID, season/episode outside pack scope, and a different known edition/cut. Unknown evidence is neutral.
+Known identity conflicts reject before points are considered. Conflicts include language, media kind, forced-only results for a full-language request, external IDs, movie year beyond ±1 without an exact external ID, season/episode outside pack scope, and a different known edition/cut. Unknown evidence is neutral.
 
 | Signal | Points |
 | --- | ---: |
 | Verified exact media-file hash | 100 (terminal) |
 | Matching IMDb/TMDB/TVDB ID | 20 |
 | Normalized title and year | 15 |
+| Matching episode or containing pack | 20 |
 | Release group | 25 |
 | Source | 15 |
 | Edition/cut | 10 |
@@ -100,7 +101,7 @@ Known identity conflicts reject before points are considered. Conflicts include 
 | Provider rating | 0–3 |
 | Popularity/downloads | 0–2 |
 
-Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). The LAPSE bypass threshold is separate: `sync.bypass_score` defaults to 75. Reaching it is necessary but not sufficient; with the safe defaults, the candidate also needs an external-ID or title/year anchor, release-group evidence, and matching season/episode evidence for TV. Rating and popularity never substitute for these anchors.
+Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). Exact episode coordinates, a parsed release range containing the episode, or an explicit containing pack earn episode evidence. The LAPSE bypass threshold is separate: `sync.bypass_score` defaults to 75. Reaching it is necessary but not sufficient; with the safe defaults, the candidate also needs an external-ID or title/year anchor, release-group evidence, and matching season/episode evidence for TV. Rating and popularity never substitute for these anchors.
 
 Final ordering is release score, synchronization confidence/provenance, configured provider priority, provider rating, popularity, then stable provider/result identity. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default.
 

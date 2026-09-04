@@ -119,7 +119,7 @@ A successful result should create one Croatian sidecar beside S01E03 and record 
 
 ## Phase 3: OpenSubtitles and larger media
 
-For `3 Body Problem` English, an exact OpenSubtitles movie-hash match can bypass LAPSE; otherwise the always policy requires LAPSE. Run this before either large movie:
+The canary uses the normal 35-point identity baseline. Hard language, media-kind, forced-only, external-ID, season/episode, pack-scope, edition, and hearing-impaired gates still reject unsafe results before scoring; the lower release threshold only lets identity-safe encode mismatches reach LAPSE. For `3 Body Problem` English, an exact OpenSubtitles movie-hash match can bypass LAPSE; otherwise the always policy requires LAPSE. Run this before either large movie:
 
 ```bash
 sudo docker compose --env-file .env --profile manual run --rm --no-deps subsyncd-canary \

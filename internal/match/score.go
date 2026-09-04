@@ -43,6 +43,7 @@ func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 	contributions := []domain.Contribution{
 		contribution("external_id", boolPoints(externalMatch, 20), "matching IMDb, TMDB, or TVDB identity"),
 		contribution("title_year", boolPoints(titleMatch && yearMatch, 15), "normalized title and year"),
+		contribution("episode", boolPoints(episodeEvidenceMatches(media, candidate, releases), 20), "episode or containing pack"),
 		contribution("release_group", boolPoints(releaseGroupMatches(releases, media.ReleaseGroup), 25), "release group"),
 		contribution("source", boolPoints(releaseFieldMatches(releases, media.Source, func(r Release) string { return r.Source }), 15), "media source"),
 		contribution("edition", boolPoints(releaseFieldMatches(releases, media.Edition, func(r Release) string { return r.Edition }), 10), "edition or cut"),
@@ -59,6 +60,39 @@ func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 		total = 100
 	}
 	return domain.Score{Total: total, Contributions: contributions}
+}
+
+func HasEpisodeEvidence(media domain.Media, candidate domain.Candidate) bool {
+	releases := make([]Release, 0, len(candidate.ReleaseNames))
+	for _, raw := range candidate.ReleaseNames {
+		releases = append(releases, ParseRelease(raw))
+	}
+	return episodeEvidenceMatches(media, candidate, releases)
+}
+
+func episodeEvidenceMatches(media domain.Media, candidate domain.Candidate, releases []Release) bool {
+	if media.Ref.Kind != domain.MediaEpisode {
+		return false
+	}
+	if candidate.Season == media.Season && candidate.Episode == media.Episode && media.Season > 0 && media.Episode > 0 {
+		return true
+	}
+	if media.AbsoluteEpisode > 0 && candidate.AbsoluteEpisode == media.AbsoluteEpisode {
+		return true
+	}
+	if packContains(candidate.Pack, media) {
+		return true
+	}
+	for _, release := range releases {
+		end := release.EpisodeEnd
+		if end == 0 {
+			end = release.Episode
+		}
+		if release.Season == media.Season && release.Episode > 0 && release.Episode <= media.Episode && media.Episode <= end {
+			return true
+		}
+	}
+	return false
 }
 
 func Eligible(score domain.Score, minimum int) bool {
@@ -94,6 +128,9 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 	}
 	if candidate.Kind != "" && candidate.Kind != media.Ref.Kind {
 		reasons = append(reasons, "candidate media kind conflicts with target")
+	}
+	if candidate.Forced {
+		reasons = append(reasons, "forced-only candidate does not satisfy a full-language request")
 	}
 	reasons = append(reasons, externalConflicts(media.ExternalIDs, candidate.ExternalIDs)...)
 	externalMatch := matchingExternalID(media.ExternalIDs, candidate.ExternalIDs)

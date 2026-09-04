@@ -172,6 +172,7 @@ func (w *Worker) completeWorkflow(ctx context.Context, lease store.SearchLease, 
 	completion := store.SearchCompletion{JobID: lease.JobID, Outcome: string(result.Outcome)}
 	switch result.Outcome {
 	case workflow.OutcomeSatisfied:
+		completion.NextAttemptAt = result.NextUpgrade
 		completion.ResetMissingAttempt = true
 		completion.ResetFailureAttempt = true
 	case workflow.OutcomeInstalled:

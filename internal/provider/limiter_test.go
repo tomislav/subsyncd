@@ -45,6 +45,44 @@ func TestGateRestoresOperationScopedCooldownAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestGateAppliesTimedAuthCooldownOnlyToAuthentication(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	providerID := "opensubtitles-main"
+	if err := database.Repository().PutProviderState(ctx, store.ProviderState{ProviderID: providerID, Scope: "auth", Reason: "retry-after", ResetAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	gate := NewGate(database.Repository(), clock, 1)
+	gate.Configure(providerID, 1000, 1, 1)
+
+	if _, err := gate.Acquire(ctx, providerID, "api.opensubtitles.com", OperationAuth); !errors.As(err, new(*CooldownError)) {
+		t.Fatalf("authentication error = %v, want CooldownError", err)
+	}
+	release, err := gate.Acquire(ctx, providerID, "api.opensubtitles.com", OperationSearch)
+	if err != nil {
+		t.Fatalf("valid-token search blocked by auth cooldown: %v", err)
+	}
+	release()
+	release, err = gate.Acquire(ctx, providerID, "api.opensubtitles.com", OperationDownload)
+	if err != nil {
+		t.Fatalf("valid-token download blocked by auth cooldown: %v", err)
+	}
+	release()
+
+	if err := database.Repository().PutProviderState(ctx, store.ProviderState{ProviderID: providerID, Scope: "auth", Reason: "credentials rejected", Disabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gate.Acquire(ctx, providerID, "api.opensubtitles.com", OperationSearch); !errors.As(err, new(*DisabledError)) {
+		t.Fatalf("search with disabled authentication error = %v, want DisabledError", err)
+	}
+}
+
 func TestGateSerializesSharedOriginAcrossProviders(t *testing.T) {
 	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
 	gate := NewGate(emptyStateStore{}, clock, 1)

@@ -302,6 +302,105 @@ func TestCandidateRejectionSignatureIgnoresVolatileProviderMetrics(t *testing.T)
 	}
 }
 
+func TestServiceDoesNotReprocessInstalledProviderCandidateAfterRescore(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.Resolution = "1080p"
+	candidate := broadCandidate("same")
+	alternative := broadCandidate("alternative")
+	alternative.ReleaseNames = []string{"Movie.2024.1080p.WEB-DL-OTHER"}
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate, alternative}}}
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{}
+	installer := &fakeInstaller{}
+	repository := &workflowRepository{
+		found: true,
+		installation: store.Installation{
+			MediaID:        request.MediaID,
+			Language:       request.Language.String(),
+			Path:           filepath.Join(filepath.Dir(request.Media.Fingerprint.Path), "Movie.en.srt"),
+			ProviderID:     candidate.ProviderID,
+			CandidateID:    candidate.ResultID,
+			ScoreJSON:      []byte(`{"total":20}`),
+			MediaPath:      request.Media.Fingerprint.Path,
+			MediaFileID:    request.Media.Fingerprint.FileID,
+			MediaSize:      request.Media.Fingerprint.Size,
+			MediaModTimeNS: request.Media.Fingerprint.ModTime.UnixNano(),
+		},
+	}
+	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, installer)
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+
+	result, err := service.Run(context.Background(), request)
+	updatedScore, _, scoreErr := installedScore(repository.installation)
+	if err != nil || scoreErr != nil || result.Outcome != OutcomeSatisfied || result.NextUpgrade.IsZero() || updatedScore.Total != 35 || providerFake.downloads != 0 || synchronizer.analyzeCalls != 0 || installer.calls != 0 {
+		t.Fatalf("Run() = %#v/%v downloads=%d analyzes=%d installs=%d", result, err, providerFake.downloads, synchronizer.analyzeCalls, installer.calls)
+	}
+}
+
+func TestServiceRefreshesCachedPackAssessmentWithoutTreatingItAsFailure(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Season, request.Media.Episode = 1, 2
+	candidate := broadCandidate("same-pack")
+	candidate.Kind = domain.MediaEpisode
+	candidate.Season, candidate.Episode = 1, 2
+	candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: 1}
+	cachedPath := writeInstallFile(t, filepath.Join(t.TempDir(), "cached.srt"), installSRT)
+	cache := &fakePackCache{member: pack.CachedMember{Path: cachedPath, Candidate: candidate}, found: true}
+	searcher := &fakeSearcher{}
+	synchronizer := &fakeSynchronizer{}
+	repository := &workflowRepository{found: true, installation: matchingInstallation(request, candidate, []byte(`{"total":20}`))}
+	service := testService(t, inventory.Inventory{}, searcher, cache, synchronizer, &fakeInstaller{})
+	service.Repository = repository
+
+	result, err := service.Run(context.Background(), request)
+	updatedScore, _, scoreErr := installedScore(repository.installation)
+	if err != nil || scoreErr != nil || result.Outcome != OutcomeSatisfied || result.NextUpgrade.IsZero() || updatedScore.Total != 55 || searcher.calls != 1 || synchronizer.analyzeCalls != 0 {
+		t.Fatalf("Run() = %#v/%v score=%#v/%v search=%d analyzes=%d", result, err, updatedScore, scoreErr, searcher.calls, synchronizer.analyzeCalls)
+	}
+}
+
+func TestServicePromotesSameCandidateToExactHashWithoutDownload(t *testing.T) {
+	request := serviceRequest(t)
+	candidate := exactCandidate("same")
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}
+	providerFake := &fakeProvider{id: "provider"}
+	repository := &workflowRepository{found: true, installation: matchingInstallation(request, candidate, []byte(`{"total":35}`))}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+
+	result, err := service.Run(context.Background(), request)
+	updatedScore, exact, scoreErr := installedScore(repository.installation)
+	if err != nil || scoreErr != nil || result.Outcome != OutcomeSatisfied || !result.NextUpgrade.IsZero() || updatedScore.Total != 100 || !exact || providerFake.downloads != 0 || !strings.Contains(string(repository.installation.SyncResultJSON), `"verdict":"exact_hash"`) {
+		t.Fatalf("Run() = %#v/%v score=%#v exact=%v/%v downloads=%d sync=%s", result, err, updatedScore, exact, scoreErr, providerFake.downloads, repository.installation.SyncResultJSON)
+	}
+	searcher.calls = 0
+	second, err := service.Run(context.Background(), request)
+	if err != nil || second.Outcome != OutcomeSatisfied || searcher.calls != 0 {
+		t.Fatalf("second Run() = %#v/%v search=%d", second, err, searcher.calls)
+	}
+}
+
+func TestServiceRevalidatesSameProviderCandidateWhenMediaChanged(t *testing.T) {
+	request := serviceRequest(t)
+	candidate := exactCandidate("same")
+	providerFake := &fakeProvider{id: "provider"}
+	installer := &fakeInstaller{}
+	existing := matchingInstallation(request, candidate, []byte(`{"total":35}`))
+	existing.MediaModTimeNS--
+	repository := &workflowRepository{found: true, installation: existing}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, installer)
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || providerFake.downloads != 1 || installer.calls != 1 {
+		t.Fatalf("Run() = %#v/%v downloads=%d installs=%d", result, err, providerFake.downloads, installer.calls)
+	}
+}
+
 func TestServiceHandlesProviderOutagesThrottlesZeroResultsAndCancellation(t *testing.T) {
 	reset := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
 	t.Run("all throttled", func(t *testing.T) {
@@ -574,6 +673,15 @@ func broadCandidate(id string) domain.Candidate {
 	return domain.Candidate{ProviderID: "provider", ResultID: id, Language: "en", Kind: domain.MediaMovie, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{IMDb: "tt123"}, DownloadRef: "/secret/" + id}
 }
 
+func matchingInstallation(request Request, candidate domain.Candidate, scoreJSON []byte) store.Installation {
+	fingerprint := request.Media.Fingerprint
+	return store.Installation{
+		MediaID: request.MediaID, Language: request.Language.String(), Path: filepath.Join(filepath.Dir(fingerprint.Path), "Movie.en.srt"),
+		ProviderID: candidate.ProviderID, CandidateID: candidate.ResultID, ScoreJSON: scoreJSON,
+		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(),
+	}
+}
+
 type fakeInventory struct {
 	current inventory.Inventory
 	calls   int
@@ -734,6 +842,11 @@ type workflowRepository struct {
 
 func (r *workflowRepository) GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error) {
 	return r.installation, r.found, nil
+}
+
+func (r *workflowRepository) UpdateInstallationAssessment(_ context.Context, installation store.Installation) error {
+	r.installation = installation
+	return nil
 }
 
 func (r *workflowRepository) RecordCandidates(_ context.Context, _ int64, _ domain.Language, candidates []store.CandidateRecord) error {

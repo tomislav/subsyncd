@@ -310,6 +310,36 @@ func TestInstallationFingerprintRoundTripsAndInvalidatesOnMediaChange(t *testing
 	}
 }
 
+func TestUpdateInstallationAssessmentPreservesArtifactAndRejectsStaleIdentity(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ProviderID: "provider", CandidateID: "candidate", ScoreJSON: []byte(`{"total":35}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}
+	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	installation.ScoreJSON = []byte(`{"total":57}`)
+	if err := repo.UpdateInstallationAssessment(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found || string(got.ScoreJSON) != `{"total":57}` || got.Path != installation.Path || got.Checksum != installation.Checksum {
+		t.Fatalf("GetInstallation() = %#v/%v/%v", got, found, err)
+	}
+	var installs int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM events WHERE event_type = 'subtitle_installed'`).Scan(&installs); err != nil || installs != 1 {
+		t.Fatalf("install audit count = %d/%v, want unchanged", installs, err)
+	}
+	stale := installation
+	stale.Checksum = "replaced"
+	if err := repo.UpdateInstallationAssessment(context.Background(), stale); err == nil {
+		t.Fatal("stale assessment update unexpectedly succeeded")
+	}
+}
+
 func TestInventoryFingerprintChangeInvalidatesInstallationProvenance(t *testing.T) {
 	repo := openTestRepository(t)
 	media := testMedia()

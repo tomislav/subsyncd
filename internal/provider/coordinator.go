@@ -13,7 +13,10 @@ import (
 	"subsyncd/internal/store"
 )
 
-const searchCacheTTL = 6 * time.Hour
+const (
+	searchCacheTTL                  = 6 * time.Hour
+	normalizedCandidateCacheVersion = "candidate-v2"
+)
 
 type SearchCache interface {
 	GetProviderCache(context.Context, string, time.Time) (store.ProviderCacheEntry, bool, error)
@@ -136,7 +139,7 @@ func cacheSafeCandidates(candidates []domain.Candidate) []domain.Candidate {
 
 func providerCacheKey(providerID string, query SearchQuery) string {
 	fingerprint := query.Media.Fingerprint
-	raw := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s\x00%d\x00%d", providerID, query.Mode, query.Language, query.Media.Ref.Instance, query.Media.Ref.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), query.Media.ReleaseName, query.Media.Season, query.Media.Episode)
+	raw := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s\x00%d\x00%d", normalizedCandidateCacheVersion, providerID, query.Mode, query.Language, query.Media.Ref.Instance, query.Media.Ref.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), query.Media.ReleaseName, query.Media.Season, query.Media.Episode)
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }

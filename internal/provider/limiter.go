@@ -103,6 +103,9 @@ func (g *Gate) checkState(ctx context.Context, providerID string, operation Oper
 		if state.Disabled {
 			return &DisabledError{ProviderID: providerID, Reason: state.Reason}
 		}
+		if scope == OperationAuth && operation != OperationAuth {
+			continue
+		}
 		if state.Remaining <= 0 && state.ResetAt.After(g.clock.Now()) {
 			return &CooldownError{ProviderID: providerID, Scope: scope, Reason: state.Reason, ResetAt: state.ResetAt}
 		}

@@ -90,8 +90,31 @@ func TestSearchAuthenticatesPaginatesAndNormalizesExactCandidates(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 2 || !candidates[0].ExactHash || candidates[0].ResultID != "501" || candidates[0].DownloadRef != "501" || candidates[0].Rating != 0.85 || !candidates[1].HearingImpaired {
+	if len(candidates) != 2 || !candidates[0].ExactHash || candidates[0].ResultID != "501" || candidates[0].DownloadRef != "501" || candidates[0].Rating != 0.85 || candidates[0].ExternalIDs.IMDb != "tt1234567" || candidates[0].ExternalIDs.TMDB != 7654 || !candidates[1].HearingImpaired {
 		t.Fatalf("candidates = %#v", candidates)
+	}
+}
+
+func TestNormalizeCandidatesKeepsFeatureIDsOnlyForMovies(t *testing.T) {
+	item := searchItem{}
+	item.Attributes.Language = "en"
+	item.Attributes.ForeignPartsOnly = true
+	item.Attributes.FeatureDetails.IMDbID = 15169108
+	item.Attributes.FeatureDetails.TMDBID = 2411002
+	item.Attributes.FeatureDetails.ParentIMDbID = 13016388
+	item.Attributes.FeatureDetails.ParentTMDBID = 85937
+	item.Attributes.Files = append(item.Attributes.Files, struct {
+		FileID   int64  `json:"file_id"`
+		FileName string `json:"file_name"`
+	}{FileID: 1})
+
+	episode := normalizeCandidates("opensubtitles", baseprovider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}}}, []searchItem{item})
+	if len(episode) != 1 || episode[0].ExternalIDs.IMDb != "tt13016388" || episode[0].ExternalIDs.TMDB != 85937 || !episode[0].Forced {
+		t.Fatalf("episode parent IDs = %#v", episode)
+	}
+	movie := normalizeCandidates("opensubtitles", baseprovider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}}}, []searchItem{item})
+	if len(movie) != 1 || movie[0].ExternalIDs.IMDb != "tt15169108" || movie[0].ExternalIDs.TMDB != 2411002 {
+		t.Fatalf("movie feature IDs = %#v", movie)
 	}
 }
 

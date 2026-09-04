@@ -1054,6 +1054,26 @@ func (r *Repository) RecordInstallation(ctx context.Context, installation Instal
 	return nil
 }
 
+// UpdateInstallationAssessment refreshes scoring or exact-hash provenance
+// without rewriting the installed subtitle or creating a new install event.
+// The full artifact and media identity guard prevents stale workers from
+// updating a replacement installation.
+func (r *Repository) UpdateInstallationAssessment(ctx context.Context, installation Installation) error {
+	result, err := r.store.db.ExecContext(ctx, `UPDATE installations SET score_json=?, sync_result_json=? WHERE media_id=? AND language=? AND provider_id=? AND candidate_id=? AND checksum=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=?`,
+		installation.ScoreJSON, installation.SyncResultJSON, installation.MediaID, installation.Language, installation.ProviderID, installation.CandidateID, installation.Checksum, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS)
+	if err != nil {
+		return fmt.Errorf("update installation assessment: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count installation assessment update: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("installation changed before assessment update")
+	}
+	return nil
+}
+
 func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMutation) (bool, error) {
 	if mutation.EventID == "" || mutation.Ref.Instance == "" || mutation.Ref.FileID <= 0 {
 		return false, fmt.Errorf("media event identity is incomplete")

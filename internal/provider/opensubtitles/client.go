@@ -303,13 +303,14 @@ type searchResponse struct {
 type searchItem struct {
 	ID         string `json:"id"`
 	Attributes struct {
-		Language        string  `json:"language"`
-		HearingImpaired bool    `json:"hearing_impaired"`
-		Ratings         float64 `json:"ratings"`
-		DownloadCount   int64   `json:"download_count"`
-		Release         string  `json:"release"`
-		MovieHashMatch  bool    `json:"moviehash_match"`
-		FeatureDetails  struct {
+		Language         string  `json:"language"`
+		ForeignPartsOnly bool    `json:"foreign_parts_only"`
+		HearingImpaired  bool    `json:"hearing_impaired"`
+		Ratings          float64 `json:"ratings"`
+		DownloadCount    int64   `json:"download_count"`
+		Release          string  `json:"release"`
+		MovieHashMatch   bool    `json:"moviehash_match"`
+		FeatureDetails   struct {
 			MovieName     string `json:"movie_name"`
 			Title         string `json:"title"`
 			Year          int    `json:"year"`
@@ -317,6 +318,8 @@ type searchItem struct {
 			EpisodeNumber int    `json:"episode_number"`
 			IMDbID        int64  `json:"imdb_id"`
 			TMDBID        int64  `json:"tmdb_id"`
+			ParentIMDbID  int64  `json:"parent_imdb_id"`
+			ParentTMDBID  int64  `json:"parent_tmdb_id"`
 		} `json:"feature_details"`
 		Files []struct {
 			FileID   int64  `json:"file_id"`
@@ -344,10 +347,19 @@ func normalizeCandidates(providerID string, query baseprovider.SearchQuery, item
 			if file.FileName != "" && file.FileName != item.Attributes.Release {
 				releases = append(releases, file.FileName)
 			}
-			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: domain.ExternalIDs{TMDB: item.Attributes.FeatureDetails.TMDBID}, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, HearingImpaired: item.Attributes.HearingImpaired, Rating: min(max(item.Attributes.Ratings/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.Attributes.DownloadCount), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10)}
-			if item.Attributes.FeatureDetails.IMDbID != 0 {
-				candidate.ExternalIDs.IMDb = fmt.Sprintf("tt%07d", item.Attributes.FeatureDetails.IMDbID)
+			externalIDs := domain.ExternalIDs{}
+			if query.Media.Ref.Kind == domain.MediaEpisode {
+				externalIDs.TMDB = item.Attributes.FeatureDetails.ParentTMDBID
+				if item.Attributes.FeatureDetails.ParentIMDbID != 0 {
+					externalIDs.IMDb = fmt.Sprintf("tt%07d", item.Attributes.FeatureDetails.ParentIMDbID)
+				}
+			} else {
+				externalIDs.TMDB = item.Attributes.FeatureDetails.TMDBID
+				if item.Attributes.FeatureDetails.IMDbID != 0 {
+					externalIDs.IMDb = fmt.Sprintf("tt%07d", item.Attributes.FeatureDetails.IMDbID)
+				}
 			}
+			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: externalIDs, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, Forced: item.Attributes.ForeignPartsOnly, HearingImpaired: item.Attributes.HearingImpaired, Rating: min(max(item.Attributes.Ratings/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.Attributes.DownloadCount), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10)}
 			candidates = append(candidates, candidate)
 		}
 	}

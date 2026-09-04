@@ -85,6 +85,7 @@ type CandidateInstaller interface {
 
 type WorkflowRepository interface {
 	GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error)
+	UpdateInstallationAssessment(context.Context, store.Installation) error
 	RecordCandidates(context.Context, int64, domain.Language, []store.CandidateRecord) error
 	GetCandidateRejection(context.Context, store.CandidateRejectionLookup) (store.CandidateRejection, bool, error)
 	PutCandidateRejection(context.Context, store.CandidateRejection) error
@@ -148,6 +149,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	}
 	result := Result{ProviderErrors: map[string]error{}}
 	var candidateFailures []error
+	sameCandidateAssessed := false
 	current, err := s.Inventory.Refresh(ctx, request.MediaID, request.Media, request.ForceProbe)
 	if err != nil {
 		return result, fmt.Errorf("refresh subtitle inventory: %w", err)
@@ -193,18 +195,30 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 				result.Decisions = append(result.Decisions, Decision{Stage: "candidate_rejection", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: rejection.ReasonCode})
 			} else {
 				score := s.evaluate(request.Media, cached.Candidate, request.Language)
-				prepared, prepareErr := s.synchronize(ctx, request, cached.Candidate, score, cached.Path, workspace, 0, installed, existing)
-				if prepareErr == nil {
-					return s.install(ctx, request, prepared, existing, installed, result)
+				if !match.Eligible(score, s.minimumScore()) {
+					result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "cached candidate score is below threshold or identity was rejected"})
+				} else if installed && sameInstalledCandidate(existing, request.Media, cached.Candidate) {
+					existing, err = s.updateInstallationAssessment(ctx, existing, cached.Candidate, score)
+					if err != nil {
+						return result, err
+					}
+					sameCandidateAssessed = true
+					setReassessmentResult(&result, existing, cached.Candidate, score, s.Clock.Now())
+					result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
+				} else {
+					prepared, prepareErr := s.synchronize(ctx, request, cached.Candidate, score, cached.Path, workspace, 0, installed, existing)
+					if prepareErr == nil {
+						return s.install(ctx, request, prepared, existing, installed, result)
+					}
+					recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
+					if recordErr != nil {
+						return result, recordErr
+					}
+					if !recorded && !isMediaValidationRejection(prepareErr) {
+						candidateFailures = append(candidateFailures, prepareErr)
+					}
+					result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: prepareErr.Error()})
 				}
-				recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
-				if recordErr != nil {
-					return result, recordErr
-				}
-				if !recorded && !isMediaValidationRejection(prepareErr) {
-					candidateFailures = append(candidateFailures, prepareErr)
-				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: prepareErr.Error()})
 			}
 		}
 	}
@@ -215,6 +229,11 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	}
 	result.ProviderErrors = search.Errors
 	if len(search.Candidates) == 0 {
+		if sameCandidateAssessed {
+			result.Outcome = OutcomeSatisfied
+			result.Installation = existing
+			return result, nil
+		}
 		if retry, allUnavailable := allProvidersUnavailable(search.Errors, len(s.ProviderOrder)); allUnavailable {
 			result.Outcome = OutcomeThrottled
 			result.RetryAt = retry
@@ -250,12 +269,31 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return result, err
 	}
 	match.Rank(evaluated)
+	if installed && InstallationMatchesMedia(existing, request.Media) {
+		for _, item := range evaluated {
+			if !match.Eligible(item.Score, s.minimumScore()) || !sameInstalledCandidate(existing, request.Media, item.Candidate) {
+				continue
+			}
+			existing, err = s.updateInstallationAssessment(ctx, existing, item.Candidate, item.Score)
+			if err != nil {
+				return result, err
+			}
+			sameCandidateAssessed = true
+			setReassessmentResult(&result, existing, item.Candidate, item.Score, s.Clock.Now())
+			result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
+			break
+		}
+	}
 	eligible := evaluated[:0]
 	for _, item := range evaluated {
 		if !match.Eligible(item.Score, s.minimumScore()) {
 			continue
 		}
 		if installed {
+			if sameInstalledCandidate(existing, request.Media, item.Candidate) {
+				result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "provider candidate is already installed"})
+				continue
+			}
 			allowed, upgradeErr := ShouldUpgradeForMedia(existing, request.Media, item.Score, item.Candidate.ExactHash, s.MinimumUpgradeDelta)
 			if upgradeErr != nil {
 				return result, upgradeErr
@@ -275,6 +313,11 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		eligible = append(eligible, item)
 	}
 	if len(eligible) == 0 {
+		if sameCandidateAssessed {
+			result.Outcome = OutcomeSatisfied
+			result.Installation = existing
+			return result, nil
+		}
 		result.Outcome = OutcomeRejected
 		return result, nil
 	}
@@ -508,6 +551,9 @@ func (s *Service) synchronize(ctx context.Context, request Request, candidate do
 		return preparedCandidate{}, fmt.Errorf("candidate score is below threshold or identity was rejected")
 	}
 	if installed {
+		if sameInstalledCandidate(existing, request.Media, candidate) {
+			return preparedCandidate{}, fmt.Errorf("provider candidate is already installed")
+		}
 		allowed, err := ShouldUpgradeForMedia(existing, request.Media, score, candidate.ExactHash, s.MinimumUpgradeDelta)
 		if err != nil || !allowed {
 			if err != nil {
@@ -544,6 +590,38 @@ func (s *Service) synchronize(ctx context.Context, request Request, candidate do
 	return preparedCandidate{candidate: candidate, score: score, sync: synchronized, path: output}, nil
 }
 
+func sameInstalledCandidate(existing store.Installation, media domain.Media, candidate domain.Candidate) bool {
+	return InstallationMatchesMedia(existing, media) &&
+		existing.ProviderID == candidate.ProviderID &&
+		existing.CandidateID == candidate.ResultID
+}
+
+func (s *Service) updateInstallationAssessment(ctx context.Context, existing store.Installation, candidate domain.Candidate, score domain.Score) (store.Installation, error) {
+	scoreJSON, err := json.Marshal(score)
+	if err != nil {
+		return existing, fmt.Errorf("encode refreshed installed score: %w", err)
+	}
+	existing.ScoreJSON = scoreJSON
+	if candidate.ExactHash {
+		syncJSON, marshalErr := json.Marshal(domain.SyncResult{Verdict: "exact_hash", Mode: "bypass", Reference: "provider_hash", Ratio: 1, Confidence: 1, Agreement: 1, Coverage: 1, Parts: 1})
+		if marshalErr != nil {
+			return existing, fmt.Errorf("encode refreshed exact-hash provenance: %w", marshalErr)
+		}
+		existing.SyncResultJSON = syncJSON
+	}
+	if err := s.Repository.UpdateInstallationAssessment(ctx, existing); err != nil {
+		return existing, fmt.Errorf("refresh installed candidate assessment: %w", err)
+	}
+	return existing, nil
+}
+
+func setReassessmentResult(result *Result, installation store.Installation, candidate domain.Candidate, score domain.Score, now time.Time) {
+	result.Candidate = candidate
+	result.Score = score
+	result.Installation = installation
+	result.NextUpgrade = NextUpgradeAt(now, score, candidate.ExactHash)
+}
+
 func (p LapsePolicy) normalized() LapsePolicy {
 	if p.Mode == "" {
 		return DefaultLapsePolicy()
@@ -577,23 +655,7 @@ func canBypassLapse(media domain.Media, candidate domain.Candidate, score domain
 }
 
 func candidateHasEpisodeEvidence(media domain.Media, candidate domain.Candidate) bool {
-	if candidate.Season == media.Season && candidate.Episode == media.Episode && media.Season > 0 && media.Episode > 0 {
-		return true
-	}
-	if media.AbsoluteEpisode > 0 && candidate.AbsoluteEpisode == media.AbsoluteEpisode {
-		return true
-	}
-	for _, name := range candidate.ReleaseNames {
-		release := match.ParseRelease(name)
-		end := release.EpisodeEnd
-		if end == 0 {
-			end = release.Episode
-		}
-		if release.Season == media.Season && release.Episode > 0 && release.Episode <= media.Episode && media.Episode <= end {
-			return true
-		}
-	}
-	return false
+	return match.HasEpisodeEvidence(media, candidate)
 }
 
 func (s *Service) install(ctx context.Context, request Request, prepared preparedCandidate, existing store.Installation, installed bool, result Result) (Result, error) {

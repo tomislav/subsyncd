@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -125,6 +128,27 @@ func TestCoordinatorCachesNormalizedResultsForSixHours(t *testing.T) {
 	}
 }
 
+func TestCoordinatorIgnoresLegacyNormalizedCandidateCache(t *testing.T) {
+	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "fresh", Forced: true}}}}
+	coordinator := newTestCoordinator(provider)
+	query := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad}
+	cache := coordinator.Cache.(*memoryCache)
+	cache.entries[legacyProviderCacheKey(provider.ID(), query)] = store.ProviderCacheEntry{
+		Key:         legacyProviderCacheKey(provider.ID(), query),
+		ProviderID:  provider.ID(),
+		ResultsJSON: []byte(`[{"provider_id":"only","result_id":"legacy"}]`),
+		ExpiresAt:   coordinator.Clock.Now().Add(searchCacheTTL),
+	}
+
+	result := coordinator.Search(context.Background(), query)
+	if len(result.Candidates) != 1 || result.Candidates[0].ResultID != "fresh" || !result.Candidates[0].Forced {
+		t.Fatalf("result = %#v", result.Candidates)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %#v, want one cache miss", provider.calls)
+	}
+}
+
 func TestCoordinatorNeverCachesDownloadURLs(t *testing.T) {
 	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "https://signed.example/subtitle?token=secret"}}}}
 	coordinator := newTestCoordinator(provider)
@@ -144,4 +168,11 @@ func newTestCoordinator(providers ...Provider) *Coordinator {
 
 func testQueryMedia() domain.Media {
 	return domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaEpisode, FileID: 42}, Fingerprint: domain.MediaFingerprint{Path: "/media/show.mkv", FileID: 42, Size: 100, ModTime: time.Unix(0, 1)}, ReleaseName: "Show.S01E01.1080p.WEB-DL-GROUP"}
+}
+
+func legacyProviderCacheKey(providerID string, query SearchQuery) string {
+	fingerprint := query.Media.Fingerprint
+	raw := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s\x00%d\x00%d", providerID, query.Mode, query.Language, query.Media.Ref.Instance, query.Media.Ref.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), query.Media.ReleaseName, query.Media.Season, query.Media.Episode)
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }

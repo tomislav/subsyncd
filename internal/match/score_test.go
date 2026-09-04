@@ -13,7 +13,7 @@ func TestEvaluateAwardsEveryDocumentedWeight(t *testing.T) {
 	if len(score.RejectedReasons) != 0 || score.Total != 100 {
 		t.Fatalf("score = %#v", score)
 	}
-	want := map[string]int{"external_id": 20, "title_year": 15, "release_group": 25, "source": 15, "edition": 10, "streaming_service": 5, "resolution": 5, "provider_rating": 3, "popularity": 2}
+	want := map[string]int{"external_id": 20, "title_year": 15, "episode": 20, "release_group": 25, "source": 15, "edition": 10, "streaming_service": 5, "resolution": 5, "provider_rating": 3, "popularity": 2}
 	for _, contribution := range score.Contributions {
 		if points, ok := want[contribution.Signal]; ok {
 			if contribution.Points != points {
@@ -27,6 +27,48 @@ func TestEvaluateAwardsEveryDocumentedWeight(t *testing.T) {
 	}
 }
 
+func TestEvaluateAwardsEpisodeOrContainingPackEvidence(t *testing.T) {
+	media := scoredMedia()
+	base := domain.Candidate{Language: "en", Kind: domain.MediaEpisode, Title: media.Title, Year: media.Year, Season: media.Season}
+	tests := []struct {
+		name      string
+		candidate domain.Candidate
+		want      int
+	}{
+		{name: "exact episode", candidate: func() domain.Candidate { candidate := base; candidate.Episode = media.Episode; return candidate }(), want: 20},
+		{name: "parsed multi-episode release", candidate: func() domain.Candidate {
+			candidate := base
+			candidate.ReleaseNames = []string{"Example.Show.S01E01-E03.1080p.WEB-DL-GROUP"}
+			return candidate
+		}(), want: 20},
+		{name: "containing season pack", candidate: func() domain.Candidate {
+			candidate := base
+			candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: media.Season}
+			return candidate
+		}(), want: 20},
+		{name: "containing range pack", candidate: func() domain.Candidate {
+			candidate := base
+			candidate.Pack = &domain.PackInfo{Scope: domain.PackRange, Season: media.Season, EpisodeFrom: 1, EpisodeTo: 3}
+			return candidate
+		}(), want: 20},
+		{name: "no episode evidence", candidate: base, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			score := Evaluate(media, test.candidate, "en")
+			for _, contribution := range score.Contributions {
+				if contribution.Signal == "episode" {
+					if contribution.Points != test.want {
+						t.Fatalf("episode contribution = %#v, want %d", contribution, test.want)
+					}
+					return
+				}
+			}
+			t.Fatal("episode contribution missing")
+		})
+	}
+}
+
 func TestEvaluateHardGatesContradictoryIdentity(t *testing.T) {
 	baseMedia := scoredMedia()
 	baseCandidate := scoredCandidate()
@@ -36,6 +78,7 @@ func TestEvaluateHardGatesContradictoryIdentity(t *testing.T) {
 	}{
 		{"language", func(c *domain.Candidate) { c.Language = "hr" }},
 		{"kind", func(c *domain.Candidate) { c.Kind = domain.MediaMovie }},
+		{"forced only", func(c *domain.Candidate) { c.Forced = true }},
 		{"external id", func(c *domain.Candidate) { c.ExternalIDs.IMDb = "tt999" }},
 		{"season", func(c *domain.Candidate) { c.Season = 2 }},
 		{"episode", func(c *domain.Candidate) { c.Episode = 3 }},
@@ -101,8 +144,8 @@ func TestExactHashIsTerminalAndThresholdIsExplicit(t *testing.T) {
 	candidate.ReleaseNames = nil
 	candidate.Rating, candidate.Popularity = 0, 0
 	score = Evaluate(scoredMedia(), candidate, "en")
-	if Eligible(score, 35) || score.Total >= 35 {
-		t.Fatalf("weak score = %#v", score)
+	if !Eligible(score, 35) || Eligible(score, 36) || score.Total != 35 {
+		t.Fatalf("identity-baseline score = %#v", score)
 	}
 }
 

@@ -39,6 +39,7 @@ type Candidate struct {
 	ExternalIDs     ExternalIDs `json:"external_ids"`
 	ReleaseNames    []string    `json:"release_names,omitempty"`
 	ExactHash       bool        `json:"exact_hash"`
+	Forced          bool        `json:"forced,omitempty"`
 	HearingImpaired bool        `json:"hearing_impaired"`
 	Rating          float64     `json:"rating"`
 	Popularity      float64     `json:"popularity"`

@@ -63,7 +63,7 @@ languages:
       - opensubtitles-main
 
 allow_hearing_impaired: false
-minimum_release_score: 50
+minimum_release_score: 35
 
 pack_cache:
   ttl: 24h
