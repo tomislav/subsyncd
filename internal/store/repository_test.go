@@ -24,12 +24,139 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 8 {
-			t.Errorf("migration count = %d, want 8", count)
+		if count != 9 {
+			t.Errorf("migration count = %d, want 9", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
 		}
+	}
+}
+
+func TestMediaUnsupportedReasonMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	db := openDatabaseThroughMigration(t, path, "008_search_priorities.sql")
+	if _, err := db.Exec(`INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, updated_at_ns) VALUES ('sonarr-main', 'episode', 42, '/media/show.mkv', 100, 1, 'Show', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var reason string
+	if err := database.db.QueryRow(`SELECT unsupported_reason FROM media WHERE file_id=42`).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" {
+		t.Fatalf("unsupported reason = %q, want empty", reason)
+	}
+}
+
+func TestMediaUnsupportedReasonRoundTrips(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	media.UnsupportedReason = domain.UnsupportedMultiEpisode
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetMedia(context.Background(), mediaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UnsupportedReason != domain.UnsupportedMultiEpisode {
+		t.Fatalf("unsupported reason = %q, want %q", got.UnsupportedReason, domain.UnsupportedMultiEpisode)
+	}
+}
+
+func TestUnsupportedMediaEventCompletesSearchWithoutLease(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	media := testMedia()
+	media.UnsupportedReason = domain.UnsupportedMultiEpisode
+	mutation := MediaEventMutation{EventID: "unsupported-import", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
+	if applied, err := repo.ApplyMediaEvent(context.Background(), mutation); err != nil || !applied {
+		t.Fatalf("ApplyMediaEvent() = %v, %v", applied, err)
+	}
+	mediaID, _, err := repo.FindMedia(context.Background(), media.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := repo.GetSearchStatus(context.Background(), mediaID, "hr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "complete" || status.LastOutcome != string(domain.UnsupportedMultiEpisode) || status.RerunPending {
+		t.Fatalf("unsupported search status = %#v", status)
+	}
+	if leases, err := repo.LeaseDueSearches(context.Background(), now, 1, time.Minute); err != nil || len(leases) != 0 {
+		t.Fatalf("unsupported leases = %#v, %v", leases, err)
+	}
+}
+
+func TestUnsupportedMediaEventDuringLeasePreservesOneTerminalRerun(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	media := testMedia()
+	first := MediaEventMutation{EventID: "searchable-import", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
+	if applied, err := repo.ApplyMediaEvent(context.Background(), first); err != nil || !applied {
+		t.Fatalf("first ApplyMediaEvent() = %v, %v", applied, err)
+	}
+	leases, err := repo.LeaseDueSearches(context.Background(), now, 1, 5*time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("initial leases = %#v, %v", leases, err)
+	}
+	media.UnsupportedReason = domain.UnsupportedMultiEpisode
+	second := MediaEventMutation{EventID: "unsupported-import", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute)}
+	if applied, err := repo.ApplyMediaEvent(context.Background(), second); err != nil || !applied {
+		t.Fatalf("second ApplyMediaEvent() = %v, %v", applied, err)
+	}
+	var owner string
+	var rerun bool
+	if err := repo.store.db.QueryRow(`SELECT lease_owner, rerun_requested FROM search_states WHERE media_id=? AND language='hr'`, leases[0].MediaID).Scan(&owner, &rerun); err != nil {
+		t.Fatal(err)
+	}
+	if owner != leases[0].JobID || !rerun {
+		t.Fatalf("owner/rerun = %q/%v, want %q/true", owner, rerun, leases[0].JobID)
+	}
+	result, err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "installed"})
+	if err != nil || !result.RerunScheduled {
+		t.Fatalf("first completion = %#v, %v", result, err)
+	}
+	rerunLease, err := repo.LeaseDueSearches(context.Background(), now.Add(2*time.Minute), 1, 5*time.Minute)
+	if err != nil || len(rerunLease) != 1 {
+		t.Fatalf("terminal rerun lease = %#v, %v", rerunLease, err)
+	}
+	result, err = repo.CompleteSearch(context.Background(), SearchCompletion{JobID: rerunLease[0].JobID, Outcome: string(domain.UnsupportedMultiEpisode)})
+	if err != nil || result.RerunScheduled {
+		t.Fatalf("terminal completion = %#v, %v", result, err)
+	}
+	if third, err := repo.LeaseDueSearches(context.Background(), now.Add(24*time.Hour), 1, 5*time.Minute); err != nil || len(third) != 0 {
+		t.Fatalf("unexpected third lease = %#v, %v", third, err)
+	}
+}
+
+func TestRecordInstallationRejectsUnsupportedMedia(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media.UnsupportedReason = domain.UnsupportedMultiEpisode
+	if _, _, err := repo.UpsertMedia(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	err = repo.RecordInstallation(context.Background(), Installation{MediaID: mediaID, Language: "hr", Path: "/media/show.hr.srt", Checksum: "sum"})
+	if err == nil || !strings.Contains(err.Error(), string(domain.UnsupportedMultiEpisode)) {
+		t.Fatalf("RecordInstallation() error = %v", err)
+	}
+	if _, found, err := repo.GetInstallation(context.Background(), mediaID, "hr"); err != nil || found {
+		t.Fatalf("GetInstallation() found/error = %v/%v, want false/nil", found, err)
 	}
 }
 
@@ -125,8 +252,11 @@ func TestLeaseDueSearchesOrdersByPriorityBeforeDueTime(t *testing.T) {
 func TestSearchPriorityMigrationDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "subsyncd.db")
 	legacy := openDatabaseThroughMigration(t, path, "007_candidate_rejections.sql")
-	repo := (&Store{db: legacy}).Repository()
-	mediaID, _, err := repo.UpsertMedia(context.Background(), testMedia())
+	result, err := legacy.Exec(`INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, updated_at_ns) VALUES ('sonarr-main', 'episode', 42, '/media/show.mkv', 100, 1, 'Show', 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaID, err := result.LastInsertId()
 	if err != nil {
 		t.Fatal(err)
 	}

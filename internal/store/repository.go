@@ -251,6 +251,9 @@ type MediaEventMutation struct {
 }
 
 func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64, bool, error) {
+	if !validUnsupportedReason(media.UnsupportedReason) {
+		return 0, false, fmt.Errorf("unsupported media reason %q", media.UnsupportedReason)
+	}
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, false, fmt.Errorf("begin media upsert: %w", err)
@@ -278,8 +281,8 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 	}
 	now := time.Now().UTC().UnixNano()
 	if id == 0 {
-		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), now)
+		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), now)
 		if err != nil {
 			return 0, false, fmt.Errorf("insert media: %w", err)
 		}
@@ -288,8 +291,8 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 			return 0, false, fmt.Errorf("read media id: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, updated_at_ns=? WHERE id=?`,
-			media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), now, id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=? WHERE id=?`,
+			media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), now, id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media: %w", err)
 		}
@@ -314,8 +317,9 @@ func (r *Repository) GetMedia(ctx context.Context, mediaID int64) (domain.Media,
 	var kind string
 	var alternateTitles []byte
 	var modTimeNS, durationNS int64
-	err := r.store.db.QueryRowContext(ctx, `SELECT instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns FROM media WHERE id=?`, mediaID).Scan(
-		&media.Ref.Instance, &kind, &media.Ref.FileID, &media.Fingerprint.Path, &media.Fingerprint.Size, &modTimeNS, &media.Title, &media.EpisodeTitle, &alternateTitles, &media.Year, &media.Season, &media.Episode, &media.AbsoluteEpisode, &media.ExternalIDs.IMDb, &media.ExternalIDs.TMDB, &media.ExternalIDs.TVDB, &media.OriginalFilename, &media.ReleaseName, &media.ReleaseGroup, &media.Source, &media.Resolution, &media.StreamingService, &media.Edition, &media.Quality, &durationNS)
+	var unsupportedReason string
+	err := r.store.db.QueryRowContext(ctx, `SELECT instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason FROM media WHERE id=?`, mediaID).Scan(
+		&media.Ref.Instance, &kind, &media.Ref.FileID, &media.Fingerprint.Path, &media.Fingerprint.Size, &modTimeNS, &media.Title, &media.EpisodeTitle, &alternateTitles, &media.Year, &media.Season, &media.Episode, &media.AbsoluteEpisode, &media.ExternalIDs.IMDb, &media.ExternalIDs.TMDB, &media.ExternalIDs.TVDB, &media.OriginalFilename, &media.ReleaseName, &media.ReleaseGroup, &media.Source, &media.Resolution, &media.StreamingService, &media.Edition, &media.Quality, &durationNS, &unsupportedReason)
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("get media %d: %w", mediaID, err)
 	}
@@ -323,6 +327,10 @@ func (r *Repository) GetMedia(ctx context.Context, mediaID int64) (domain.Media,
 	media.Fingerprint.FileID = media.Ref.FileID
 	media.Fingerprint.ModTime = time.Unix(0, modTimeNS).UTC()
 	media.Duration = time.Duration(durationNS)
+	media.UnsupportedReason = domain.UnsupportedReason(unsupportedReason)
+	if !validUnsupportedReason(media.UnsupportedReason) {
+		return domain.Media{}, fmt.Errorf("get media %d: corrupt unsupported reason %q", mediaID, unsupportedReason)
+	}
 	if err := json.Unmarshal(alternateTitles, &media.AlternateTitles); err != nil {
 		return domain.Media{}, fmt.Errorf("decode media %d alternate titles: %w", mediaID, err)
 	}
@@ -573,6 +581,10 @@ func (r *Repository) UpsertSearchStateWithPriority(ctx context.Context, mediaID 
 
 func validSearchPriority(priority SearchPriority) bool {
 	return priority == SearchPriorityUpgrade || priority == SearchPriorityMissing || priority == SearchPriorityImport
+}
+
+func validUnsupportedReason(reason domain.UnsupportedReason) bool {
+	return reason == "" || reason == domain.UnsupportedMultiEpisode
 }
 
 func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit int, duration time.Duration) ([]SearchLease, error) {
@@ -1107,6 +1119,15 @@ func (r *Repository) RecordInstallation(ctx context.Context, installation Instal
 		return fmt.Errorf("begin installation record: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var unsupportedReason string
+	if err := tx.QueryRowContext(ctx, `SELECT unsupported_reason FROM media WHERE id=?`, installation.MediaID).Scan(&unsupportedReason); err != nil {
+		return fmt.Errorf("read installation media support: %w", err)
+	}
+	if reason := domain.UnsupportedReason(unsupportedReason); !validUnsupportedReason(reason) {
+		return fmt.Errorf("read installation media support: corrupt unsupported reason %q", unsupportedReason)
+	} else if reason != "" {
+		return fmt.Errorf("record installation: media is unsupported: %s", reason)
+	}
 	now := time.Now().UTC().UnixNano()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events(event_type, media_id, outcome, created_at_ns) VALUES ('subtitle_installed', ?, 'success', ?)`, installation.MediaID, now); err != nil {
 		return fmt.Errorf("record installation audit: %w", err)
@@ -1186,7 +1207,7 @@ func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMut
 			}
 		}
 		for _, language := range mutation.Languages {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, priority) VALUES (?, ?, 'pending', 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, last_outcome='', priority=MAX(search_states.priority, excluded.priority), rerun_requested=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE 1 END, lease_owner=search_states.lease_owner, lease_until_ns=search_states.lease_until_ns`, mediaID, language.String(), mutation.At.UnixNano(), SearchPriorityImport); err != nil {
+			if err := scheduleMediaSearchTx(ctx, tx, mediaID, language, mutation.At, SearchPriorityImport, mutation.Media.UnsupportedReason); err != nil {
 				return false, fmt.Errorf("reset media search: %w", err)
 			}
 		}
@@ -1219,7 +1240,25 @@ func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMut
 	return true, nil
 }
 
+func scheduleMediaSearchTx(ctx context.Context, tx *sql.Tx, mediaID int64, language domain.Language, at time.Time, priority SearchPriority, unsupported domain.UnsupportedReason) error {
+	if !validSearchPriority(priority) {
+		return fmt.Errorf("invalid search priority %d", priority)
+	}
+	if !validUnsupportedReason(unsupported) {
+		return fmt.Errorf("invalid unsupported media reason %q", unsupported)
+	}
+	if unsupported == "" {
+		_, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, priority) VALUES (?, ?, 'pending', 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, last_outcome='', priority=MAX(search_states.priority, excluded.priority), rerun_requested=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE 1 END, lease_owner=search_states.lease_owner, lease_until_ns=search_states.lease_until_ns`, mediaID, language.String(), at.UnixNano(), priority)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, priority) VALUES (?, ?, 'complete', 0, 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state=CASE WHEN search_states.lease_owner IS NULL THEN 'complete' ELSE 'pending' END, attempt=0, failure_attempt=0, next_attempt_at_ns=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE ? END, last_outcome=CASE WHEN search_states.lease_owner IS NULL THEN ? ELSE '' END, priority=MAX(search_states.priority, excluded.priority), rerun_requested=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE 1 END, lease_owner=search_states.lease_owner, lease_until_ns=search_states.lease_until_ns`, mediaID, language.String(), string(unsupported), priority, at.UnixNano(), string(unsupported))
+	return err
+}
+
 func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.Time) (int64, bool, error) {
+	if !validUnsupportedReason(media.UnsupportedReason) {
+		return 0, false, fmt.Errorf("unsupported media reason %q", media.UnsupportedReason)
+	}
 	var id, existingFileID, existingSize, existingModTime int64
 	var existingPath string
 	err := tx.QueryRowContext(ctx, `SELECT id, path, file_id, size, mod_time_ns FROM media WHERE instance=? AND kind=? AND file_id=?`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID).Scan(&id, &existingPath, &existingFileID, &existingSize, &existingModTime)
@@ -1236,7 +1275,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		return 0, false, fmt.Errorf("encode media alternate titles: %w", err)
 	}
 	if id == 0 {
-		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano())
+		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), at.UnixNano())
 		if err != nil {
 			return 0, false, fmt.Errorf("insert media for event: %w", err)
 		}
@@ -1245,7 +1284,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 			return 0, false, fmt.Errorf("read media ID for event: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, updated_at_ns=? WHERE id=?`, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), at.UnixNano(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=? WHERE id=?`, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), at.UnixNano(), id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}

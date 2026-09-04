@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repair implementation plan written
-- Next task: choose inline or subagent-driven execution of the approved plan
+- Current task: conventional review repairs executing inline; Task 1 complete
+- Next task: decode typed Sonarr and Radarr history changes
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 1 — persisted unsupported media state
+
+- Migration `009_media_unsupported_reason.sql` adds a backward-compatible empty-default support marker. `domain.Media` and every repository media read/write path round-trip the validated `unsupported_multi_episode` reason.
+- Unsupported imports complete unleased language searches immediately. An event arriving during an active lease preserves ownership and coalesces one terminal rerun instead of starting concurrent work.
+- `RecordInstallation` checks current persisted support status inside its transaction, preventing stale in-flight work from committing managed provenance after Sonarr marks a file unsupported.
+- Verification: focused red tests failed on the missing domain/schema contract; `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/store -race -count=1` and `git diff --check` pass. Next task: typed Arr history decoding.
 
 ### Follow-up — conventional review repair design
 

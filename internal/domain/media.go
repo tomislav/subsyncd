@@ -4,9 +4,13 @@ import "time"
 
 type MediaKind string
 
+type UnsupportedReason string
+
 const (
 	MediaMovie   MediaKind = "movie"
 	MediaEpisode MediaKind = "episode"
+
+	UnsupportedMultiEpisode UnsupportedReason = "unsupported_multi_episode"
 )
 
 type ExternalIDs struct {
@@ -29,23 +33,24 @@ type MediaFingerprint struct {
 }
 
 type Media struct {
-	Ref              MediaRef         `json:"ref"`
-	Fingerprint      MediaFingerprint `json:"fingerprint"`
-	Title            string           `json:"title"`
-	EpisodeTitle     string           `json:"episode_title,omitempty"`
-	AlternateTitles  []string         `json:"alternate_titles,omitempty"`
-	Year             int              `json:"year,omitempty"`
-	Season           int              `json:"season,omitempty"`
-	Episode          int              `json:"episode,omitempty"`
-	AbsoluteEpisode  int              `json:"absolute_episode,omitempty"`
-	ExternalIDs      ExternalIDs      `json:"external_ids"`
-	OriginalFilename string           `json:"original_filename,omitempty"`
-	ReleaseName      string           `json:"release_name,omitempty"`
-	ReleaseGroup     string           `json:"release_group,omitempty"`
-	Source           string           `json:"source,omitempty"`
-	Resolution       string           `json:"resolution,omitempty"`
-	StreamingService string           `json:"streaming_service,omitempty"`
-	Edition          string           `json:"edition,omitempty"`
-	Quality          string           `json:"quality,omitempty"`
-	Duration         time.Duration    `json:"duration,omitempty"`
+	Ref               MediaRef          `json:"ref"`
+	Fingerprint       MediaFingerprint  `json:"fingerprint"`
+	Title             string            `json:"title"`
+	EpisodeTitle      string            `json:"episode_title,omitempty"`
+	AlternateTitles   []string          `json:"alternate_titles,omitempty"`
+	Year              int               `json:"year,omitempty"`
+	Season            int               `json:"season,omitempty"`
+	Episode           int               `json:"episode,omitempty"`
+	AbsoluteEpisode   int               `json:"absolute_episode,omitempty"`
+	ExternalIDs       ExternalIDs       `json:"external_ids"`
+	OriginalFilename  string            `json:"original_filename,omitempty"`
+	ReleaseName       string            `json:"release_name,omitempty"`
+	ReleaseGroup      string            `json:"release_group,omitempty"`
+	Source            string            `json:"source,omitempty"`
+	Resolution        string            `json:"resolution,omitempty"`
+	StreamingService  string            `json:"streaming_service,omitempty"`
+	Edition           string            `json:"edition,omitempty"`
+	Quality           string            `json:"quality,omitempty"`
+	Duration          time.Duration     `json:"duration,omitempty"`
+	UnsupportedReason UnsupportedReason `json:"unsupported_reason,omitempty"`
 }
