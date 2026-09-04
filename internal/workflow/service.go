@@ -741,6 +741,9 @@ func canBypassLapse(media domain.Media, candidate domain.Candidate, score domain
 	if (policy.RequireIdentityAnchor && !identity) || (policy.RequireReleaseGroup && !releaseGroup) {
 		return false
 	}
+	if !match.HasMatchingEdition(media, candidate) {
+		return false
+	}
 	return !policy.RequireEpisodeEvidence || media.Ref.Kind != domain.MediaEpisode || candidateHasEpisodeEvidence(media, candidate)
 }
 

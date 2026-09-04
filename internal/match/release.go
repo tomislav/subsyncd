@@ -1,6 +1,7 @@
 package match
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -85,10 +86,20 @@ func normalizeSource(value, raw string) string {
 }
 
 func normalizeEdition(value, raw string, extended, remastered, unrated bool) string {
-	joined := strings.ToLower(value + " " + strings.NewReplacer(".", " ", "_", " ", "-", " ").Replace(raw))
+	joined := strings.ToLower(value + " " + editionDescriptor(raw))
 	switch {
 	case strings.Contains(joined, "director's cut") || strings.Contains(joined, "directors cut") || strings.Contains(joined, "director cut"):
 		return "directors cut"
+	case strings.Contains(joined, "final cut"):
+		return "final cut"
+	case strings.Contains(joined, "ultimate cut"):
+		return "ultimate cut"
+	case strings.Contains(joined, "special edition"):
+		return "special edition"
+	case strings.Contains(joined, "anniversary edition"):
+		return "anniversary edition"
+	case strings.Contains(joined, "redux"):
+		return "redux"
 	case extended || strings.Contains(joined, "extended"):
 		return "extended"
 	case remastered || strings.Contains(joined, "remaster"):
@@ -99,6 +110,17 @@ func normalizeEdition(value, raw string, extended, remastered, unrated bool) str
 		return "theatrical"
 	}
 	return NormalizeIdentity(value)
+}
+
+func editionDescriptor(raw string) string {
+	fields := strings.Fields(strings.NewReplacer(".", " ", "_", " ", "-", " ").Replace(raw))
+	for index, field := range fields {
+		year, err := strconv.Atoi(field)
+		if err == nil && len(field) == 4 && year >= 1900 && year <= 2099 {
+			return strings.Join(fields[index+1:], " ")
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
 func streamingService(raw string) string {

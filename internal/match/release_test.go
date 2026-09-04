@@ -10,6 +10,11 @@ func TestParseReleaseExtractsComparableEvidence(t *testing.T) {
 	}{
 		{"episode", "Example.Show.S01E02.1080p.NF.WEB-DL.DDP5.1.H.264-GROUP", Release{Title: "example show", Season: 1, Episode: 2, Resolution: "1080p", Source: "web-dl", Service: "netflix", Group: "group"}},
 		{"extended movie", "Open.Feature.2014.EXTENDED.1080p.BluRay.x264-RARBG", Release{Title: "open feature", Year: 2014, Resolution: "1080p", Source: "bluray", Edition: "extended", Group: "rarbg"}},
+		{"final cut", "Film.2020.FINAL.CUT.1080p.BluRay-GRP", Release{Title: "film", Year: 2020, Resolution: "1080p", Source: "bluray", Edition: "final cut", Group: "grp"}},
+		{"special edition", "Film.2020.SPECIAL.EDITION.1080p.BluRay-GRP", Release{Title: "film", Year: 2020, Resolution: "1080p", Source: "bluray", Edition: "special edition", Group: "grp"}},
+		{"ultimate cut", "Film.2020.ULTIMATE.CUT.1080p.BluRay-GRP", Release{Title: "film", Year: 2020, Resolution: "1080p", Source: "bluray", Edition: "ultimate cut", Group: "grp"}},
+		{"redux", "Film.2020.REDUX.1080p.BluRay-GRP", Release{Title: "film", Year: 2020, Resolution: "1080p", Source: "bluray", Edition: "redux", Group: "grp"}},
+		{"anniversary edition", "Film.2020.20TH.ANNIVERSARY.EDITION.1080p.BluRay-GRP", Release{Title: "film", Year: 2020, Resolution: "1080p", Source: "bluray", Edition: "anniversary edition", Group: "grp"}},
 		{"remux", "Film.2020.2160p.UHD.BluRay.REMUX.DV-GRP", Release{Title: "film", Year: 2020, Resolution: "2160p", Source: "remux", Group: "grp"}},
 		{"season pack", "Example.Show.S01.COMPLETE.720p.WEBRip-GRP", Release{Title: "example show", Season: 1, Resolution: "720p", Source: "webrip", Group: "grp", Complete: true}},
 		{"multi episode", "Example.Show.S01E02-E04.1080p.HDTV-GRP", Release{Title: "example show", Season: 1, Episode: 2, EpisodeEnd: 4, Resolution: "1080p", Source: "hdtv", Group: "grp"}},
@@ -33,5 +38,16 @@ func TestNormalizeIdentityHandlesAliasesAndPunctuationWithoutFuzzyMatching(t *te
 	}
 	if NormalizeIdentity("The Office") == NormalizeIdentity("Office Space") {
 		t.Fatal("different titles must not fuzzy-match")
+	}
+}
+
+func TestParseReleaseDoesNotTreatMovieTitleAsEdition(t *testing.T) {
+	for _, raw := range []string{
+		"The.Final.Cut.2004.1080p.BluRay-GRP",
+		"Anniversary.2015.1080p.BluRay-GRP",
+	} {
+		if release := ParseRelease(raw); release.Edition != "" {
+			t.Errorf("ParseRelease(%q) edition = %q", raw, release.Edition)
+		}
 	}
 }

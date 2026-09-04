@@ -98,6 +98,39 @@ func TestEvaluateHardGatesContradictoryIdentity(t *testing.T) {
 	}
 }
 
+func TestExactHashOverridesConflictingEditionLabel(t *testing.T) {
+	media := scoredMedia()
+	candidate := scoredCandidate()
+	candidate.ExactHash = true
+	candidate.ReleaseNames = []string{"Example.Show.S01E02.DIRECTORS.CUT.1080p.WEB-DL-GROUP"}
+	score := Evaluate(media, candidate, "en")
+	if len(score.RejectedReasons) != 0 || score.Total != 100 || len(score.Contributions) != 1 || score.Contributions[0].Signal != "exact_hash" {
+		t.Fatalf("exact-hash score = %#v", score)
+	}
+}
+
+func TestUnknownCandidateEditionRemainsEligibleWithoutEditionPoints(t *testing.T) {
+	media := scoredMedia()
+	candidate := scoredCandidate()
+	candidate.ReleaseNames = []string{"Example.Show.S01E02.1080p.NF.WEB-DL-GROUP"}
+	score := Evaluate(media, candidate, "en")
+	if len(score.RejectedReasons) != 0 {
+		t.Fatalf("unknown edition rejected: %#v", score)
+	}
+	found := false
+	for _, contribution := range score.Contributions {
+		if contribution.Signal == "edition" {
+			found = true
+			if contribution.Points != 0 {
+				t.Fatalf("unknown edition contribution = %#v", contribution)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("edition contribution missing")
+	}
+}
+
 func TestEvaluateAllowsExplicitContainingPackAndRejectsOtherMovieYear(t *testing.T) {
 	media := scoredMedia()
 	candidate := scoredCandidate()

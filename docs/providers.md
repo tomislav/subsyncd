@@ -85,7 +85,7 @@ Candidate rejections are not provider blacklists. They are scoped to one media/l
 
 ## Score model
 
-Known identity conflicts reject before points are considered. Conflicts include language, media kind, forced-only results for a full-language request, external IDs, movie year beyond ±1 without an exact external ID, season/episode outside pack scope, and a different known edition/cut. Unknown evidence is neutral.
+Known identity conflicts reject before points are considered. Conflicts include language, media kind, forced-only results for a full-language request, external IDs, movie year beyond ±1 without an exact external ID, season/episode outside pack scope, and a different known edition/cut. A verified exact file hash overrides only a conflicting textual edition label; all other identity gates remain active. Unknown evidence is normally neutral.
 
 | Signal | Points |
 | --- | ---: |
@@ -101,7 +101,9 @@ Known identity conflicts reject before points are considered. Conflicts include 
 | Provider rating | 0–3 |
 | Popularity/downloads | 0–2 |
 
-Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). Exact episode coordinates, a parsed release range containing the episode, or an explicit containing pack earn episode evidence. The LAPSE bypass threshold is separate: `sync.bypass_score` defaults to 75. Reaching it is necessary but not sufficient; with the safe defaults, the candidate also needs an external-ID or title/year anchor, release-group evidence, and matching season/episode evidence for TV. Rating and popularity never substitute for these anchors.
+Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). Exact episode coordinates, a parsed release range containing the episode, or an explicit containing pack earn episode evidence. The LAPSE bypass threshold is separate: `sync.bypass_score` defaults to 75. Reaching it is necessary but not sufficient; with the safe defaults, the candidate also needs an external-ID or title/year anchor, release-group evidence, matching season/episode evidence for TV, and an explicit edition match whenever Radarr identifies the target movie's edition. An edition-unknown candidate remains eligible but receives no edition points and must use LAPSE. Rating and popularity never substitute for these anchors.
+
+Edition comparison normalizes punctuation and recognizes Director's Cut, Extended, Remastered, Unrated, Theatrical, Final Cut, Special Edition, Ultimate Cut, Redux, and Anniversary Edition labels. Edition markers are read from the release descriptor after a movie year when present, so a title such as *The Final Cut (2004)* is not mistaken for an edition. An explicit matching edition contributes 10 points; an explicit mismatch is rejected.
 
 Release score is primary and lower score tiers cannot outrank a solid higher tier. Within one equal-score tier, analysis confidence is followed by configured provider priority, provider rating, provider ID, then result ID. Popularity already contributes up to two points to the primary score. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default.
 

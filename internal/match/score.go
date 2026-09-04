@@ -46,7 +46,7 @@ func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 		contribution("episode", boolPoints(episodeEvidenceMatches(media, candidate, releases), 20), "episode or containing pack"),
 		contribution("release_group", boolPoints(releaseGroupMatches(releases, media.ReleaseGroup), 25), "release group"),
 		contribution("source", boolPoints(releaseFieldMatches(releases, media.Source, func(r Release) string { return r.Source }), 15), "media source"),
-		contribution("edition", boolPoints(releaseFieldMatches(releases, media.Edition, func(r Release) string { return r.Edition }), 10), "edition or cut"),
+		contribution("edition", boolPoints(editionMatches(releases, media.Edition), 10), "edition or cut"),
 		contribution("streaming_service", boolPoints(releaseFieldMatches(releases, media.StreamingService, func(r Release) string { return r.Service }), 5), "streaming service"),
 		contribution("resolution", boolPoints(releaseFieldMatches(releases, media.Resolution, func(r Release) string { return r.Resolution }), 5), "resolution"),
 		contribution("provider_rating", int(math.Round(clamp(candidate.Rating)*3)), "normalized provider rating"),
@@ -148,12 +148,13 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 			reasons = append(reasons, "candidate episode conflicts with target")
 		}
 	}
-	if media.Edition != "" {
+	if media.Edition != "" && !candidate.ExactHash {
 		known, matched := false, false
+		wantedEdition := comparable(normalizeEdition(media.Edition, "", false, false, false))
 		for _, release := range releases {
 			if release.Edition != "" {
 				known = true
-				matched = matched || comparable(release.Edition) == comparable(media.Edition)
+				matched = matched || comparable(release.Edition) == wantedEdition
 			}
 		}
 		if known && !matched {
@@ -161,6 +162,17 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 		}
 	}
 	return reasons
+}
+
+func HasMatchingEdition(media domain.Media, candidate domain.Candidate) bool {
+	if strings.TrimSpace(media.Edition) == "" {
+		return true
+	}
+	releases := make([]Release, 0, len(candidate.ReleaseNames))
+	for _, raw := range candidate.ReleaseNames {
+		releases = append(releases, ParseRelease(raw))
+	}
+	return editionMatches(releases, media.Edition)
 }
 
 func packSeasonConflicts(pack *domain.PackInfo, media domain.Media) bool {
@@ -228,6 +240,19 @@ func releaseFieldMatches(releases []Release, wanted string, field func(Release) 
 	}
 	for _, release := range releases {
 		if comparable(field(release)) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func editionMatches(releases []Release, wanted string) bool {
+	wanted = comparable(normalizeEdition(wanted, "", false, false, false))
+	if wanted == "" {
+		return false
+	}
+	for _, release := range releases {
+		if comparable(release.Edition) == wanted {
 			return true
 		}
 	}

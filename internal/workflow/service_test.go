@@ -518,6 +518,8 @@ func TestLapseConfidencePolicySafetyBoundaries(t *testing.T) {
 		want      bool
 	}{
 		{name: "strong movie", media: movie, score: strongScore, policy: policy, want: true},
+		{name: "known target edition missing from candidate", media: func() domain.Media { item := movie; item.Edition = "Director's Cut"; return item }(), candidate: domain.Candidate{ReleaseNames: []string{"Movie.2024.1080p.WEB-DL-GROUP"}}, score: strongScore, policy: policy},
+		{name: "known target edition matches candidate", media: func() domain.Media { item := movie; item.Edition = "20th Anniversary Edition"; return item }(), candidate: domain.Candidate{ReleaseNames: []string{"Movie.2024.ANNIVERSARY.EDITION.1080p.WEB-DL-GROUP"}}, score: strongScore, policy: policy, want: true},
 		{name: "always policy", media: movie, score: strongScore, policy: func() LapsePolicy { p := policy; p.Mode = "always"; return p }()},
 		{name: "below threshold", media: movie, score: domain.Score{Total: 74, Contributions: strongScore.Contributions}, policy: policy},
 		{name: "missing identity", media: movie, score: domain.Score{Total: 75, Contributions: []domain.Contribution{{Signal: "release_group", Points: 25}}}, policy: policy},
