@@ -187,6 +187,32 @@ func TestServiceExactHashSkipsLapseAndBroadCandidatesAreLimitedToThree(t *testin
 	})
 }
 
+func TestRunStopsAfterUniqueHighestScoreInstalls(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.ReleaseGroup = "GROUP"
+	request.Media.Source = "webdl"
+	leader := broadCandidate("leader")
+	leader.ReleaseNames = []string{"Movie.2024-GROUP"}
+	runnerUp := broadCandidate("runner-up")
+	runnerUp.ReleaseNames = []string{"Movie.2024.WEB-DL"}
+	last := broadCandidate("last")
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{}
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{last, runnerUp, leader}}}
+	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Candidate.ResultID != "leader" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(providerFake.downloaded, []string{"leader"}) ||
+		!slices.Equal(synchronizer.analyzed, []string{"leader"}) ||
+		!slices.Equal(synchronizer.synchronized, []string{"leader"}) {
+		t.Fatalf("download/analyze/sync = %#v/%#v/%#v", providerFake.downloaded, synchronizer.analyzed, synchronizer.synchronized)
+	}
+}
+
 func TestServiceStrongAnchoredFirstInstallBypassesLapse(t *testing.T) {
 	request := serviceRequest(t)
 	request.Media.ReleaseGroup = "GROUP"
@@ -781,10 +807,13 @@ type fakeSynchronizer struct {
 	rejectAll        bool
 	analyzeCalls     int
 	synchronizeCalls int
+	analyzed         []string
+	synchronized     []string
 }
 
 func (f *fakeSynchronizer) AnalyzeCandidate(_ context.Context, candidate domain.Candidate, _ string, subtitle string) (domain.SyncResult, error) {
 	f.analyzeCalls++
+	f.analyzed = append(f.analyzed, candidate.ResultID)
 	if f.analyzeErr != nil {
 		return domain.SyncResult{}, f.analyzeErr
 	}
@@ -795,17 +824,12 @@ func (f *fakeSynchronizer) AnalyzeCandidate(_ context.Context, candidate domain.
 	if f.rejectAll || f.rejectText != "" && strings.Contains(string(payload), f.rejectText) {
 		return domain.SyncResult{}, &syncer.VerdictError{Verdict: "unsure", Reason: "test rejection"}
 	}
-	confidence := 0.5
-	for id, value := range f.confidence {
-		if strings.Contains(string(payload), id) {
-			confidence = value
-		}
-	}
-	return domain.SyncResult{Verdict: "solid", Confidence: confidence, Ratio: 1, Parts: 1}, nil
+	return f.syncResult(payload), nil
 }
 
-func (f *fakeSynchronizer) SynchronizeCandidate(_ context.Context, _ domain.Candidate, _ string, input, output string) (domain.SyncResult, error) {
+func (f *fakeSynchronizer) SynchronizeCandidate(_ context.Context, candidate domain.Candidate, _ string, input, output string) (domain.SyncResult, error) {
 	f.synchronizeCalls++
+	f.synchronized = append(f.synchronized, candidate.ResultID)
 	payload, err := os.ReadFile(input)
 	if err != nil {
 		return domain.SyncResult{}, err
@@ -813,9 +837,20 @@ func (f *fakeSynchronizer) SynchronizeCandidate(_ context.Context, _ domain.Cand
 	if err := os.WriteFile(output, payload, 0o600); err != nil {
 		return domain.SyncResult{}, err
 	}
-	result, err := f.AnalyzeCandidate(context.Background(), domain.Candidate{}, "", input)
-	f.analyzeCalls--
-	return result, err
+	if f.rejectAll || f.rejectText != "" && strings.Contains(string(payload), f.rejectText) {
+		return domain.SyncResult{}, &syncer.VerdictError{Verdict: "unsure", Reason: "test rejection"}
+	}
+	return f.syncResult(payload), nil
+}
+
+func (f *fakeSynchronizer) syncResult(payload []byte) domain.SyncResult {
+	confidence := 0.5
+	for id, value := range f.confidence {
+		if strings.Contains(string(payload), id) {
+			confidence = value
+		}
+	}
+	return domain.SyncResult{Verdict: "solid", Confidence: confidence, Ratio: 1, Parts: 1}
 }
 
 type fakeInstaller struct {

@@ -132,12 +132,25 @@ type Service struct {
 	Clock                WorkflowClock
 }
 
-type preparedCandidate struct {
+type downloadedCandidate struct {
 	candidate domain.Candidate
 	score     domain.Score
+	priority  int
+	path      string
+}
+
+type analyzedCandidate struct {
+	downloadedCandidate
+	analysis domain.SyncResult
+	bypass   bool
+}
+
+type finalizedCandidate struct {
+	candidate domain.Candidate
+	score     domain.Score
+	priority  int
 	sync      domain.SyncResult
 	path      string
-	priority  int
 }
 
 func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
@@ -206,9 +219,14 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 					setReassessmentResult(&result, existing, cached.Candidate, score, s.Clock.Now())
 					result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 				} else {
-					prepared, prepareErr := s.synchronize(ctx, request, cached.Candidate, score, cached.Path, workspace, 0, installed, existing)
+					downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, path: cached.Path}
+					analyzed, prepareErr := s.analyzeCandidate(ctx, request, downloaded, installed, existing)
 					if prepareErr == nil {
-						return s.install(ctx, request, prepared, existing, installed, result)
+						var finalized finalizedCandidate
+						finalized, prepareErr = s.finalizeCandidate(ctx, request, analyzed, workspace, 0)
+						if prepareErr == nil {
+							return s.install(ctx, request, finalized, existing, installed, result)
+						}
 					}
 					recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
 					if recordErr != nil {
@@ -331,57 +349,80 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		eligible = eligible[:3]
 	}
 
-	prepared := make([]preparedCandidate, 0, len(eligible))
-	for index, item := range eligible {
-		if err := ctx.Err(); err != nil {
-			return result, err
+	for tierStart := 0; tierStart < len(eligible); {
+		tierEnd := tierStart + 1
+		for tierEnd < len(eligible) && eligible[tierEnd].Score.Total == eligible[tierStart].Score.Total {
+			tierEnd++
 		}
-		path, decisions, prepareErr := s.downloadAndSelect(ctx, request, item.Candidate, workspace, index)
-		result.Decisions = append(result.Decisions, decisions...)
-		if prepareErr != nil {
-			recorded, rejectionErr := s.recordCandidateRejection(ctx, request, item.Candidate, "", prepareErr)
-			if rejectionErr != nil {
-				return result, rejectionErr
+		finalized := make([]finalizedCandidate, 0, tierEnd-tierStart)
+		for index := tierStart; index < tierEnd; index++ {
+			if err := ctx.Err(); err != nil {
+				return result, err
 			}
-			if !recorded && !isMediaValidationRejection(prepareErr) {
-				candidateFailures = append(candidateFailures, prepareErr)
+			item := eligible[index]
+			path, decisions, prepareErr := s.downloadAndSelect(ctx, request, item.Candidate, workspace, index)
+			result.Decisions = append(result.Decisions, decisions...)
+			if prepareErr != nil {
+				recorded, rejectionErr := s.recordCandidateRejection(ctx, request, item.Candidate, "", prepareErr)
+				if rejectionErr != nil {
+					return result, rejectionErr
+				}
+				if !recorded && !isMediaValidationRejection(prepareErr) {
+					candidateFailures = append(candidateFailures, prepareErr)
+				}
+				result.Decisions = append(result.Decisions, Decision{Stage: "candidate", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: prepareErr.Error()})
+				continue
 			}
-			result.Decisions = append(result.Decisions, Decision{Stage: "candidate", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: prepareErr.Error()})
-			continue
+			downloaded := downloadedCandidate{candidate: item.Candidate, score: item.Score, priority: item.ProviderPriority, path: path}
+			analyzed, syncErr := s.analyzeCandidate(ctx, request, downloaded, installed, existing)
+			if syncErr != nil {
+				if err := s.handleCandidateFailure(ctx, request, item.Candidate, path, syncErr, &candidateFailures); err != nil {
+					return result, err
+				}
+				result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: syncErr.Error()})
+				continue
+			}
+			ready, syncErr := s.finalizeCandidate(ctx, request, analyzed, workspace, index)
+			if syncErr != nil {
+				if err := s.handleCandidateFailure(ctx, request, item.Candidate, path, syncErr, &candidateFailures); err != nil {
+					return result, err
+				}
+				result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: syncErr.Error()})
+				continue
+			}
+			finalized = append(finalized, ready)
 		}
-		ready, syncErr := s.synchronize(ctx, request, item.Candidate, item.Score, path, workspace, index, installed, existing)
-		if syncErr != nil {
-			checksum, checksumErr := fileChecksum(path)
-			if checksumErr != nil {
-				return result, checksumErr
-			}
-			recorded, rejectionErr := s.recordCandidateRejection(ctx, request, item.Candidate, checksum, syncErr)
-			if rejectionErr != nil {
-				return result, rejectionErr
-			}
-			if !recorded && !isMediaValidationRejection(syncErr) {
-				candidateFailures = append(candidateFailures, syncErr)
-			}
-			result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: syncErr.Error()})
-			continue
+		if len(finalized) != 0 {
+			sortFinalized(finalized)
+			return s.install(ctx, request, finalized[0], existing, installed, result)
 		}
-		ready.priority = item.ProviderPriority
-		prepared = append(prepared, ready)
+		tierStart = tierEnd
 	}
-	if len(prepared) == 0 {
-		if retry, unavailable := unavailableErrors(candidateFailures); unavailable {
-			result.Outcome = OutcomeThrottled
-			result.RetryAt = retry
-			return result, nil
-		}
-		if len(candidateFailures) != 0 {
-			return result, errors.Join(candidateFailures...)
-		}
+	if len(candidateFailures) == 0 {
 		result.Outcome = OutcomeRejected
 		return result, nil
 	}
-	sortPrepared(prepared)
-	return s.install(ctx, request, prepared[0], existing, installed, result)
+	if retry, unavailable := unavailableErrors(candidateFailures); unavailable {
+		result.Outcome = OutcomeThrottled
+		result.RetryAt = retry
+		return result, nil
+	}
+	return result, errors.Join(candidateFailures...)
+}
+
+func (s *Service) handleCandidateFailure(ctx context.Context, request Request, candidate domain.Candidate, path string, failure error, candidateFailures *[]error) error {
+	checksum, checksumErr := fileChecksum(path)
+	if checksumErr != nil {
+		return checksumErr
+	}
+	recorded, rejectionErr := s.recordCandidateRejection(ctx, request, candidate, checksum, failure)
+	if rejectionErr != nil {
+		return rejectionErr
+	}
+	if !recorded && !isMediaValidationRejection(failure) {
+		*candidateFailures = append(*candidateFailures, failure)
+	}
+	return nil
 }
 
 func (s *Service) candidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, bool, error) {
@@ -546,48 +587,55 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	return member.NormalizedPath, decisions, nil
 }
 
-func (s *Service) synchronize(ctx context.Context, request Request, candidate domain.Candidate, score domain.Score, source, workspace string, index int, installed bool, existing store.Installation) (preparedCandidate, error) {
-	if !match.Eligible(score, s.minimumScore()) {
-		return preparedCandidate{}, fmt.Errorf("candidate score is below threshold or identity was rejected")
+func (s *Service) analyzeCandidate(ctx context.Context, request Request, item downloadedCandidate, installed bool, existing store.Installation) (analyzedCandidate, error) {
+	if !match.Eligible(item.score, s.minimumScore()) {
+		return analyzedCandidate{}, fmt.Errorf("candidate score is below threshold or identity was rejected")
 	}
 	if installed {
-		if sameInstalledCandidate(existing, request.Media, candidate) {
-			return preparedCandidate{}, fmt.Errorf("provider candidate is already installed")
+		if sameInstalledCandidate(existing, request.Media, item.candidate) {
+			return analyzedCandidate{}, fmt.Errorf("provider candidate is already installed")
 		}
-		allowed, err := ShouldUpgradeForMedia(existing, request.Media, score, candidate.ExactHash, s.MinimumUpgradeDelta)
+		allowed, err := ShouldUpgradeForMedia(existing, request.Media, item.score, item.candidate.ExactHash, s.MinimumUpgradeDelta)
 		if err != nil || !allowed {
 			if err != nil {
-				return preparedCandidate{}, err
+				return analyzedCandidate{}, err
 			}
-			return preparedCandidate{}, fmt.Errorf("candidate does not satisfy upgrade policy")
+			return analyzedCandidate{}, fmt.Errorf("candidate does not satisfy upgrade policy")
 		}
 	}
-	if candidate.ExactHash {
-		return preparedCandidate{candidate: candidate, score: score, sync: domain.SyncResult{Verdict: "exact_hash", Mode: "bypass", Reference: "provider_hash", Ratio: 1, Confidence: 1, Agreement: 1, Coverage: 1, Parts: 1}, path: source}, nil
+	if item.candidate.ExactHash {
+		return analyzedCandidate{downloadedCandidate: item, analysis: domain.SyncResult{Verdict: "exact_hash", Mode: "bypass", Reference: "provider_hash", Ratio: 1, Confidence: 1, Agreement: 1, Coverage: 1, Parts: 1}, bypass: true}, nil
 	}
-	if canBypassLapse(request.Media, candidate, score, installed, s.LapsePolicy.normalized()) {
-		return preparedCandidate{candidate: candidate, score: score, sync: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, path: source}, nil
+	if canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
+		return analyzedCandidate{downloadedCandidate: item, analysis: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
-	analysis, err := s.Synchronizer.AnalyzeCandidate(ctx, candidate, request.Media.Fingerprint.Path, source)
+	analysis, err := s.Synchronizer.AnalyzeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path)
 	if err != nil || analysis.Verdict != "solid" {
 		if err != nil {
-			return preparedCandidate{}, err
+			return analyzedCandidate{}, err
 		}
-		return preparedCandidate{}, fmt.Errorf("LAPSE analysis was not solid")
+		return analyzedCandidate{}, fmt.Errorf("LAPSE analysis was not solid")
 	}
-	extension := strings.ToLower(filepath.Ext(source))
+	return analyzedCandidate{downloadedCandidate: item, analysis: analysis}, nil
+}
+
+func (s *Service) finalizeCandidate(ctx context.Context, request Request, item analyzedCandidate, workspace string, index int) (finalizedCandidate, error) {
+	if item.bypass {
+		return finalizedCandidate{candidate: item.candidate, score: item.score, priority: item.priority, sync: item.analysis, path: item.path}, nil
+	}
+	extension := strings.ToLower(filepath.Ext(item.path))
 	output := filepath.Join(workspace, fmt.Sprintf("synchronized-%d%s", index, extension))
-	synchronized, err := s.Synchronizer.SynchronizeCandidate(ctx, candidate, request.Media.Fingerprint.Path, source, output)
+	synchronized, err := s.Synchronizer.SynchronizeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path, output)
 	if err != nil || synchronized.Verdict != "solid" {
 		if err != nil {
-			return preparedCandidate{}, err
+			return finalizedCandidate{}, err
 		}
-		return preparedCandidate{}, fmt.Errorf("LAPSE synchronization was not solid")
+		return finalizedCandidate{}, fmt.Errorf("LAPSE synchronization was not solid")
 	}
 	// Use analysis confidence for ranking because every candidate was compared at
 	// the same stage; retain the synchronization metadata that produced the file.
-	synchronized.Confidence = analysis.Confidence
-	return preparedCandidate{candidate: candidate, score: score, sync: synchronized, path: output}, nil
+	synchronized.Confidence = item.analysis.Confidence
+	return finalizedCandidate{candidate: item.candidate, score: item.score, priority: item.priority, sync: synchronized, path: output}, nil
 }
 
 func sameInstalledCandidate(existing store.Installation, media domain.Media, candidate domain.Candidate) bool {
@@ -658,7 +706,7 @@ func candidateHasEpisodeEvidence(media domain.Media, candidate domain.Candidate)
 	return match.HasEpisodeEvidence(media, candidate)
 }
 
-func (s *Service) install(ctx context.Context, request Request, prepared preparedCandidate, existing store.Installation, installed bool, result Result) (Result, error) {
+func (s *Service) install(ctx context.Context, request Request, prepared finalizedCandidate, existing store.Installation, installed bool, result Result) (Result, error) {
 	destination := subtitleDestination(request.Media.Fingerprint.Path, request.Language, prepared.path)
 	if installed {
 		if !strings.EqualFold(filepath.Ext(existing.Path), filepath.Ext(prepared.path)) {
@@ -745,7 +793,7 @@ func candidateRecord(candidate domain.Candidate, score domain.Score, eligible bo
 	return store.CandidateRecord{ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, MetadataJSON: metadata, ScoreJSON: scoreJSON, ValidationJSON: validation}, nil
 }
 
-func sortPrepared(candidates []preparedCandidate) {
+func sortFinalized(candidates []finalizedCandidate) {
 	sort.SliceStable(candidates, func(left, right int) bool {
 		a, b := candidates[left], candidates[right]
 		if a.score.Total != b.score.Total {
