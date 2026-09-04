@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 8, SubDL adapter
-- Next task: Task 9, candidate matching and scoring
+- Current task: Task 9, candidate matching and scoring
+- Next task: Task 10, archive extraction and pack selection
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -57,6 +57,18 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Downloads accept only configured HTTPS origins and redirects, stream through a compressed-byte ceiling, and leave ZIP/RAR member selection to the later common fail-closed extractor.
 - Bazarr behavior adopted: token contract, provider language names, pagination, episode-zero pack signal, and typed 429 handling. Tightened: explicit pack scope, wrong-season rejection, bounded pages/bytes, host-safe redirects, and no archive extraction inside the provider.
 - Verification: `go test ./... -race`, `go vet ./internal/provider/titlovi`, and scoped `git diff --check` passed.
+
+### Task 8 — SubDL adapter
+
+- Commit: `cd2afdf feat: add SubDL provider`
+
+- Strict configuration requires an API key, defaults to the official HTTPS search and download origins, and uses an explicit download-host allowlist. The provider is broad-only and advertises season-pack plus direct-member capabilities.
+- Search sends the strongest available IMDb/TMDB ID, original filename or title fallback, media type/year/language, release/HI/unpack/full-season flags, 30-result page size, and `client=custom_integration`.
+- Episode searches run standard season/episode, optional absolute episode, and season-only variants; a title-only query runs only when all filtered variants are empty. Stable URL/name identities deduplicate the merged response.
+- Provider media-result identity is retained for hard gating and scoring. All release names survive normalization. Explicit and release-text episode ranges must contain the standard or absolute target; direct unpack members are preferred, explicit full seasons become `PackSeason`, and unproven episode-zero rows fail closed.
+- Search and download understand daily quota, rate-limit, and service-busy payloads without sleeping. Cooldowns persist by provider instance and operation. Downloads attach the API key only to an allowlisted origin, reject unsafe redirects, and stream through the compressed-byte ceiling.
+- Current official contract was checked at <https://subdl.com/api-doc>; Bazarr was used only to compare multi-query/range behavior. We retain the official `full_season`, `unpack_files`, `client`, and optional authenticated-download behavior while rejecting Bazarr's arbitrary archive-member fallback.
+- Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
 
