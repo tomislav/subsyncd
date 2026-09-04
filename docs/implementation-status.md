@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 9, candidate matching and scoring
-- Next task: Task 10, archive extraction and pack selection
+- Current task: Task 10, archive extraction and pack selection
+- Next task: Task 11, LAPSE integration
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -68,6 +68,18 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Provider media-result identity is retained for hard gating and scoring. All release names survive normalization. Explicit and release-text episode ranges must contain the standard or absolute target; direct unpack members are preferred, explicit full seasons become `PackSeason`, and unproven episode-zero rows fail closed.
 - Search and download understand daily quota, rate-limit, and service-busy payloads without sleeping. Cooldowns persist by provider instance and operation. Downloads attach the API key only to an allowlisted origin, reject unsafe redirects, and stream through the compressed-byte ceiling.
 - Current official contract was checked at <https://subdl.com/api-doc>; Bazarr was used only to compare multi-query/range behavior. We retain the official `full_season`, `unpack_files`, `client`, and optional authenticated-download behavior while rejecting Bazarr's arbitrary archive-member fallback.
+- Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Task 9 — candidate matching and scoring
+
+- Commit: `dd09fe8 feat: add explainable subtitle matching`
+
+- `github.com/chill-institute/torrentname` v1.4.1 is pinned behind the local release parser. The wrapper preserves raw evidence and normalizes title, season/episode/range, group, source, resolution, complete-season state, edition/cut, and common streaming-service tokens.
+- Identity comparison is punctuation/case normalized but never fuzzy. Known language, media kind, external-ID, movie-year, season/episode, pack-season, and edition conflicts reject before scoring; unknown metadata remains neutral. Standard and absolute pack ranges are accepted only when they contain the target.
+- Exact hash is terminal at 100 after identity gates. Non-hash contributions are emitted in stable order for external ID (20), title/year (15), release group (25), source (15), edition (10), service (5), resolution (5), rating (0–3), and popularity (0–2), capped at 100.
+- `Eligible` applies the configured threshold independently from evaluation. `Rank` deterministically orders by score, provider priority, normalized rating, normalized popularity, then stable provider/result identity.
+- Provider download counts now share a logarithmic `[0,1]` normalization saturating at four orders of magnitude. This prevents popularity from overpowering identity while making its two score points usable by OpenSubtitles, Titlovi, and SubDL.
+- Adopted Bazarr's small known release-group equivalence sets as behavior, with independently authored tests. Tightened scoring retains explicit zero-point explanations and rejects wrong-season pack metadata even when candidate top-level season is absent.
 - Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
