@@ -106,7 +106,7 @@ func (c *Client) login(ctx context.Context, force bool) error {
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&decoded); err != nil || decoded.Token == "" || decoded.UserID <= 0 {
 		return &baseprovider.InvalidPayloadError{Message: "Titlovi login response is incomplete"}
 	}
-	expiresAt, err := time.Parse(time.RFC3339, decoded.ExpirationDate)
+	expiresAt, err := parseExpiration(decoded.ExpirationDate)
 	if err != nil {
 		return &baseprovider.InvalidPayloadError{Message: "Titlovi token expiration is invalid"}
 	}
@@ -114,6 +114,17 @@ func (c *Client) login(ctx context.Context, force bool) error {
 	c.userID = decoded.UserID
 	c.expiresAt = expiresAt
 	return nil
+}
+
+func parseExpiration(value string) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, nil
+	}
+	location, err := time.LoadLocation("Europe/Zagreb")
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.ParseInLocation("2006-01-02T15:04:05.999999999", value, location)
 }
 
 func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]domain.Candidate, error) {
