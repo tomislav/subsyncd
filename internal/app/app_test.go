@@ -112,6 +112,38 @@ func TestNewWiresConfiguredWorkflowConcurrency(t *testing.T) {
 	}
 }
 
+func TestNewWiresProviderObservabilityIntoSuppliedProvidersAndSearchers(t *testing.T) {
+	cfg := testConfig(t)
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(context.Background(), cfg, Options{Events: events, LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+
+	if _, err := application.Providers["english"].Download(context.Background(), domain.Candidate{ResultID: "candidate"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	application.Workflows["en"].Searcher.Search(context.Background(), provider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaEpisode, FileID: 1}}, Language: "en"})
+
+	records := decodeLogRecords(t, logs.String())
+	want := map[string]bool{"provider.download_completed": false, "provider.search_started": false, "provider.search_completed": false}
+	for _, record := range records {
+		if _, ok := want[record["event"].(string)]; ok {
+			want[record["event"].(string)] = true
+		}
+	}
+	for event, found := range want {
+		if !found {
+			t.Errorf("missing %s in %s", event, logs.String())
+		}
+	}
+}
+
 func TestOpenUsesConfiguredEmitterAndLogsStartupLifecycle(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.yaml")

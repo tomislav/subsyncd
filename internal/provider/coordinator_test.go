@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 	"subsyncd/internal/testutil"
 )
@@ -158,6 +160,60 @@ func TestCoordinatorNeverCachesDownloadURLs(t *testing.T) {
 		if strings.Contains(string(entry.ResultsJSON), "signed.example") || strings.Contains(string(entry.ResultsJSON), "secret") {
 			t.Fatalf("cache leaked temporary download URL: %s", entry.ResultsJSON)
 		}
+	}
+}
+
+func TestCoordinatorLogsSearchAttemptsAndCacheStateWithoutMediaDetails(t *testing.T) {
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "debug", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "https://signed.example/subtitle?token=secret"}}}}
+	coordinator := newTestCoordinator(item)
+	coordinator.Events = events
+	query := SearchQuery{Media: testQueryMedia(), Language: "en"}
+
+	coordinator.Search(context.Background(), query)
+	coordinator.Search(context.Background(), query)
+
+	records := providerLogRecords(t, logs.String())
+	started := providerEvents(records, "provider.search_started")
+	completed := providerEvents(records, "provider.search_completed")
+	if len(started) != 2 || len(completed) != 2 {
+		t.Fatalf("search events started/completed = %d/%d, want 2/2: %s", len(started), len(completed), logs.String())
+	}
+	if completed[0]["cache_status"] != "miss" || completed[1]["cache_status"] != "hit" {
+		t.Fatalf("cache statuses = %#v/%#v", completed[0]["cache_status"], completed[1]["cache_status"])
+	}
+	if completed[0]["outcome"] != "success" || completed[0]["candidate_count"] != float64(1) {
+		t.Fatalf("first completion = %#v", completed[0])
+	}
+	if len(providerEvents(records, "provider.cache_miss")) != 1 || len(providerEvents(records, "provider.cache_hit")) != 1 {
+		t.Fatalf("cache debug events missing: %s", logs.String())
+	}
+	for _, forbidden := range []string{"/media/show.mkv", "Show.S01E01", "signed.example", "token=secret"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("provider logs leaked %q: %s", forbidden, logs.String())
+		}
+	}
+}
+
+func TestCoordinatorClassifiesCanceledSearchAsWarning(t *testing.T) {
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "debug", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{}, err: map[SearchMode]error{SearchBroad: context.DeadlineExceeded}}
+	coordinator := newTestCoordinator(item)
+	coordinator.Events = events
+
+	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
+
+	completed := providerEvents(providerLogRecords(t, logs.String()), "provider.search_completed")
+	if len(completed) != 1 || completed[0]["outcome"] != "canceled" || completed[0]["level"] != "warn" {
+		t.Fatalf("canceled completion = %#v", completed)
 	}
 }
 

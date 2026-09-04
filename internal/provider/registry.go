@@ -47,7 +47,7 @@ func (r *Registry) Build(specs []InstanceSpec, dependencies Dependencies) (map[s
 		if provider == nil || provider.ID() != spec.ID {
 			return nil, fmt.Errorf("provider factory %q returned an invalid instance", spec.Type)
 		}
-		providers[spec.ID] = provider
+		providers[spec.ID] = Observe(provider, dependencies.Events)
 	}
 	return providers, nil
 }

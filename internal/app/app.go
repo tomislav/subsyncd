@@ -181,7 +181,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		}
 	}
 
-	providers, err := buildProviders(cfg, database, repository, clock, httpClient, options.Providers)
+	providers, err := buildProviders(cfg, database, repository, clock, httpClient, options.Providers, events)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			ordered = append(ordered, providers[id])
 		}
 		workflows[language] = &workflow.Service{
-			Inventory: inventoryService, Searcher: &provider.Coordinator{Providers: ordered, Cache: repository, Clock: clock}, PackCache: packCache,
+			Inventory: inventoryService, Searcher: &provider.Coordinator{Providers: ordered, Cache: repository, Clock: clock, Events: events}, PackCache: packCache,
 			Synchronizer: lapse, Installer: installer, Repository: repository, Providers: providers, ProviderOrder: append([]string(nil), providerIDs...),
 			MinimumScore: cfg.MinimumReleaseScore, MinimumUpgradeDelta: workflow.DefaultMinimumUpgradeDelta, PackTTL: cfg.PackCache.TTL,
 			LapsePolicy:          workflow.LapsePolicy{Mode: cfg.Sync.Policy, BypassScore: cfg.Sync.BypassScore, RequireIdentityAnchor: cfg.Sync.RequireIdentityAnchor, RequireEpisodeEvidence: cfg.Sync.RequireEpisodeEvidence, RequireReleaseGroup: cfg.Sync.RequireReleaseGroup, LapseForPacks: cfg.Sync.LapseForPacks, LapseForUpgrades: cfg.Sync.LapseForUpgrades},
@@ -291,11 +291,11 @@ func buildCatalogs(cfg config.Config, supplied map[string]catalog.Catalog) (map[
 	return result, nil
 }
 
-func buildProviders(cfg config.Config, database *store.Store, repository *store.Repository, clock provider.Clock, client *http.Client, supplied map[string]provider.Provider) (map[string]provider.Provider, error) {
+func buildProviders(cfg config.Config, database *store.Store, repository *store.Repository, clock provider.Clock, client *http.Client, supplied map[string]provider.Provider, events *observability.Emitter) (map[string]provider.Provider, error) {
 	if supplied != nil {
 		result := make(map[string]provider.Provider, len(supplied))
 		for id, item := range supplied {
-			result[id] = item
+			result[id] = provider.Observe(item, events)
 		}
 		return result, nil
 	}
@@ -310,8 +310,8 @@ func buildProviders(cfg config.Config, database *store.Store, repository *store.
 		specs = append(specs, provider.InstanceSpec{ID: id, Type: spec.Type, Settings: spec.Settings})
 	}
 	registry := provider.NewRegistry(map[string]provider.Factory{"titlovi": titlovi.Factory, "opensubtitles": opensubtitles.Factory, "subdl": subdl.Factory})
-	gate := provider.NewGate(repository, clock, cfg.ProviderHTTP.SharedOriginMaxConcurrent)
-	return registry.Build(specs, provider.Dependencies{HTTPClient: client, Store: database, Clock: clock, Gate: gate})
+	gate := provider.NewGate(repository, clock, cfg.ProviderHTTP.SharedOriginMaxConcurrent, events)
+	return registry.Build(specs, provider.Dependencies{HTTPClient: client, Store: database, Clock: clock, Gate: gate, Events: events})
 }
 
 func languageRoutes(cfg config.Config) map[domain.Language][]string {

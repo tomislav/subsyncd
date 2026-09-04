@@ -52,7 +52,7 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 	if dependencies.Gate == nil || dependencies.HTTPClient == nil {
 		return nil, fmt.Errorf("SubDL HTTP client and provider gate are required")
 	}
-	dependencies.Gate.Configure(id, config.RequestsPerSecond, config.Burst, config.MaxConcurrent)
+	dependencies.Gate.Configure(id, config.RequestsPerSecond, config.Burst, config.MaxConcurrent, "subdl")
 	transport := baseprovider.Client{HTTP: dependencies.HTTPClient, Gate: dependencies.Gate, Clock: clock, ProviderID: id, ProviderType: "subdl"}
 	return New(config, transport, clock)
 }

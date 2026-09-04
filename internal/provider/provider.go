@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -68,6 +69,7 @@ type Dependencies struct {
 	Store      *store.Store
 	Clock      Clock
 	Gate       *Gate
+	Events     *observability.Emitter
 }
 
 type Clock interface {

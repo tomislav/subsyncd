@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -27,6 +30,7 @@ type Coordinator struct {
 	Providers []Provider
 	Cache     SearchCache
 	Clock     Clock
+	Events    *observability.Emitter
 }
 
 type SearchResult struct {
@@ -95,34 +99,113 @@ func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResul
 }
 
 func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, query SearchQuery) ([]domain.Candidate, error) {
+	events := c.Events
+	if events == nil {
+		events = observability.Discard()
+	}
+	events = events.For("provider")
+	startedAt := time.Now()
+	base := []slog.Attr{
+		slog.String("provider", provider.ID()),
+		slog.String("search_mode", string(query.Mode)),
+		slog.String("language", string(query.Language)),
+	}
+	events.Log(ctx, slog.LevelInfo, "provider.search_started", "provider search started", base...)
+	complete := func(candidates []domain.Candidate, cacheStatus string, err error) {
+		attrs := append([]slog.Attr(nil), base...)
+		attrs = append(attrs,
+			slog.String("outcome", providerOutcome(err, len(candidates))),
+			slog.String("cache_status", cacheStatus),
+			slog.Int("candidate_count", len(candidates)),
+			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+		if err != nil {
+			attrs = append(attrs, events.ErrorAttrs(providerErrorKind(err), err)...)
+		}
+		events.Log(ctx, searchLogLevel(err), "provider.search_completed", "provider search completed", attrs...)
+	}
+
 	key := providerCacheKey(provider.ID(), query)
 	now := c.Clock.Now()
 	if c.Cache != nil {
 		entry, found, err := c.Cache.GetProviderCache(ctx, key, now)
 		if err != nil {
-			return nil, fmt.Errorf("read %s search cache: %w", provider.ID(), err)
+			wrapped := fmt.Errorf("read %s search cache: %w", provider.ID(), err)
+			complete(nil, "error", wrapped)
+			return nil, wrapped
 		}
 		if found {
 			var candidates []domain.Candidate
 			if err := json.Unmarshal(entry.ResultsJSON, &candidates); err == nil {
+				events.Log(ctx, slog.LevelDebug, "provider.cache_hit", "provider search cache hit", base...)
+				complete(candidates, "hit", nil)
 				return candidates, nil
 			}
 		}
 	}
+	events.Log(ctx, slog.LevelDebug, "provider.cache_miss", "provider search cache miss", base...)
 	candidates, err := provider.Search(ctx, query)
 	if err != nil {
+		complete(nil, "miss", err)
 		return nil, err
 	}
 	if c.Cache != nil {
 		encoded, err := json.Marshal(cacheSafeCandidates(candidates))
 		if err != nil {
-			return nil, fmt.Errorf("encode %s search cache: %w", provider.ID(), err)
+			wrapped := fmt.Errorf("encode %s search cache: %w", provider.ID(), err)
+			complete(candidates, "miss", wrapped)
+			return nil, wrapped
 		}
 		if err := c.Cache.PutProviderCache(ctx, store.ProviderCacheEntry{Key: key, ProviderID: provider.ID(), ResultsJSON: encoded, ExpiresAt: now.Add(searchCacheTTL)}); err != nil {
-			return nil, fmt.Errorf("write %s search cache: %w", provider.ID(), err)
+			wrapped := fmt.Errorf("write %s search cache: %w", provider.ID(), err)
+			complete(candidates, "miss", wrapped)
+			return nil, wrapped
 		}
 	}
+	complete(candidates, "miss", nil)
 	return candidates, nil
+}
+
+func providerOutcome(err error, candidateCount int) string {
+	if err == nil {
+		if candidateCount == 0 {
+			return "no_result"
+		}
+		return "success"
+	}
+	var cooldown *CooldownError
+	var quota *QuotaError
+	var disabled *DisabledError
+	var authentication *AuthenticationError
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "canceled"
+	case errors.As(err, &cooldown), errors.As(err, &quota):
+		return "throttled"
+	case errors.As(err, &disabled):
+		return "disabled"
+	case errors.As(err, &authentication):
+		return "authentication_failed"
+	default:
+		return "failed"
+	}
+}
+
+func providerErrorKind(err error) string {
+	return providerOutcome(err, 0)
+}
+
+func searchLogLevel(err error) slog.Level {
+	if err == nil {
+		return slog.LevelInfo
+	}
+	var cooldown *CooldownError
+	var quota *QuotaError
+	var disabled *DisabledError
+	if errors.As(err, &cooldown) || errors.As(err, &quota) || errors.As(err, &disabled) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return slog.LevelWarn
+	}
+	return slog.LevelError
 }
 
 func cacheSafeCandidates(candidates []domain.Candidate) []domain.Candidate {

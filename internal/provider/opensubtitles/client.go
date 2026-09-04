@@ -66,7 +66,7 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 	if dependencies.Gate == nil || dependencies.HTTPClient == nil || dependencies.Store == nil {
 		return nil, fmt.Errorf("OpenSubtitles HTTP client, provider gate, and store are required")
 	}
-	dependencies.Gate.Configure(id, config.RequestsPerSecond, config.Burst, config.MaxConcurrent)
+	dependencies.Gate.Configure(id, config.RequestsPerSecond, config.Burst, config.MaxConcurrent, "opensubtitles")
 	transport := baseprovider.Client{HTTP: dependencies.HTTPClient, Gate: dependencies.Gate, Clock: clock, ProviderID: id, ProviderType: "opensubtitles"}
 	return New(config, transport, FileHasher{}, dependencies.Store.Repository(), clock)
 }
