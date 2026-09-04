@@ -254,7 +254,7 @@ func expandEnv(node *yaml.Node, lookupEnv func(string) (string, bool)) error {
 }
 
 func normalize(raw rawConfig) (Config, error) {
-	allowHearingImpaired := true
+	allowHearingImpaired := false
 	if raw.AllowHearingImpaired != nil {
 		allowHearingImpaired = *raw.AllowHearingImpaired
 	}

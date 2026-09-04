@@ -16,6 +16,8 @@ languages:
 
 Provider instances are independently credentialed and throttled. Startup rejects unknown providers and language/provider combinations the adapter cannot represent. There is no hard-coded English/Croatian coupling in the workflow.
 
+Hearing-impaired/SDH tracks and candidates are disallowed by default. Set `allow_hearing_impaired: true` at the configuration root to opt in; when enabled, an existing matching SDH track may satisfy the language and an HI provider result remains eligible.
+
 ## Built-in providers
 
 ### Titlovi

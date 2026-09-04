@@ -51,7 +51,7 @@ func TestExampleConfigurationLoads(t *testing.T) {
 	}
 }
 
-func TestLoadDefaultsHearingImpairedToAllowedAndHonorsExplicitFalse(t *testing.T) {
+func TestLoadDefaultsHearingImpairedToDisallowedAndHonorsExplicitTrue(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := loadText(t, validConfig(root, `
 languages:
@@ -60,12 +60,12 @@ languages:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.AllowHearingImpaired {
-		t.Fatal("omitted allow_hearing_impaired should default to true")
+	if cfg.AllowHearingImpaired {
+		t.Fatal("omitted allow_hearing_impaired should default to false")
 	}
 
 	text := validConfig(root, `
-allow_hearing_impaired: false
+allow_hearing_impaired: true
 languages:
   en: {providers: [subdl-main]}
 `)
@@ -73,8 +73,8 @@ languages:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AllowHearingImpaired {
-		t.Fatal("explicit allow_hearing_impaired: false was ignored")
+	if !cfg.AllowHearingImpaired {
+		t.Fatal("explicit allow_hearing_impaired: true was ignored")
 	}
 }
 

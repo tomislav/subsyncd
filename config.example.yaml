@@ -61,7 +61,7 @@ languages:
       - opensubtitles-main
       - subdl-main
 
-allow_hearing_impaired: true
+allow_hearing_impaired: false
 minimum_release_score: 35
 
 pack_cache:
