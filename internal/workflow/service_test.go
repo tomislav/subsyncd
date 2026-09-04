@@ -15,6 +15,7 @@ import (
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
@@ -463,6 +464,12 @@ func TestServiceStrongAnchoredFirstInstallBypassesLapse(t *testing.T) {
 	installer := &fakeInstaller{}
 	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, installer)
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	var logs bytes.Buffer
+	events, eventErr := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	service.Events = events
 
 	result, err := service.Run(context.Background(), request)
 	if err != nil || result.Outcome != OutcomeInstalled || result.Score.Total != 75 {
@@ -473,6 +480,10 @@ func TestServiceStrongAnchoredFirstInstallBypassesLapse(t *testing.T) {
 	}
 	if installer.request.SyncResult.Verdict != "score_bypass" || installer.request.SyncResult.Reference != "release_evidence" || installer.request.SyncResult.Confidence != 0 {
 		t.Fatalf("sync provenance = %#v", installer.request.SyncResult)
+	}
+	selected := workflowEvents(workflowLogRecords(t, logs.String()), "candidate.selected")
+	if len(selected) != 1 || selected[0]["selection_mode"] != "score_bypass" || len(workflowEvents(workflowLogRecords(t, logs.String()), "lapse.analysis_completed")) != 0 {
+		t.Fatalf("score-bypass events = %s", logs.String())
 	}
 }
 

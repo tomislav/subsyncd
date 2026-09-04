@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
 	"subsyncd/internal/match"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
@@ -130,6 +132,7 @@ type Service struct {
 	LapsePolicy          LapsePolicy
 	AllowHearingImpaired bool
 	Clock                WorkflowClock
+	Events               *observability.Emitter
 }
 
 type downloadedCandidate struct {
@@ -153,18 +156,51 @@ type finalizedCandidate struct {
 	path      string
 }
 
-func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
+func (s *Service) Run(ctx context.Context, request Request) (result Result, runErr error) {
+	events := s.workflowEvents()
+	startedAt := time.Now()
+	candidateCount := 0
+	events.Log(ctx, slog.LevelInfo, "search.started", "subtitle workflow started",
+		slog.Int64("media_id", request.MediaID),
+		slog.String("media_kind", string(request.Media.Ref.Kind)),
+		slog.Int64("file_id", request.Media.Ref.FileID),
+		slog.String("language", request.Language.String()),
+		slog.Bool("manual", request.Manual),
+	)
+	defer func() {
+		outcome, reason, level := workflowCompletion(result, runErr)
+		attrs := []slog.Attr{
+			slog.String("outcome", outcome),
+			slog.String("reason", reason),
+			slog.Int("candidate_count", candidateCount),
+			slog.Int("provider_error_count", len(result.ProviderErrors)),
+			slog.Int("score", result.Score.Total),
+			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		}
+		if !result.RetryAt.IsZero() {
+			attrs = append(attrs, slog.Time("retry_at", result.RetryAt.UTC()))
+		}
+		if !result.NextUpgrade.IsZero() {
+			attrs = append(attrs, slog.Time("next_upgrade_at", result.NextUpgrade.UTC()))
+			events.Log(ctx, slog.LevelInfo, "upgrade.scheduled", "subtitle upgrade scheduled", slog.Time("next_upgrade_at", result.NextUpgrade.UTC()), slog.Int("score", result.Score.Total), slog.Bool("exact_hash", result.Candidate.ExactHash))
+		}
+		for _, decision := range result.Decisions {
+			s.logWorkflowDecision(ctx, decision)
+		}
+		events.Log(ctx, level, "search.completed", "subtitle workflow completed", attrs...)
+	}()
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
 	if err := s.validate(request); err != nil {
 		return Result{}, err
 	}
-	result := Result{ProviderErrors: map[string]error{}}
+	result = Result{ProviderErrors: map[string]error{}}
 	var candidateFailures []error
 	sameCandidateAssessed := false
 	current, err := s.Inventory.Refresh(ctx, request.MediaID, request.Media, request.ForceProbe)
 	if err != nil {
+		events.Log(ctx, slog.LevelError, "inventory.refresh_failed", "subtitle inventory refresh failed", events.ErrorAttrs("inventory", err)...)
 		return result, fmt.Errorf("refresh subtitle inventory: %w", err)
 	}
 	if current.Fingerprint.Path != "" {
@@ -174,7 +210,15 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return result, err
 	}
-	if inventoryStopsSearch(current, request.Language, s.AllowHearingImpaired, installed, existing) {
+	inventorySatisfied := inventoryStopsSearch(current, request.Language, s.AllowHearingImpaired, installed, existing)
+	embeddedCount, sidecarCount := inventoryTrackCounts(current)
+	events.Log(ctx, slog.LevelInfo, "inventory.refresh_completed", "subtitle inventory refreshed",
+		slog.Int("track_count", len(current.Tracks)),
+		slog.Int("embedded_count", embeddedCount),
+		slog.Int("sidecar_count", sidecarCount),
+		slog.Bool("satisfied", inventorySatisfied),
+	)
+	if inventorySatisfied {
 		result.Outcome = OutcomeSatisfied
 		return result, nil
 	}
@@ -208,6 +252,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 				result.Decisions = append(result.Decisions, Decision{Stage: "candidate_rejection", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: rejection.ReasonCode})
 			} else {
 				score := s.evaluate(request.Media, cached.Candidate, request.Language)
+				s.logCandidateEvaluation(ctx, request, cached.Candidate, score)
 				if !match.Eligible(score, s.minimumScore()) {
 					result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "cached candidate score is below threshold or identity was rejected"})
 				} else if installed && sameInstalledCandidate(existing, request.Media, cached.Candidate) {
@@ -242,6 +287,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	}
 
 	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language})
+	candidateCount = len(search.Candidates)
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -277,6 +323,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	priorities := s.priorities()
 	for _, candidate := range search.Candidates {
 		score := s.evaluate(request.Media, candidate, request.Language)
+		s.logCandidateEvaluation(ctx, request, candidate, score)
 		priority, exists := priorities[candidate.ProviderID]
 		if !exists {
 			priority = len(s.ProviderOrder)
@@ -442,6 +489,175 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return result, nil
 	}
 	return result, errors.Join(candidateFailures...)
+}
+
+func (s *Service) workflowEvents() *observability.Emitter {
+	if s.Events == nil {
+		return observability.Discard().For("workflow")
+	}
+	return s.Events.For("workflow")
+}
+
+func workflowCompletion(result Result, err error) (string, string, slog.Level) {
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "canceled", "canceled", slog.LevelWarn
+		}
+		return "failed", workflowErrorKind(err), slog.LevelError
+	}
+	switch result.Outcome {
+	case OutcomeSatisfied:
+		if result.Candidate.ResultID != "" {
+			return string(result.Outcome), "provenance_refreshed", slog.LevelInfo
+		}
+		return string(result.Outcome), "existing_subtitle", slog.LevelInfo
+	case OutcomeInstalled:
+		return string(result.Outcome), "installed", slog.LevelInfo
+	case OutcomeNoResult:
+		return string(result.Outcome), "no_candidate", slog.LevelInfo
+	case OutcomeRejected:
+		return string(result.Outcome), "no_eligible_candidate", slog.LevelInfo
+	case OutcomeThrottled:
+		return string(result.Outcome), "provider_unavailable", slog.LevelWarn
+	default:
+		return "failed", "incomplete_result", slog.LevelError
+	}
+}
+
+func workflowErrorKind(err error) string {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "canceled"
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "inventory") || strings.Contains(message, "ffprobe"):
+		return "inventory"
+	case strings.Contains(message, "provider"):
+		return "provider_search"
+	case strings.Contains(message, "LAPSE"):
+		return "lapse"
+	case strings.Contains(message, "install") || strings.Contains(message, "subtitle"):
+		return "installation"
+	default:
+		return "workflow"
+	}
+}
+
+func inventoryTrackCounts(current inventory.Inventory) (embedded, sidecar int) {
+	for _, track := range current.Tracks {
+		if track.Embedded {
+			embedded++
+		} else {
+			sidecar++
+		}
+	}
+	return embedded, sidecar
+}
+
+func (s *Service) logCandidateEvaluation(ctx context.Context, request Request, candidate domain.Candidate, score domain.Score) {
+	components := make([]map[string]any, 0, len(score.Contributions))
+	for _, item := range score.Contributions {
+		components = append(components, map[string]any{
+			"signal": observability.SafeText(item.Signal),
+			"points": item.Points,
+			"reason": observability.SafeText(item.Reason),
+		})
+	}
+	attrs := []slog.Attr{
+		slog.String("provider", observability.SafeText(candidate.ProviderID)),
+		slog.String("candidate_id", observability.SafeText(candidate.ResultID)),
+		slog.Int("score", score.Total),
+		slog.Bool("eligible", match.Eligible(score, s.minimumScore())),
+		slog.Any("score_components", components),
+		slog.Any("rejected_reasons", safeStrings(score.RejectedReasons)),
+		slog.Any("release_names", safeStrings(candidate.ReleaseNames)),
+	}
+	if relative, ok := s.workflowEvents().RelativePath(request.Media.Fingerprint.Path); ok {
+		attrs = append(attrs, slog.String("relative_path", relative))
+	}
+	s.workflowEvents().Log(ctx, slog.LevelDebug, "candidate.evaluated", "subtitle candidate evaluated", attrs...)
+}
+
+func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
+	event := "candidate.decision"
+	switch decision.Stage {
+	case "candidate_rejection", "candidate":
+		event = "candidate.rejected"
+	case "tournament_tier":
+		event = "candidate.tier_started"
+	case "fallback":
+		event = "candidate.fallback"
+	case "early_stop":
+		event = "candidate.early_stopped"
+	}
+	attrs := []slog.Attr{slog.String("stage", observability.SafeText(decision.Stage))}
+	if decision.ProviderID != "" {
+		attrs = append(attrs, slog.String("provider", observability.SafeText(decision.ProviderID)))
+	}
+	if decision.ResultID != "" {
+		attrs = append(attrs, slog.String("candidate_id", observability.SafeText(decision.ResultID)))
+	}
+	s.workflowEvents().Log(ctx, slog.LevelDebug, event, "subtitle candidate decision", attrs...)
+}
+
+func safeStrings(values []string) []string {
+	result := make([]string, 0, min(len(values), 8))
+	for _, value := range values {
+		if len(result) == 8 {
+			break
+		}
+		if safe := observability.SafeText(value); safe != "" {
+			result = append(result, safe)
+		}
+	}
+	return result
+}
+
+func (s *Service) logLapseCompleted(ctx context.Context, phase string, candidate domain.Candidate, result domain.SyncResult, duration time.Duration) {
+	level := slog.LevelInfo
+	if result.Verdict != "solid" {
+		level = slog.LevelWarn
+	}
+	event := "lapse." + phase + "_completed"
+	s.workflowEvents().Log(ctx, level, event, "LAPSE phase completed", lapseAttrs(s, phase, candidate, result, duration)...)
+}
+
+func (s *Service) logLapseFailure(ctx context.Context, phase string, candidate domain.Candidate, duration time.Duration, err error) {
+	result := domain.SyncResult{}
+	level := slog.LevelError
+	var verdict *syncer.VerdictError
+	if errors.As(err, &verdict) {
+		result.Verdict = observability.SafeText(verdict.Verdict)
+		level = slog.LevelWarn
+	}
+	attrs := lapseAttrs(s, phase, candidate, result, duration)
+	attrs = append(attrs, s.workflowEvents().ErrorAttrs("lapse_"+phase, err)...)
+	s.workflowEvents().Log(ctx, level, "lapse.failed", "LAPSE phase failed", attrs...)
+}
+
+func lapseAttrs(s *Service, phase string, candidate domain.Candidate, result domain.SyncResult, duration time.Duration) []slog.Attr {
+	version := "unknown"
+	if versioned, ok := s.Synchronizer.(interface{ CompatibilityVersion() string }); ok {
+		if safe := observability.SafeText(versioned.CompatibilityVersion()); safe != "" {
+			version = safe
+		}
+	}
+	return []slog.Attr{
+		slog.String("phase", phase),
+		slog.String("provider", observability.SafeText(candidate.ProviderID)),
+		slog.String("candidate_id", observability.SafeText(candidate.ResultID)),
+		slog.Int64("duration_ms", duration.Milliseconds()),
+		slog.String("verdict", observability.SafeText(result.Verdict)),
+		slog.String("mode", observability.SafeText(result.Mode)),
+		slog.Int64("offset_ms", result.OffsetMS),
+		slog.Float64("ratio", result.Ratio),
+		slog.Float64("confidence", result.Confidence),
+		slog.Float64("agreement", result.Agreement),
+		slog.Float64("coverage", result.Coverage),
+		slog.Int("parts", result.Parts),
+		slog.Int("splits", result.Splits),
+		slog.String("compatibility_version", version),
+	}
 }
 
 func lapseFailureDecision(failure error) string {
@@ -651,11 +867,14 @@ func (s *Service) analyzeCandidate(ctx context.Context, request Request, item do
 	if canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
 		return analyzedCandidate{downloadedCandidate: item, analysis: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
+	startedAt := time.Now()
 	analysis, err := s.Synchronizer.AnalyzeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path)
-	if err != nil || analysis.Verdict != "solid" {
-		if err != nil {
-			return analyzedCandidate{}, err
-		}
+	if err != nil {
+		s.logLapseFailure(ctx, "analysis", item.candidate, time.Since(startedAt), err)
+		return analyzedCandidate{}, err
+	}
+	s.logLapseCompleted(ctx, "analysis", item.candidate, analysis, time.Since(startedAt))
+	if analysis.Verdict != "solid" {
 		return analyzedCandidate{}, fmt.Errorf("LAPSE analysis was not solid")
 	}
 	return analyzedCandidate{downloadedCandidate: item, analysis: analysis}, nil
@@ -667,11 +886,14 @@ func (s *Service) finalizeCandidate(ctx context.Context, request Request, item a
 	}
 	extension := strings.ToLower(filepath.Ext(item.path))
 	output := filepath.Join(workspace, fmt.Sprintf("synchronized-%d%s", index, extension))
+	startedAt := time.Now()
 	synchronized, err := s.Synchronizer.SynchronizeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path, output)
-	if err != nil || synchronized.Verdict != "solid" {
-		if err != nil {
-			return finalizedCandidate{}, err
-		}
+	if err != nil {
+		s.logLapseFailure(ctx, "sync", item.candidate, time.Since(startedAt), err)
+		return finalizedCandidate{}, err
+	}
+	s.logLapseCompleted(ctx, "sync", item.candidate, synchronized, time.Since(startedAt))
+	if synchronized.Verdict != "solid" {
 		return finalizedCandidate{}, fmt.Errorf("LAPSE synchronization was not solid")
 	}
 	// Use analysis confidence for ranking because every candidate was compared at
@@ -687,6 +909,7 @@ func sameInstalledCandidate(existing store.Installation, media domain.Media, can
 }
 
 func (s *Service) updateInstallationAssessment(ctx context.Context, existing store.Installation, candidate domain.Candidate, score domain.Score) (store.Installation, error) {
+	startedAt := time.Now()
 	scoreJSON, err := json.Marshal(score)
 	if err != nil {
 		return existing, fmt.Errorf("encode refreshed installed score: %w", err)
@@ -700,8 +923,10 @@ func (s *Service) updateInstallationAssessment(ctx context.Context, existing sto
 		existing.SyncResultJSON = syncJSON
 	}
 	if err := s.Repository.UpdateInstallationAssessment(ctx, existing); err != nil {
+		s.workflowEvents().Log(ctx, slog.LevelError, "subtitle.provenance_refresh_failed", "subtitle provenance refresh failed", append([]slog.Attr{slog.String("provider", candidate.ProviderID), slog.String("candidate_id", candidate.ResultID), slog.Int("score", score.Total), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}, s.workflowEvents().ErrorAttrs("persistence", err)...)...)
 		return existing, fmt.Errorf("refresh installed candidate assessment: %w", err)
 	}
+	s.workflowEvents().Log(ctx, slog.LevelInfo, "subtitle.provenance_refreshed", "subtitle provenance refreshed", slog.String("provider", candidate.ProviderID), slog.String("candidate_id", candidate.ResultID), slog.Int("score", score.Total), slog.Bool("exact_hash", candidate.ExactHash), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()))
 	return existing, nil
 }
 
@@ -761,10 +986,27 @@ func (s *Service) install(ctx context.Context, request Request, prepared finaliz
 		}
 		destination = existing.Path
 	}
+	selectionMode := prepared.sync.Verdict
+	if selectionMode != "exact_hash" && selectionMode != "score_bypass" {
+		selectionMode = "lapse"
+	}
+	s.workflowEvents().Log(ctx, slog.LevelInfo, "candidate.selected", "subtitle candidate selected", slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("exact_hash", prepared.candidate.ExactHash), slog.String("selection_mode", selectionMode))
+	startedAt := time.Now()
 	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, SourcePath: prepared.path, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync})
 	if err != nil {
+		attrs := append([]slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}, s.workflowEvents().ErrorAttrs("installation", err)...)
+		s.workflowEvents().Log(ctx, slog.LevelError, "subtitle.install_failed", "subtitle installation failed", attrs...)
 		return result, err
 	}
+	checksum := observability.SafeText(installation.Checksum)
+	if len(checksum) > 12 {
+		checksum = checksum[:12]
+	}
+	attrs := []slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("replaced", installed), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}
+	if checksum != "" {
+		attrs = append(attrs, slog.String("checksum_prefix", checksum))
+	}
+	s.workflowEvents().Log(ctx, slog.LevelInfo, "subtitle.installed", "subtitle installed", attrs...)
 	result.Outcome = OutcomeInstalled
 	result.Candidate = prepared.candidate
 	result.Score = prepared.score
