@@ -310,6 +310,90 @@ func TestInstallationFingerprintRoundTripsAndInvalidatesOnMediaChange(t *testing
 	}
 }
 
+func TestInventoryFingerprintChangeInvalidatesInstallationProvenance(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}
+	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	changed := media.Fingerprint
+	changed.ModTime = changed.ModTime.Add(time.Second)
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, changed, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found || string(got.ScoreJSON) != "{}" || string(got.SyncResultJSON) != "{}" || got.MediaPath != "" || got.MediaFileID != 0 || got.MediaSize != 0 || got.MediaModTimeNS != 0 {
+		t.Fatalf("invalidated installation = %#v/%v/%v", got, found, err)
+	}
+}
+
+func TestCatalogRefreshPreservesAuthoritativeInventoryFingerprintAndInstallation(t *testing.T) {
+	repo := openTestRepository(t)
+	catalogMedia := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), catalogMedia)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritative := catalogMedia.Fingerprint
+	authoritative.ModTime = authoritative.ModTime.Add(2 * time.Hour)
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, authoritative, nil); err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: authoritative.Path, MediaFileID: authoritative.FileID, MediaSize: authoritative.Size, MediaModTimeNS: authoritative.ModTime.UnixNano()}
+	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := repo.UpsertMedia(context.Background(), catalogMedia); err != nil || changed {
+		t.Fatalf("catalog refresh changed = %v, err = %v", changed, err)
+	}
+	gotMedia, err := repo.GetMedia(context.Background(), mediaID)
+	if err != nil || !gotMedia.Fingerprint.ModTime.Equal(authoritative.ModTime) {
+		t.Fatalf("media fingerprint = %#v, err = %v", gotMedia.Fingerprint, err)
+	}
+	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found || got.MediaPath != authoritative.Path || got.MediaFileID != authoritative.FileID || got.MediaSize != authoritative.Size || got.MediaModTimeNS != authoritative.ModTime.UnixNano() || string(got.ScoreJSON) != `{"total":70}` || string(got.SyncResultJSON) != `{"verdict":"solid"}` {
+		t.Fatalf("installation = %#v/%v/%v", got, found, err)
+	}
+}
+
+func TestCatalogEventPreservesAuthoritativeInventoryFingerprintAndInstallation(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	catalogMedia := testMedia()
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "initial-import", Type: "import", Media: catalogMedia, Ref: catalogMedia.Ref, Languages: []domain.Language{"en"}, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	mediaID, stored, err := repo.FindMedia(context.Background(), catalogMedia.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritative := stored.Fingerprint
+	authoritative.ModTime = authoritative.ModTime.Add(2 * time.Hour)
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, authoritative, nil); err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: authoritative.Path, MediaFileID: authoritative.FileID, MediaSize: authoritative.Size, MediaModTimeNS: authoritative.ModTime.UnixNano()}
+	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "repeat-import", Type: "import", Media: catalogMedia, Ref: catalogMedia.Ref, Languages: []domain.Language{"en"}, At: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	gotMedia, err := repo.GetMedia(context.Background(), mediaID)
+	if err != nil || !gotMedia.Fingerprint.ModTime.Equal(authoritative.ModTime) {
+		t.Fatalf("media fingerprint = %#v, err = %v", gotMedia.Fingerprint, err)
+	}
+	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found || got.MediaPath != authoritative.Path || got.MediaFileID != authoritative.FileID || got.MediaSize != authoritative.Size || got.MediaModTimeNS != authoritative.ModTime.UnixNano() || string(got.ScoreJSON) != `{"total":70}` || string(got.SyncResultJSON) != `{"verdict":"solid"}` {
+		t.Fatalf("installation = %#v/%v/%v", got, found, err)
+	}
+}
+
 func TestMediaRenameRetainsInstallationProvenanceAndRebasesManagedPaths(t *testing.T) {
 	repo := openTestRepository(t)
 	media := testMedia()

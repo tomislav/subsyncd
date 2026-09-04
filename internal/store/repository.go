@@ -238,6 +238,7 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 		return 0, false, fmt.Errorf("find media: %w", err)
 	}
 	if err == nil {
+		preserveAuthoritativeModTime(&media, existingFileID, existingSize, existingModTime)
 		contentChanged = existingFileID != media.Fingerprint.FileID || existingSize != media.Fingerprint.Size || existingModTime != media.Fingerprint.ModTime.UnixNano()
 		changed = existingPath != media.Fingerprint.Path || contentChanged
 	}
@@ -458,6 +459,15 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, f
 		return fmt.Errorf("begin track replacement: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var existingFileID, existingSize, existingModTime int64
+	err = tx.QueryRowContext(ctx, `SELECT file_id, size, mod_time_ns FROM media WHERE id=?`, mediaID).Scan(&existingFileID, &existingSize, &existingModTime)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("media %d not found while replacing track inventory", mediaID)
+	}
+	if err != nil {
+		return fmt.Errorf("read inventory fingerprint: %w", err)
+	}
+	contentChanged := existingFileID != fingerprint.FileID || existingSize != fingerprint.Size || existingModTime != fingerprint.ModTime.UnixNano()
 	result, err := tx.ExecContext(ctx, `UPDATE media SET path=?, file_id=?, size=?, mod_time_ns=?, updated_at_ns=? WHERE id=?`, fingerprint.Path, fingerprint.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), time.Now().UTC().UnixNano(), mediaID)
 	if err != nil {
 		return fmt.Errorf("update inventory fingerprint: %w", err)
@@ -468,6 +478,11 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, f
 	}
 	if updated != 1 {
 		return fmt.Errorf("media %d not found while replacing track inventory", mediaID)
+	}
+	if contentChanged {
+		if err := invalidateInstallationTx(ctx, tx, mediaID); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE media_id = ?`, mediaID); err != nil {
 		return fmt.Errorf("delete old tracks: %w", err)
@@ -1120,6 +1135,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		return 0, false, fmt.Errorf("find media for event: %w", err)
 	}
 	if err == nil {
+		preserveAuthoritativeModTime(&media, existingFileID, existingSize, existingModTime)
 		changed = existingFileID != media.Fingerprint.FileID || existingSize != media.Fingerprint.Size || existingModTime != media.Fingerprint.ModTime.UnixNano()
 	}
 	alternateTitles, err := json.Marshal(media.AlternateTitles)
@@ -1147,6 +1163,12 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		}
 	}
 	return id, changed, nil
+}
+
+func preserveAuthoritativeModTime(media *domain.Media, existingFileID, existingSize, existingModTime int64) {
+	if existingFileID == media.Fingerprint.FileID && existingSize == media.Fingerprint.Size {
+		media.Fingerprint.ModTime = time.Unix(0, existingModTime).UTC()
+	}
 }
 
 func invalidateInstallationTx(ctx context.Context, tx *sql.Tx, mediaID int64) error {
