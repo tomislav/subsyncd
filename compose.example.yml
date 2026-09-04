@@ -1,10 +1,6 @@
 services:
   subsyncd:
-    image: subsyncd:local
-    build:
-      context: .
-      args:
-        VERSION: dev
+    image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-latest}
     init: true
     restart: unless-stopped
     read_only: true

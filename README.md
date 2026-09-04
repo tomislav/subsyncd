@@ -17,6 +17,18 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 
 See [providers.md](docs/providers.md) for search/scoring behavior and [operations.md](docs/operations.md) for deployment, webhooks, commands, recovery, and upgrades.
 
+## Private container image
+
+GitHub Actions publishes `ghcr.io/tomislav/subsyncd` for `linux/amd64` and `linux/arm64`. The repository and package are private, so each Docker host must authenticate with a GitHub token that can read packages:
+
+```bash
+docker login ghcr.io --username tomislav
+```
+
+Enter the token through Docker's password prompt; do not put it in this repository or in a command argument.
+
+Successful pushes to `main` publish `latest` and an immutable `sha-<commit>` tag. Stable `v*` tags also publish semantic-version aliases; prereleases publish only their full version and SHA. Set `SUBSYNCD_IMAGE_TAG` to pin Compose to a version or immutable SHA.
+
 ## Quick start with Compose
 
 1. Copy `config.example.yaml` to `config/config.yaml`.
@@ -26,18 +38,12 @@ See [providers.md](docs/providers.md) for search/scoring behavior and [operation
 5. Make the external `media` network (or change the network in the example) and start the service:
 
 ```bash
-docker compose -f compose.example.yml build
+docker compose -f compose.example.yml pull
 docker compose -f compose.example.yml up -d
 docker compose -f compose.example.yml exec subsyncd subsyncd doctor --config /config/config.yaml
 ```
 
-The production image contains Go 1.27-built `subsyncd`, FFmpeg/FFprobe and timezone data from Debian 13.2, and checksummed LAPSE v2.0.5 release assets for Linux amd64 and arm64. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image defaults to unprivileged UID/GID `1000:1000`; Compose can select another existing host identity through `PUID` and `PGID` without starting the container as root. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
-
-The root stack exposes the same service behind an opt-in profile:
-
-```bash
-docker compose --profile subsyncd up -d subsyncd
-```
+The `ghcr.io/tomislav/subsyncd:latest` production image supports Linux amd64 and arm64. It contains Go 1.27-built `subsyncd`, FFmpeg/FFprobe and timezone data from Debian 13.2, and checksummed LAPSE v2.0.5 release assets. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image defaults to unprivileged UID/GID `1000:1000`; Compose can select another existing host identity through `PUID` and `PGID` without starting the container as root. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
 
 ## Native build
 
@@ -48,6 +54,8 @@ go build -trimpath -o subsyncd ./cmd/subsyncd
 ./subsyncd --version
 ./subsyncd doctor --config ./config.yaml
 ./subsyncd serve --config ./config.yaml
+
+docker build --build-arg VERSION=dev -t subsyncd:local .
 ```
 
 The configuration requires absolute `data_dir`, `media_roots`, mapping destinations, and `sync.lapse_path` values.
