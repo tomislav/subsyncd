@@ -15,6 +15,7 @@ Important invariants:
 
 - Canonical language identities are BCP 47 tags.
 - Embedded subtitle inventory is fingerprint-cached; sidecars are scanned live before searches.
+- Provider file hashes are calculated lazily, persisted by algorithm, and reusable only for an exact path/file-ID/size/mtime fingerprint.
 - Providers are compiled-in adapters behind the common interface.
 - Remote provider cooldowns are persisted and release worker leases; provider code must not sleep through them.
 - A season-pack member must be uniquely identified. Never select the first arbitrary archive member.
