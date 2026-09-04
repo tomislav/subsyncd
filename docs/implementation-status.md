@@ -5,7 +5,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 14, daemon, webhook API, and operational CLI
+- Current task: Task 15, packaging and service documentation
 - Next task: Task 15, packaging and service documentation
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
@@ -30,20 +30,18 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Commit: `b047df2 feat: integrate Sonarr and Radarr catalogs`
 
-- Webhook IDs are stable hashes of configured instance, normalized Arr event name, media kind, and Arr file ID. Duplicate deliveries are database no-ops.
+- Webhook IDs are stable hashes of configured instance, normalized Arr event name, media kind, Arr file ID, size, path/previous-path, release evidence, and upgrade flag. Exact duplicate deliveries are database no-ops while later renames of the same file ID remain distinct.
 - Imports and renames hydrate the authoritative file/episode-or-movie/series records from Arr before persistence. Deletes do not require a now-missing remote file resource.
 - Content provenance invalidation compares Arr file ID, byte size, and nanosecond timestamp. A path-only rename retains candidate provenance while updating the path.
 - Import/upgrade resets the missing schedule for every configured language. Delete events release/cancel pending jobs and remain in a bounded 10,000-row audit log.
 - Reconciliation applies the full hydrated history page and cursor in one SQLite transaction, preventing a cursor gap after a partial failure.
 - Path mapping tightens Bazarr behavior: longest boundary-aware remote prefix wins, both slash styles are accepted, case is preserved, traversal is rejected, and existing parent symlinks are resolved before media-root containment is accepted.
-- Arr errors include instance/status and at most 4 KiB of response text; API keys are never included. Default client timeout is 15 seconds.
+- Arr errors include only instance and status; untrusted upstream response bodies and API keys are never surfaced. Default client timeout is 15 seconds.
 - Ordinary tests use sanitized fixture JSON and loopback fake servers only.
 - Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed. The full run exposed and retained a regression for SQLite partial unique indexes; targetless `ON CONFLICT DO NOTHING` is required for the partial `events(event_id)` index.
 
 ## Known follow-ups
 
-- The application wiring will create/ensure configured Arr instance rows before reconciliation starts.
-- HTTP webhook token validation belongs to the HTTP API task; catalog normalization deliberately accepts bytes only after transport authentication.
 - Reconciliation currently hydrates history rows that still identify a live file. Deletions are handled by delete webhooks; if an Arr history endpoint exposes reliable deletion tombstones, add them behind a contract fixture before changing this rule.
 
 ### Task 7 — Titlovi adapter
@@ -136,6 +134,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 - The optional Silo adapter follows the current official Jellyfin-compatible contract: `POST /Library/Media/Updated`, `X-Emby-Token`, one `Modified` media-file path, and 2xx success (Silo documents 204). It supports boundary-aware longest-prefix mount rewrites, rejects redirects and credential-bearing/invalid base URLs, uses a 15-second default timeout, treats timeout/408/429/5xx as retryable, and never includes the API key or response body in errors. The example now targets Silo's compatibility listener on port 8096. See `docs/references/silo.md`.
 - Bazarr was not used for Silo behavior; official Silo documentation is authoritative. The worker design independently tightens the nonblocking cooldown and durable-lease requirements from the approved service design.
 - Verification: race-enabled tests cover renewal, completion ordering, two-worker exclusion, two-workflow concurrency, crash recovery, missing/failure/throttle accounting, poll/reset jitter, six-hour reconciliation, bounded shutdown, notification dedupe/retry isolation, disabled Silo, request contract, path mapping, authentication/status classification, timeout, redirect rejection, and secret redaction. Final `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Task 14 — daemon, webhook API, and operational CLI
+
+- Commit: `9d0d06a feat: expose subtitle daemon and CLI`
+
+- `internal/app` now assembles strict configuration, media-root checks, SQLite/migrations, Arr catalogs and persisted instance rows, compiled-in providers, per-language ordered coordinators/workflows, embedded inventory, immutable pack cache, LAPSE, atomic installer, optional Silo notification, reconcilers, durable worker, and the HTTP handler. Assembly performs no Arr/provider/Silo network request, so those dependencies can be unavailable without blocking startup/readiness.
+- Startup fails before serving when configuration/listen addresses are invalid, media roots do not exist as directories, SQLite cannot open/migrate, `ffprobe -version` fails, or LAPSE does not advertise `--json`, `--strict`, `--output`, `--no-sidecar`, and cache support (`--no-cache`). The pinned v2.0.5 source shows usage on stderr and can return nonzero for help, so a complete advertised capability set is accepted regardless of help exit status; an empty nonzero response fails. See <https://github.com/rs-jensen/lapse/tree/v2.0.5>.
+- `serve` runs the worker and a time-bounded `net/http` server together. SIGINT/SIGTERM cancel the shared context; HTTP drains first with a 30-second ceiling and force-closes on timeout, then active worker work receives cancellation and recoverable leases remain in SQLite. Mutating processes are excluded by a nonblocking advisory lock at `<data_dir>/subsyncd.lock`.
+- The HTTP surface is limited to `POST /webhooks/{instance}?token=...`, `GET /healthz`, and `GET /readyz`. Tokens are SHA-256-normalized before constant-time comparison; exactly one token is required. Bodies are capped at 1 MiB and must contain one complete JSON object. Unknown instances, invalid tokens, unsupported/missing event identity, test events, oversized input, and dependency failure have explicit generic status responses. Every response receives a bounded request ID, and structured logs contain the path without query strings or error bodies.
+- Readiness rechecks only SQLite and local media roots. It never probes Arr, subtitle providers, or Silo. Arr non-2xx errors now omit untrusted response bodies from logs/CLI output. Configuration-aware CLI error redaction removes Arr/webhook/Silo/provider credentials and configured media-root prefixes.
+- Webhook deduplication was tightened: exact redeliveries remain transactionally harmless, but stable IDs now include file/path/release/upgrade evidence so a later rename of the same Arr file ID is not suppressed. Catalog normalization exposes a typed invalid-webhook error for correct HTTP classification.
+- The stable CLI surface is `serve`, `scan`, `search`, `retry`, `explain`, `doctor`, and `analyze-sync`, with exit codes 0/1/2 for success/operation failure/usage. Configuration defaults to `/config/config.yaml`, honors `SUBSYNCD_CONFIG`, and can be overridden by `--config` on every command. Flags unrelated to a command are rejected.
+- `scan` reconciles one configured instance and can force-refresh embedded tracks for every indexed file. `search` hydrates current Arr metadata and calls the same protected-file/scoring/LAPSE/install workflow used by workers. `retry` clears every persisted throttle/auth scope for one configured provider. `explain` reports indexed identity, embedded/sidecar inventory, scheduling attempts/outcome, candidate score and identity evidence, installation/LAPSE provenance, reusable packs, and provider cooldowns. `analyze-sync` accepts only media inside configured roots, calls LAPSE analysis mode, and never installs output.
+- The example configuration no longer advertises nonexistent `fallback_cooldowns` YAML; the documented provider-specific fallback values remain compiled policy in `provider.FallbackReset`.
+- Verification: focused red/green tests cover HTTP authentication/body/JSON/status/readiness/request-ID/query-redaction behavior; CLI golden output, strict flags, exit codes, and backend redaction; real compiled provider assembly without network calls; startup diagnostics; local readiness; advisory-lock exclusion; and HTTP/worker drain. Final `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
 

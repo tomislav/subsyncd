@@ -34,6 +34,13 @@ Important invariants:
 - Missing/rejected results advance only the missing-attempt schedule; technical failures advance only the failure schedule; provider throttles advance neither and are scheduled at or after the provider reset. Successful/installed outcomes reset both counters.
 - A committed installation enqueues a checksum-deduplicated notification before its search lease completes. Notification leases, attempts, and retry times are independent from subtitle acquisition; Silo failure never rolls back a valid subtitle.
 - Silo integration is limited to its documented Jellyfin-compatible `POST /Library/Media/Updated` contract on the compatibility listener (normally port 8096), authenticated with `X-Emby-Token`. Send the mapped media-file path as `Modified`, reject redirects, and never persist or surface the API key.
+- The only HTTP routes are authenticated `POST /webhooks/{instance}`, `GET /healthz`, and `GET /readyz`. Webhook bodies are capped at 1 MiB, query tokens are compared as fixed-size SHA-256 values, response/log errors are generic, and structured logs use the path without its query string.
+- Webhook IDs include the instance, event type, kind, file ID, size, path/previous-path, release evidence, and upgrade flag. Exact redeliveries are no-ops, but a later rename of the same Arr file ID must produce a new event ID.
+- Startup and readiness are intentionally local/offline. Startup validates configuration, existing media-root directories, SQLite migrations, LAPSE help capabilities, and `ffprobe -version`; it never requires a live Arr/provider/Silo response. Runtime readiness rechecks SQLite and media roots only.
+- LAPSE v2.0.5 prints its usage to stderr and may return a nonzero status for `--help`. Capability detection therefore trusts the presence of `--json`, `--strict`, `--output`, `--no-sidecar`, and `--no-cache`, while an empty nonzero response or failed process is incompatible.
+- The daemon owns a nonblocking advisory lock at `<data_dir>/subsyncd.lock`. `serve`, `scan`, `search`, and `retry` are mutating operations and must take it; `explain`, `doctor`, and `analyze-sync` are read-only. A second mutator must fail rather than race the daemon.
+- CLI commands route through the assembled services, not HTTP management endpoints. The configuration path defaults to `/config/config.yaml`, can be set with `SUBSYNCD_CONFIG`, and every command accepts an explicit `--config`. Backend errors must pass through configuration-aware secret/media-root redaction before reaching stderr.
+- Language routing is assembled as one workflow per canonical language, preserving that language's configured provider order. Do not use one global provider list for all worker jobs.
 
 Local verification uses writable caches:
 
