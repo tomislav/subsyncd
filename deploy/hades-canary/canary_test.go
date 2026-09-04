@@ -16,6 +16,7 @@ func TestDeploymentIsManualPinnedAndRestricted(t *testing.T) {
 		"ghcr.io/tomislav/subsyncd:sha-6f0683a",
 		`profiles: ["manual"]`,
 		`restart: "no"`,
+		`disable: true`,
 		`command: ["doctor", "--config", "/config/config.yaml"]`,
 		`/srv/media/movies/1917 (2019) [tmdbid-530915]`,
 		`/srv/media/movies/Arrival (2016) [tmdbid-329865]`,

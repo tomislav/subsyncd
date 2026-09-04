@@ -6,6 +6,8 @@ services:
     profiles: ["manual"]
     command: ["doctor", "--config", "/config/config.yaml"]
     restart: "no"
+    healthcheck:
+      disable: true
     init: true
     read_only: true
     user: "${PUID:-1000}:${PGID:-1000}"
