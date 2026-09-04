@@ -7,7 +7,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Branch: `feat/subsyncd`
 - Current task: complete through Task 15
 - Next task: none; the approved implementation plan ends after Task 15
-- Latest follow-up: current native Silo scan API integration in `4a394b1`
+- Latest follow-up: configurable rootless container identity in `ce023d5`
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -164,6 +164,16 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Silo's API-v2 program plans a dual-API bridge followed by a Silo 1.0 `/api/v1` tombstone. The current migration ledger says the scan operation will be ported but leaves its v2 method, path, and operation ID unset. Do not guess or automatically replay the mutating request across versions; add an explicit versioned adapter with contract tests once Silo publishes the route and schema.
 - Verification on 2026-09-04: `go test ./internal/notifier -race -v`, `go test ./... -race`, `go vet ./...`, `go test ./test/e2e -tags=e2e -v`, and `git diff --check` passed. The end-to-end flow asserts the native route, bearer header, mapped media path, accepted response, durable deduplication, and restart behavior.
 - Next task: monitor Silo API-v2 issue #135, cutover issue #886, and migration-ledger PR #902; implement v2 only after the scan contract is assigned and published.
+
+### Follow-up — configurable rootless container identity
+
+- Commit: `ce023d5 feat: make container identity configurable`
+- The image's baked-in unprivileged account and owned runtime directories now default to UID/GID `1000:1000`. Both Compose definitions interpolate host-side `PUID` and `PGID` into `user:` and `/tmp` tmpfs ownership, also defaulting to `1000:1000`.
+- This deliberately is not a LinuxServer-style root entrypoint: the service does not read `PUID`/`PGID` from its container environment, create users, retain `CHOWN`/`SETUID` capabilities, or mutate bind-mount ownership. Operators set the values in `.env` or the invoking shell and must prepare `/data` and media permissions for that numeric identity.
+- Compose passes `TZ`, defaulting to `Europe/Zagreb`; the runtime image explicitly installs timezone data. Arbitrary numeric identities do not require passwd/home lookup because `subsyncd` uses explicit configured paths and LAPSE cache locations.
+- Red/green Compose checks proved that standalone and root-stack definitions previously ignored `PUID=1234 PGID=2345 TZ=UTC`, then rendered `user: 1234:2345`, matching tmpfs ownership, and `TZ=UTC` after the change. Default renders were separately checked as `1000:1000` and `Europe/Zagreb`.
+- Verification on 2026-09-04: native arm64 image build; image metadata and runtime UID/GID checks; Zagreb timezone offset; default and arbitrary-identity `subsyncd --version` smoke runs; `go test ./... -race`; `go vet ./...`; tagged e2e tests; and `git diff --check`. The local image ID is recorded in `docs/release-notes.md`; it is not a registry digest.
+- Next task: none. Before publication, retain the existing native-amd64 build gate from the initial release notes.
 
 ### Task 14 — daemon, webhook API, and operational CLI
 
