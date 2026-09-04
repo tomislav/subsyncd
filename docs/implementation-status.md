@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 11, LAPSE integration
-- Next task: Task 12, workflow orchestration and atomic installation
+- Current task: Task 12, workflow orchestration and atomic installation
+- Next task: Task 13, durable workers and Silo notifications
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -96,6 +96,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Reuse matches any known TVDB, TMDB, IMDb, or title/year identity so a provider result keyed by one external ID can serve media carrying stronger additional IDs. Cached members remain subject to later matching/scoring and LAPSE validation.
 - Bazarr behavior adopted: format filtering and numbered/ranged pack evidence. Tightened: universal bounded extraction, no arbitrary single-file fallback, strict ambiguity rejection, content addressing, raw-link scrubbing, checksum validation, symlink-safe reuse, and rollback across filesystem/database publication.
 - Verification: focused red/green regressions plus `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Task 11 — LAPSE synchronization
+
+- Commit: `d37f7e1 feat: integrate LAPSE subtitle synchronization`
+
+- The compatibility baseline is official LAPSE v2.0.5 at tag commit `8d57e43`; current upstream HEAD inspected during implementation was `a0e99bd919e80f9f836cb4c6f6cc391c1a666dd6`. The CLI/JSON contract was verified from <https://github.com/rs-jensen/lapse> rather than inferred from Bazarr.
+- Analysis runs LAPSE with the media path plus a private copy of the candidate and `--dry-run --json --strict --no-sidecar`. The original candidate is never supplied as LAPSE's writable input. LAPSE dry-run legitimately reports `written:true` as “would write,” so trust comes from the `solid` verdict and validated protocol, not file existence during analysis.
+- Synchronization runs only to a caller-provided absent output using `--output PATH --no-backup --json --strict --no-sidecar`. It accepts only exit-0 `solid`, `written:true`, the exact reported output path, a real regular nonempty file, a supported text extension, valid UTF-8, parseable cues, and nonnegative monotonic timestamps.
+- JSON decoding requires the complete v2.0.5 field set, rejects unknown/trailing fields, validates the documented modes and `vad`/`embedded`/`subtitle` references, requires finite bounded metrics, and checks cue/part/split consistency. A future LAPSE protocol addition intentionally fails closed until fixtures and the allowlist are reviewed.
+- Strict `unsure` and `nothing` reports with exits 2/3 become typed `VerdictError` rejections. Early no-speech/no-audio failures without JSON become typed `NoSpeechError`. Nonzero failures, malformed/truncated JSON, missing output, invalid output, timeout, and protocol contradictions are rejected.
+- Exact-hash candidate entry points return an `exact_hash` bypass result without invoking either LAPSE command. Task 12 must call these candidate-aware entry points rather than calling raw analysis/synchronization for exact results.
+- The subprocess runner never uses a shell, caps stdout at 1 MiB and stderr at 64 KiB, replaces inherited `LAPSE_CACHE` with the configured persistent speech-cache directory, applies separate analysis/synchronization contexts, redacts media and temporary paths from surfaced errors, and kills the entire process group on cancellation.
+- Verification: sanitized v2.0.5 JSON fixtures and fake runners cover solid/weak/nothing, unsafe metrics, malformed/trailing/oversized output, no speech, nonzero exits, timeouts, path redaction, output validation, exact-hash bypass, environment replacement, output caps, exit preservation, and descendant-process cancellation. `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
 
