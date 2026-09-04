@@ -6,7 +6,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: conventional review repairs executing inline; Tasks 1–7 complete
-- Next task: final full-suite verification
+- Next task: none; push, image publication, and Hades deployment remain separate user-approved actions
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
@@ -17,7 +17,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - A tagged integration test now drives typed Sonarr history through the real catalog adapter and SQLite repository. One atomic page imports a searchable episode, tombstones an existing episode, persists an out-of-order combined file as `unsupported_multi_episode`, advances the cursor, and exposes only the supported import as due work.
 - README, operations, architecture, and contributor guidance now preserve the reconciliation transaction, failed-page cursor, active-lease rerun, fail-closed combined-episode, two-window shutdown, and incomplete-rollback recovery contracts for future agents and operators.
-- Verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test/e2e -tags=e2e -race -count=1` passes. Next task: final full-suite verification.
+- Verification: fresh parallel runs of `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./... -race -count=1`, `go vet ./...`, and `go test ./test/e2e -tags=e2e -race -count=1` all exited 0; `git diff --check` also passes. Next task: none inside this repair plan.
 
 ### Conventional repairs Task 6 — visible installation rollback failures
 
