@@ -17,6 +17,17 @@ type redactingBackend struct{ *fakeBackend }
 
 func (redactingBackend) Redact(error) error { return errors.New("[redacted]") }
 
+type reportingBackend struct {
+	*fakeBackend
+	reportedCommand string
+	reportedError   error
+}
+
+func (b *reportingBackend) ReportFailure(_ context.Context, command string, err error) {
+	b.reportedCommand = command
+	b.reportedError = err
+}
+
 func (f *fakeBackend) Close() error                { return nil }
 func (f *fakeBackend) Serve(context.Context) error { f.call = "serve"; return f.err }
 func (f *fakeBackend) Scan(_ context.Context, instance string, force bool) (string, error) {
@@ -70,7 +81,12 @@ func TestCommandSurface(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &fakeBackend{}
 			var stdout, stderr bytes.Buffer
-			command := Command{Open: func(context.Context, string) (Backend, error) { return backend, nil }, Stdout: &stdout, Stderr: &stderr}
+			command := Command{Open: func(_ context.Context, _ string, openedCommand string) (Backend, error) {
+				if openedCommand != test.args[0] {
+					t.Fatalf("opened command = %q, want %q", openedCommand, test.args[0])
+				}
+				return backend, nil
+			}, Stdout: &stdout, Stderr: &stderr}
 			if code := command.Run(context.Background(), test.args); code != ExitOK {
 				t.Fatalf("exit = %d, stderr=%q", code, stderr.String())
 			}
@@ -83,7 +99,7 @@ func TestCommandSurface(t *testing.T) {
 
 func TestVersionDoesNotOpenBackend(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	command := Command{Version: "1.2.3", Open: func(context.Context, string) (Backend, error) { t.Fatal("backend opened"); return nil, nil }, Stdout: &stdout, Stderr: &stderr}
+	command := Command{Version: "1.2.3", Open: func(context.Context, string, string) (Backend, error) { t.Fatal("backend opened"); return nil, nil }, Stdout: &stdout, Stderr: &stderr}
 	if code := command.Run(context.Background(), []string{"--version"}); code != ExitOK || stdout.String() != "subsyncd 1.2.3\n" {
 		t.Fatalf("exit/output = %d/%q", code, stdout.String())
 	}
@@ -101,8 +117,10 @@ func TestUsageAndOperationExitCodes(t *testing.T) {
 		{"missing required", []string{"search", "--instance", "tv"}, nil, ExitUsage, "--kind"},
 		{"bad kind", []string{"search", "--instance", "tv", "--kind", "track", "--file-id", "1", "--language", "en"}, nil, ExitUsage, "movie or episode"},
 		{"unrelated flag", []string{"serve", "--provider", "x"}, nil, ExitUsage, "not valid for serve"},
-		{"open failure", []string{"doctor", "--config", "/bad"}, func(context.Context, string) (Backend, error) { return nil, errors.New("invalid configuration") }, ExitFailure, "invalid configuration"},
-		{"operation failure", []string{"retry", "--provider", "missing"}, func(context.Context, string) (Backend, error) {
+		{"open failure", []string{"doctor", "--config", "/bad"}, func(context.Context, string, string) (Backend, error) {
+			return nil, errors.New("invalid configuration")
+		}, ExitFailure, "invalid configuration"},
+		{"operation failure", []string{"retry", "--provider", "missing"}, func(context.Context, string, string) (Backend, error) {
 			return &fakeBackend{err: errors.New("unknown provider")}, nil
 		}, ExitFailure, "unknown provider"},
 	} {
@@ -119,8 +137,23 @@ func TestUsageAndOperationExitCodes(t *testing.T) {
 func TestOperationErrorsUseBackendRedaction(t *testing.T) {
 	backend := redactingBackend{&fakeBackend{err: errors.New("secret path")}}
 	var stderr bytes.Buffer
-	code := (Command{Open: func(context.Context, string) (Backend, error) { return backend, nil }, Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"retry", "--provider", "p"})
+	code := (Command{Open: func(context.Context, string, string) (Backend, error) { return backend, nil }, Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"retry", "--provider", "p"})
 	if code != ExitFailure || stderr.String() != "subsyncd: [redacted]\n" {
 		t.Fatalf("exit/stderr = %d/%q", code, stderr.String())
+	}
+}
+
+func TestInitializedBackendFailureUsesStructuredReporterInsteadOfPlainText(t *testing.T) {
+	backend := &reportingBackend{fakeBackend: &fakeBackend{err: errors.New("backend exploded")}}
+	var stderr bytes.Buffer
+	code := (Command{Open: func(context.Context, string, string) (Backend, error) { return backend, nil }, Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"serve"})
+	if code != ExitFailure {
+		t.Fatalf("exit = %d, want %d", code, ExitFailure)
+	}
+	if backend.reportedCommand != "serve" || backend.reportedError == nil || backend.reportedError.Error() != "backend exploded" {
+		t.Fatalf("reported command/error = %q/%v", backend.reportedCommand, backend.reportedError)
+	}
+	if strings.Contains(stderr.String(), "backend exploded") || stderr.Len() != 0 {
+		t.Fatalf("plain stderr = %q, want empty", stderr.String())
 	}
 }

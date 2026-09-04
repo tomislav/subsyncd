@@ -1,9 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +23,7 @@ import (
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
@@ -104,6 +109,91 @@ func TestNewWiresConfiguredWorkflowConcurrency(t *testing.T) {
 	}
 	if background.MaxWorkflows != 4 {
 		t.Fatalf("worker max workflows = %d, want 4", background.MaxWorkflows)
+	}
+}
+
+func TestOpenUsesConfiguredEmitterAndLogsStartupLifecycle(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.yaml")
+	text := fmt.Sprintf(`
+data_dir: %q
+media_roots: [%q]
+server: {listen: "127.0.0.1:0"}
+logging: {level: debug}
+worker: {max_concurrent: 1}
+instances:
+  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, webhook_token: hook-secret, path_mappings: [{remote: /tv, local: %q}]}
+providers:
+  english: {type: fake, requests_per_second: 1, burst: 1, max_concurrent: 1}
+provider_http: {shared_origin_max_concurrent: 1}
+languages: {en: {providers: [english]}}
+pack_cache: {ttl: 1h, max_bytes: 1048576}
+sync: {lapse_path: /usr/local/bin/lapse, timeout: 1m}
+install: {file_mode: "0644"}
+`, filepath.Join(root, "data"), root, root)
+	if err := os.WriteFile(configPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	application, err := Open(context.Background(), configPath, OpenOptions{
+		LogWriter: &logs, Version: "sha-test", Command: "doctor",
+		Runtime: Options{SkipLapseCheck: true, SkipProbeCheck: true, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	application.Events.For("test").Log(context.Background(), slog.LevelDebug, "test.debug", "debug enabled")
+	records := decodeLogRecords(t, logs.String())
+	if len(records) != 3 {
+		t.Fatalf("log records = %d, want starting, ready, debug: %s", len(records), logs.String())
+	}
+	for index, event := range []string{"service.starting", "service.ready", "test.debug"} {
+		if records[index]["event"] != event {
+			t.Errorf("record %d event = %#v, want %q", index, records[index]["event"], event)
+		}
+	}
+	if records[0]["version"] != "sha-test" || records[0]["command"] != "doctor" || records[0]["instance_count"] != float64(1) || records[0]["provider_count"] != float64(1) || records[0]["language_count"] != float64(1) {
+		t.Fatalf("startup fields = %#v", records[0])
+	}
+}
+
+func TestOpenLogsSanitizedStartupFailure(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.yaml")
+	text := fmt.Sprintf(`
+data_dir: %q
+media_roots: [%q]
+server: {listen: "127.0.0.1:0"}
+instances:
+  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, webhook_token: hook-secret, path_mappings: [{remote: /tv, local: %q}]}
+providers:
+  english: {type: fake, requests_per_second: 1, burst: 1, max_concurrent: 1}
+languages: {en: {providers: [english]}}
+sync: {lapse_path: /usr/local/bin/lapse, timeout: 1m}
+`, filepath.Join(root, "data"), root, root)
+	if err := os.WriteFile(configPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	_, err := Open(context.Background(), configPath, OpenOptions{
+		LogWriter: &logs, Version: "test", Command: "serve",
+		Runtime: Options{SkipLapseCheck: true, ProbeRunner: probeRunner{err: errors.New("api-secret\n" + root + "/Movie.mkv")}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}},
+	})
+	if err == nil {
+		t.Fatal("Open() error = nil")
+	}
+	for _, forbidden := range []string{"api-secret", root} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("startup failure log contains %q: %s", forbidden, logs.String())
+		}
+	}
+	records := decodeLogRecords(t, logs.String())
+	if got := records[len(records)-1]["event"]; got != "service.start_failed" {
+		t.Fatalf("last event = %#v, want service.start_failed", got)
+	}
+	if message, _ := records[len(records)-1]["error"].(string); strings.ContainsAny(message, "\r\n") {
+		t.Fatalf("startup error field is multiline: %q", message)
 	}
 }
 
@@ -274,7 +364,12 @@ func TestServeDrainsHTTPAndWorkerOnCancellation(t *testing.T) {
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	application := &App{Config: cfg, Listener: listener, Handler: httpapi.Server{}.Handler(), Worker: worker}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := &App{Config: cfg, Listener: listener, Handler: httpapi.Server{}.Handler(), Worker: worker, Events: events, Command: "serve"}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- application.Serve(ctx) }()
@@ -300,6 +395,13 @@ func TestServeDrainsHTTPAndWorkerOnCancellation(t *testing.T) {
 	}
 	if !worker.stopped.Load() {
 		t.Fatal("worker was not drained")
+	}
+	records := decodeLogRecords(t, logs.String())
+	if len(records) != 2 || records[0]["event"] != "service.shutdown_requested" || records[1]["event"] != "service.stopped" {
+		t.Fatalf("shutdown events = %#v", records)
+	}
+	if records[0]["trigger"] != "context" || records[1]["outcome"] != "success" {
+		t.Fatalf("shutdown fields = %#v / %#v", records[0], records[1])
 	}
 }
 
@@ -336,4 +438,21 @@ func TestRedactRemovesConfiguredSecretsAndMediaRoots(t *testing.T) {
 			t.Fatalf("redacted error still contains %q: %s", forbidden, message)
 		}
 	}
+}
+
+func decodeLogRecords(t *testing.T, output string) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	records := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"subsyncd/internal/httpapi"
 	"subsyncd/internal/inventory"
 	"subsyncd/internal/notifier"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/provider/opensubtitles"
@@ -43,6 +45,7 @@ type Runner interface {
 
 type Options struct {
 	Logger         *slog.Logger
+	Events         *observability.Emitter
 	Clock          provider.Clock
 	HTTPClient     *http.Client
 	LapseRunner    syncer.Runner
@@ -71,18 +74,56 @@ type App struct {
 	Handler     http.Handler
 	Listener    net.Listener
 	Logger      *slog.Logger
+	Events      *observability.Emitter
+	Command     string
 	Clock       provider.Clock
 
 	closeOnce sync.Once
 	closeErr  error
 }
 
-func Open(ctx context.Context, configPath string, logger *slog.Logger) (*App, error) {
+type OpenOptions struct {
+	LogWriter io.Writer
+	Version   string
+	Command   string
+	Runtime   Options
+}
+
+func Open(ctx context.Context, configPath string, options OpenOptions) (*App, error) {
 	cfg, err := config.Load(configPath, os.LookupEnv)
 	if err != nil {
 		return nil, err
 	}
-	return New(ctx, cfg, Options{Logger: logger})
+	events, err := observability.New(options.LogWriter, observability.Options{
+		Level:      cfg.Logging.Level,
+		Version:    options.Version,
+		MediaRoots: cfg.MediaRoots,
+		Redact: func(err error) string {
+			return redactedError(err, cfg)
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	appEvents := events.For("app")
+	appEvents.Log(ctx, slog.LevelInfo, "service.starting", "subsyncd starting",
+		slog.String("command", options.Command),
+		slog.Int("instance_count", len(cfg.Instances)),
+		slog.Int("provider_count", len(cfg.Providers)),
+		slog.Int("language_count", len(cfg.Languages)),
+		slog.Int("max_concurrent", cfg.Worker.MaxConcurrent),
+		slog.Bool("silo_enabled", cfg.Silo.Enabled),
+	)
+	runtimeOptions := options.Runtime
+	runtimeOptions.Events = events
+	application, err := New(ctx, cfg, runtimeOptions)
+	if err != nil {
+		appEvents.Log(ctx, slog.LevelError, "service.start_failed", "subsyncd failed to start", appEvents.ErrorAttrs("startup", err)...)
+		return nil, err
+	}
+	application.Command = options.Command
+	appEvents.Log(ctx, slog.LevelInfo, "service.ready", "subsyncd ready", slog.String("command", options.Command))
+	return application, nil
 }
 
 func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err error) {
@@ -125,7 +166,11 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	logger := options.Logger
 	if logger == nil {
-		logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+	}
+	events := options.Events
+	if events == nil {
+		events = observability.Discard()
 	}
 	httpClient := options.HTTPClient
 	if httpClient == nil {
@@ -211,10 +256,13 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	workerRunner := options.Worker
 	if workerRunner == nil {
-		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, OnError: func(err error) { logger.Error("background cycle failed", "error", redactedError(err, cfg)) }}
+		workerEvents := events.For("worker")
+		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, OnError: func(err error) {
+			workerEvents.Log(context.Background(), slog.LevelError, "worker.cycle_failed", "background cycle failed", workerEvents.ErrorAttrs("background_cycle", err)...)
+		}}
 	}
 
-	application := &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Logger: logger, Clock: clock}
+	application := &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Logger: logger, Events: events, Clock: clock}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Logger: logger}.Handler()
 	return application, nil
 }
@@ -329,6 +377,7 @@ func validateMediaRoots(roots []string) error {
 }
 
 func (a *App) Serve(ctx context.Context) error {
+	started := time.Now()
 	release, err := a.acquireMutationLock()
 	if err != nil {
 		return err
@@ -350,19 +399,28 @@ func (a *App) Serve(ctx context.Context) error {
 	go func() { workerDone <- a.Worker.Run(runCtx) }()
 
 	var cause error
+	trigger := "context"
 	select {
 	case <-ctx.Done():
 	case err := <-serverDone:
+		trigger = "component_failure"
 		if !errors.Is(err, http.ErrServerClosed) {
 			cause = fmt.Errorf("HTTP server: %w", err)
 		}
 		serverDone = nil
 	case err := <-workerDone:
+		trigger = "component_failure"
 		if err != nil && !errors.Is(err, context.Canceled) {
 			cause = fmt.Errorf("worker: %w", err)
 		}
 		workerDone = nil
 	}
+	appEvents := a.Events
+	if appEvents == nil {
+		appEvents = observability.Discard()
+	}
+	appEvents = appEvents.For("app")
+	appEvents.Log(context.Background(), slog.LevelInfo, "service.shutdown_requested", "subsyncd shutdown requested", slog.String("trigger", trigger))
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	shutdownErr := server.Shutdown(shutdownCtx)
 	shutdownCancel()
@@ -380,7 +438,16 @@ func (a *App) Serve(ctx context.Context) error {
 			shutdownErr = errors.Join(shutdownErr, err)
 		}
 	}
-	return errors.Join(cause, shutdownErr)
+	result := errors.Join(cause, shutdownErr)
+	outcome := "success"
+	if result != nil {
+		outcome = "failed"
+	}
+	appEvents.Log(context.Background(), slog.LevelInfo, "service.stopped", "subsyncd stopped",
+		slog.String("outcome", outcome),
+		slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+	)
+	return result
 }
 
 func (a *App) Close() error {
@@ -397,6 +464,20 @@ func (a *App) Redact(err error) error {
 		return nil
 	}
 	return errors.New(redactedError(err, a.Config))
+}
+
+func (a *App) ReportFailure(ctx context.Context, command string, err error) {
+	if err == nil {
+		return
+	}
+	events := a.Events
+	if events == nil {
+		events = observability.Discard()
+	}
+	events = events.For("app")
+	events.Log(ctx, slog.LevelError, "command.failed", "subsyncd command failed",
+		append([]slog.Attr{slog.String("command", command)}, events.ErrorAttrs("command", err)...)...,
+	)
 }
 
 func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (string, error) {

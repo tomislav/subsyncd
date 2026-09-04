@@ -25,10 +25,14 @@ type Backend interface {
 	AnalyzeSync(context.Context, string, string) (string, error)
 }
 
-type OpenFunc func(context.Context, string) (Backend, error)
+type OpenFunc func(context.Context, string, string) (Backend, error)
 
 type ErrorRedactor interface {
 	Redact(error) error
+}
+
+type FailureReporter interface {
+	ReportFailure(context.Context, string, error)
 }
 
 type Command struct {
@@ -113,7 +117,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		return c.failure(errorsText("backend is unavailable"))
 	}
 
-	backend, err := c.Open(ctx, *configPath)
+	backend, err := c.Open(ctx, *configPath, command)
 	if err != nil {
 		return c.failure(err)
 	}
@@ -137,6 +141,10 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		output, err = backend.AnalyzeSync(ctx, *media, *subtitle)
 	}
 	if err != nil {
+		if reporter, ok := backend.(FailureReporter); ok {
+			reporter.ReportFailure(ctx, command, err)
+			return ExitFailure
+		}
 		if redactor, ok := backend.(ErrorRedactor); ok {
 			err = redactor.Redact(err)
 		}

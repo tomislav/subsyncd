@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,12 +19,11 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	defaultConfig := os.Getenv("SUBSYNCD_CONFIG")
 	return (cli.Command{
 		Stdout: stdout, Stderr: stderr, DefaultConfigPath: defaultConfig, Version: version.Value,
-		Open: func(ctx context.Context, path string) (cli.Backend, error) {
-			return app.Open(ctx, path, logger)
+		Open: func(ctx context.Context, path, command string) (cli.Backend, error) {
+			return app.Open(ctx, path, app.OpenOptions{LogWriter: stderr, Version: version.Value, Command: command})
 		},
 	}).Run(ctx, args)
 }
