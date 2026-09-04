@@ -1,0 +1,70 @@
+data_dir: /data
+media_roots:
+  - /media/canary/movies/1917
+  - /media/canary/movies/arrival
+  # Read-only and required only to resolve Hades's absolute AltMount symlinks.
+  - /mnt
+
+server:
+  listen: 0.0.0.0:8097
+
+worker:
+  max_concurrent: 1
+
+logging:
+  level: info
+
+instances:
+  - name: radarr-daemon-canary
+    type: radarr
+    url: http://radarr:7878
+    api_key: ${RADARR_CANARY_API_KEY}
+    webhook_token: ${RADARR_CANARY_WEBHOOK_TOKEN}
+    path_mappings:
+      - remote: /media/movies/1917 (2019) [tmdbid-530915]/1917.2019.Hybrid.2160p.MA.WEB-DL.DDP5.1.Atmos.DoVi.HDR.H.265-HONE.mkv
+        local: /media/canary/movies/1917/1917.2019.Hybrid.2160p.MA.WEB-DL.DDP5.1.Atmos.DoVi.HDR.H.265-HONE.mkv
+      - remote: /media/movies/Arrival (2016) [tmdbid-329865]/Arrival.2016.UHD.BluRay.2160p.DDP.7.1.DV.HDR.x265-hallowed.mkv
+        local: /media/canary/movies/arrival/Arrival.2016.UHD.BluRay.2160p.DDP.7.1.DV.HDR.x265-hallowed.mkv
+
+providers:
+  opensubtitles-main:
+    type: opensubtitles
+    api_key: ${OPENSUBTITLES_API_KEY}
+    username: ${OPENSUBTITLES_USERNAME}
+    password: ${OPENSUBTITLES_PASSWORD}
+    user_agent: subsyncd-daemon-canary
+    requests_per_second: 0.25
+    burst: 1
+    max_concurrent: 1
+
+provider_http:
+  shared_origin_max_concurrent: 1
+
+languages:
+  en:
+    providers:
+      - opensubtitles-main
+
+allow_hearing_impaired: false
+minimum_release_score: 35
+
+pack_cache:
+  ttl: 24h
+  max_bytes: 536870912
+
+sync:
+  lapse_path: /opt/lapse/lapse
+  timeout: 30m
+  policy: confidence
+  bypass_score: 75
+  require_identity_anchor: true
+  require_episode_evidence: true
+  require_release_group: true
+  lapse_for_packs: true
+  lapse_for_upgrades: true
+
+install:
+  file_mode: "0644"
+
+silo:
+  enabled: false

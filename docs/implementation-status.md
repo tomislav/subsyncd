@@ -5,13 +5,25 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repairs executing inline; Tasks 1–7 complete
-- Next task: none; push, image publication, and Hades deployment remain separate user-approved actions
-- Latest follow-up: candidate-local rejection and bounded diagnostics for wrong-episode archives
+- Current task: isolated Hades daemon canary running on two embedded-English Radarr movies
+- Next task: observe the daemon canary before enabling automatic Arr webhooks or broadening media scope
+- Latest follow-up: published and deployed `sha-b3a2d45`, then verified daemon queue, deduplication, restart recovery, and zero-write embedded skips
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — isolated Hades daemon canary
+
+- Commit `b3a2d45` passed the GitHub verification job and published native amd64/arm64 images as `latest` and immutable `sha-b3a2d45`. Hades pulled the private arm64 image using a temporary root-only Docker credential; that credential directory was removed immediately. The local image ID is `sha256:03c48f02a4778ff7f6df21b990d1d8a941d4711ede9377635ad1fcc16655dfac`, and the embedded version label is `sha-b3a2d45`.
+- The isolated deployment lives at `/opt/subsyncd-daemon-canary`. It uses a fresh database, loopback-only port `18097`, one worker, English routed only to OpenSubtitles, Silo disabled, no automatic Arr connection, and exact file mappings for Radarr movie-file IDs `1440` (1917) and `1168` (Arrival). The existing `/opt/subsyncd-canary` manual deployment was not changed or run.
+- Before first start, `doctor` created the schema and passed configuration, SQLite, three scoped roots, LAPSE compatibility, and FFprobe checks. The canary reconciliation cursor was then initialized to current UTC so historical production Radarr events were skipped. Startup and post-restart reconciliation each completed successfully.
+- Both manual Download webhooks returned HTTP 204 and were processed sequentially at import priority. 1917 indexed six subtitle tracks, including five embedded; Arrival indexed eleven, including ten embedded. Their English searches completed as `satisfied` with zero attempts/failures because existing embedded English tracks fulfilled policy.
+- Exact duplicate delivery returned HTTP 204 with `outcome=duplicate` and no leased job both before and after a daemon restart. After restart, the same SQLite state remained terminal with no pending or leased work.
+- Final live audit at `2026-09-04T17:46:15Z`: container running and healthy, `/healthz=ok`, `/readyz=ready`, zero candidates/installations/provider-cache/provider-state rows, zero provider/LAPSE/install/notification/warn/error log events, unchanged Croatian sidecar checksums, and idle usage of about 6.84 MiB with eight PIDs. The canary was deliberately left running with Compose `restart: "no"` for observation.
+- Deployment discovery: Arcane can access the private package, but its authorization is not automatically available to `sudo docker` over SSH. Also, host group `ubuntu` is GID 1001 while the container PGID is 1000; the deployment root and config must therefore be `root:1000` with modes `0750`/`0640`, data `1000:1000 0750`, and `.env` `root:root 0600`.
+- Documentation/config verification passed with `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, the placeholder-secret daemon Compose render, and `git diff --check`. The tests require loopback-bind permission for local `httptest` servers; their first restricted-sandbox invocation failed only at `listen ... operation not permitted` and the unrestricted rerun passed.
+- The reproducible host-specific Compose/config/webhook fixtures and operator evidence are in `deploy/hades-daemon-canary`. Next task: watch normal reconciliation/log behavior, then decide whether to broaden the canary or configure real Radarr/Sonarr webhook delivery.
 
 ### Follow-up — wrong-episode archive hardening
 

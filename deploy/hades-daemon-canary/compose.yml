@@ -1,0 +1,56 @@
+name: subsyncd-daemon-canary
+
+services:
+  subsyncd-daemon-canary:
+    image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-sha-b3a2d45}
+    command: ["serve", "--config", "/config/config.yaml"]
+    restart: "no"
+    init: true
+    read_only: true
+    user: "${PUID:-1000}:${PGID:-1000}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: ${TZ:-Europe/Zagreb}
+      RADARR_CANARY_API_KEY: ${RADARR_CANARY_API_KEY:?set RADARR_CANARY_API_KEY in .env}
+      RADARR_CANARY_WEBHOOK_TOKEN: ${RADARR_CANARY_WEBHOOK_TOKEN:?set RADARR_CANARY_WEBHOOK_TOKEN in .env}
+      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:?set OPENSUBTITLES_API_KEY in .env}
+      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:?set OPENSUBTITLES_USERNAME in .env}
+      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:?set OPENSUBTITLES_PASSWORD in .env}
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data:rw
+      - type: bind
+        source: /mnt
+        target: /mnt
+        read_only: true
+        bind:
+          propagation: rslave
+      - type: bind
+        source: /srv/media/movies/1917 (2019) [tmdbid-530915]
+        target: /media/canary/movies/1917
+      - type: bind
+        source: /srv/media/movies/Arrival (2016) [tmdbid-329865]
+        target: /media/canary/movies/arrival
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m,uid=${PUID:-1000},gid=${PGID:-1000}
+    ports:
+      - 127.0.0.1:18097:8097
+    stop_grace_period: 45s
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8097/readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - apps
+
+networks:
+  apps:
+    external: true
