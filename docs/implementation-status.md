@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: complete through Task 15
-- Next task: none; the approved implementation plan ends after Task 15
-- Latest follow-up: absolute missing-subtitle milestones in `acfc801`
+- Current task: standalone GitHub publication prepared and locally verified
+- Next task: authenticate GitHub CLI, create private `tomislav/subsyncd`, push the history-preserving split, and verify its first image publication
+- Latest follow-up: verified standalone repository and GHCR publication setup through `b054f50`
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -260,3 +260,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 - No-header fallbacks are Titlovi rate limit 5 minutes; OpenSubtitles rate limit 1 minute and download quota 6 hours; SubDL rate limit 15 minutes, daily quota until next GMT midnight plus 15 minutes, and service busy 1 hour.
 - Added `golang.org/x/time/rate` v0.15.0 for local token-bucket pacing.
 - Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Follow-up — standalone GitHub publishing
+
+- Commits: `6fc34d5 chore: prepare standalone subsyncd tree`, `f2deb60 docs: deploy subsyncd from private GHCR`, and `b054f50 ci: publish verified multiarch images`.
+- The self-contained source root is `/Users/tomislav/Development/arr-stack/subsyncd`. It is prepared for a private `github.com/tomislav/subsyncd` repository and private `ghcr.io/tomislav/subsyncd` package while retaining subsystem history through `git subtree split`.
+- The standalone root now excludes environment files, runtime configuration, SQLite state, caches, media, logs, coverage, and the compiled binary. `AGENTS.md` resolves only in-tree documentation and retains the correct default-off hearing-impaired policy.
+- `compose.example.yml` pulls `ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-latest}` without changing its rootless identity, read-only filesystem, tmpfs ownership, mounts, health check, resource limits, or network. The README documents private GHCR authentication, immutable tag selection, Compose pulls, and an explicit local build path. The parent `arr-stack/docker-compose.yml` is unchanged.
+- `.github/workflows/container.yml` runs race-enabled unit/package tests, `go vet`, and tagged end-to-end tests before publishing. It builds exactly `linux/amd64` and `linux/arm64`, uses the Actions cache, and emits maximum provenance plus an SBOM.
+- Action pins are `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`, `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e`, `docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a`, `docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e`, `docker/login-action@dbcb813823bdd20940b903addbd779551569679f`, `docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302`, and `docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a`.
+- Successful `main` pushes publish `latest` and `sha-<short-commit>`. Stable `vMAJOR.MINOR.PATCH` tags additionally publish `MAJOR.MINOR.PATCH`, `MAJOR.MINOR`, and `MAJOR`; prereleases publish only their full prerelease version and SHA. Manual runs always publish SHA and publish `latest` only when dispatched from `main`.
+- Local verification on 2026-09-04 passed: credential-pattern scans of the subtree and relevant history; `go test ./... -race -count=1`; `go vet ./...`; `go test ./test/e2e -tags=e2e -race -count=1`; actionlint v1.7.12; `docker compose -f compose.example.yml config --quiet`; default, SHA-tag, and arbitrary PUID/PGID/TZ Compose renderings; a native `docker build --build-arg VERSION=prepublish -t subsyncd:prepublish .`; and `docker run --rm subsyncd:prepublish --version`, which returned `subsyncd prepublish`.
+- External repository and image publication remain pending GitHub CLI authentication. No personal access token is stored or printed; GitHub Actions will use only its ephemeral `GITHUB_TOKEN` for package writes.
