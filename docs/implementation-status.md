@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: priority-aware continuous daemon dispatch implemented locally
-- Next task: implement the approved score-tier LAPSE tournament, then publish both changes
-- Latest follow-up: priority search dispatch and coalesced webhook wakeups
+- Current task: priority dispatch and LAPSE score-tier tournament implemented locally
+- Next task: publish the verified main branch and prepare—but do not run—the Hades comparison
+- Latest follow-up: lazy score-tier LAPSE evaluation and one-winner synchronization
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -21,6 +21,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 - `worker.max_concurrent` defaults to one, accepts 1–8, and controls media workflows. Daemon mode leases only free slots and refills on startup, a capacity-one nonblocking webhook/reconciliation wake, each completion, and the jittered recovery poll. `RunOnce` retains deterministic bounded-batch behavior. Reconciliation and notifications remain independently maintained.
 - `explain` now exposes human-readable priority and whether a same-key rerun is pending. Unit and tagged end-to-end coverage proves migration compatibility, strict ordering, priority lifecycle, wake coalescing after partial webhook success, immediate free-slot fill, completion refill, lost-wake recovery, concurrency bounds, bounded shutdown, and persisted webhook-to-daemon dispatch.
 - Verification through this boundary used race-enabled storage, schedule, worker, catalog, config, and application suites plus the focused tagged end-to-end webhook wake test. The final repository-wide gate is deferred until the LAPSE tournament is implemented in the same approved execution sequence.
+
+### Follow-up — LAPSE score-tier tournament
+
+- Commits: `cc7a24d feat: stop lapse after a winning score tier`, `ae78f05 feat: rank lapse score ties by confidence`, `87b4e66 feat: fall back across lapse score tiers`, and `ea3c07d test: protect lapse tournament invariants`.
+- The top-three eligible cap is now lazy. Candidates are partitioned by descending release score, and the next tier is not downloaded until every viable candidate in the current tier fails. A unique successful leader therefore runs one download, one LAPSE analysis, and one synchronization before structurally skipping lower scores.
+- Equal-score candidates are all analyzed before finalization. Solid analyses rank by confidence, configured provider priority, rating, provider ID, and result ID. Only the best is synchronized; a synchronization failure falls through already analyzed ties without repeating analysis, then opens the next score tier if necessary. Score and exact bypasses retain zero analysis confidence and invoke neither LAPSE method.
+- Deterministic LAPSE/content/pack failures retain the existing exact candidate/media/tool quarantine. Process, protocol, filesystem, provider, network, and cancellation failures never create rejection records. Cancellation is checked before downloads, analysis, finalization, and tier transitions. Temporary workspaces are removed on every exit path.
+- The prior production baselines remain the comparison evidence: Arrival Croatian completed in 12m11s, while 1917 Croatian took 24m55s and six LAPSE passes over about 22.1 GB. A distinct-score leader should now require two passes; tied top scores still require one analysis per tie plus one winning synchronization.
+- Race-enabled workflow/syncer tests cover unique-leader early stopping, confidence ties and deterministic ordering, within-tier and lower-tier fallback, transient error isolation, cancellation, lazy season-pack extraction, bypass/upgrade invariants, and workspace cleanup. Tagged end-to-end coverage asserts the broad single-candidate path performs exactly one analysis plus one synchronization.
 
 ### Task 1 — domain and configuration
 

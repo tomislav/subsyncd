@@ -11,6 +11,7 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 - Embedded tracks are fingerprint-cached in SQLite; sidecars are rescanned before every search.
 - OpenSubtitles file hashes are calculated lazily once per exact file fingerprint and persisted.
 - Exact-hash matches skip LAPSE. A first install with a score of at least 75 plus identity, release-group, and episode evidence can also skip it; uncertain matches, packs, and upgrades require LAPSE's strict `solid` verdict by default.
+- LAPSE candidates run as a lazy score-tier tournament: lower-scored files are untouched after a higher tier installs, equal-score ties are compared by analysis confidence, and only the selected candidate is synchronized unless fallback is needed.
 - Season packs use one bounded extractor and fail closed when the target member is ambiguous.
 - Deterministic candidate failures are quarantined for the exact media/release evidence, allowing later-ranked results to advance without repeated downloads; operational failures remain retryable.
 - Provider cooldowns, search schedules, leases, candidate evidence/rejections, install provenance, and notifications survive restarts.

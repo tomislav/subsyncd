@@ -44,3 +44,9 @@ The image now defaults to UID/GID `1000:1000`. Standalone and root-stack Compose
 Compose also passes `TZ`, defaulting to `Europe/Zagreb`, and the image explicitly includes Debian timezone data. Operators must ensure `/data` and mapped media roots are accessible to the selected numeric identity.
 
 Both Compose files rendered successfully with defaults and with `PUID=1234 PGID=2345 TZ=UTC`. The native arm64 image built successfully and reported `sha256:27a06cd026c0445c69dfb91f50c512315e51f8dfbeba65a2627c62d3a4ea000a` (218,820,223 bytes, configured user `1000:1000`). A container runtime check confirmed UID/GID `1000:1000` and the Zagreb UTC offset. This is a local content ID, not a published registry digest.
+
+## Priority dispatch and LAPSE tournament — 2026-09-04
+
+The pending release adds SQLite-backed import/missing/upgrade priority, coalesced same-key reruns, capacity-aware webhook wake dispatch, and configurable `worker.max_concurrent` (default 1, range 1–8). The LAPSE workflow now evaluates the top-three cap lazily by release-score tier, analyzes equal-score ties before choosing by confidence, synchronizes one winner, and preserves fallback plus rejection semantics.
+
+The pre-change Hades baselines were 12m11s for Arrival Croatian and 24m55s/six LAPSE passes/about 22.1 GB for 1917 Croatian. Publication verification and the immutable image tag will be recorded after the final repository gate and GitHub Actions complete. No production canary is run automatically.

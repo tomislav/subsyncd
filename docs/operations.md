@@ -79,11 +79,15 @@ Packs and managed-subtitle upgrades still require LAPSE by default, even if thei
 
 When LAPSE is required, analysis runs against a private subtitle copy with `--dry-run --json --strict --no-sidecar`. Synchronization writes a new explicit output with `--output`, `--no-backup`, `--json`, `--strict`, and `--no-sidecar`. `unsure`, `nothing`, malformed JSON, invalid output, and missing speech are rejections; only `solid` can install.
 
+The best three eligible non-hash candidates are a cap, not an eager batch. They are partitioned by release score and processed from highest score downward. A unique top scorer is downloaded and analyzed alone; if it is solid, it is synchronized once and lower tiers are never downloaded. Candidates tied at the same score are all downloaded and analyzed so LAPSE confidence can choose the best; only that winner is synchronized. A synchronization failure tries the next already analyzed tie, and only an exhausted tier opens the next lower score. Deterministic verdict/content failures retain their scoped quarantine behavior, while process, filesystem, provider, network, and cancellation errors remain retryable and never blacklist a candidate.
+
 An `unsure` or `nothing` verdict quarantines that provider result for 30 days, scoped to the language, exact media fingerprint, stable candidate/release metadata, selected artifact checksum when known, LAPSE compatibility version, and synchronization policy. Invalid or oversized subtitle payloads and ambiguous pack selection are quarantined too. Rejected candidates are removed before the three-candidate shortlist, so later-ranked results advance on the next job. A rejected cached pack member is skipped by checksum; the pack remains available to other episodes.
 
 Timeouts, crashes, malformed LAPSE protocol output, cancellation, filesystem failures, and provider/network failures do not quarantine the candidate. They surface as technical failures and use the separate failure backoff. No-speech is a media-validation rejection rather than evidence that one particular subtitle is bad. In every failure case, the job workspace is removed and an existing installed subtitle remains untouched.
 
 LAPSE itself makes no internet request, but it reads the media to build a speech profile; on network storage, the first analysis can therefore read much or nearly all of the file. The profile cache is persisted under `/data/lapse-cache`, so later candidates for the unchanged media can reuse it. The confidence gate avoids that media read for strong first-install matches. A normal timeout is 30 minutes. Cancellation kills the entire LAPSE subprocess group.
+
+Before this tournament, production canaries took 12m11s for Arrival Croatian and 24m55s for 1917 Croatian; the latter performed three analyses plus three synchronization passes and read about 22.1 GB. With distinct candidate scores and a successful leader, the expected path is one analysis plus one synchronization. Equal-score ties still require one analysis per tied candidate because confidence is meaningful only within that metadata tier.
 
 Diagnostic analysis never installs a sidecar:
 
