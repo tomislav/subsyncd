@@ -65,7 +65,10 @@ func TestDeploymentIsManualPinnedAndRestricted(t *testing.T) {
 	}
 
 	runbook := readFile(t, "README.md")
-	for _, required := range []string{"1440", "1168", "9864", "10146", "Do not run `scan`", "Silo remains disabled"} {
+	for _, required := range []string{
+		"1440", "1168", "9864", "10146", "Do not run `scan`", "Silo remains disabled",
+		"`config/`: `root:1000` and `0750`", "`config/config.yaml`: `root:1000` and `0640`", "`.env`: `root:root` and `0600`",
+	} {
 		if !strings.Contains(runbook, required) {
 			t.Errorf("README.md is missing %q", required)
 		}

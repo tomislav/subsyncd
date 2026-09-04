@@ -17,14 +17,28 @@ The two TV mounts contain their complete Season 01 directories because sidecars 
 
 ## Install on Hades
 
-Copy this directory to `/opt/subsyncd-canary`, then work only from that directory:
+Copy this directory to `/opt/subsyncd-canary`, then set the Hades operator and rootless-container permissions explicitly:
 
 ```bash
+sudo chown root:ubuntu /opt/subsyncd-canary
+sudo chmod 0750 /opt/subsyncd-canary
+sudo chown root:1000 /opt/subsyncd-canary/config /opt/subsyncd-canary/config/config.yaml
+sudo chmod 0750 /opt/subsyncd-canary/config
+sudo chmod 0640 /opt/subsyncd-canary/config/config.yaml
 cd /opt/subsyncd-canary
-cp .env.example .env
-chmod 600 .env
+sudo cp .env.example .env
+sudo chown root:root .env
+sudo chmod 0600 .env
 sudo install -d -o 1000 -g 1000 -m 0750 data
 ```
+
+The intended modes are:
+
+- `/opt/subsyncd-canary`: `root:ubuntu` and `0750`, allowing the Hades operator to enter the deployment directory.
+- `config/`: `root:1000` and `0750`.
+- `config/config.yaml`: `root:1000` and `0640`, allowing the rootless `1000:1000` container to read its non-secret placeholder configuration.
+- `.env`: `root:root` and `0600`; only sudo-operated Compose reads the real Arr credentials and generated validation tokens.
+- `data/`: `1000:1000` and `0750`, allowing SQLite and the LAPSE/pack caches to persist.
 
 Fill every blank value in `.env`. Generate separate unused webhook validation values even though the manual canary never listens for webhooks:
 
