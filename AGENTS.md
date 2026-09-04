@@ -2,20 +2,22 @@
 
 Read these documents before changing behavior:
 
-1. `../docs/superpowers/specs/2026-09-03-focused-subtitle-service-design.md`
-2. `../docs/superpowers/plans/2026-09-04-focused-subtitle-service.md`
-3. `docs/implementation-status.md`
-4. `docs/references/bazarr.md` for the task being implemented
+1. `docs/implementation-status.md` for the behavior actually shipped and the resumable handoff ledger
+2. `docs/providers.md` for provider, scoring, scheduling, and upgrade behavior
+3. `docs/operations.md` for deployment, filesystem, LAPSE, webhook, and recovery behavior
+4. `docs/references/bazarr.md` before changing provider or matching behavior
 5. `docs/references/silo.md` before changing Silo notification behavior
+6. `docs/superpowers/specs/2026-09-04-standalone-github-publishing-design.md` and its matching plan before changing repository or image publication
 
-The design is authoritative. Bazarr commit `da73aeaf5e4d89ad86c8d559d3abd0e4129b24b2` is a GPL-3.0 behavioral reference only. Do not copy, vendor, execute, or translate its Python implementation or fixtures.
+`AGENTS.md` and `docs/implementation-status.md` are the authoritative entry points for current behavior. Historical design material that lived outside the original `subsyncd/` subtree is not required by the standalone repository.
+
+Bazarr commit `da73aeaf5e4d89ad86c8d559d3abd0e4129b24b2` is a GPL-3.0 behavioral reference only. Do not copy, vendor, execute, or translate its Python implementation or fixtures.
 
 Use test-driven development: add one focused failing test, confirm the expected failure, implement the smallest production change, then run the affected package with `-race`. Ordinary tests must use sanitized fixtures and local fake servers; they must never contact Arr applications or subtitle providers.
 
 Important invariants:
 
 - Canonical language identities are BCP 47 tags.
-- Hearing-impaired subtitles are allowed by default. When disabled, both existing SDH tracks and remote HI candidates are ignored/rejected with an explainable reason.
 - Embedded subtitle inventory is fingerprint-cached; sidecars are scanned live before searches.
 - Provider file hashes are calculated lazily, persisted by algorithm, and reusable only for an exact path/file-ID/size/mtime fingerprint.
 - Providers are compiled-in adapters behind the common interface.

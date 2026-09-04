@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+/subsyncd
+/coverage.out
+/config/
+/data/
+/cache/
+/media/
+
+*.db
+*.db-shm
+*.db-wal
+*.log
