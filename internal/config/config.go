@@ -98,7 +98,7 @@ type rawConfig struct {
 	Instances            []InstanceConfig          `yaml:"instances"`
 	Providers            map[string]yaml.Node      `yaml:"providers"`
 	Languages            map[string]LanguageConfig `yaml:"languages"`
-	AllowHearingImpaired bool                      `yaml:"allow_hearing_impaired"`
+	AllowHearingImpaired *bool                     `yaml:"allow_hearing_impaired"`
 	MinimumReleaseScore  int                       `yaml:"minimum_release_score"`
 	ProviderHTTP         rawProviderHTTPConfig     `yaml:"provider_http"`
 	PackCache            rawPackCacheConfig        `yaml:"pack_cache"`
@@ -212,6 +212,10 @@ func expandEnv(node *yaml.Node, lookupEnv func(string) (string, bool)) error {
 }
 
 func normalize(raw rawConfig) (Config, error) {
+	allowHearingImpaired := true
+	if raw.AllowHearingImpaired != nil {
+		allowHearingImpaired = *raw.AllowHearingImpaired
+	}
 	cfg := Config{
 		DataDir:              raw.DataDir,
 		MediaRoots:           raw.MediaRoots,
@@ -219,7 +223,7 @@ func normalize(raw rawConfig) (Config, error) {
 		Instances:            raw.Instances,
 		Providers:            make(map[string]ProviderSpec, len(raw.Providers)),
 		Languages:            make(map[domain.Language]LanguageConfig, len(raw.Languages)),
-		AllowHearingImpaired: raw.AllowHearingImpaired,
+		AllowHearingImpaired: allowHearingImpaired,
 		MinimumReleaseScore:  raw.MinimumReleaseScore,
 		Silo:                 raw.Silo,
 	}

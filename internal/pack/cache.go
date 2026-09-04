@@ -64,43 +64,63 @@ func NewCache(root string, repository *store.Repository, clock cacheClock, maxBy
 func (c *Cache) Find(ctx context.Context, media domain.Media, language domain.Language) (CachedMember, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	record, found, err := c.repo.GetReusablePackMember(ctx, store.PackLookup{SeriesIDs: media.ExternalIDs, SeriesTitle: media.Title, SeriesYear: media.Year, Season: media.Season, Episode: media.Episode, AbsoluteEpisode: media.AbsoluteEpisode, Language: language.String()}, c.clock.Now())
-	if err != nil || !found {
-		return CachedMember{}, found, err
-	}
-	if err := c.secureRegularPath(record.CachePath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			_ = c.invalidate(ctx, record)
-			return CachedMember{}, false, nil
-		}
+	now := c.clock.Now()
+	entries, err := c.repo.ListReusablePacks(ctx, store.PackLookup{SeriesIDs: media.ExternalIDs, SeriesTitle: media.Title, SeriesYear: media.Year, Season: media.Season, Episode: media.Episode, AbsoluteEpisode: media.AbsoluteEpisode, Language: language.String()}, now)
+	if err != nil {
 		return CachedMember{}, false, err
 	}
-	payload, err := os.ReadFile(record.CachePath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			_ = c.invalidate(ctx, record)
-			return CachedMember{}, false, nil
-		}
-		return CachedMember{}, false, fmt.Errorf("read cached pack member: %w", err)
-	}
-	if checksum(payload) != record.Checksum {
-		if err := c.invalidate(ctx, record); err != nil {
+	var selectionErr error
+	for _, entry := range entries {
+		if err := c.secureRegularPath(entry.ManifestPath); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				if err := c.invalidateEntry(ctx, entry); err != nil {
+					return CachedMember{}, false, err
+				}
+				continue
+			}
 			return CachedMember{}, false, err
 		}
-		return CachedMember{}, false, nil
-	}
-	var candidate domain.Candidate
-	if err := json.Unmarshal(record.CandidateJSON, &candidate); err != nil {
-		if invalidateErr := c.invalidate(ctx, record); invalidateErr != nil {
-			return CachedMember{}, false, invalidateErr
+		payload, err := os.ReadFile(entry.ManifestPath)
+		if err != nil {
+			if err := c.invalidateEntry(ctx, entry); err != nil {
+				return CachedMember{}, false, err
+			}
+			continue
 		}
-		return CachedMember{}, false, nil
+		var manifest Manifest
+		if err := json.Unmarshal(payload, &manifest); err != nil || manifest.ProviderID != entry.ProviderID || manifest.ResultID != entry.ResultID || manifest.Language.String() != entry.Language || manifest.Checksum != entry.ContentChecksum {
+			if err := c.invalidateEntry(ctx, entry); err != nil {
+				return CachedMember{}, false, err
+			}
+			continue
+		}
+		member, err := Select(manifest, manifest.Candidate, media, false)
+		if err != nil {
+			selectionErr = err
+			continue
+		}
+		if err := c.secureRegularPath(member.NormalizedPath); err != nil {
+			if err := c.invalidateEntry(ctx, entry); err != nil {
+				return CachedMember{}, false, err
+			}
+			continue
+		}
+		memberPayload, err := os.ReadFile(member.NormalizedPath)
+		if err != nil || checksum(memberPayload) != member.Checksum {
+			if err := c.invalidateEntry(ctx, entry); err != nil {
+				return CachedMember{}, false, err
+			}
+			continue
+		}
+		if err := c.repo.TouchPack(ctx, entry.ID, now); err != nil {
+			return CachedMember{}, false, err
+		}
+		return CachedMember{Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}, true, nil
 	}
-	if err := c.repo.TouchPack(ctx, record.PackID, c.clock.Now()); err != nil {
-		return CachedMember{}, false, err
+	if selectionErr != nil {
+		return CachedMember{}, false, selectionErr
 	}
-	rule, evidence := cachedEvidence(record, media)
-	return CachedMember{Path: record.CachePath, Checksum: record.Checksum, Candidate: candidate, SelectionRule: rule, SelectionEvidence: evidence}, true, nil
+	return CachedMember{}, false, nil
 }
 
 func (c *Cache) Put(ctx context.Context, manifest Manifest, expiresAt time.Time) error {
@@ -279,15 +299,18 @@ func (c *Cache) evictLocked(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-func (c *Cache) invalidate(ctx context.Context, record store.PackMemberRecord) error {
-	directory, err := c.cacheDirectory(record.CachePath)
+func (c *Cache) invalidateEntry(ctx context.Context, entry store.PackCacheEntry) error {
+	directory, err := c.cacheDirectory(entry.ManifestPath)
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(directory); err != nil {
-		return fmt.Errorf("remove invalid pack cache: %w", err)
+	if err := c.repo.DeletePack(ctx, entry.ID); err != nil {
+		return err
 	}
-	return c.repo.DeletePack(ctx, record.PackID)
+	if err := os.RemoveAll(directory); err != nil {
+		return fmt.Errorf("remove invalid pack cache after deleting its database record: %w", err)
+	}
+	return nil
 }
 
 func (c *Cache) secureRegularPath(path string) error {
@@ -379,11 +402,4 @@ func sanitizeCandidate(candidate domain.Candidate) domain.Candidate {
 func cacheContentKey(manifest Manifest) string {
 	value := sha256.Sum256([]byte(manifest.ProviderID + "\x00" + manifest.ResultID + "\x00" + manifest.Language.String() + "\x00" + manifest.Checksum))
 	return hex.EncodeToString(value[:])
-}
-
-func cachedEvidence(record store.PackMemberRecord, media domain.Media) (string, string) {
-	if record.EpisodeFrom > 0 && record.EpisodeFrom <= media.Episode && media.Episode <= record.EpisodeTo {
-		return "cached_episode", fmt.Sprintf("cached member range %d-%d contains episode %d", record.EpisodeFrom, record.EpisodeTo, media.Episode)
-	}
-	return "cached_absolute_episode", fmt.Sprintf("cached member range %d-%d contains absolute episode %d", record.AbsoluteFrom, record.AbsoluteTo, media.AbsoluteEpisode)
 }

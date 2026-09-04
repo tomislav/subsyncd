@@ -41,6 +41,33 @@ languages:
 	}
 }
 
+func TestLoadDefaultsHearingImpairedToAllowedAndHonorsExplicitFalse(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := loadText(t, validConfig(root, `
+languages:
+  en: {providers: [subdl-main]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowHearingImpaired {
+		t.Fatal("omitted allow_hearing_impaired should default to true")
+	}
+
+	text := validConfig(root, `
+allow_hearing_impaired: false
+languages:
+  en: {providers: [subdl-main]}
+`)
+	cfg, err = loadText(t, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowHearingImpaired {
+		t.Fatal("explicit allow_hearing_impaired: false was ignored")
+	}
+}
+
 func TestValidateRejectsLanguageWithoutProviders(t *testing.T) {
 	root := t.TempDir()
 	_, err := loadText(t, validConfig(root, `

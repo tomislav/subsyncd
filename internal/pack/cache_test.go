@@ -3,6 +3,7 @@ package pack
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -155,6 +156,33 @@ func TestCacheSupportsConcurrentReaders(t *testing.T) {
 	close(errors)
 	for err := range errors {
 		t.Error(err)
+	}
+}
+
+func TestCacheFindRerunsStrictSelectionAndRejectsAmbiguousPack(t *testing.T) {
+	ctx := context.Background()
+	repository := openRepository(t)
+	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	cache, err := NewCache(filepath.Join(t.TempDir(), "pack-cache"), repository, clock, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := cacheCandidate("ambiguous")
+	payload := zipPayload(t, []zipEntry{{name: "one.S01E02.srt", body: validSRT}, {name: "two.S01E02.srt", body: validSRT}})
+	manifest, err := Extract(ctx, candidate, strings.NewReader(string(payload)), int64(len(payload)), filepath.Join(t.TempDir(), "extracted"), testLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put(ctx, manifest, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := cache.Find(ctx, cacheMedia(), "en"); found || err == nil {
+		t.Fatalf("ambiguous cache lookup = found %v, error %T %v", found, err, err)
+	} else {
+		var selectionError *SelectionError
+		if !errors.As(err, &selectionError) {
+			t.Fatalf("error = %T %v", err, err)
+		}
 	}
 }
 

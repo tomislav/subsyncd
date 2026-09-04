@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -70,6 +71,14 @@ type ProviderCacheEntry struct {
 	ExpiresAt   time.Time
 }
 
+type CandidateRecord struct {
+	ProviderID     string
+	ResultID       string
+	MetadataJSON   []byte
+	ScoreJSON      []byte
+	ValidationJSON []byte
+}
+
 type PackLookup struct {
 	ProviderID      string
 	SeriesIDs       domain.ExternalIDs
@@ -124,6 +133,10 @@ type Installation struct {
 	ScoreJSON      []byte
 	SyncResultJSON []byte
 	RollbackPath   string
+	MediaPath      string
+	MediaFileID    int64
+	MediaSize      int64
+	MediaModTimeNS int64
 }
 
 // MediaEventMutation is the persistence-level representation of an Arr event.
@@ -149,11 +162,13 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 	err = tx.QueryRowContext(ctx, `SELECT id, path, file_id, size, mod_time_ns FROM media WHERE instance = ? AND kind = ? AND file_id = ?`,
 		media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID).Scan(&id, &existingPath, &existingFileID, &existingSize, &existingModTime)
 	changed := true
+	contentChanged := true
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, false, fmt.Errorf("find media: %w", err)
 	}
 	if err == nil {
-		changed = existingPath != media.Fingerprint.Path || existingFileID != media.Fingerprint.FileID || existingSize != media.Fingerprint.Size || existingModTime != media.Fingerprint.ModTime.UnixNano()
+		contentChanged = existingFileID != media.Fingerprint.FileID || existingSize != media.Fingerprint.Size || existingModTime != media.Fingerprint.ModTime.UnixNano()
+		changed = existingPath != media.Fingerprint.Path || contentChanged
 	}
 
 	alternateTitles, err := json.Marshal(media.AlternateTitles)
@@ -176,6 +191,15 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 			media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), now, id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media: %w", err)
+		}
+	}
+	if contentChanged {
+		if err := invalidateInstallationTx(ctx, tx, id); err != nil {
+			return 0, false, err
+		}
+	} else if existingPath != media.Fingerprint.Path {
+		if err := rebaseInstallationPathsTx(ctx, tx, id, existingPath, media.Fingerprint.Path); err != nil {
+			return 0, false, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -451,6 +475,33 @@ func (r *Repository) PutProviderCache(ctx context.Context, entry ProviderCacheEn
 	return nil
 }
 
+func (r *Repository) RecordCandidates(ctx context.Context, mediaID int64, language domain.Language, candidates []CandidateRecord) error {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin candidate replacement: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM candidates WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
+		return fmt.Errorf("delete previous candidates: %w", err)
+	}
+	now := time.Now().UTC().UnixNano()
+	for _, candidate := range candidates {
+		if len(candidate.MetadataJSON) == 0 || len(candidate.ScoreJSON) == 0 {
+			return fmt.Errorf("candidate metadata and score are required")
+		}
+		if len(candidate.ValidationJSON) == 0 {
+			candidate.ValidationJSON = []byte(`{}`)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO candidates(media_id, language, provider_id, result_id, metadata_json, score_json, validation_json, created_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, mediaID, language.String(), candidate.ProviderID, candidate.ResultID, candidate.MetadataJSON, candidate.ScoreJSON, candidate.ValidationJSON, now); err != nil {
+			return fmt.Errorf("insert candidate: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit candidate replacement: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) GetReusablePackMember(ctx context.Context, lookup PackLookup, now time.Time) (PackMemberRecord, bool, error) {
 	seriesKeys := allSeriesKeys(lookup.SeriesIDs, lookup.SeriesTitle, lookup.SeriesYear)
 	providerClause := ""
@@ -474,6 +525,42 @@ func (r *Repository) GetReusablePackMember(ctx context.Context, lookup PackLooku
 		return PackMemberRecord{}, false, fmt.Errorf("get reusable pack member: %w", err)
 	}
 	return member, true, nil
+}
+
+func (r *Repository) ListReusablePacks(ctx context.Context, lookup PackLookup, now time.Time) ([]PackCacheEntry, error) {
+	seriesKeys := allSeriesKeys(lookup.SeriesIDs, lookup.SeriesTitle, lookup.SeriesYear)
+	args := make([]any, 0, len(seriesKeys)+4)
+	for _, key := range seriesKeys {
+		args = append(args, key)
+	}
+	args = append(args, lookup.Season, lookup.Language, now.UnixNano())
+	providerClause := ""
+	if lookup.ProviderID != "" {
+		providerClause = " AND provider_id=?"
+		args = append(args, lookup.ProviderID)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(seriesKeys)), ",")
+	query := `SELECT id, provider_id, result_id, series_key, season, language, content_checksum, manifest_path, candidate_json, byte_size, expires_at_ns, last_access_at_ns FROM pack_cache WHERE series_key IN (` + placeholders + `) AND season=? AND language=? AND expires_at_ns>?` + providerClause + ` ORDER BY last_access_at_ns DESC, id`
+	rows, err := r.store.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list reusable packs: %w", err)
+	}
+	defer rows.Close()
+	var entries []PackCacheEntry
+	for rows.Next() {
+		var entry PackCacheEntry
+		var expires, lastAccess int64
+		if err := rows.Scan(&entry.ID, &entry.ProviderID, &entry.ResultID, &entry.SeriesKey, &entry.Season, &entry.Language, &entry.ContentChecksum, &entry.ManifestPath, &entry.CandidateJSON, &entry.ByteSize, &expires, &lastAccess); err != nil {
+			return nil, fmt.Errorf("scan reusable pack: %w", err)
+		}
+		entry.ExpiresAt = fromUnixNano(expires)
+		entry.LastAccessAt = fromUnixNano(lastAccess)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate reusable packs: %w", err)
+	}
+	return entries, nil
 }
 
 func (r *Repository) PutPack(ctx context.Context, entry PackCacheEntry, members []PackMemberRecord) error {
@@ -544,7 +631,7 @@ func (r *Repository) DeletePack(ctx context.Context, packID int64) error {
 
 func (r *Repository) GetInstallation(ctx context.Context, mediaID int64, language domain.Language) (Installation, bool, error) {
 	var installation Installation
-	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath)
+	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath, &installation.MediaPath, &installation.MediaFileID, &installation.MediaSize, &installation.MediaModTimeNS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Installation{}, false, nil
 	}
@@ -570,7 +657,7 @@ func (r *Repository) RecordInstallation(ctx context.Context, installation Instal
 	if len(installation.SyncResultJSON) == 0 {
 		installation.SyncResultJSON = []byte(`{}`)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, installed_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET path=excluded.path, checksum=excluded.checksum, provider_id=excluded.provider_id, candidate_id=excluded.candidate_id, score_json=excluded.score_json, sync_result_json=excluded.sync_result_json, rollback_path=excluded.rollback_path, installed_at_ns=excluded.installed_at_ns`, installation.MediaID, installation.Language, installation.Path, installation.Checksum, installation.ProviderID, installation.CandidateID, installation.ScoreJSON, installation.SyncResultJSON, installation.RollbackPath, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, installed_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET path=excluded.path, checksum=excluded.checksum, provider_id=excluded.provider_id, candidate_id=excluded.candidate_id, score_json=excluded.score_json, sync_result_json=excluded.sync_result_json, rollback_path=excluded.rollback_path, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, installed_at_ns=excluded.installed_at_ns`, installation.MediaID, installation.Language, installation.Path, installation.Checksum, installation.ProviderID, installation.CandidateID, installation.ScoreJSON, installation.SyncResultJSON, installation.RollbackPath, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS, now)
 	if err != nil {
 		return fmt.Errorf("record installation: %w", err)
 	}
@@ -613,6 +700,9 @@ func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMut
 		if contentChanged {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM candidates WHERE media_id=?`, mediaID); err != nil {
 				return false, fmt.Errorf("invalidate media candidates: %w", err)
+			}
+			if err := invalidateInstallationTx(ctx, tx, mediaID); err != nil {
+				return false, err
 			}
 		}
 		for _, language := range mutation.Languages {
@@ -678,9 +768,78 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}
+		if !changed && existingPath != media.Fingerprint.Path {
+			if err := rebaseInstallationPathsTx(ctx, tx, id, existingPath, media.Fingerprint.Path); err != nil {
+				return 0, false, err
+			}
+		}
 	}
-	_ = existingPath
 	return id, changed, nil
+}
+
+func invalidateInstallationTx(ctx context.Context, tx *sql.Tx, mediaID int64) error {
+	_, err := tx.ExecContext(ctx, `UPDATE installations SET score_json='{}', sync_result_json='{}', media_path='', media_file_id=0, media_size=0, media_mod_time_ns=0 WHERE media_id=?`, mediaID)
+	if err != nil {
+		return fmt.Errorf("invalidate installation provenance: %w", err)
+	}
+	return nil
+}
+
+func rebaseInstallationPathsTx(ctx context.Context, tx *sql.Tx, mediaID int64, oldMediaPath, newMediaPath string) error {
+	type installationPaths struct {
+		language string
+		path     string
+		rollback string
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT language, path, rollback_path FROM installations WHERE media_id=?`, mediaID)
+	if err != nil {
+		return fmt.Errorf("list installation paths for media rename: %w", err)
+	}
+	var installations []installationPaths
+	for rows.Next() {
+		var paths installationPaths
+		if err := rows.Scan(&paths.language, &paths.path, &paths.rollback); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan installation paths for media rename: %w", err)
+		}
+		installations = append(installations, paths)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate installation paths for media rename: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close installation paths for media rename: %w", err)
+	}
+	for _, installation := range installations {
+		path := rebaseSidecarPath(installation.path, oldMediaPath, newMediaPath)
+		rollback := rebaseSiblingPath(installation.rollback, oldMediaPath, newMediaPath)
+		if _, err := tx.ExecContext(ctx, `UPDATE installations SET path=?, rollback_path=?, media_path=? WHERE media_id=? AND language=?`, path, rollback, newMediaPath, mediaID, installation.language); err != nil {
+			return fmt.Errorf("rebase installation paths for media rename: %w", err)
+		}
+	}
+	return nil
+}
+
+func rebaseSidecarPath(sidecar, oldMediaPath, newMediaPath string) string {
+	if filepath.Clean(filepath.Dir(sidecar)) != filepath.Clean(filepath.Dir(oldMediaPath)) {
+		return sidecar
+	}
+	oldStem := strings.TrimSuffix(filepath.Base(oldMediaPath), filepath.Ext(oldMediaPath))
+	base := filepath.Base(sidecar)
+	prefix := oldStem + "."
+	if !strings.HasPrefix(base, prefix) {
+		return sidecar
+	}
+	newStem := strings.TrimSuffix(filepath.Base(newMediaPath), filepath.Ext(newMediaPath))
+	return filepath.Join(filepath.Dir(newMediaPath), newStem+strings.TrimPrefix(base, oldStem))
+}
+
+func rebaseSiblingPath(path, oldMediaPath, newMediaPath string) string {
+	if path == "" || filepath.Clean(filepath.Dir(path)) != filepath.Clean(filepath.Dir(oldMediaPath)) {
+		return path
+	}
+	return filepath.Join(filepath.Dir(newMediaPath), filepath.Base(path))
 }
 
 func (r *Repository) EnsureInstance(ctx context.Context, name, instanceType, baseURL string, now time.Time) error {

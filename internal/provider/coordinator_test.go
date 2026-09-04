@@ -96,6 +96,19 @@ func TestCoordinatorRunsBroadSearchesConcurrentlyAndIsolatesErrors(t *testing.T)
 	}
 }
 
+func TestCoordinatorClearsExactPhaseFailureAfterSuccessfulBroadSearch(t *testing.T) {
+	provider := &fakeProvider{
+		id:           "only",
+		capabilities: Capabilities{ExactFileHash: true},
+		candidates:   map[SearchMode][]domain.Candidate{SearchBroad: {}},
+		err:          map[SearchMode]error{SearchExactHash: context.DeadlineExceeded},
+	}
+	result := newTestCoordinator(provider).Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
+	if len(result.Candidates) != 0 || len(result.Errors) != 0 {
+		t.Fatalf("successful broad phase retained stale exact failure: %#v", result)
+	}
+}
+
 func TestCoordinatorCachesNormalizedResultsForSixHours(t *testing.T) {
 	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "opaque-id"}}}}
 	coordinator := newTestCoordinator(provider)

@@ -1,0 +1,4 @@
+ALTER TABLE installations ADD COLUMN media_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE installations ADD COLUMN media_file_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE installations ADD COLUMN media_size INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE installations ADD COLUMN media_mod_time_ns INTEGER NOT NULL DEFAULT 0;

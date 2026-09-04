@@ -85,6 +85,7 @@ func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResul
 			result.Errors[item.providerID] = item.err
 			continue
 		}
+		delete(result.Errors, item.providerID)
 		result.Candidates = append(result.Candidates, item.candidates...)
 	}
 	return result

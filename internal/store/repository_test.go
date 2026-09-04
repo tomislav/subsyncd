@@ -20,8 +20,8 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 4 {
-			t.Errorf("migration count = %d, want 4", count)
+		if count != 5 {
+			t.Errorf("migration count = %d, want 5", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
@@ -197,6 +197,122 @@ func TestRecordInstallationRollsBackAuditWhenInsertFails(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("audit event count = %d, want rollback", count)
+	}
+}
+
+func TestInstallationFingerprintRoundTripsAndInvalidatesOnMediaChange(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}
+	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found || got.MediaPath != installation.MediaPath || got.MediaModTimeNS != installation.MediaModTimeNS {
+		t.Fatalf("GetInstallation() = %#v/%v/%v", got, found, err)
+	}
+	media.Fingerprint.Size++
+	if _, changed, err := repo.UpsertMedia(context.Background(), media); err != nil || !changed {
+		t.Fatalf("changed UpsertMedia() = %v/%v", changed, err)
+	}
+	got, found, err = repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found || string(got.ScoreJSON) != "{}" || string(got.SyncResultJSON) != "{}" || got.MediaPath != "" {
+		t.Fatalf("invalidated installation = %#v/%v/%v", got, found, err)
+	}
+}
+
+func TestMediaRenameRetainsInstallationProvenanceAndRebasesManagedPaths(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	media.Fingerprint.Path = "/media/Old.Name.mkv"
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{
+		MediaID:        mediaID,
+		Language:       "en",
+		Path:           "/media/Old.Name.en.srt",
+		Checksum:       "sum",
+		ScoreJSON:      []byte(`{"total":70}`),
+		SyncResultJSON: []byte(`{"verdict":"solid"}`),
+		RollbackPath:   "/media/.subsyncd-rollback-old",
+		MediaPath:      media.Fingerprint.Path,
+		MediaFileID:    media.Fingerprint.FileID,
+		MediaSize:      media.Fingerprint.Size,
+		MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(),
+	}
+	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	media.Fingerprint.Path = "/media/renamed/New.Name.mkv"
+	if _, changed, err := repo.UpsertMedia(context.Background(), media); err != nil || !changed {
+		t.Fatalf("renamed UpsertMedia() = %v/%v", changed, err)
+	}
+	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found {
+		t.Fatalf("GetInstallation() = %#v/%v/%v", got, found, err)
+	}
+	if got.MediaPath != media.Fingerprint.Path || got.Path != "/media/renamed/New.Name.en.srt" || got.RollbackPath != "/media/renamed/.subsyncd-rollback-old" || string(got.ScoreJSON) != `{"total":70}` || string(got.SyncResultJSON) != `{"verdict":"solid"}` {
+		t.Fatalf("renamed installation = %#v", got)
+	}
+}
+
+func TestRenameEventRetainsInstallationProvenance(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	media := testMedia()
+	media.Fingerprint.Path = "/media/Old.Name.mkv"
+	media.Fingerprint.ModTime = now
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-before-rename", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	var mediaID int64
+	if err := repo.store.db.QueryRow(`SELECT id FROM media WHERE instance=? AND kind=? AND file_id=?`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID).Scan(&mediaID); err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/Old.Name.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}
+	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+		t.Fatal(err)
+	}
+	media.Fingerprint.Path = "/media/New.Name.mkv"
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "rename-1", Type: "rename", Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+	if err != nil || !found || got.Path != "/media/New.Name.en.srt" || got.MediaPath != media.Fingerprint.Path || string(got.ScoreJSON) != `{"total":70}` {
+		t.Fatalf("renamed event installation = %#v/%v/%v", got, found, err)
+	}
+}
+
+func TestRecordCandidatesAtomicallyReplacesMediaLanguageSet(t *testing.T) {
+	repo := openTestRepository(t)
+	mediaID, _, err := repo.UpsertMedia(context.Background(), testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := []CandidateRecord{
+		{ProviderID: "one", ResultID: "1", MetadataJSON: []byte(`{"provider_id":"one"}`), ScoreJSON: []byte(`{"total":35}`)},
+		{ProviderID: "two", ResultID: "2", MetadataJSON: []byte(`{"provider_id":"two"}`), ScoreJSON: []byte(`{"total":40}`)},
+	}
+	if err := repo.RecordCandidates(context.Background(), mediaID, "en", first); err != nil {
+		t.Fatal(err)
+	}
+	second := []CandidateRecord{{ProviderID: "three", ResultID: "3", MetadataJSON: []byte(`{"provider_id":"three"}`), ScoreJSON: []byte(`{"total":45}`), ValidationJSON: []byte(`{"eligible":true}`)}}
+	if err := repo.RecordCandidates(context.Background(), mediaID, "en", second); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var providerID string
+	if err := repo.store.db.QueryRow(`SELECT count(*), provider_id FROM candidates WHERE media_id=? AND language=?`, mediaID, "en").Scan(&count, &providerID); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || providerID != "three" {
+		t.Fatalf("candidate set = %d/%q", count, providerID)
 	}
 }
 
