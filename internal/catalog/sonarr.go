@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 
@@ -87,6 +88,18 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	if len(episodes) == 0 {
 		return domain.Media{}, fmt.Errorf("Sonarr file %d has no episode", ref.FileID)
 	}
+	sort.Slice(episodes, func(i, j int) bool {
+		if episodes[i].SeasonNumber != episodes[j].SeasonNumber {
+			return episodes[i].SeasonNumber < episodes[j].SeasonNumber
+		}
+		if episodes[i].EpisodeNumber != episodes[j].EpisodeNumber {
+			return episodes[i].EpisodeNumber < episodes[j].EpisodeNumber
+		}
+		if episodes[i].AbsoluteEpisodeNumber != episodes[j].AbsoluteEpisodeNumber {
+			return episodes[i].AbsoluteEpisodeNumber < episodes[j].AbsoluteEpisodeNumber
+		}
+		return episodes[i].ID < episodes[j].ID
+	})
 	episode := episodes[0]
 	seriesID := file.SeriesID
 	if seriesID == 0 {
@@ -100,7 +113,7 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("map Sonarr file %d: %w", ref.FileID, err)
 	}
-	return domain.Media{
+	media := domain.Media{
 		Ref:              ref,
 		Fingerprint:      domain.MediaFingerprint{Path: path, FileID: ref.FileID, Size: file.Size, ModTime: file.DateAdded},
 		Title:            series.Title,
@@ -118,7 +131,11 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 		Resolution:       resolutionName(file.Quality.Quality.Resolution),
 		Quality:          file.Quality.Quality.Name,
 		Duration:         parseRuntime(file.MediaInfo.RunTime),
-	}, nil
+	}
+	if len(episodes) > 1 {
+		media.UnsupportedReason = domain.UnsupportedMultiEpisode
+	}
+	return media, nil
 }
 
 func (s *Sonarr) ListChangesSince(ctx context.Context, since time.Time) ([]HistoryChange, error) {

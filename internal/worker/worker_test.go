@@ -40,6 +40,25 @@ func TestRunOnceLimitsWorkflowConcurrencyAndRenewsLeases(t *testing.T) {
 	}
 }
 
+func TestRunSearchLeaseCompletesUnsupportedMediaWithoutWorkflow(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	media := repository.media[1]
+	media.UnsupportedReason = domain.UnsupportedMultiEpisode
+	repository.media[1] = media
+	service := &workerWorkflow{}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	if err := worker.runSearchLease(context.Background(), repository.searches[0]); err != nil {
+		t.Fatal(err)
+	}
+	if service.calls != 0 {
+		t.Fatalf("workflow calls = %d, want 0", service.calls)
+	}
+	if len(repository.searchCompletions) != 1 || repository.searchCompletions[0].Outcome != string(domain.UnsupportedMultiEpisode) || !repository.searchCompletions[0].NextAttemptAt.IsZero() {
+		t.Fatalf("search completions = %#v", repository.searchCompletions)
+	}
+}
+
 func TestRunOnceLogsCorrelatedSearchJobLifecycle(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)

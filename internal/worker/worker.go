@@ -230,6 +230,25 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			slog.String("media_kind", string(media.Ref.Kind)),
 			slog.Int64("file_id", media.Ref.FileID),
 		)
+		if media.UnsupportedReason != "" {
+			if renewErr := renewal.finish(); renewErr != nil {
+				events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
+				return renewErr
+			}
+			if jobCtx.Err() != nil {
+				w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, nil)
+				return jobCtx.Err()
+			}
+			completion := store.SearchCompletion{JobID: lease.JobID, Outcome: string(media.UnsupportedReason)}
+			completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
+			if completionErr != nil {
+				w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, completionErr)
+				return completionErr
+			}
+			w.logRerun(jobCtx, completionResult)
+			w.logJobCompleted(jobCtx, slog.LevelInfo, string(media.UnsupportedReason), string(media.UnsupportedReason), time.Time{}, started, nil)
+			return nil
+		}
 		result, err = w.Workflow.Run(jobCtx, workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)})
 	}
 	if renewErr := renewal.finish(); renewErr != nil {

@@ -562,6 +562,9 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "media: id=%d instance=%s kind=%s file_id=%d title=%q\n", mediaID, instance, kind, fileID, media.Title)
+	if media.UnsupportedReason != "" {
+		fmt.Fprintf(&output, "unsupported_reason=%s\n", media.UnsupportedReason)
+	}
 	inventoryRecord, err := a.Repository.GetTrackInventory(ctx, mediaID)
 	if err != nil {
 		return "", err

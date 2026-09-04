@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repairs executing inline; Tasks 1–3 complete
-- Next task: index and terminalize multi-episode Sonarr files
+- Current task: conventional review repairs executing inline; Tasks 1–4 complete
+- Next task: put a hard second deadline on canceled worker shutdown
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 4 — fail-closed multi-episode indexing
+
+- Sonarr sorts episode records by season, episode, absolute number, and ID. Zero episodes remains a catalog consistency failure; two or more use the earliest display identity and persist `unsupported_multi_episode`.
+- Unleased unsupported searches are terminal at mutation time. A leased terminal rerun is intercepted immediately after current media load, completed without calling the workflow, and receives no provider, LAPSE, candidate, rejection, installation, or upgrade work.
+- `explain` emits `unsupported_reason=unsupported_multi_episode`. The Task 1 installation transaction check remains the final guard against stale work already inside an external operation.
+- Verification: the three focused tests failed on unsorted selection, workflow entry, and missing explanation; unrestricted `go test ./internal/catalog ./internal/store ./internal/worker ./internal/app ./internal/cli -race -count=1` and `git diff --check` pass. Next task: bounded canceled shutdown.
 
 ### Conventional repairs Task 3 — atomic typed reconciliation
 

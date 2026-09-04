@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,61 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	}
 	if media.ExternalIDs.IMDb != "tt1234567" || media.ExternalIDs.TVDB != 7654 || media.OriginalFilename == "" || media.ReleaseGroup != "GROUP" || media.Quality != "WEBDL-1080p" || media.Duration != 42*time.Minute+30*time.Second {
 		t.Fatalf("release metadata = %#v", media)
+	}
+}
+
+func TestSonarrGetMediaIndexesMultiEpisodeFileAsUnsupported(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v3/episodefile/1001":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 1234, "dateAdded": "2026-09-04T10:00:00Z"})
+		case r.URL.Path == "/api/v3/episode":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "absoluteEpisodeNumber": 12, "title": "Second"},
+				{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 11, "title": "First"},
+			})
+		case r.URL.Path == "/api/v3/series/10":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Show"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := catalog.GetMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if media.Season != 1 || media.Episode != 1 || media.EpisodeTitle != "First" || media.UnsupportedReason != domain.UnsupportedMultiEpisode {
+		t.Fatalf("multi-episode media = %#v", media)
+	}
+}
+
+func TestSonarrGetMediaRejectsFileWithoutEpisodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/episodefile/1001":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10})
+		case "/api/v3/episode":
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", nil, []string{t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = catalog.GetMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001})
+	if err == nil || !strings.Contains(err.Error(), "file 1001 has no episode") {
+		t.Fatalf("GetMedia() error = %v", err)
 	}
 }
 
