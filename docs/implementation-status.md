@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 10, archive extraction and pack selection
-- Next task: Task 11, LAPSE integration
+- Current task: Task 11, LAPSE integration
+- Next task: Task 12, workflow orchestration and atomic installation
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -81,6 +81,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Provider download counts now share a logarithmic `[0,1]` normalization saturating at four orders of magnitude. This prevents popularity from overpowering identity while making its two score points usable by OpenSubtitles, Titlovi, and SubDL.
 - Adopted Bazarr's small known release-group equivalence sets as behavior, with independently authored tests. Tightened scoring retains explicit zero-point explanations and rejects wrong-season pack metadata even when candidate top-level season is absent.
 - Verification: `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Task 10 — safe extraction and reusable season packs
+
+- Commit: `8ff4405 feat: add safe reusable season-pack handling`
+
+- One common extractor handles ZIP, RAR, and plain `.srt`, `.ass`, `.ssa`, or `.vtt` payloads. Defaults cap input at 20 MiB compressed, 100 MiB expanded, 100 files, and one directory level. Every archive member counts toward limits, including ignored extensions.
+- Extraction rejects Unix and Windows absolute paths, traversal, symlinks and other special files, duplicate case-insensitive names, nested archives by extension or ZIP/RAR magic, excessive expansion, NUL/binary payloads, unsupported syntax, more than 100,000 cues, and negative or non-monotonic timestamps. Text is normalized to UTF-8/LF, accepting UTF-8 and Windows-1250 input, and is published from a same-parent staging directory.
+- Subtitle syntax validation uses `github.com/asticode/go-astisub` v0.42.0. RAR streaming uses `github.com/nwaples/rardecode/v2` v2.4.1. ZIP, plain, and hostile archive branches have independent fixtures; the RAR decoder integration is compiled and bounded but still needs a provenance-safe valid RAR fixture in the later black-box suite.
+- Member selection is fail-closed and ordered: provider direct member, unique `SxxEyy`/`xxXyy`, containing episode range, absolute `EP`/`ABS` token, then unique normalized episode-title similarity of at least 0.98 for titles longer than four characters. Range starts are not misclassified as single episodes, repeated direct evidence is deduplicated, and forced members are excluded from normal requests.
+- Sonarr episode titles now hydrate into `domain.Media` and migration `004_episode_titles.sql` persists them. Both direct and webhook-transaction media upserts carry the field.
+- The cache key hashes provider, result, language, and download checksum. Normalized members live below an exact 64-hex content directory with checksums and an SQLite manifest. Raw candidate and direct-member download references are scrubbed before persistence.
+- Cache publication is immutable and rolls back if SQLite rejects the entry. Existing destinations must be real directories containing real regular files; cache reads reject symlinks and verify checksums. Expired entries are removed before live LRU entries, eviction renames to a tombstone before database deletion, and orphan cleanup is root-contained. The cache assumes one service process owns its configured cache root.
+- Reuse matches any known TVDB, TMDB, IMDb, or title/year identity so a provider result keyed by one external ID can serve media carrying stronger additional IDs. Cached members remain subject to later matching/scoring and LAPSE validation.
+- Bazarr behavior adopted: format filtering and numbered/ranged pack evidence. Tightened: universal bounded extraction, no arbitrary single-file fallback, strict ambiguity rejection, content addressing, raw-link scrubbing, checksum validation, symlink-safe reuse, and rollback across filesystem/database publication.
+- Verification: focused red/green regressions plus `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
 

@@ -18,7 +18,10 @@ Important invariants:
 - Provider file hashes are calculated lazily, persisted by algorithm, and reusable only for an exact path/file-ID/size/mtime fingerprint.
 - Providers are compiled-in adapters behind the common interface.
 - Remote provider cooldowns are persisted and release worker leases; provider code must not sleep through them.
-- A season-pack member must be uniquely identified. Never select the first arbitrary archive member.
+- All provider downloads pass through the common bounded extractor. ZIP, RAR, and plain subtitle payloads are accepted; traversal, links, nested archives, decompression-limit violations, invalid subtitle syntax, and ambiguous season-pack members fail closed.
+- A season-pack member must be uniquely identified by provider evidence, episode/range/absolute tokens, or the strict episode-title rule. Never select the first arbitrary archive member.
+- Pack-cache directories are content-addressed and immutable. Never persist candidate download references, follow cache symlinks, or delete paths outside the exact cache layout.
+- Sonarr episode titles are persisted because they are part of strict pack-member evidence; schema changes must update both normal and event-transaction media upserts.
 - LAPSE is the only synchronization engine. Non-exact candidates require its `solid` verdict.
 - Only unchanged files owned by this service may be upgraded.
 - Every media write is root-contained, atomic, checksum-recorded, and auditable.
