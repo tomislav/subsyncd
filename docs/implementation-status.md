@@ -5,7 +5,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 15 verification and handoff
+- Current task: complete through Task 15
 - Next task: none; the approved implementation plan ends after Task 15
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
@@ -152,7 +152,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ### Task 15 — packaging, end-to-end verification, and operator documentation
 
-- Pending commit: `docs: package and document subsyncd`
+- Commit: `5619812 docs: package and document subsyncd`
 - The multi-stage production image builds a static Go 1.27.0 service and installs checksum-pinned LAPSE v2.0.5 assets for Linux amd64/arm64. Debian 13.2 is intentional: the upstream LAPSE executable needs glibc 2.38+, which the initially tested Debian 12 runtime did not provide. The final runtime includes FFmpeg/FFprobe, runs as fixed UID/GID 10001, and declares a readiness health check.
 - LAPSE capability discovery was corrected against the packaged executable: v2.0.5 exposes usage only on an empty invocation and interprets `--help` as a media filename. Startup now checks the real no-argument usage contract. The v2.0.5 release archive's executable reports internal version `2.0.0`; both values are recorded rather than conflated.
 - Compose examples use a read-only root filesystem, read-only configuration, writable data/media mounts, bounded tmpfs, dropped capabilities, no-new-privileges, init, a 45-second stop grace period, resource limits, health checks, external media networking, and credential environment variables with no embedded secrets. The root stack keeps the service behind the opt-in `subsyncd` profile.
