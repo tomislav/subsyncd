@@ -166,7 +166,7 @@ http://subsyncd:8097/webhooks/INSTANCE_NAME?token=INSTANCE_WEBHOOK_TOKEN
 
 Enable download/import (including upgrades), rename, and file-delete events. `subsyncd` deliberately does not create or modify Arr connections; this keeps ownership explicit and avoids coupling startup to mutable, version-specific Arr configuration. Keep the token out of general reverse-proxy access logs. `subsyncd` itself logs only `/webhooks/INSTANCE_NAME`, never the query string. The request body limit is 1 MiB.
 
-Every instance also reconciles immediately at process start and every six hours using an independent persisted cursor. A failed instance does not roll back another instance's cursor.
+Every instance also reconciles immediately at process start and every six hours using an independent persisted cursor. Reconciliation reads typed Arr history for imports, renames, and deletions, reduces multiple records for one file to the newest relevant final state, and hydrates only live files. The complete page—including deletion tombstones, audit records, media/search changes, and the new cursor—is committed in one SQLite transaction. A malformed or otherwise failed page advances nothing and is retried from the old cursor. A failed instance does not roll back another instance's cursor.
 
 The daemon starts with one media workflow at a time. Increase this only when the host and media storage can sustain concurrent provider preparation and LAPSE reads:
 
@@ -177,6 +177,8 @@ worker:
 
 Search work is durable and strictly ordered by class: a newly imported or renamed file runs before an ordinary missing-subtitle retry, which runs before a scheduled upgrade check. Within one class, the oldest due time wins. A webhook sends a nonblocking advisory wake after its database commit, so a free slot is filled without waiting for the next poll. Wakes may coalesce during bursts; startup and the jittered recovery poll read SQLite again, so correctness never depends on receiving every signal. A new event for a media/language already being processed requests exactly one immediate rerun without starting a concurrent duplicate. Priority changes dispatch order only and never bypass provider rate limits or persisted cooldowns.
 
+The same lease rule applies to reconciliation. If history reports a change for media already being processed, the current owner and expiry remain intact and one immediate rerun is coalesced. An old completion cannot erase that rerun.
+
 For a missing language, search workflows run at absolute milestones from import or reset: immediately, about 30 minutes, 2 hours, 8 hours, 24 hours, 3 days, 7 days, 14 days, and every 14 days thereafter, with interval jitter. Sidecars are refreshed on every run. Provider search results are cached for six hours, so the 30-minute and 2-hour workflows normally perform local checks without another provider request; under an unchanged empty result, external searches normally occur around import, 8 hours, 24 hours, 3 days, 7 days, and 14 days. Provider cooldowns and technical-failure retries remain independent of this sequence.
 
 ## Embedded and external subtitle behavior
@@ -184,6 +186,8 @@ For a missing language, search workflows run at absolute milestones from import 
 FFprobe indexes all embedded subtitle streams, including text and image codecs. The result is stored in SQLite and reused until path, Arr file ID, size, or nanosecond mtime changes. Sidecars are never trusted from that cache: `.srt`, `.ass`, `.ssa`, and `.vtt` files for the exact media stem are scanned and checksummed before every search.
 
 A matching full embedded track prevents downloading. Forced-only or unknown-language (`und`) tracks do not. SDH/HI tracks are rejected by default and satisfy only when `allow_hearing_impaired: true` is explicitly configured. Existing sidecars are protected unless their path and checksum match `subsyncd` installation provenance, so user edits are never overwritten automatically.
+
+Sonarr can associate more than one episode with a single media file. `subsyncd` records such a file using the earliest episode only as a stable display identity and persists `unsupported_multi_episode`. Every configured language is terminally marked with that outcome; provider search, download, candidate processing, LAPSE, installation, and upgrade work are skipped. `subsyncd explain` shows the reason. A later single-episode import or rename clears the marker and schedules normal work.
 
 ## LAPSE policy
 
@@ -252,7 +256,9 @@ This adapter targets Silo's current pre-1.0 native API. Silo plans to retire `/a
 
 For a consistent backup, stop the service and copy `/data` as one unit. It contains the SQLite database and both caches. Restoring only the database can leave pack manifests missing; those entries are detected and invalidated safely, but the cache benefit is lost.
 
-Search and notification leases are recoverable after five minutes. A crash after atomic publication but before search completion does not trigger a second installation: the next inventory pass recognizes the checksum-recorded sidecar. Managed replacements retain one rollback file until a later successful replacement supersedes it; database-commit failure restores it immediately.
+Search and notification leases are recoverable after five minutes. On shutdown, workers receive one graceful drain window, then cancellation, then one final equally bounded window. A cancellation-insensitive external operation may outlive the daemon return, but its lease is deliberately not cleared and becomes recoverable after expiry; operators should avoid starting a replacement process against the same media mounts until the old process/container has actually stopped.
+
+A crash after atomic publication but before search completion does not trigger a second installation: the next inventory pass recognizes the checksum-recorded sidecar. Managed replacements retain one rollback file until a later successful replacement supersedes it; database-commit failure restores it immediately. If removal of a newly published sidecar or restoration/fsync of a replacement also fails, the combined technical error is logged and returned. The destination or rollback copy is retained rather than silently discarded. Such a sidecar may be valid but untracked and is therefore protected from automatic takeover; inspect it and `explain` before resolving it manually.
 
 If a user wants to take ownership of a subtitle, edit or replace the sidecar. Its checksum then differs from provenance and `subsyncd` protects it. Use `explain` before removing any generated file; never delete arbitrary `.subsyncd-*` files while the daemon is running.
 

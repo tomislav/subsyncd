@@ -269,6 +269,155 @@ func TestExactHashInstallsWithoutLapseOrBroadSearch(t *testing.T) {
 	}
 }
 
+func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	database, err := store.Open(context.Background(), filepath.Join(root, "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repository := database.Repository()
+	if err := repository.EnsureInstance(context.Background(), "sonarr-main", "sonarr", "http://sonarr.invalid", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	deletedRef := domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1002}
+	deletedMedia := domain.Media{
+		Ref:         deletedRef,
+		Fingerprint: domain.MediaFingerprint{Path: filepath.Join(root, "Deleted.S01E02.mkv"), FileID: 1002, Size: 100, ModTime: now.Add(-2 * time.Hour)},
+		Title:       "Deleted",
+		Season:      1,
+		Episode:     2,
+	}
+	if _, err := repository.ApplyMediaEvent(context.Background(), store.MediaEventMutation{EventID: "seed:1002", Type: "import", Ref: deletedRef, Media: deletedMedia, Languages: []domain.Language{"en"}, At: now.Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	sonarr := newReconciliationSonarrServer(t, now)
+	defer sonarr.Close()
+	sonarrCatalog, err := catalog.NewSonarr("sonarr-main", sonarr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciler := catalog.Reconciler{Instance: "sonarr-main", Catalog: sonarrCatalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }}
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	importID, _, err := repository.FindMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	importStatus, err := repository.GetSearchStatus(context.Background(), importID, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if importStatus.State != "pending" || importStatus.Priority != store.SearchPriorityMissing || importStatus.NextAttemptAt.After(now) {
+		t.Fatalf("import search status = %#v", importStatus)
+	}
+
+	deletedID, _, err := repository.FindMedia(context.Background(), deletedRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletedStatus, err := repository.GetSearchStatus(context.Background(), deletedID, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deletedStatus.State != "complete" || deletedStatus.LastOutcome != "deleted" {
+		t.Fatalf("deleted search status = %#v", deletedStatus)
+	}
+
+	unsupportedID, unsupported, err := repository.FindMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1003})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsupported.UnsupportedReason != domain.UnsupportedMultiEpisode || unsupported.Season != 1 || unsupported.Episode != 3 {
+		t.Fatalf("unsupported media = %#v", unsupported)
+	}
+	unsupportedStatus, err := repository.GetSearchStatus(context.Background(), unsupportedID, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsupportedStatus.State != "complete" || unsupportedStatus.LastOutcome != string(domain.UnsupportedMultiEpisode) {
+		t.Fatalf("unsupported search status = %#v", unsupportedStatus)
+	}
+	cursor, err := repository.GetReconciliationCursor(context.Background(), "sonarr-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cursor.Equal(now) {
+		t.Fatalf("reconciliation cursor = %s, want %s", cursor, now)
+	}
+
+	leases, err := repository.LeaseDueSearches(context.Background(), now, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 1 || leases[0].MediaID != importID {
+		t.Fatalf("due leases = %#v, want only imported media %d", leases, importID)
+	}
+	if _, err := repository.CompleteSearch(context.Background(), store.SearchCompletion{JobID: leases[0].JobID, Outcome: "satisfied", ResetMissingAttempt: true, ResetFailureAttempt: true}); err != nil {
+		t.Fatal(err)
+	}
+	workflowCalls := &countingSatisfiedWorkflow{}
+	background := &worker.Worker{Repository: repository, Workflow: workflowCalls, Clock: fixedE2EClock{now: now}, MaxWorkflows: 1, LeaseDuration: time.Minute, RenewInterval: time.Second, ShutdownTimeout: time.Second}
+	if err := background.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if workflowCalls.calls.Load() != 0 {
+		t.Fatalf("unsupported reconciliation triggered %d acquisition workflows", workflowCalls.calls.Load())
+	}
+}
+
+func newReconciliationSonarrServer(t *testing.T, now time.Time) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Api-Key") != "arr-key" {
+			response.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch request.URL.Path {
+		case "/api/v3/history/since":
+			_ = json.NewEncoder(response).Encode([]map[string]any{
+				{"id": 101, "eventType": "downloadFolderImported", "date": now.Add(-30 * time.Minute), "episodeFileId": 1001},
+				{"id": 102, "eventType": "episodeFileDeleted", "date": now.Add(-20 * time.Minute), "episodeFileId": 1002},
+				{"id": 103, "eventType": "downloadFolderImported", "date": now.Add(-10 * time.Minute), "episodeFileId": 1003},
+			})
+		case "/api/v3/episodefile/1001":
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 1001, "seriesId": 11, "path": "/remote/tv/Show.S01E01.mkv", "size": 100, "dateAdded": now.Add(-30 * time.Minute)})
+		case "/api/v3/episodefile/1003":
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 1003, "seriesId": 13, "path": "/remote/tv/Combined.S01E03E04.mkv", "size": 300, "dateAdded": now.Add(-10 * time.Minute)})
+		case "/api/v3/episode":
+			switch request.URL.Query().Get("episodeFileId") {
+			case "1001":
+				_ = json.NewEncoder(response).Encode([]map[string]any{{"id": 1, "seriesId": 11, "seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 1, "title": "Pilot"}})
+			case "1003":
+				_ = json.NewEncoder(response).Encode([]map[string]any{
+					{"id": 4, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 4, "absoluteEpisodeNumber": 4, "title": "Fourth"},
+					{"id": 3, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 3, "absoluteEpisodeNumber": 3, "title": "Third"},
+				})
+			default:
+				http.NotFound(response, request)
+			}
+		case "/api/v3/series/11":
+			_, _ = io.WriteString(response, `{"id":11,"title":"Show","year":2026,"tvdbId":11}`)
+		case "/api/v3/series/13":
+			_, _ = io.WriteString(response, `{"id":13,"title":"Combined","year":2026,"tvdbId":13}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+}
+
+type countingSatisfiedWorkflow struct{ calls atomic.Int64 }
+
+func (w *countingSatisfiedWorkflow) Run(context.Context, workflow.Request) (workflow.Result, error) {
+	w.calls.Add(1)
+	return workflow.Result{Outcome: workflow.OutcomeSatisfied}, nil
+}
+
 type counts struct {
 	exact    atomic.Int64
 	broad    atomic.Int64
