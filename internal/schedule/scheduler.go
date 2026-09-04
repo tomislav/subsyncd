@@ -28,13 +28,15 @@ func (s Scheduler) Missing(jobID string, attempt int) store.SearchCompletion {
 		Outcome:               "missing",
 		NextAttemptAt:         s.Clock.Now().Add(MissingDelay(attempt, randomUnit)),
 		AdvanceMissingAttempt: true,
+		ResetFailureAttempt:   true,
 	}
 }
 
 func (s Scheduler) Failure(jobID string, failureAttempt int, outcome string) store.SearchCompletion {
 	return store.SearchCompletion{
-		JobID:         jobID,
-		Outcome:       outcome,
-		NextAttemptAt: s.Clock.Now().Add(FailureDelay(failureAttempt)),
+		JobID:                 jobID,
+		Outcome:               outcome,
+		NextAttemptAt:         s.Clock.Now().Add(FailureDelay(failureAttempt)),
+		AdvanceFailureAttempt: true,
 	}
 }

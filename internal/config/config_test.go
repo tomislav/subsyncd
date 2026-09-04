@@ -132,6 +132,18 @@ languages:
 	assertErrorContains(t, err, "subdl-main", "requests_per_second")
 }
 
+func TestValidateRejectsUnsafeSiloURLAndRelativePathMapping(t *testing.T) {
+	root := t.TempDir()
+	for _, silo := range []string{
+		`silo: {enabled: true, url: "http://user:pass@silo:8096", api_key: key}`,
+		`silo: {enabled: true, url: "http://silo:8096", api_key: key, path_mappings: [{from: relative, to: /mnt/media}]}`,
+	} {
+		block := "\n" + silo + "\nlanguages:\n  en: {providers: [subdl-main]}\n"
+		_, err := loadText(t, validConfig(root, block))
+		assertErrorContains(t, err, "silo")
+	}
+}
+
 func loadText(t *testing.T, text string) (Config, error) {
 	t.Helper()
 	if _, ok := os.LookupEnv("TEST_SUBDL_KEY"); !ok {

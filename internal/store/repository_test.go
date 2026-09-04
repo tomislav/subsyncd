@@ -20,8 +20,8 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 5 {
-			t.Errorf("migration count = %d, want 5", count)
+		if count != 6 {
+			t.Errorf("migration count = %d, want 6", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
@@ -178,6 +178,91 @@ func TestExpiredLeaseCanBeRecovered(t *testing.T) {
 	recovered, err := repo.LeaseDueSearches(context.Background(), now.Add(time.Minute), 1, time.Minute)
 	if err != nil || len(recovered) != 1 || recovered[0].JobID == first[0].JobID {
 		t.Fatalf("recovered lease = %#v, %v", recovered, err)
+	}
+}
+
+func TestSearchLeaseRenewalAndAttemptAccountingAreCompareAndSwap(t *testing.T) {
+	repo := openTestRepository(t)
+	mediaID, _, _ := repo.UpsertMedia(context.Background(), testMedia())
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	if err := repo.UpsertSearchState(context.Background(), mediaID, "en", now); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := repo.LeaseDueSearches(context.Background(), now, 1, 5*time.Minute)
+	if err != nil || len(leases) != 1 || leases[0].FailureAttempt != 0 {
+		t.Fatalf("leases = %#v, %v", leases, err)
+	}
+	if err := repo.RenewSearchLease(context.Background(), "wrong-owner", now.Add(time.Minute), 5*time.Minute); err == nil {
+		t.Fatal("wrong-owner renewal succeeded")
+	}
+	if err := repo.RenewSearchLease(context.Background(), leases[0].JobID, now.Add(time.Minute), 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	next := now.Add(30 * time.Minute)
+	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "missing", NextAttemptAt: next, AdvanceMissingAttempt: true, ResetFailureAttempt: true}); err != nil {
+		t.Fatal(err)
+	}
+	leases, err = repo.LeaseDueSearches(context.Background(), next, 1, 5*time.Minute)
+	if err != nil || len(leases) != 1 || leases[0].Attempt != 1 || leases[0].FailureAttempt != 0 {
+		t.Fatalf("missing completion lease = %#v, %v", leases, err)
+	}
+	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "transport_error", NextAttemptAt: next.Add(time.Minute), AdvanceFailureAttempt: true}); err != nil {
+		t.Fatal(err)
+	}
+	leases, err = repo.LeaseDueSearches(context.Background(), next.Add(time.Minute), 1, 5*time.Minute)
+	if err != nil || len(leases) != 1 || leases[0].Attempt != 1 || leases[0].FailureAttempt != 1 {
+		t.Fatalf("failure completion lease = %#v, %v", leases, err)
+	}
+}
+
+func TestNotificationLeaseRetryCompletionAndDedupeLifecycle(t *testing.T) {
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	payload := []byte(`{"path":"/media/movie.mkv"}`)
+	for range 2 {
+		if err := repo.EnqueueNotification(context.Background(), NotificationRequest{Notifier: "silo", DedupeKey: "install:1:sum", PayloadJSON: payload, NextAttemptAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs, err := repo.LeaseDueNotifications(context.Background(), now, 10, 5*time.Minute)
+	if err != nil || len(jobs) != 1 || jobs[0].Attempt != 0 || string(jobs[0].PayloadJSON) != string(payload) {
+		t.Fatalf("first notification lease = %#v, %v", jobs, err)
+	}
+	if competing, err := repo.LeaseDueNotifications(context.Background(), now, 10, 5*time.Minute); err != nil || len(competing) != 0 {
+		t.Fatalf("competing notification lease = %#v, %v", competing, err)
+	}
+	if err := repo.RenewNotificationLease(context.Background(), jobs[0].JobID, now.Add(time.Minute), 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	retryAt := now.Add(5 * time.Minute)
+	if err := repo.CompleteNotification(context.Background(), NotificationCompletion{JobID: jobs[0].JobID, Result: "transport_error", NextAttemptAt: retryAt}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err = repo.LeaseDueNotifications(context.Background(), retryAt, 10, 5*time.Minute)
+	if err != nil || len(jobs) != 1 || jobs[0].Attempt != 1 {
+		t.Fatalf("retry notification lease = %#v, %v", jobs, err)
+	}
+	if err := repo.CompleteNotification(context.Background(), NotificationCompletion{JobID: jobs[0].JobID, Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if jobs, err := repo.LeaseDueNotifications(context.Background(), retryAt.Add(time.Hour), 10, 5*time.Minute); err != nil || len(jobs) != 0 {
+		t.Fatalf("completed notification was leased again: %#v, %v", jobs, err)
+	}
+}
+
+func TestGetMediaReturnsWorkflowIdentity(t *testing.T) {
+	repo := openTestRepository(t)
+	want := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetMedia(context.Background(), mediaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Ref != want.Ref || got.Fingerprint != want.Fingerprint || got.Title != want.Title || got.ReleaseName != want.ReleaseName || got.ExternalIDs != want.ExternalIDs {
+		t.Fatalf("GetMedia() = %#v, want %#v", got, want)
 	}
 }
 

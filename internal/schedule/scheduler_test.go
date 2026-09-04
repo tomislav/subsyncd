@@ -33,6 +33,9 @@ func TestSchedulerBuildsFailureCompletionWithoutAdvancingMissingAttempt(t *testi
 	if completion.AdvanceMissingAttempt {
 		t.Fatal("transport failure must not advance the missing-attempt index")
 	}
+	if !completion.AdvanceFailureAttempt {
+		t.Fatal("transport failure must advance the failure-attempt index")
+	}
 	if completion.Outcome != "transport_error" {
 		t.Fatalf("outcome = %q", completion.Outcome)
 	}

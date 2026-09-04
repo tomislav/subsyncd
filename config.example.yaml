@@ -82,5 +82,9 @@ sync:
 
 silo:
   enabled: false
-  url: http://silo:8090
+  # Silo's Jellyfin-compatible listener, not its web UI listener.
+  url: http://silo:8096
   api_key: ${SILO_API_KEY}
+  path_mappings:
+    - from: /media
+      to: /mnt/media

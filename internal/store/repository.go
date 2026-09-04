@@ -39,11 +39,12 @@ type InventoryRecord struct {
 }
 
 type SearchLease struct {
-	MediaID    int64
-	Language   string
-	JobID      string
-	Attempt    int
-	LeaseUntil time.Time
+	MediaID        int64
+	Language       string
+	JobID          string
+	Attempt        int
+	FailureAttempt int
+	LeaseUntil     time.Time
 }
 
 type SearchCompletion struct {
@@ -51,6 +52,31 @@ type SearchCompletion struct {
 	Outcome               string
 	NextAttemptAt         time.Time
 	AdvanceMissingAttempt bool
+	AdvanceFailureAttempt bool
+	ResetMissingAttempt   bool
+	ResetFailureAttempt   bool
+}
+
+type NotificationRequest struct {
+	Notifier      string
+	DedupeKey     string
+	PayloadJSON   []byte
+	NextAttemptAt time.Time
+}
+
+type NotificationLease struct {
+	ID          int64
+	Notifier    string
+	PayloadJSON []byte
+	Attempt     int
+	JobID       string
+	LeaseUntil  time.Time
+}
+
+type NotificationCompletion struct {
+	JobID         string
+	Result        string
+	NextAttemptAt time.Time
 }
 
 type ProviderState struct {
@@ -208,6 +234,26 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 	return id, changed, nil
 }
 
+func (r *Repository) GetMedia(ctx context.Context, mediaID int64) (domain.Media, error) {
+	var media domain.Media
+	var kind string
+	var alternateTitles []byte
+	var modTimeNS, durationNS int64
+	err := r.store.db.QueryRowContext(ctx, `SELECT instance, kind, file_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns FROM media WHERE id=?`, mediaID).Scan(
+		&media.Ref.Instance, &kind, &media.Ref.FileID, &media.Fingerprint.Path, &media.Fingerprint.Size, &modTimeNS, &media.Title, &media.EpisodeTitle, &alternateTitles, &media.Year, &media.Season, &media.Episode, &media.AbsoluteEpisode, &media.ExternalIDs.IMDb, &media.ExternalIDs.TMDB, &media.ExternalIDs.TVDB, &media.OriginalFilename, &media.ReleaseName, &media.ReleaseGroup, &media.Source, &media.Resolution, &media.StreamingService, &media.Edition, &media.Quality, &durationNS)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("get media %d: %w", mediaID, err)
+	}
+	media.Ref.Kind = domain.MediaKind(kind)
+	media.Fingerprint.FileID = media.Ref.FileID
+	media.Fingerprint.ModTime = time.Unix(0, modTimeNS).UTC()
+	media.Duration = time.Duration(durationNS)
+	if err := json.Unmarshal(alternateTitles, &media.AlternateTitles); err != nil {
+		return domain.Media{}, fmt.Errorf("decode media %d alternate titles: %w", mediaID, err)
+	}
+	return media, nil
+}
+
 // GetMediaHash returns a cached content hash only when it was calculated for
 // the exact media fingerprint supplied by the caller. A changed path, Arr file
 // ID, size, or modification time is therefore a cache miss.
@@ -362,19 +408,20 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 		return nil, fmt.Errorf("begin search lease: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT media_id, language, attempt FROM search_states WHERE state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?) ORDER BY next_attempt_at_ns, media_id, language LIMIT ?`, now.UnixNano(), now.UnixNano(), limit)
+	rows, err := tx.QueryContext(ctx, `SELECT media_id, language, attempt, failure_attempt FROM search_states WHERE state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?) ORDER BY next_attempt_at_ns, media_id, language LIMIT ?`, now.UnixNano(), now.UnixNano(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("select due searches: %w", err)
 	}
 	type due struct {
-		mediaID  int64
-		language string
-		attempt  int
+		mediaID        int64
+		language       string
+		attempt        int
+		failureAttempt int
 	}
 	var dueRows []due
 	for rows.Next() {
 		var item due
-		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt); err != nil {
+		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt, &item.failureAttempt); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan due search: %w", err)
 		}
@@ -400,13 +447,24 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 			return nil, fmt.Errorf("count claimed search: %w", err)
 		}
 		if claimed == 1 {
-			leases = append(leases, SearchLease{MediaID: item.mediaID, Language: item.language, JobID: jobID, Attempt: item.attempt, LeaseUntil: leaseUntil})
+			leases = append(leases, SearchLease{MediaID: item.mediaID, Language: item.language, JobID: jobID, Attempt: item.attempt, FailureAttempt: item.failureAttempt, LeaseUntil: leaseUntil})
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit search leases: %w", err)
 	}
 	return leases, nil
+}
+
+func (r *Repository) RenewSearchLease(ctx context.Context, jobID string, now time.Time, duration time.Duration) error {
+	if jobID == "" || duration <= 0 {
+		return fmt.Errorf("search lease owner and duration are required")
+	}
+	result, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET lease_until_ns=? WHERE lease_owner=?`, now.Add(duration).UnixNano(), jobID)
+	if err != nil {
+		return fmt.Errorf("renew search lease: %w", err)
+	}
+	return requireOneRow(result, "search lease "+jobID+" not found")
 }
 
 func (r *Repository) CompleteSearch(ctx context.Context, completion SearchCompletion) error {
@@ -416,11 +474,15 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		state = "pending"
 		next = completion.NextAttemptAt.UnixNano()
 	}
-	advance := 0
+	advanceMissing := 0
 	if completion.AdvanceMissingAttempt {
-		advance = 1
+		advanceMissing = 1
 	}
-	result, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state=?, attempt=attempt+?, next_attempt_at_ns=?, last_outcome=?, lease_owner=NULL, lease_until_ns=NULL WHERE lease_owner=?`, state, advance, next, completion.Outcome, completion.JobID)
+	advanceFailure := 0
+	if completion.AdvanceFailureAttempt {
+		advanceFailure = 1
+	}
+	result, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state=?, attempt=CASE WHEN ? THEN 0 ELSE attempt+? END, failure_attempt=CASE WHEN ? THEN 0 ELSE failure_attempt+? END, next_attempt_at_ns=?, last_outcome=?, lease_owner=NULL, lease_until_ns=NULL WHERE lease_owner=?`, state, completion.ResetMissingAttempt, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.Outcome, completion.JobID)
 	if err != nil {
 		return fmt.Errorf("complete search: %w", err)
 	}
@@ -430,6 +492,103 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 	}
 	if count != 1 {
 		return fmt.Errorf("search lease %s not found", completion.JobID)
+	}
+	return nil
+}
+
+func (r *Repository) EnqueueNotification(ctx context.Context, request NotificationRequest) error {
+	if request.Notifier == "" || request.DedupeKey == "" || !json.Valid(request.PayloadJSON) || request.NextAttemptAt.IsZero() {
+		return fmt.Errorf("notification notifier, dedupe key, valid payload, and due time are required")
+	}
+	_, err := r.store.db.ExecContext(ctx, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES (?, ?, 0, ?, '', ?) ON CONFLICT DO NOTHING`, request.Notifier, request.PayloadJSON, request.NextAttemptAt.UnixNano(), request.DedupeKey)
+	if err != nil {
+		return fmt.Errorf("enqueue notification: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) LeaseDueNotifications(ctx context.Context, now time.Time, limit int, duration time.Duration) ([]NotificationLease, error) {
+	if limit <= 0 || duration <= 0 {
+		return nil, fmt.Errorf("notification lease limit and duration must be positive")
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin notification lease: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT id, notifier, payload_json, attempt FROM notifications WHERE next_attempt_at_ns > 0 AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?) ORDER BY next_attempt_at_ns, id LIMIT ?`, now.UnixNano(), now.UnixNano(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("select due notifications: %w", err)
+	}
+	var due []NotificationLease
+	for rows.Next() {
+		var item NotificationLease
+		if err := rows.Scan(&item.ID, &item.Notifier, &item.PayloadJSON, &item.Attempt); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan due notification: %w", err)
+		}
+		due = append(due, item)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close due notifications: %w", err)
+	}
+	leaseUntil := now.Add(duration)
+	leased := make([]NotificationLease, 0, len(due))
+	for _, item := range due {
+		jobID, err := randomID()
+		if err != nil {
+			return nil, err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE notifications SET lease_owner=?, lease_until_ns=? WHERE id=? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`, jobID, leaseUntil.UnixNano(), item.ID, now.UnixNano())
+		if err != nil {
+			return nil, fmt.Errorf("claim due notification: %w", err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("count claimed notification: %w", err)
+		}
+		if count == 1 {
+			item.JobID = jobID
+			item.LeaseUntil = leaseUntil
+			leased = append(leased, item)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit notification leases: %w", err)
+	}
+	return leased, nil
+}
+
+func (r *Repository) RenewNotificationLease(ctx context.Context, jobID string, now time.Time, duration time.Duration) error {
+	if jobID == "" || duration <= 0 {
+		return fmt.Errorf("notification lease owner and duration are required")
+	}
+	result, err := r.store.db.ExecContext(ctx, `UPDATE notifications SET lease_until_ns=? WHERE lease_owner=?`, now.Add(duration).UnixNano(), jobID)
+	if err != nil {
+		return fmt.Errorf("renew notification lease: %w", err)
+	}
+	return requireOneRow(result, "notification lease "+jobID+" not found")
+}
+
+func (r *Repository) CompleteNotification(ctx context.Context, completion NotificationCompletion) error {
+	next := int64(0)
+	if !completion.NextAttemptAt.IsZero() {
+		next = completion.NextAttemptAt.UnixNano()
+	}
+	result, err := r.store.db.ExecContext(ctx, `UPDATE notifications SET attempt=attempt+1, next_attempt_at_ns=?, result=?, lease_owner=NULL, lease_until_ns=NULL WHERE lease_owner=?`, next, completion.Result, completion.JobID)
+	if err != nil {
+		return fmt.Errorf("complete notification: %w", err)
+	}
+	return requireOneRow(result, "notification lease "+completion.JobID+" not found")
+}
+
+func requireOneRow(result sql.Result, message string) error {
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return errors.New(message)
 	}
 	return nil
 }

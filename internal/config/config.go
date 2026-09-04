@@ -86,9 +86,15 @@ type SyncConfig struct {
 }
 
 type SiloConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	URL     string `yaml:"url"`
-	APIKey  string `yaml:"api_key"`
+	Enabled      bool              `yaml:"enabled"`
+	URL          string            `yaml:"url"`
+	APIKey       string            `yaml:"api_key"`
+	PathMappings []SiloPathMapping `yaml:"path_mappings"`
+}
+
+type SiloPathMapping struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
 }
 
 type rawConfig struct {
@@ -390,8 +396,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("sync timeout must be positive")
 	}
 	if c.Silo.Enabled {
-		if _, err := url.ParseRequestURI(c.Silo.URL); err != nil || c.Silo.APIKey == "" {
+		parsedURL, err := url.ParseRequestURI(c.Silo.URL)
+		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || c.Silo.APIKey == "" {
 			return fmt.Errorf("enabled silo requires a valid url and api_key")
+		}
+		for _, mapping := range c.Silo.PathMappings {
+			if !filepath.IsAbs(mapping.From) || !filepath.IsAbs(mapping.To) {
+				return fmt.Errorf("Silo path mapping from and to must be absolute")
+			}
 		}
 	}
 	return nil
