@@ -14,19 +14,21 @@ Use test-driven development: add one focused failing test, confirm the expected 
 Important invariants:
 
 - Canonical language identities are BCP 47 tags.
+- Hearing-impaired subtitles are allowed by default. When disabled, both existing SDH tracks and remote HI candidates are ignored/rejected with an explainable reason.
 - Embedded subtitle inventory is fingerprint-cached; sidecars are scanned live before searches.
 - Provider file hashes are calculated lazily, persisted by algorithm, and reusable only for an exact path/file-ID/size/mtime fingerprint.
 - Providers are compiled-in adapters behind the common interface.
 - Remote provider cooldowns are persisted and release worker leases; provider code must not sleep through them.
-- All provider downloads pass through the common bounded extractor. ZIP, RAR, and plain subtitle payloads are accepted; traversal, links, nested archives, decompression-limit violations, invalid subtitle syntax, and ambiguous season-pack members fail closed.
+- All provider downloads are capped at 20 MiB by the workflow before reaching the common bounded extractor, even if an adapter mishandles writer errors. ZIP, RAR, and plain subtitle payloads are accepted; traversal, links, nested archives, decompression-limit violations, invalid subtitle syntax, and ambiguous season-pack members fail closed.
 - A season-pack member must be uniquely identified by provider evidence, episode/range/absolute tokens, or the strict episode-title rule. Never select the first arbitrary archive member.
-- Pack-cache directories are content-addressed and immutable. Never persist candidate download references, follow cache symlinks, or delete paths outside the exact cache layout.
+- Pack-cache directories are content-addressed and immutable. A cache hit reloads its manifest and reruns the normal strict selector for the current episode. Never persist candidate download references, follow cache symlinks, or delete paths outside the exact cache layout. Cache writes are best-effort and must not reject an otherwise valid installation.
 - Sonarr episode titles are persisted because they are part of strict pack-member evidence; schema changes must update both normal and event-transaction media upserts.
 - LAPSE is the only synchronization engine. The compatibility baseline is LAPSE v2.0.5; non-exact candidates require its documented `solid` JSON verdict. Its strict weak verdicts return exit 2, and dry-run reports `written:true` to mean “would write.”
 - Invoke LAPSE through argument arrays with `--json --strict --no-sidecar`; analysis also uses `--dry-run` on a private copy, while synchronization uses an explicit new `--output` plus `--no-backup`. Cancellation must kill the subprocess group.
 - LAPSE JSON is an intentionally strict protocol boundary. When upgrading LAPSE, update the documented mode/reference/field allowlists and sanitized fixtures together after checking the official source contract.
-- Only unchanged files owned by this service may be upgraded.
-- Every media write is root-contained, atomic, checksum-recorded, and auditable.
+- The workflow persists every scored candidate without download references, analyzes at most the best three eligible non-hash files, and installs only an exact hash or LAPSE `solid` result. Exact-hash installations are terminal; nonexact upgrades require the configured score delta (default 10).
+- Only unchanged files owned by this service may be upgraded. A content fingerprint change invalidates old score/sync provenance; a path-only media rename rebases managed paths and retains it.
+- Every media write is root-contained, syntax-validated, staged beside its destination, fsynced, atomically renamed, checksum-recorded, and auditable. Managed replacements retain a rollback copy and restore it if the post-rename database commit fails.
 
 Local verification uses writable caches:
 

@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `feat/subsyncd`
-- Current task: Task 12, workflow orchestration and atomic installation
-- Next task: Task 13, durable workers and Silo notifications
+- Current task: Task 13, durable workers and Silo notifications
+- Next task: Task 14, daemon, webhook API, and operational CLI
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -109,6 +109,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Exact-hash candidate entry points return an `exact_hash` bypass result without invoking either LAPSE command. Task 12 must call these candidate-aware entry points rather than calling raw analysis/synchronization for exact results.
 - The subprocess runner never uses a shell, caps stdout at 1 MiB and stderr at 64 KiB, replaces inherited `LAPSE_CACHE` with the configured persistent speech-cache directory, applies separate analysis/synchronization contexts, redacts media and temporary paths from surfaced errors, and kills the entire process group on cancellation.
 - Verification: sanitized v2.0.5 JSON fixtures and fake runners cover solid/weak/nothing, unsafe metrics, malformed/trailing/oversized output, no speech, nonzero exits, timeouts, path redaction, output validation, exact-hash bypass, environment replacement, output caps, exit preservation, and descendant-process cancellation. `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
+
+### Task 12 — workflow orchestration and atomic installation
+
+- Commit: `fce31ab feat: orchestrate subtitle acquisition and upgrades`
+
+- The workflow refreshes embedded/sidecar inventory before every attempt, stops for acceptable embedded or protected/user-managed subtitles, checks a reusable season pack before remote providers, and otherwise consumes the provider coordinator's exact-first/broad-fan-out result. A stale exact-phase error is cleared when that provider's broad phase succeeds.
+- Every search result is identity-gated, explainably scored, and transactionally persisted without raw candidate or direct-member download references. Disallowed hearing-impaired candidates carry a persisted rejection reason; `allow_hearing_impaired` now correctly defaults to `true` while honoring explicit `false`.
+- Exact hashes bypass LAPSE and reduce the download shortlist to that terminal result. Nonexact acquisition analyzes and synchronizes at most the top three eligible candidates. Final ordering is release score, LAPSE analysis confidence, configured provider priority, rating, then stable provider/result ID.
+- Provider output is capped at 20 MiB at the workflow writer boundary even if an adapter ignores a short-write error, then sent through the common ZIP/RAR/plain extractor and strict episode selector. Ambiguous packs fail closed. Normalized season packs are cached only after successful selection; cache persistence failure is recorded but does not discard a valid candidate.
+- Cache reuse now reloads the immutable manifest and reruns strict selection for the requested episode instead of trusting the first indexed member. Missing, malformed, symlinked, or checksum-mismatched entries are invalidated through root-contained cleanup. Ambiguity remains a typed rejection rather than a cache miss.
+- Existing exact-hash installations are terminal. Managed nonexact files require a default 10-point improvement and schedule another upgrade check after 7, 30, or 90 days according to score. Media-content changes invalidate installed score, LAPSE result, and fingerprint provenance while retaining the old sidecar; path-only renames rebase managed sidecar/rollback paths and retain valid provenance.
+- Installation validates a regular UTF-8 SRT/ASS/SSA/VTT source, cue order, and duration bounds; stages it beside a root-contained destination; fsyncs content; applies configured mode/ownership; rechecks ownership immediately before rename; atomically publishes and fsyncs the directory; and commits checksum, provider, candidate, score, sync result, and media fingerprint. A managed replacement keeps a rollback copy and restores it after any post-rename failure. User-modified, unmanaged, special, and symlink destinations are protected.
+- Remote cooldown/quota/disabled results become a nonblocking throttled outcome with the earliest known reset. A partial provider outage can still yield a normal no-result or successful installation; a generic failure from every assigned provider returns a technical workflow error. Manual requests still honor provider cooldown and protected-file rules.
+- Verification: focused red/green tests cover inventory ownership/HI policy, cached-pack fallback, exact bypass, three-candidate limit, confidence tie-breaks, outages, throttles, manual search, cancellation, ambiguity, LAPSE rejection, score upgrades, secret-free persistence, download limits, cache-write degradation, installation fault restoration, fingerprint invalidation, and rename rebasing. Final `go test ./... -race`, `go vet ./...`, and `git diff --check` passed.
 
 ### Task 4 — embedded and sidecar inventory
 
