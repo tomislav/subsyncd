@@ -8,8 +8,8 @@ Read these documents before changing behavior:
 4. `docs/references/bazarr.md` before changing provider or matching behavior
 5. `docs/references/silo.md` before changing Silo notification behavior
 6. `docs/superpowers/specs/2026-09-04-standalone-github-publishing-design.md` and its matching plan before changing repository or image publication
-7. `docs/superpowers/specs/2026-09-04-priority-search-dispatch-design.md` before changing daemon queue dispatch, priorities, leases, or webhook wakeups
-8. `docs/superpowers/specs/2026-09-04-lapse-score-tier-tournament-design.md` before changing shortlist preparation, LAPSE evaluation, early stopping, or synchronization fallback
+7. `docs/superpowers/specs/2026-09-04-priority-search-dispatch-design.md` and its matching plan before changing daemon queue dispatch, priorities, leases, or webhook wakeups
+8. `docs/superpowers/specs/2026-09-04-lapse-score-tier-tournament-design.md` and its matching plan before changing shortlist preparation, LAPSE evaluation, early stopping, or synchronization fallback
 
 `AGENTS.md` and `docs/implementation-status.md` are the authoritative entry points for current behavior. Historical design material that lived outside the original `subsyncd/` subtree is not required by the standalone repository.
 

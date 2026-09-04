@@ -1,6 +1,6 @@
 # Priority Search Dispatch Design
 
-**Status:** Approved architecture; awaiting written-specification review
+**Status:** Approved for implementation
 
 ## Purpose
 

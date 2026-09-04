@@ -1,6 +1,6 @@
 # LAPSE Score-Tier Tournament Design
 
-**Status:** Approved architecture; awaiting written-specification review
+**Status:** Approved for implementation
 
 ## Purpose
 
