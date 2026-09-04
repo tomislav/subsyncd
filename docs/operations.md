@@ -48,6 +48,112 @@ subsyncd retry --config /config/config.yaml --provider subdl-main
 
 The retry command clears all cooldown, quota, transient-failure, and disabled-authentication scopes for that one configured provider; it does not alter candidate rejections or search schedules.
 
+## Structured logging and Grafana Loki
+
+`subsyncd` writes synchronous newline-delimited JSON to stderr. Each physical line is one event, suitable for Docker's log driver and Grafana Alloy. Configure the minimum level in YAML, or override it through the environment:
+
+```yaml
+logging:
+  level: info
+```
+
+```dotenv
+SUBSYNCD_LOG_LEVEL=debug
+```
+
+Valid levels are `debug`, `info`, `warn`, and `error`; omitted configuration defaults to `info`. The environment value takes precedence. Values are read only at startup, so a change requires a service restart. Use `info` continuously. Enable `debug` only for a bounded diagnostic run, then remove the override and restart at `info`.
+
+Every record has `time`, `service`, `version`, `level`, `component`, `event`, and `msg`. Operational records add typed fields such as `job_id`, `media_id`, `media_kind`, `file_id`, `language`, `provider`, `candidate_id`, `outcome`, `reason`, `attempt`, `duration_ms`, `retry_at`, or `next_upgrade_at`. Follow one operation by parsing JSON and filtering on `job_id`; media, provider, and candidate IDs remain fields in the JSON body rather than Loki labels.
+
+The level behavior is:
+
+| Level | Intended records |
+| --- | --- |
+| `info` | Service, webhook, durable job, search, selected candidate, install/provenance, notification, reconciliation, and recovery lifecycle summaries. |
+| `warn` | Expected degraded states such as throttling, persisted provider cooldown/circuit/auth transitions, non-solid LAPSE decisions, readiness loss, and bounded shutdown drain timeout. |
+| `error` | Technical failures that require retry or operator attention. |
+| `debug` | Candidate score components/rejections, release-name diagnostics, cache decisions, tournament/fallback decisions, and media paths only when safely root-relative. |
+
+Successful `/healthz` and `/readyz` requests are intentionally silent. Readiness emits only a transition to unhealthy and a later recovery, avoiding probe noise. Webhook paths exclude query strings. Error text passes through configuration-aware redaction and is normalized to one line. Credentials, bearer/API keys, provider URLs and bodies, notification payloads, absolute media/data/temp paths, command arguments, and raw LAPSE stdout/stderr are never intentional log fields. If root containment cannot be proven, even the debug relative path is omitted.
+
+### Alloy pipeline on Hades
+
+Hades was verified with host Alloy `v1.19.2` and a managed Grafana Cloud Loki destination. Its existing Docker source collects both stdout and stderr. To avoid duplicate ingestion, add a `/subsyncd` drop rule to the existing general Docker target pipeline, then use this dedicated keep-before-parse pipeline. It promotes only the bounded application labels `service`, `environment`, `level`, `component`, and `event`; dynamic IDs remain in the original JSON line.
+
+```alloy
+discovery.relabel "subsyncd_logs" {
+  targets = discovery.docker.logs_integrations_docker.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/subsyncd"
+    action        = "keep"
+  }
+
+  rule {
+    target_label = "service"
+    replacement  = "subsyncd"
+  }
+
+  rule {
+    target_label = "environment"
+    replacement  = "hades"
+  }
+}
+
+loki.source.docker "subsyncd" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.subsyncd_logs.output
+  forward_to       = [loki.process.subsyncd.receiver]
+  refresh_interval = "60s"
+}
+
+loki.process "subsyncd" {
+  stage.json {
+    expressions = {
+      level     = "level",
+      component = "component",
+      event     = "event",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level     = "",
+      component = "",
+      event     = "",
+    }
+  }
+
+  forward_to = [loki.write.grafana_cloud_loki.receiver]
+}
+
+loki.write "grafana_cloud_loki" {
+  endpoint {
+    url = sys.env("LOKI_URL")
+
+    basic_auth {
+      username = sys.env("LOKI_USERNAME")
+      password = sys.env("LOKI_PASSWORD")
+    }
+  }
+}
+```
+
+The referenced `loki.write` name can instead be the existing Hades component. Loki credentials belong only in Alloy and its service environment, never in `subsyncd` YAML or Compose environment. Do not add `job_id`, `media_id`, `candidate_id`, `file_id`, `language`, or `provider` to `stage.labels`; their cardinality is unbounded.
+
+Grafana Cloud uses managed Loki, so Hades has no local Loki version to pin. These LogQL queries use its current JSON parser, duration numeric filter, and escaped literal-dot regex syntax:
+
+```logql
+{service="subsyncd", environment="hades", event="job.completed"} | json | outcome="failed"
+{service="subsyncd", environment="hades", event=~"provider\\.(cooldown_started|circuit_opened|auth_disabled)"} | json
+{service="subsyncd", environment="hades", event=~"lapse\\.(analysis_completed|sync_completed)"} | json | duration_ms > 600000
+{service="subsyncd", environment="hades", event="candidate.selected"} | json
+{service="subsyncd", environment="hades"} | json | job_id="JOB_ID"
+```
+
+When diagnosing one workflow, start with the final query, then inspect `job.started`, provider search/download events, `candidate.selected`, any LAPSE phase, installation/notification, and `job.completed`. Candidate details require a temporary `SUBSYNCD_LOG_LEVEL=debug` restart; return to `info` immediately afterward.
+
 ## Sonarr and Radarr setup
 
 Each instance needs a unique `name`, API key, webhook secret, and one or more remote-to-local path mappings. Longest boundary-aware mapping wins. Mapping destinations must sit inside a configured media root, and existing parent symlinks are resolved before acceptance.

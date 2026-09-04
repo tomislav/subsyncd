@@ -190,6 +190,37 @@ install: {file_mode: "0644"}
 	}
 }
 
+func TestLoggingDocumentationContract(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(payload)
+	}
+	readme := read("../../README.md")
+	operations := read("../../docs/operations.md")
+	combined := readme + "\n" + operations
+	for _, required := range []string{
+		"SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
+		"service", "environment", "level", "component", "event",
+		"job_id", "media_id", "duration_ms", "loki.process", "loki.write",
+	} {
+		if !strings.Contains(combined, required) {
+			t.Errorf("logging documentation is missing %q", required)
+		}
+	}
+	for _, highCardinalityLabel := range []string{"job_id", "media_id", "candidate_id", "file_id", "language", "provider"} {
+		if strings.Contains(operations, highCardinalityLabel+" = label_drop") || strings.Contains(operations, highCardinalityLabel+" = \"") {
+			t.Errorf("operations documentation promotes high-cardinality %s as a Loki label", highCardinalityLabel)
+		}
+	}
+	if !strings.Contains(operations, "Loki credentials belong only in Alloy") {
+		t.Error("operations documentation must keep Loki credentials out of subsyncd configuration")
+	}
+}
+
 func TestOpenLogsSanitizedStartupFailure(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.yaml")

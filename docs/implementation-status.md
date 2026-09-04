@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: structured Loki logging implementation plan complete and awaiting execution choice
-- Next task: execute the approved plan inline or with subagent-driven development
-- Latest follow-up: comprehensive newline-delimited JSON observability for Grafana Alloy and Loki
+- Current task: structured Loki-compatible logging implemented and locally verified
+- Next task: publish an immutable multi-architecture image and perform the separately approved Hades log rollout
+- Latest follow-up: comprehensive newline-delimited JSON observability, operator guidance, and verified Alloy pipeline
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -374,3 +374,12 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Inventory completion reports aggregate embedded/sidecar counts and satisfaction without paths. Candidate evaluation, score components, rejected reasons, release names, tournament tiers, fallbacks, rejection decisions, and early stops are debug-only; a root-relative media path is added only when containment can be proven. The selected candidate is safe at info with provider/result ID, score, exact-hash state, and selection mode.
 - LAPSE analysis and synchronization are timed at the workflow boundary and expose only typed verdict/mode/offset/ratio/confidence/agreement/coverage/part/split/version fields. Exact-hash and score-bypass paths emit no LAPSE phase event. Installation and provenance events are emitted only after their writes commit; installation checksum correlation is capped to 12 characters.
 - Verification passed with `go test ./internal/workflow ./internal/app -race -count=1`, `go test ./test/e2e -tags=e2e -race -count=1`, and `git diff --check`. Next task: publish the event/field/privacy contract, add Alloy/Loki guidance and queries, update the agent handoff, and run the full repository verification matrix before any Hades deployment.
+
+### Follow-up — Structured Loki-compatible logging completed
+
+- Implementation commits are `91fc653`, `1ea794f`, `61b5d8e`, `54272da`, `debd8d5`, `a58317b`, and `3a0fdee`; documentation checkpoints are `dd954d3` and `c7354a5`. Together they implement the approved synchronous NDJSON lifecycle, privacy, correlation, transition-only provider state, debug candidate detail, typed LAPSE result, committed install/provenance, and durable worker/notification contracts.
+- The README documents `logging.level`, `SUBSYNCD_LOG_LEVEL` precedence, restart behavior, info/debug policy, and Alloy ownership. Operations documentation defines common and correlation fields, level behavior, successful-probe silence, privacy guarantees, a bounded-label Docker pipeline, and practical failed-job/provider/LAPSE/selection/job-trail LogQL queries. `AGENTS.md` now requires the logging design and plan before changing this contract.
+- Hades reports host Alloy `v1.19.2` and a managed Grafana Cloud Loki destination. The documented dedicated Docker source selects `/subsyncd` before JSON parsing and promotes only `service`, `environment`, `level`, `component`, and `event`; dynamic identifiers remain JSON fields. An isolated copy of the exact River pipeline passed `alloy validate` on Hades and was removed afterward. The live Alloy configuration was not changed.
+- Adding the environment override exposed an overbroad Hades canary test fake that returned a credential placeholder for every environment variable, including `SUBSYNCD_LOG_LEVEL`. The test now leaves the log override unset while continuing to synthesize canary credentials; the production canary configuration was already unaffected and defaults to `info`.
+- Final local verification on 2026-09-04 passed `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, `docker compose -f compose.example.yml config --quiet`, `git diff --check`, and the repository-wide focused logging/privacy/readiness test selection. Ordinary and tagged tests used local fixtures only.
+- No image was published and no Hades service, canary, Alloy configuration, or Loki destination was mutated. Next step requires separate approval: publish the immutable multi-architecture image, pin the Hades service/canary to its SHA tag at `info`, add the validated Alloy route without duplicate ingestion, and inspect one bounded workflow for complete correlation and privacy before considering temporary debug.

@@ -33,7 +33,10 @@ func TestDeploymentIsManualPinnedAndRestricted(t *testing.T) {
 		}
 	}
 
-	cfg, err := config.Load(filepath.Join("config", "config.yaml"), func(string) (string, bool) {
+	cfg, err := config.Load(filepath.Join("config", "config.yaml"), func(name string) (string, bool) {
+		if name == "SUBSYNCD_LOG_LEVEL" {
+			return "", false
+		}
 		return "canary-test-secret", true
 	})
 	if err != nil {

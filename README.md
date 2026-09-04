@@ -50,6 +50,17 @@ docker compose -f compose.example.yml exec subsyncd subsyncd doctor --config /co
 
 The `ghcr.io/tomislav/subsyncd:latest` production image supports Linux amd64 and arm64. It contains Go 1.27-built `subsyncd`, FFmpeg/FFprobe and timezone data from Debian 13.2, and checksummed LAPSE v2.0.5 release assets. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image defaults to unprivileged UID/GID `1000:1000`; Compose can select another existing host identity through `PUID` and `PGID` without starting the container as root. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
 
+## Structured logs
+
+`subsyncd` writes one JSON object per line to stderr for Docker, Grafana Alloy, or another container-log collector. The default level is `info`:
+
+```yaml
+logging:
+  level: info # debug, info, warn, or error
+```
+
+`SUBSYNCD_LOG_LEVEL` overrides the YAML value when set. Logging configuration is read at startup, so changing either value requires a restart. `debug` adds candidate scoring, bounded release diagnostics, cache decisions, and root-relative media paths; it should be enabled only for a short investigation. Logs never intentionally include credentials, provider URLs/bodies, absolute media paths, command arguments, or raw LAPSE output. Collection, labels, retention, and Loki credentials belong to Alloy rather than this service; see [Structured logging and Grafana Loki](docs/operations.md#structured-logging-and-grafana-loki).
+
 ## Native build
 
 Requirements are Go 1.27, `ffprobe`, and a compatible LAPSE v2.0.5 executable.
