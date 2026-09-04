@@ -7,7 +7,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Branch: `feat/subsyncd`
 - Current task: complete through Task 15
 - Next task: none; the approved implementation plan ends after Task 15
-- Latest follow-up: hearing-impaired subtitles default off in `5a42290`
+- Latest follow-up: absolute missing-subtitle milestones in `acfc801`
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -182,6 +182,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 - With the default policy, an embedded SDH track does not satisfy an ordinary language request and a provider result marked hearing-impaired is rejected during candidate evaluation. Explicit opt-in restores both behaviors. Forced-only and unknown-language behavior is unchanged.
 - Red/green coverage changed the configuration contract test before production code: it failed because omission still yielded `true`, then passed after the default changed while also proving explicit `true` is honored. Existing inventory and workflow policy tests passed unchanged.
 - Verification on 2026-09-04: focused configuration/workflow/inventory race tests, complete `go test ./... -race -count=1`, `go vet ./...`, tagged e2e tests with `-count=1`, and `git diff --check` all passed.
+- Next task: none.
+
+### Follow-up — absolute missing-subtitle milestones
+
+- Commit: `acfc801 fix: use absolute missing-subtitle milestones`
+- Missing-language searches now reach the intended elapsed milestones from import or schedule reset: immediately, 30 minutes, 2 hours, 8 hours, 24 hours, 3 days, 7 days, 14 days, then every 14 days. The scheduler stores the adjacent intervals `30m`, `90m`, `6h`, `16h`, `48h`, `96h`, `168h`, then `336h`, preventing the former cumulative drift to 2h30m, 10h30m, 1d10h30m, and later dates.
+- The existing ±10% interval jitter, technical-failure backoff, provider cooldowns, upgrade schedule, and six-hour normalized search cache are unchanged. Because cached empty results suppress provider access, the 30-minute and 2-hour jobs normally refresh only local sidecars; continuously missing subtitles normally generate provider searches around import, 8 hours, 24 hours, 3 days, 7 days, and 14 days.
+- A cumulative-elapsed-time regression test failed against the former delay table and passed after the interval correction. The scheduler test also proves that attempt two is scheduled 90 minutes after the preceding attempt.
+- Verification on 2026-09-04: `go test ./internal/schedule -race -count=1 -v`, complete `go test ./... -race -count=1`, `go vet ./...`, tagged e2e tests with `-race -count=1`, and `git diff --check` passed. The complete and e2e suites required loopback permission solely for their local `httptest` servers.
 - Next task: none.
 
 ### Task 14 — daemon, webhook API, and operational CLI
