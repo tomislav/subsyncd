@@ -20,8 +20,8 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 2 {
-			t.Errorf("migration count = %d, want 2", count)
+		if count != 3 {
+			t.Errorf("migration count = %d, want 3", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
@@ -270,6 +270,28 @@ func TestReconciliationCursorAdvancesOnlyWithCommittedPage(t *testing.T) {
 	}
 	if got, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !got.Equal(end) {
 		t.Fatalf("cursor = %s, %v; want %s", got, err, end)
+	}
+}
+
+func TestMediaHashCacheIsBoundToExactFingerprint(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	if _, _, err := repo.UpsertMedia(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutMediaHash(context.Background(), media, "opensubtitles", "0123456789abcdef", media.Fingerprint.Size); err != nil {
+		t.Fatal(err)
+	}
+	value, size, found, err := repo.GetMediaHash(context.Background(), media, "opensubtitles")
+	if err != nil || !found || value != "0123456789abcdef" || size != media.Fingerprint.Size {
+		t.Fatalf("cached hash = %q/%d/%v/%v", value, size, found, err)
+	}
+	media.Fingerprint.ModTime = media.Fingerprint.ModTime.Add(time.Nanosecond)
+	if _, _, err := repo.UpsertMedia(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, found, err := repo.GetMediaHash(context.Background(), media, "opensubtitles"); err != nil || found {
+		t.Fatalf("changed fingerprint cache = %v/%v, want miss", found, err)
 	}
 }
 

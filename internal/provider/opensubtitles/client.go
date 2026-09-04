@@ -24,13 +24,19 @@ type Client struct {
 	config    Config
 	transport baseprovider.Client
 	hasher    Hasher
+	hashCache HashCache
 	clock     baseprovider.Clock
 	mu        sync.Mutex
 	token     string
 	expiresAt time.Time
 }
 
-func New(config Config, transport baseprovider.Client, hasher Hasher, clock baseprovider.Clock) (*Client, error) {
+type HashCache interface {
+	GetMediaHash(context.Context, domain.Media, string) (string, int64, bool, error)
+	PutMediaHash(context.Context, domain.Media, string, string, int64) error
+}
+
+func New(config Config, transport baseprovider.Client, hasher Hasher, hashCache HashCache, clock baseprovider.Clock) (*Client, error) {
 	config.applyDefaults()
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -41,7 +47,7 @@ func New(config Config, transport baseprovider.Client, hasher Hasher, clock base
 	if clock == nil {
 		clock = baseprovider.SystemClock{}
 	}
-	return &Client{id: transport.ProviderID, config: config, transport: transport, hasher: hasher, clock: clock}, nil
+	return &Client{id: transport.ProviderID, config: config, transport: transport, hasher: hasher, hashCache: hashCache, clock: clock}, nil
 }
 
 func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) (baseprovider.Provider, error) {
@@ -57,12 +63,12 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 	if clock == nil {
 		clock = baseprovider.SystemClock{}
 	}
-	if dependencies.Gate == nil || dependencies.HTTPClient == nil {
-		return nil, fmt.Errorf("OpenSubtitles HTTP client and provider gate are required")
+	if dependencies.Gate == nil || dependencies.HTTPClient == nil || dependencies.Store == nil {
+		return nil, fmt.Errorf("OpenSubtitles HTTP client, provider gate, and store are required")
 	}
 	dependencies.Gate.Configure(id, config.RequestsPerSecond, config.Burst, config.MaxConcurrent)
 	transport := baseprovider.Client{HTTP: dependencies.HTTPClient, Gate: dependencies.Gate, Clock: clock, ProviderID: id, ProviderType: "opensubtitles"}
-	return New(config, transport, FileHasher{}, clock)
+	return New(config, transport, FileHasher{}, dependencies.Store.Repository(), clock)
 }
 
 func (c *Client) ID() string { return c.id }
@@ -80,7 +86,7 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 	parameters := url.Values{}
 	parameters.Set("languages", openSubtitlesLanguage(query.Language))
 	if query.Mode == baseprovider.SearchExactHash {
-		hash, err := c.hasher.Hash(query.Media.Fingerprint.Path)
+		hash, err := c.fileHash(ctx, query.Media)
 		if err != nil {
 			return nil, err
 		}
@@ -103,6 +109,30 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 		}
 	}
 	return candidates, nil
+}
+
+func (c *Client) fileHash(ctx context.Context, media domain.Media) (FileHash, error) {
+	const algorithm = "opensubtitles"
+	if c.hashCache != nil {
+		value, byteSize, found, err := c.hashCache.GetMediaHash(ctx, media, algorithm)
+		if err != nil {
+			return FileHash{}, err
+		}
+		if found {
+			return FileHash{MovieHash: value, ByteSize: byteSize}, nil
+		}
+	}
+
+	hash, err := c.hasher.Hash(media.Fingerprint.Path)
+	if err != nil {
+		return FileHash{}, err
+	}
+	if c.hashCache != nil {
+		if err := c.hashCache.PutMediaHash(ctx, media, algorithm, hash.MovieHash, hash.ByteSize); err != nil {
+			return FileHash{}, err
+		}
+	}
+	return hash, nil
 }
 
 func setBroadParameters(parameters url.Values, media domain.Media) {

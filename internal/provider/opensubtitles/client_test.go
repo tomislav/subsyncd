@@ -26,6 +26,16 @@ type staticHasher struct{ result FileHash }
 
 func (h staticHasher) Hash(string) (FileHash, error) { return h.result, nil }
 
+type countingHasher struct {
+	result FileHash
+	calls  int
+}
+
+func (h *countingHasher) Hash(string) (FileHash, error) {
+	h.calls++
+	return h.result, nil
+}
+
 type testStateStore struct {
 	mu     sync.Mutex
 	states map[string]store.ProviderState
@@ -82,6 +92,38 @@ func TestSearchAuthenticatesPaginatesAndNormalizesExactCandidates(t *testing.T) 
 	}
 	if len(candidates) != 2 || !candidates[0].ExactHash || candidates[0].ResultID != "501" || candidates[0].DownloadRef != "501" || candidates[0].Rating != 0.85 || !candidates[1].HearingImpaired {
 		t.Fatalf("candidates = %#v", candidates)
+	}
+}
+
+func TestExactSearchReusesHashStoredForMediaFingerprint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/login":
+			io.WriteString(w, `{"token":"token","expires_in":3600}`)
+		case "/api/v1/subtitles":
+			io.WriteString(w, `{"total_pages":1,"data":[]}`)
+		}
+	}))
+	defer server.Close()
+
+	media := episodeMedia()
+	media.Fingerprint.Size = 196608
+	media.Fingerprint.ModTime = time.Date(2026, 9, 4, 11, 0, 0, 0, time.UTC)
+	repository := openHashRepository(t)
+	if _, _, err := repository.UpsertMedia(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	hasher := &countingHasher{result: FileHash{MovieHash: "0123456789abcdef", ByteSize: media.Fingerprint.Size}}
+	client := newTestClient(t, server, hasher, 1024, repository)
+	query := baseprovider.SearchQuery{Media: media, Language: "en", Mode: baseprovider.SearchExactHash}
+	if _, err := client.Search(context.Background(), query); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Search(context.Background(), query); err != nil {
+		t.Fatal(err)
+	}
+	if hasher.calls != 1 {
+		t.Fatalf("hasher calls = %d, want 1", hasher.calls)
 	}
 }
 
@@ -261,18 +303,32 @@ func TestSearchRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-func newTestClient(t *testing.T, server *httptest.Server, hasher Hasher, maxBytes int64) *Client {
+func newTestClient(t *testing.T, server *httptest.Server, hasher Hasher, maxBytes int64, caches ...HashCache) *Client {
 	t.Helper()
 	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
 	states := &testStateStore{states: map[string]store.ProviderState{}}
 	gate := baseprovider.NewGate(states, clock, 1)
 	gate.Configure("opensubtitles-main", 1000, 10, 1)
 	transport := baseprovider.Client{HTTP: server.Client(), Gate: gate, Clock: clock, ProviderID: "opensubtitles-main", ProviderType: "opensubtitles"}
-	client, err := New(Config{APIKey: "api-key", Username: "user", Password: "pass", UserAgent: "subsyncd-test", BaseURL: server.URL + "/api/v1", MaxDownloadBytes: maxBytes}, transport, hasher, clock)
+	var cache HashCache
+	if len(caches) != 0 {
+		cache = caches[0]
+	}
+	client, err := New(Config{APIKey: "api-key", Username: "user", Password: "pass", UserAgent: "subsyncd-test", BaseURL: server.URL + "/api/v1", MaxDownloadBytes: maxBytes}, transport, hasher, cache, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return client
+}
+
+func openHashRepository(t *testing.T) *store.Repository {
+	t.Helper()
+	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	return database.Repository()
 }
 
 func episodeMedia() domain.Media {

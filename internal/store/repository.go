@@ -184,6 +184,86 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 	return id, changed, nil
 }
 
+// GetMediaHash returns a cached content hash only when it was calculated for
+// the exact media fingerprint supplied by the caller. A changed path, Arr file
+// ID, size, or modification time is therefore a cache miss.
+func (r *Repository) GetMediaHash(ctx context.Context, media domain.Media, algorithm string) (string, int64, bool, error) {
+	var value string
+	var byteSize int64
+	err := r.store.db.QueryRowContext(ctx, `
+		SELECT h.hash_value, h.byte_size
+		FROM media_hashes h
+		JOIN media m ON m.id = h.media_id
+		WHERE m.instance = ? AND m.kind = ? AND m.file_id = ?
+		  AND m.path = ?
+		  AND m.size = ?
+		  AND m.mod_time_ns = ?
+		  AND h.algorithm = ?
+		  AND h.fingerprint_path = ?
+		  AND h.fingerprint_file_id = ?
+		  AND h.fingerprint_size = ?
+		  AND h.fingerprint_mod_time_ns = ?`,
+		media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID,
+		media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), algorithm,
+		media.Fingerprint.Path, media.Fingerprint.FileID, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(),
+	).Scan(&value, &byteSize)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, fmt.Errorf("get %s media hash: %w", algorithm, err)
+	}
+	return value, byteSize, true, nil
+}
+
+// PutMediaHash stores a content hash only if the database still describes the
+// exact file that was hashed. This prevents a concurrent rescan or replacement
+// from attaching a stale hash to new media bytes.
+func (r *Repository) PutMediaHash(ctx context.Context, media domain.Media, algorithm, value string, byteSize int64) error {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin %s media hash write: %w", algorithm, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var mediaID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM media
+		WHERE instance = ? AND kind = ? AND file_id = ?
+		  AND path = ? AND size = ? AND mod_time_ns = ?`,
+		media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID,
+		media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(),
+	).Scan(&mediaID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store %s media hash: media fingerprint changed", algorithm)
+	}
+	if err != nil {
+		return fmt.Errorf("find media for %s hash: %w", algorithm, err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO media_hashes(media_id, algorithm, hash_value, byte_size, fingerprint_path, fingerprint_file_id, fingerprint_size, fingerprint_mod_time_ns, updated_at_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(media_id, algorithm) DO UPDATE SET
+		  hash_value=excluded.hash_value,
+		  byte_size=excluded.byte_size,
+		  fingerprint_path=excluded.fingerprint_path,
+		  fingerprint_file_id=excluded.fingerprint_file_id,
+		  fingerprint_size=excluded.fingerprint_size,
+		  fingerprint_mod_time_ns=excluded.fingerprint_mod_time_ns,
+		  updated_at_ns=excluded.updated_at_ns`,
+		mediaID, algorithm, value, byteSize, media.Fingerprint.Path, media.Fingerprint.FileID,
+		media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), time.Now().UTC().UnixNano(),
+	)
+	if err != nil {
+		return fmt.Errorf("store %s media hash: %w", algorithm, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit %s media hash: %w", algorithm, err)
+	}
+	return nil
+}
+
 func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, fingerprint domain.MediaFingerprint, tracks []TrackRecord) error {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
