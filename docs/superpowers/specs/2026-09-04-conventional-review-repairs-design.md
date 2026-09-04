@@ -1,6 +1,6 @@
 # Conventional Review Repairs Design
 
-**Status:** Approved for planning
+**Status:** Approved; implementation planned
 
 ## Purpose
 
@@ -58,7 +58,9 @@ Add persisted media support status rather than pretending that a multi-episode f
 - Exactly one episode produces the current searchable media identity.
 - Two or more episodes produce indexed media using the earliest sorted episode as display metadata and `unsupported_reason=unsupported_multi_episode`.
 
-The repository stores this media record and creates or updates language search rows so `explain` retains a durable reason, but those rows are completed rather than due. Existing active leases are not silently converted into new provider work; their next repository transition must retain the unsupported terminal state. The worker also loads and checks the persisted reason before invoking the workflow as a defense in depth. No newly dispatched provider search, provider download, archive extraction, LAPSE analysis, LAPSE synchronization, or subtitle installation may begin after the unsupported metadata commits. Work already inside an external call is canceled through the existing lease transition and must not publish a sidecar after it observes cancellation.
+The repository stores this media record and creates or updates language search rows so `explain` retains a durable reason, but those rows are completed rather than due. Existing active leases are not silently converted into new provider work; their next repository transition must retain the unsupported terminal state. The worker also loads and checks the persisted reason before invoking the workflow as a defense in depth. No newly dispatched provider search, provider download, archive extraction, LAPSE analysis, LAPSE synchronization, or subtitle installation may begin after the unsupported metadata commits.
+
+An external operation already in flight when Sonarr changes the same file to unsupported may finish before its lease observes the new state. `RecordInstallation` therefore checks the current persisted support status inside its installation transaction. If the media has become unsupported, provenance commit fails and the installer restores or removes the published sidecar through the normal rollback path. This final guard prevents stale work from leaving a managed subtitle installed for unsupported media.
 
 Full combined-episode support is a separate feature. It would need range-aware provider queries, hard gates proving complete range coverage, combined-versus-per-episode archive semantics, embedded/sidecar association rules, and dedicated LAPSE validation. Exact-hash-only behavior is not introduced as a partial exception.
 
@@ -85,7 +87,6 @@ If the filesystem prevents removal after a first-install database failure, the r
 
 Reuse the existing structured logging vocabulary and redaction rules. Add only bounded reason/outcome values needed for:
 
-- reconciliation mutation counts by import, rename, delete, and unsupported;
 - `unsupported_multi_episode` in indexed/search state and `explain`;
 - forced return after the second shutdown deadline;
 - incomplete installation rollback.

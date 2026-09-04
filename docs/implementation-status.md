@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repair design approved and recorded
-- Next task: user review of the conventional repair specification, followed by implementation planning
+- Current task: conventional review repair implementation plan written
+- Next task: choose inline or subagent-driven execution of the approved plan
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
@@ -21,6 +21,14 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Shutdown will use a graceful deadline followed by cancellation and one final bounded deadline. Installation rollback will return joined restoration failures instead of silently leaving an untracked sidecar.
 - Full snapshots, combined-episode subtitle support, scoring/provider changes, and automatic takeover of rollback orphans remain out of scope.
 - Verification for this design boundary: `git diff --check`. Next task: user review, then a test-driven implementation plan.
+
+### Follow-up — conventional review repair implementation plan
+
+- The implementation plan is `docs/superpowers/plans/2026-09-04-conventional-review-repairs.md`.
+- Seven test-driven commit boundaries cover persisted unsupported status, typed Arr history decoding, atomic reconciliation and lease preservation, worker fail-closed dispatch, bounded shutdown, installation rollback errors, and final integration/documentation.
+- The plan retains existing external APIs, provider/scoring/LAPSE behavior, SQLite durability, and structured redaction rules. Push, image publication, and Hades deployment remain explicitly separate.
+- Plan self-review covers every approved design requirement with named interfaces, literal fixtures/outcomes, red-failure expectations, race verification, and resumable ledger updates.
+- Verification for this planning boundary: placeholder scan and `git diff --check`. Next task: execute the plan using the user's selected workflow.
 
 ### Follow-up — structured Loki logging design
 
