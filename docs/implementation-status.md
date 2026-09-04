@@ -7,7 +7,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Branch: `feat/subsyncd`
 - Current task: complete through Task 15
 - Next task: none; the approved implementation plan ends after Task 15
-- Latest follow-up: score/evidence-gated LAPSE in `a8887ef`
+- Latest follow-up: persistent candidate rejection quarantine in `42943d3`
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -78,6 +78,16 @@ This file is the resumable implementation ledger. The approved design and plan r
 - LAPSE remains installed and capability-checked because any uncertain candidate can need it. Its persistent speech profile cache remains under `<data_dir>/lapse-cache`; on network media storage, the first required analysis may read much or nearly all of the media file, while a score bypass performs no LAPSE media read.
 - The existing broad-search black-box test explicitly selects `policy: always`, preserving coverage of real LAPSE analysis/synchronization. Workflow tests cover the score bypass, adjustable threshold, `always` mode, missing anchors, TV ambiguity, packs, and upgrades. Configuration tests cover defaults, explicit switches, invalid policy, and invalid thresholds.
 - Verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./... -race`, `go vet ./...`, tagged e2e tests, and `git diff --check` passed on 2026-09-04.
+
+### Follow-up — persistent candidate rejection quarantine
+
+- Commit: `42943d3 feat: quarantine rejected subtitle candidates`
+- Migration `007_candidate_rejections.sql` adds a cascade-owned rejection ledger keyed by media/language/provider result, stable candidate signature, optional artifact checksum, and tool/policy signature. Each row retains the exact media fingerprint, reason code, rejection time, and 30-day expiry.
+- Candidate signatures deliberately omit download references, ratings, popularity, and download counts so volatile provider data cannot trigger another download. Release/identity/pack evidence changes do invalidate the signature. Media fingerprint, known member checksum, LAPSE compatibility version, synchronization policy, expiry, or a manual clear also invalidate the applicable rejection match.
+- LAPSE `unsure` and `nothing`, invalid or oversized subtitle payloads, and ambiguous pack selection are deterministic rejections. They are persisted immediately, removed before the top-three shortlist, and allow later-ranked results to advance on later jobs. Cached pack members are checked with their checksum; rejecting one episode does not remove the pack or affect another episode/media row.
+- Process timeouts/crashes, malformed LAPSE protocol, filesystem errors, provider/network failures, and cancellation never create rejection records. A shortlist containing only such failures returns an error so the worker uses technical-failure backoff. No-speech remains a media-validation rejection and does not poison an individual candidate.
+- `explain` lists active rejection reason, artifact checksum, and expiry. `search --retry-rejected` clears only the selected media/language ledger before the manual workflow; deterministic failures during that run are reinserted.
+- Red/green tests cover SQLite match/expiry/clear semantics, media/tool/artifact invalidation, top-three promotion, stable candidate signatures, invalid payload quarantine, cached-pack suppression, transient LAPSE classification, CLI forwarding, manual clearing, explain output, and the exported LAPSE compatibility version. Verification passed with the complete race suite, `go vet ./...`, tagged e2e tests, and `git diff --check` on 2026-09-04.
 
 ### Task 9 — candidate matching and scoring
 
