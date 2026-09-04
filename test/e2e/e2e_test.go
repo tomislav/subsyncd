@@ -39,22 +39,19 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	defer providerServer.Close()
 	var siloCalls atomic.Int64
 	silo := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/Library/Media/Updated" || request.Header.Get("X-Emby-Token") != "silo-key" {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/scan" || request.Header.Get("Authorization") != "Bearer silo-key" {
 			t.Errorf("unexpected Silo request: %s %s", request.Method, request.URL.Path)
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		var payload struct {
-			Updates []struct {
-				Path       string `json:"path"`
-				UpdateType string `json:"updateType"`
-			} `json:"Updates"`
+			Path string `json:"path"`
 		}
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || len(payload.Updates) != 1 || payload.Updates[0].Path != mediaPath || payload.Updates[0].UpdateType != "Modified" {
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || payload.Path != mediaPath {
 			t.Errorf("unexpected Silo payload: %#v, %v", payload, err)
 		}
 		siloCalls.Add(1)
-		response.WriteHeader(http.StatusNoContent)
+		response.WriteHeader(http.StatusAccepted)
 	}))
 	defer silo.Close()
 

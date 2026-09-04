@@ -55,7 +55,7 @@ func NewSilo(config SiloConfig) (Notifier, error) {
 	if err != nil || base.Scheme == "" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.Scheme != "http" && base.Scheme != "https" {
 		return nil, fmt.Errorf("Silo base URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
 	}
-	base.Path = strings.TrimRight(base.Path, "/") + "/Library/Media/Updated"
+	base.Path = strings.TrimRight(base.Path, "/") + "/api/v1/scan"
 	client := http.Client{Timeout: defaultTimeout}
 	if config.Client != nil {
 		client = *config.Client
@@ -82,14 +82,8 @@ func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitle
 		return &DeliveryError{Reason: "path mapping is invalid"}
 	}
 	payload, err := json.Marshal(struct {
-		Updates []struct {
-			Path       string `json:"path"`
-			UpdateType string `json:"updateType"`
-		} `json:"Updates"`
-	}{Updates: []struct {
-		Path       string `json:"path"`
-		UpdateType string `json:"updateType"`
-	}{{Path: mapped, UpdateType: "Modified"}}})
+		Path string `json:"path"`
+	}{Path: mapped})
 	if err != nil {
 		return &DeliveryError{Reason: "encode request"}
 	}
@@ -98,7 +92,7 @@ func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitle
 		return &DeliveryError{Reason: "build request"}
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Emby-Token", s.apiKey)
+	request.Header.Set("Authorization", "Bearer "+s.apiKey)
 	response, err := s.client.Do(request)
 	if err != nil {
 		if ctx.Err() != nil {

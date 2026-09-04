@@ -89,8 +89,8 @@ install:
 
 silo:
   enabled: false
-  # Silo's Jellyfin-compatible listener, not its web UI listener.
-  url: http://silo:8096
+  # Silo's native API listener.
+  url: http://silo:8090
   # Replace with ${SILO_API_KEY} when enabled.
   api_key: disabled
   path_mappings:

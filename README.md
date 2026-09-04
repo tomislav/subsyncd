@@ -1,10 +1,10 @@
 # subsyncd
 
-`subsyncd` is a small, headless subtitle service for one or more Sonarr and Radarr instances. It indexes embedded and external subtitles, searches ordered providers per language, scores release compatibility, uses LAPSE when release evidence is uncertain, installs sidecars atomically, and can notify Silo through its Jellyfin-compatible API.
+`subsyncd` is a small, headless subtitle service for one or more Sonarr and Radarr instances. It indexes embedded and external subtitles, searches ordered providers per language, scores release compatibility, uses LAPSE when release evidence is uncertain, installs sidecars atomically, and can notify Silo through its native scan API.
 
 It intentionally has no browser UI and no management API. The HTTP surface is limited to Arr webhooks plus liveness/readiness checks; inspection and manual actions use the CLI.
 
-## Why this is narrower than Bazarr
+## Features
 
 - Any canonical BCP 47 language can be configured independently.
 - Each language has an explicit ordered provider list. The example routes Croatian only to Titlovi and English to OpenSubtitles followed by SubDL.
@@ -60,7 +60,7 @@ http://subsyncd:8097/webhooks/sonarr-main?token=THE_SONARR_WEBHOOK_TOKEN
 http://subsyncd:8097/webhooks/radarr-main?token=THE_RADARR_WEBHOOK_TOKEN
 ```
 
-Enable download/import, upgrade, rename, and file-delete events. Arr test events return success but create no work. Exact redeliveries are transactionally idempotent.
+Enable download/import, upgrade, rename, and file-delete events. Connections are configured manually; `subsyncd` does not create or modify Arr settings. Arr test events return success but create no work. Exact redeliveries are transactionally idempotent.
 
 ## Development and tests
 
@@ -73,5 +73,3 @@ GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test
 ```
 
 Real provider smoke tests are deliberately excluded from normal CI. They run only with `-tags=provider_contract` and the corresponding provider credentials in the environment.
-
-The project consulted Bazarr only as a pinned GPL-3.0 behavioral reference. No Bazarr source, fixtures, or runtime dependency are included; see [the reference ledger](docs/references/bazarr.md).

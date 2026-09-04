@@ -22,26 +22,25 @@ func TestDisabledSiloNotifierIsNoop(t *testing.T) {
 	}
 }
 
-func TestSiloPostsJellyfinCompatibleMediaUpdateWithMappedMediaPath(t *testing.T) {
-	var gotPath, gotType, gotToken string
+func TestSiloPostsNativeTargetedScanWithMappedMediaPath(t *testing.T) {
+	var gotPath, gotToken string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/Library/Media/Updated" {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/scan" {
 			t.Errorf("request = %s %s", request.Method, request.URL.Path)
 		}
-		gotToken = request.Header.Get("X-Emby-Token")
-		var payload struct {
-			Updates []struct {
-				Path       string `json:"path"`
-				UpdateType string `json:"updateType"`
-			} `json:"Updates"`
+		if request.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("content type = %q", request.Header.Get("Content-Type"))
 		}
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || len(payload.Updates) != 1 {
+		gotToken = request.Header.Get("Authorization")
+		var payload struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Errorf("payload = %#v, %v", payload, err)
 		} else {
-			gotPath = payload.Updates[0].Path
-			gotType = payload.Updates[0].UpdateType
+			gotPath = payload.Path
 		}
-		writer.WriteHeader(http.StatusNoContent)
+		writer.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
 	notifier, err := NewSilo(SiloConfig{Enabled: true, BaseURL: server.URL, APIKey: "sa_secret", PathMappings: []PathMapping{{From: "/local/media", To: "/mnt/library"}}})
@@ -52,8 +51,8 @@ func TestSiloPostsJellyfinCompatibleMediaUpdateWithMappedMediaPath(t *testing.T)
 	if err := notifier.SubtitleChanged(context.Background(), media, "/local/media/shows/Show/episode.en.srt"); err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != "/mnt/library/shows/Show/episode.mkv" || gotType != "Modified" || gotToken != "sa_secret" {
-		t.Fatalf("update = path %q type %q token %q", gotPath, gotType, gotToken)
+	if gotPath != "/mnt/library/shows/Show/episode.mkv" || gotToken != "Bearer sa_secret" {
+		t.Fatalf("scan = path %q token %q", gotPath, gotToken)
 	}
 }
 

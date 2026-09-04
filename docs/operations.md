@@ -40,7 +40,7 @@ Create an Arr webhook/connection pointing to:
 http://subsyncd:8097/webhooks/INSTANCE_NAME?token=INSTANCE_WEBHOOK_TOKEN
 ```
 
-Enable download/import (including upgrades), rename, and file-delete events. Keep the token out of general reverse-proxy access logs. `subsyncd` itself logs only `/webhooks/INSTANCE_NAME`, never the query string. The request body limit is 1 MiB.
+Enable download/import (including upgrades), rename, and file-delete events. `subsyncd` deliberately does not create or modify Arr connections; this keeps ownership explicit and avoids coupling startup to mutable, version-specific Arr configuration. Keep the token out of general reverse-proxy access logs. `subsyncd` itself logs only `/webhooks/INSTANCE_NAME`, never the query string. The request body limit is 1 MiB.
 
 Every instance also reconciles immediately at process start and every six hours using an independent persisted cursor. A failed instance does not roll back another instance's cursor.
 
@@ -93,19 +93,19 @@ Exit status is 0 for success, 1 for an operational failure, and 2 for invalid co
 
 ## Silo notification
 
-Enable Silo only after setting its compatibility-listener URL and API key:
+Enable Silo only after setting its native API URL and admin API key:
 
 ```yaml
 silo:
   enabled: true
-  url: http://silo:8096
+  url: http://silo:8090
   api_key: ${SILO_API_KEY}
   path_mappings:
     - from: /media
       to: /mnt/media
 ```
 
-After a committed install, a durable notification sends `POST /Library/Media/Updated` with `X-Emby-Token` and one `Modified` media path. Notification failure never rolls back a subtitle. Timeout, 408, 429, and 5xx responses retry independently; other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
+After a committed install, a durable notification sends `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped media-file path. Silo resolves this to a targeted file scan, which refreshes its external-subtitle inventory. Notification failure never rolls back a subtitle. Timeout, 408, 429, and 5xx responses retry independently; other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
 
 ## Backup, restart, and recovery
 
@@ -122,4 +122,4 @@ If a user wants to take ownership of a subtitle, edit or replace the sidecar. It
 - no provider call: check `explain` for an embedded/protected track, exact terminal installation, future schedule, pack cache, or provider cooldown.
 - repeated missing result: this is expected backoff, not a worker sleep. Use `search` for a deliberate manual attempt or `retry` only to clear provider throttle/auth state.
 - LAPSE rejection: inspect `candidate_rejections` with `explain`; `unsure`/`nothing` is intentionally not installable. Use `analyze-sync` for diagnosis or `search --retry-rejected` after changing the media, candidate source, LAPSE build, or policy.
-- Silo does not refresh: confirm port 8096 is the Jellyfin-compatible listener and that container-to-Silo path mapping is correct.
+- Silo does not refresh: confirm port 8090 reaches Silo's native API, the key is an admin API key, and the container-to-Silo path mapping is correct.
