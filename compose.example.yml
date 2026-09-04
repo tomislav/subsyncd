@@ -1,0 +1,52 @@
+services:
+  subsyncd:
+    image: subsyncd:local
+    build:
+      context: .
+      args:
+        VERSION: dev
+    init: true
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SONARR_MAIN_API_KEY: ${SONARR_MAIN_API_KEY:-}
+      SONARR_MAIN_WEBHOOK_TOKEN: ${SONARR_MAIN_WEBHOOK_TOKEN:-}
+      RADARR_MAIN_API_KEY: ${RADARR_MAIN_API_KEY:-}
+      RADARR_MAIN_WEBHOOK_TOKEN: ${RADARR_MAIN_WEBHOOK_TOKEN:-}
+      TITLOVI_USERNAME: ${TITLOVI_USERNAME:-}
+      TITLOVI_PASSWORD: ${TITLOVI_PASSWORD:-}
+      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
+      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
+      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
+      SUBDL_API_KEY: ${SUBDL_API_KEY:-}
+      SILO_API_KEY: ${SILO_API_KEY:-disabled}
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data:rw
+      - ${MOVIES_PATH:-./media/movies}:/media/movies:rw
+      - ${TV_PATH:-./media/tv}:/media/tv:rw
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m,uid=10001,gid=10001
+    expose:
+      - "8097"
+    stop_grace_period: 45s
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8097/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - media
+
+networks:
+  media:
+    external: true

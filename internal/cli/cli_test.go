@@ -77,6 +77,14 @@ func TestCommandSurface(t *testing.T) {
 	}
 }
 
+func TestVersionDoesNotOpenBackend(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	command := Command{Version: "1.2.3", Open: func(context.Context, string) (Backend, error) { t.Fatal("backend opened"); return nil, nil }, Stdout: &stdout, Stderr: &stderr}
+	if code := command.Run(context.Background(), []string{"--version"}); code != ExitOK || stdout.String() != "subsyncd 1.2.3\n" {
+		t.Fatalf("exit/output = %d/%q", code, stdout.String())
+	}
+}
+
 func TestUsageAndOperationExitCodes(t *testing.T) {
 	for _, test := range []struct {
 		name string

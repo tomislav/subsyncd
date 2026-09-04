@@ -34,6 +34,22 @@ func TestServiceStopsForEmbeddedOrProtectedSubtitle(t *testing.T) {
 	}
 }
 
+func TestServiceUsesRefreshedFilesystemFingerprintForProviderSearch(t *testing.T) {
+	request := serviceRequest(t)
+	refreshed := request.Media.Fingerprint
+	refreshed.Size++
+	refreshed.ModTime = refreshed.ModTime.Add(time.Second)
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{exactCandidate("exact")}}}
+	service := testService(t, inventory.Inventory{Fingerprint: refreshed}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	if _, err := service.Run(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if searcher.query.Media.Fingerprint != refreshed {
+		t.Fatalf("provider fingerprint = %#v, want refreshed %#v", searcher.query.Media.Fingerprint, refreshed)
+	}
+}
+
 func TestServiceHonorsHearingImpairedInventoryPolicy(t *testing.T) {
 	current := inventory.Inventory{Tracks: []inventory.Track{{Language: "en", Embedded: true, SDH: true}}}
 
@@ -367,10 +383,12 @@ func (f *fakeInventory) Refresh(context.Context, int64, domain.Media, bool) (inv
 type fakeSearcher struct {
 	result provider.SearchResult
 	calls  int
+	query  provider.SearchQuery
 }
 
-func (f *fakeSearcher) Search(context.Context, provider.SearchQuery) provider.SearchResult {
+func (f *fakeSearcher) Search(_ context.Context, query provider.SearchQuery) provider.SearchResult {
 	f.calls++
+	f.query = query
 	if f.result.Errors == nil {
 		f.result.Errors = map[string]error{}
 	}

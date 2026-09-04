@@ -160,7 +160,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		return nil, err
 	}
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner}}
-	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots}
+	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID}
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
 	for language, providerIDs := range routes {
 		ordered := make([]provider.Provider, 0, len(providerIDs))

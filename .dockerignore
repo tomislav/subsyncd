@@ -1,0 +1,10 @@
+.git
+.gitignore
+.DS_Store
+subsyncd
+data
+testdata
+**/*.log
+**/*.db
+**/*.db-shm
+**/*.db-wal

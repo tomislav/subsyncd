@@ -41,6 +41,16 @@ languages:
 	}
 }
 
+func TestExampleConfigurationLoads(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"), func(string) (string, bool) { return "example-secret", true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Instances) != 2 || len(cfg.Providers) != 3 || len(cfg.Languages) != 2 || cfg.Install.FileMode.Perm() != 0o644 {
+		t.Fatalf("example config decoded incompletely: instances=%d providers=%d languages=%d mode=%o", len(cfg.Instances), len(cfg.Providers), len(cfg.Languages), cfg.Install.FileMode.Perm())
+	}
+}
+
 func TestLoadDefaultsHearingImpairedToAllowedAndHonorsExplicitFalse(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := loadText(t, validConfig(root, `
@@ -66,6 +76,46 @@ languages:
 	if cfg.AllowHearingImpaired {
 		t.Fatal("explicit allow_hearing_impaired: false was ignored")
 	}
+}
+
+func TestLoadParsesInstallModeAndOwnership(t *testing.T) {
+	root := t.TempDir()
+	text := validConfig(root, `
+install:
+  file_mode: "0640"
+  uid: 1000
+  gid: 1001
+languages:
+  en: {providers: [subdl-main]}
+`)
+	cfg, err := loadText(t, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Install.FileMode.Perm() != 0o640 || cfg.Install.UID == nil || *cfg.Install.UID != 1000 || cfg.Install.GID == nil || *cfg.Install.GID != 1001 {
+		t.Fatalf("install config = %#v", cfg.Install)
+	}
+}
+
+func TestLoadDefaultsInstallModeAndRejectsExecutableMode(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := loadText(t, validConfig(root, `
+languages:
+  en: {providers: [subdl-main]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Install.FileMode.Perm() != 0o644 {
+		t.Fatalf("default install mode = %o", cfg.Install.FileMode.Perm())
+	}
+	_, err = loadText(t, validConfig(root, `
+install:
+  file_mode: "0755"
+languages:
+  en: {providers: [subdl-main]}
+`))
+	assertErrorContains(t, err, "file_mode", "execute")
 }
 
 func TestValidateRejectsLanguageWithoutProviders(t *testing.T) {

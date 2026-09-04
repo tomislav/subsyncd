@@ -10,6 +10,7 @@ import (
 
 	"subsyncd/internal/app"
 	"subsyncd/internal/cli"
+	"subsyncd/internal/version"
 )
 
 func main() {
@@ -22,7 +23,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	defaultConfig := os.Getenv("SUBSYNCD_CONFIG")
 	return (cli.Command{
-		Stdout: stdout, Stderr: stderr, DefaultConfigPath: defaultConfig,
+		Stdout: stdout, Stderr: stderr, DefaultConfigPath: defaultConfig, Version: version.Value,
 		Open: func(ctx context.Context, path string) (cli.Backend, error) {
 			return app.Open(ctx, path, logger)
 		},

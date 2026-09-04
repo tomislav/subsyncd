@@ -13,7 +13,7 @@ type doctorRunner struct {
 }
 
 func (r doctorRunner) Run(_ context.Context, command Command) (Execution, error) {
-	if len(command.Args) != 1 || command.Args[0] != "--help" {
+	if len(command.Args) != 0 {
 		return Execution{}, errors.New("unexpected command")
 	}
 	return r.execution, r.err

@@ -13,7 +13,9 @@ func CheckCapabilities(ctx context.Context, path string, runner Runner) error {
 	if runner == nil {
 		runner = OSRunner{}
 	}
-	execution, err := runner.Run(ctx, Command{Path: path, Args: []string{"--help"}})
+	// LAPSE v2.0.5 prints usage for an empty invocation. It does not implement
+	// --help; that token is interpreted as an input filename.
+	execution, err := runner.Run(ctx, Command{Path: path})
 	if err != nil {
 		return fmt.Errorf("run LAPSE capability check: %w", err)
 	}

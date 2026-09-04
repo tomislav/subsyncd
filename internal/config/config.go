@@ -40,6 +40,7 @@ type Config struct {
 	ProviderHTTP         ProviderHTTPConfig
 	PackCache            PackCacheConfig
 	Sync                 SyncConfig
+	Install              InstallConfig
 	Silo                 SiloConfig
 }
 
@@ -87,6 +88,12 @@ type SyncConfig struct {
 	Timeout   time.Duration
 }
 
+type InstallConfig struct {
+	FileMode os.FileMode
+	UID      *int
+	GID      *int
+}
+
 type SiloConfig struct {
 	Enabled      bool              `yaml:"enabled"`
 	URL          string            `yaml:"url"`
@@ -111,6 +118,7 @@ type rawConfig struct {
 	ProviderHTTP         rawProviderHTTPConfig     `yaml:"provider_http"`
 	PackCache            rawPackCacheConfig        `yaml:"pack_cache"`
 	Sync                 rawSyncConfig             `yaml:"sync"`
+	Install              rawInstallConfig          `yaml:"install"`
 	Silo                 SiloConfig                `yaml:"silo"`
 }
 
@@ -126,6 +134,12 @@ type rawPackCacheConfig struct {
 type rawSyncConfig struct {
 	LapsePath string    `yaml:"lapse_path"`
 	Timeout   *duration `yaml:"timeout"`
+}
+
+type rawInstallConfig struct {
+	FileMode string `yaml:"file_mode"`
+	UID      *int   `yaml:"uid"`
+	GID      *int   `yaml:"gid"`
 }
 
 type providerCommon struct {
@@ -263,6 +277,15 @@ func normalize(raw rawConfig) (Config, error) {
 		syncTimeout = time.Duration(*raw.Sync.Timeout)
 	}
 	cfg.Sync = SyncConfig{LapsePath: raw.Sync.LapsePath, Timeout: syncTimeout}
+	installMode := os.FileMode(0o644)
+	if raw.Install.FileMode != "" {
+		parsed, err := strconv.ParseUint(strings.TrimPrefix(raw.Install.FileMode, "0o"), 8, 9)
+		if err != nil {
+			return Config{}, fmt.Errorf("install file_mode %q must be octal", raw.Install.FileMode)
+		}
+		installMode = os.FileMode(parsed)
+	}
+	cfg.Install = InstallConfig{FileMode: installMode, UID: raw.Install.UID, GID: raw.Install.GID}
 
 	for id, settings := range raw.Providers {
 		var common providerCommon
@@ -334,6 +357,12 @@ func (c Config) Validate() error {
 	}
 	if c.MinimumReleaseScore < 1 || c.MinimumReleaseScore > 100 {
 		return fmt.Errorf("minimum_release_score must be between 1 and 100")
+	}
+	if c.Install.FileMode.Perm() == 0 || c.Install.FileMode.Perm()&0o111 != 0 {
+		return fmt.Errorf("install file_mode must be a nonzero octal mode without execute bits")
+	}
+	if (c.Install.UID != nil && *c.Install.UID < 0) || (c.Install.GID != nil && *c.Install.GID < 0) {
+		return fmt.Errorf("install uid and gid must be nonnegative")
 	}
 
 	for id, provider := range c.Providers {

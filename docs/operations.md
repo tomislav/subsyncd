@@ -1,0 +1,116 @@
+# Operations
+
+## Filesystem and container permissions
+
+The image runs as UID/GID `10001:10001` and expects:
+
+- `/config/config.yaml`: readable configuration, normally a read-only mount.
+- `/data`: writable SQLite database, LAPSE speech cache, pack cache, and process lock.
+- Every configured media root: readable for probing/hashing and writable for atomic sidecar installation.
+- `/tmp`: writable ephemeral space; the Compose examples provide a bounded tmpfs.
+
+Create host directories before starting and grant UID/GID 10001 access. Overriding the container user is possible but then the mounted paths and optional `install.uid`/`install.gid` must agree. Chown is omitted unless those optional settings are configured; unprivileged containers normally leave them unset.
+
+`install.file_mode` defaults to `0644`, accepts an octal non-executable mode, and is applied before atomic publication:
+
+```yaml
+install:
+  file_mode: "0640"
+  # uid: 10001
+  # gid: 10001
+```
+
+## Startup and health
+
+Startup is deliberately offline with respect to Arr, subtitle providers, and Silo. It fails only for invalid configuration, unsafe/missing local roots, SQLite migration/open errors, missing `ffprobe`, or an incompatible LAPSE executable. Run diagnostics after every configuration/image change:
+
+```bash
+subsyncd doctor --config /config/config.yaml
+```
+
+`GET /healthz` means the HTTP process is alive. `GET /readyz` rechecks SQLite and media-root availability. Temporary provider or Arr failures do not make readiness fail; they are scheduled and logged instead.
+
+## Sonarr and Radarr setup
+
+Each instance needs a unique `name`, API key, webhook secret, and one or more remote-to-local path mappings. Longest boundary-aware mapping wins. Mapping destinations must sit inside a configured media root, and existing parent symlinks are resolved before acceptance.
+
+Create an Arr webhook/connection pointing to:
+
+```text
+http://subsyncd:8097/webhooks/INSTANCE_NAME?token=INSTANCE_WEBHOOK_TOKEN
+```
+
+Enable download/import (including upgrades), rename, and file-delete events. Keep the token out of general reverse-proxy access logs. `subsyncd` itself logs only `/webhooks/INSTANCE_NAME`, never the query string. The request body limit is 1 MiB.
+
+Every instance also reconciles immediately at process start and every six hours using an independent persisted cursor. A failed instance does not roll back another instance's cursor.
+
+## Embedded and external subtitle behavior
+
+FFprobe indexes all embedded subtitle streams, including text and image codecs. The result is stored in SQLite and reused until path, Arr file ID, size, or nanosecond mtime changes. Sidecars are never trusted from that cache: `.srt`, `.ass`, `.ssa`, and `.vtt` files for the exact media stem are scanned and checksummed before every search.
+
+A matching full embedded track prevents downloading. Forced-only or unknown-language (`und`) tracks do not. SDH/HI tracks satisfy only when `allow_hearing_impaired` is true. Existing sidecars are protected unless their path and checksum match `subsyncd` installation provenance, so user edits are never overwritten automatically.
+
+## LAPSE policy
+
+LAPSE v2.0.5 is the compatibility baseline. Analysis runs against a private subtitle copy with `--dry-run --json --strict --no-sidecar`. Synchronization writes a new explicit output with `--output`, `--no-backup`, `--json`, `--strict`, and `--no-sidecar`. `unsure`, `nothing`, malformed JSON, invalid output, and missing speech are rejections; only `solid` can install. Exact OpenSubtitles hash matches bypass LAPSE.
+
+The speech cache is persisted under `/data/lapse-cache`. A normal timeout is 30 minutes. Cancellation kills the entire LAPSE subprocess group.
+
+Diagnostic analysis never installs a sidecar:
+
+```bash
+subsyncd analyze-sync --config /config/config.yaml --media /media/movies/Movie.mkv --subtitle /tmp/candidate.srt
+```
+
+## CLI reference
+
+The default configuration path is `/config/config.yaml`; set `SUBSYNCD_CONFIG` or pass `--config` to override it.
+
+```bash
+subsyncd serve --config /config/config.yaml
+subsyncd scan --config /config/config.yaml --instance sonarr-main
+subsyncd scan --config /config/config.yaml --instance sonarr-main --force-probe
+subsyncd search --config /config/config.yaml --instance radarr-main --kind movie --file-id 42 --language en
+subsyncd retry --config /config/config.yaml --provider titlovi-main
+subsyncd explain --config /config/config.yaml --instance sonarr-main --kind episode --file-id 1001 --language hr
+subsyncd doctor --config /config/config.yaml
+subsyncd analyze-sync --config /config/config.yaml --media /media/tv/Show/S01E01.mkv --subtitle /tmp/test.srt
+subsyncd --version
+```
+
+Exit status is 0 for success, 1 for an operational failure, and 2 for invalid command usage. `serve`, `scan`, `search`, and `retry` take the nonblocking `/data/subsyncd.lock`; a second mutator fails immediately instead of racing the daemon. Stop the daemon before running a mutating one-shot command.
+
+`explain` reports the indexed media identity, embedded/sidecar tracks, missing/failure attempts, last outcome and next attempt, candidates with score/identity evidence, managed installation and LAPSE provenance, reusable pack count, and provider cooldowns.
+
+## Silo notification
+
+Enable Silo only after setting its compatibility-listener URL and API key:
+
+```yaml
+silo:
+  enabled: true
+  url: http://silo:8096
+  api_key: ${SILO_API_KEY}
+  path_mappings:
+    - from: /media
+      to: /mnt/media
+```
+
+After a committed install, a durable notification sends `POST /Library/Media/Updated` with `X-Emby-Token` and one `Modified` media path. Notification failure never rolls back a subtitle. Timeout, 408, 429, and 5xx responses retry independently; other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
+
+## Backup, restart, and recovery
+
+For a consistent backup, stop the service and copy `/data` as one unit. It contains the SQLite database and both caches. Restoring only the database can leave pack manifests missing; those entries are detected and invalidated safely, but the cache benefit is lost.
+
+Search and notification leases are recoverable after five minutes. A crash after atomic publication but before search completion does not trigger a second installation: the next inventory pass recognizes the checksum-recorded sidecar. Managed replacements retain one rollback file until a later successful replacement supersedes it; database-commit failure restores it immediately.
+
+If a user wants to take ownership of a subtitle, edit or replace the sidecar. Its checksum then differs from provenance and `subsyncd` protects it. Use `explain` before removing any generated file; never delete arbitrary `.subsyncd-*` files while the daemon is running.
+
+## Troubleshooting
+
+- `another subsyncd mutation process is active`: stop the daemon or wait for the other one-shot mutator; do not delete the lock file to bypass a live lock.
+- `media path is outside configured roots`: fix the Arr path mapping or mount path; do not broaden roots merely to silence the check.
+- no provider call: check `explain` for an embedded/protected track, exact terminal installation, future schedule, pack cache, or provider cooldown.
+- repeated missing result: this is expected backoff, not a worker sleep. Use `search` for a deliberate manual attempt or `retry` only to clear provider throttle/auth state.
+- LAPSE rejection: run `analyze-sync`; `unsure`/`nothing` is intentionally not installable.
+- Silo does not refresh: confirm port 8096 is the Jellyfin-compatible listener and that container-to-Silo path mapping is correct.

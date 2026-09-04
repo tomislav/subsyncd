@@ -36,6 +36,7 @@ type Command struct {
 	Stdout            io.Writer
 	Stderr            io.Writer
 	DefaultConfigPath string
+	Version           string
 }
 
 func (c Command) Run(ctx context.Context, args []string) int {
@@ -50,6 +51,14 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	}
 	if len(args) == 0 {
 		return c.usageError("command is required")
+	}
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "version") {
+		version := c.Version
+		if version == "" {
+			version = "dev"
+		}
+		_, _ = fmt.Fprintf(c.Stdout, "subsyncd %s\n", version)
+		return ExitOK
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)

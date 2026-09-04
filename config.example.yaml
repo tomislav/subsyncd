@@ -69,14 +69,21 @@ pack_cache:
   max_bytes: 536870912
 
 sync:
-  lapse_path: /usr/local/bin/lapse
+  # The production image installs the pinned LAPSE release here.
+  lapse_path: /opt/lapse/lapse
   timeout: 30m
+
+install:
+  file_mode: "0644"
+  # uid: 1000
+  # gid: 1000
 
 silo:
   enabled: false
   # Silo's Jellyfin-compatible listener, not its web UI listener.
   url: http://silo:8096
-  api_key: ${SILO_API_KEY}
+  # Replace with ${SILO_API_KEY} when enabled.
+  api_key: disabled
   path_mappings:
     - from: /media
       to: /mnt/media

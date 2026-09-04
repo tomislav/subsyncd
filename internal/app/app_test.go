@@ -73,7 +73,7 @@ func testConfig(t *testing.T) config.Config {
 		Languages:            map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"english"}}},
 		AllowHearingImpaired: true, MinimumReleaseScore: 35,
 		ProviderHTTP: config.ProviderHTTPConfig{SharedOriginMaxConcurrent: 1}, PackCache: config.PackCacheConfig{TTL: time.Hour, MaxBytes: 1 << 20},
-		Sync: config.SyncConfig{LapsePath: "/usr/local/bin/lapse", Timeout: time.Minute},
+		Sync: config.SyncConfig{LapsePath: "/usr/local/bin/lapse", Timeout: time.Minute}, Install: config.InstallConfig{FileMode: 0o644},
 	}
 }
 

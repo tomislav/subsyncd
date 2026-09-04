@@ -122,6 +122,9 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return result, fmt.Errorf("refresh subtitle inventory: %w", err)
 	}
+	if current.Fingerprint.Path != "" {
+		request.Media.Fingerprint = current.Fingerprint
+	}
 	existing, installed, err := s.Repository.GetInstallation(ctx, request.MediaID, request.Language)
 	if err != nil {
 		return result, err
