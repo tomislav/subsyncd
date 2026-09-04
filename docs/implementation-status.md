@@ -4,10 +4,10 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Current state
 
-- Branch: `feat/subsyncd`
-- Current task: standalone GitHub publication prepared and locally verified
-- Next task: authenticate GitHub CLI, create private `tomislav/subsyncd`, push the history-preserving split, and verify its first image publication
-- Latest follow-up: verified standalone repository and GHCR publication setup through `b054f50`
+- Branch: `main`
+- Current task: private standalone GitHub and GHCR publication verified
+- Next task: stage a filesystem-allowlisted canary deployment on Hades before enabling broad mounts or Arr webhooks
+- Latest follow-up: private standalone repository and dual-platform image publication
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -264,11 +264,13 @@ This file is the resumable implementation ledger. The approved design and plan r
 ### Follow-up — standalone GitHub publishing
 
 - Commits: `6fc34d5 chore: prepare standalone subsyncd tree`, `f2deb60 docs: deploy subsyncd from private GHCR`, and `b054f50 ci: publish verified multiarch images`.
-- The self-contained source root is `/Users/tomislav/Development/arr-stack/subsyncd`. It is prepared for a private `github.com/tomislav/subsyncd` repository and private `ghcr.io/tomislav/subsyncd` package while retaining subsystem history through `git subtree split`.
+- The self-contained source root was published with subsystem history to private `https://github.com/tomislav/subsyncd`; its canonical local clone is `/Users/tomislav/Development/subsyncd` on default branch `main`. The associated container package is private `ghcr.io/tomislav/subsyncd`.
 - The standalone root now excludes environment files, runtime configuration, SQLite state, caches, media, logs, coverage, and the compiled binary. `AGENTS.md` resolves only in-tree documentation and retains the correct default-off hearing-impaired policy.
 - `compose.example.yml` pulls `ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-latest}` without changing its rootless identity, read-only filesystem, tmpfs ownership, mounts, health check, resource limits, or network. The README documents private GHCR authentication, immutable tag selection, Compose pulls, and an explicit local build path. The parent `arr-stack/docker-compose.yml` is unchanged.
 - `.github/workflows/container.yml` runs race-enabled unit/package tests, `go vet`, and tagged end-to-end tests before publishing. It builds exactly `linux/amd64` and `linux/arm64`, uses the Actions cache, and emits maximum provenance plus an SBOM.
 - Action pins are `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`, `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e`, `docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a`, `docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e`, `docker/login-action@dbcb813823bdd20940b903addbd779551569679f`, `docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302`, and `docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a`.
 - Successful `main` pushes publish `latest` and `sha-<short-commit>`. Stable `vMAJOR.MINOR.PATCH` tags additionally publish `MAJOR.MINOR.PATCH`, `MAJOR.MINOR`, and `MAJOR`; prereleases publish only their full prerelease version and SHA. Manual runs always publish SHA and publish `latest` only when dispatched from `main`.
 - Local verification on 2026-09-04 passed: credential-pattern scans of the subtree and relevant history; `go test ./... -race -count=1`; `go vet ./...`; `go test ./test/e2e -tags=e2e -race -count=1`; actionlint v1.7.12; `docker compose -f compose.example.yml config --quiet`; default, SHA-tag, and arbitrary PUID/PGID/TZ Compose renderings; a native `docker build --build-arg VERSION=prepublish -t subsyncd:prepublish .`; and `docker run --rm subsyncd:prepublish --version`, which returned `subsyncd prepublish`.
-- External repository and image publication remain pending GitHub CLI authentication. No personal access token is stored or printed; GitHub Actions will use only its ephemeral `GITHUB_TOKEN` for package writes.
+- GitHub CLI authorization was renewed through the interactive device flow without printing or committing a token. The first publication workflow, `https://github.com/tomislav/subsyncd/actions/runs/33857752027`, succeeded for head `607269e502c3c90d75403bcc82bbb497fc93b9d5`; both the `Verify` and `Publish multi-architecture image` jobs passed.
+- `latest` and immutable `sha-607269e` resolve to manifest-list digest `sha256:d88884fab6e65fc4e657e3fbf0e2c5cc0c52b78d4d4f2f10c9d6438c60f4092f`. The index contains native `linux/amd64` (`sha256:e1e428b0fc1213bb993fad7281fbfa93d75ff7eedf7898702bed85dac737ff15`) and `linux/arm64` (`sha256:bd898356f1a86df98999c0b5230f8b897bf861a1fe8afe827bde5986e992712b`) images plus per-platform SBOM/provenance attestations. Runtime smoke output was `subsyncd sha-607269e`.
+- GitHub reports package visibility `private` and repository association `tomislav/subsyncd`. The parent `/Users/tomislav/Development/arr-stack/docker-compose.yml` remained unchanged.
