@@ -17,6 +17,8 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 
 See [providers.md](docs/providers.md) for search/scoring behavior and [operations.md](docs/operations.md) for deployment, webhooks, commands, recovery, and upgrades.
 
+For a deliberately narrow production trial, the [Hades manual canary](deploy/hades-canary/README.md) pins an immutable image, disables daemon/webhook/Silo behavior, and permits only four exact Arr media-file mappings.
+
 ## Private container image
 
 GitHub Actions publishes `ghcr.io/tomislav/subsyncd` for `linux/amd64` and `linux/arm64`. The repository and package are private, so each Docker host must authenticate with a GitHub token that can read packages:
