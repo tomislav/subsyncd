@@ -669,10 +669,12 @@ func TestServiceHandlesProviderOutagesThrottlesZeroResultsAndCancellation(t *tes
 	reset := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
 	t.Run("all throttled", func(t *testing.T) {
 		searcher := &fakeSearcher{result: provider.SearchResult{Errors: map[string]error{"provider": &provider.CooldownError{ProviderID: "provider", Scope: provider.OperationSearch, ResetAt: reset}}}}
+		repository := &workflowRepository{candidates: []store.CandidateRecord{{ProviderID: "last-known", ResultID: "candidate"}}}
 		service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+		service.Repository = repository
 		result, err := service.Run(context.Background(), serviceRequest(t))
-		if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) {
-			t.Fatalf("Run() = %#v, %v", result, err)
+		if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) || len(repository.candidates) != 1 {
+			t.Fatalf("Run() = %#v, %v, persisted candidates=%#v", result, err, repository.candidates)
 		}
 	})
 
@@ -703,6 +705,17 @@ func TestServiceHandlesProviderOutagesThrottlesZeroResultsAndCancellation(t *tes
 			t.Fatalf("Run() error = %T %v", err, err)
 		}
 	})
+}
+
+func TestServiceClearsPersistedCandidatesAfterSuccessfulEmptySearch(t *testing.T) {
+	repository := &workflowRepository{candidates: []store.CandidateRecord{{ProviderID: "stale-provider", ResultID: "stale-result"}}}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = repository
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeNoResult || len(repository.candidates) != 0 {
+		t.Fatalf("Run() = %#v, %v, persisted candidates=%#v", result, err, repository.candidates)
+	}
 }
 
 func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {

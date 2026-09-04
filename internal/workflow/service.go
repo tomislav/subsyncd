@@ -247,6 +247,11 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	}
 	result.ProviderErrors = search.Errors
 	if len(search.Candidates) == 0 {
+		if len(s.ProviderOrder) == 0 || len(search.Errors) < len(s.ProviderOrder) {
+			if err := s.Repository.RecordCandidates(ctx, request.MediaID, request.Language, nil); err != nil {
+				return result, err
+			}
+		}
 		if sameCandidateAssessed {
 			result.Outcome = OutcomeSatisfied
 			result.Installation = existing
