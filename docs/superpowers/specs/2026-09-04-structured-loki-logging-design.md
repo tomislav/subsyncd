@@ -1,6 +1,6 @@
 # Structured Loki Logging Design
 
-**Status:** Approved for implementation planning
+**Status:** Approved for implementation
 
 ## Purpose
 

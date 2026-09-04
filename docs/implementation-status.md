@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: approved structured Loki logging design; implementation planning in progress
-- Next task: complete and review the structured logging implementation plan
+- Current task: structured Loki logging implementation plan complete and awaiting execution choice
+- Next task: execute the approved plan inline or with subagent-driven development
 - Latest follow-up: comprehensive newline-delimited JSON observability for Grafana Alloy and Loki
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — structured Loki logging design
+
+- Commit `5205f87` records the approved architecture for comprehensive newline-delimited JSON logs collected by Grafana Alloy and queried in Loki. The application owns stable event names, bounded common fields, severity policy, component ownership, central redaction, and correlation; it does not push to Loki directly.
+- Normal successful health/readiness probes remain silent. Candidate-by-candidate scoring, release/file evidence, cache decisions, and proven root-relative paths are debug-only. Absolute paths, secrets, query strings, provider bodies/URLs, subtitle content, and raw LAPSE output are forbidden at every level.
+- `logging.level` with a `SUBSYNCD_LOG_LEVEL` override defaults to `info` and requires restart. Only bounded `service`, `environment`, `level`, `component`, and `event` values are recommended Loki labels; dynamic identifiers remain JSON fields.
+- Metrics, OpenTelemetry, direct Loki transport, runtime level reload, and behavior changes are explicitly out of scope. The implementation plan is `docs/superpowers/plans/2026-09-04-structured-loki-logging.md`.
+- Verification for the design boundary: `git diff --check` passed. Next task: approve and execute the test-driven implementation plan.
 
 ### Follow-up — priority-aware continuous search dispatch
 
