@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: structured Loki-compatible logging implemented and locally verified
-- Next task: publish an immutable multi-architecture image and perform the separately approved Hades log rollout
-- Latest follow-up: comprehensive newline-delimited JSON observability, operator guidance, and verified Alloy pipeline
+- Current task: conventional review repair design approved and recorded
+- Next task: user review of the conventional repair specification, followed by implementation planning
+- Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — conventional review repair design
+
+- The approved design is `docs/superpowers/specs/2026-09-04-conventional-review-repairs-design.md`.
+- Reconciliation will consume typed Arr history mutations, coalesce each file to its latest relevant state before hydration, and apply imports, renames, deletes, audit rows, and the cursor transactionally.
+- Reconciled scheduling will preserve active lease ownership and coalesce one rerun. Sonarr multi-episode files will be indexed as `unsupported_multi_episode` and make no provider or LAPSE calls.
+- Shutdown will use a graceful deadline followed by cancellation and one final bounded deadline. Installation rollback will return joined restoration failures instead of silently leaving an untracked sidecar.
+- Full snapshots, combined-episode subtitle support, scoring/provider changes, and automatic takeover of rollback orphans remain out of scope.
+- Verification for this design boundary: `git diff --check`. Next task: user review, then a test-driven implementation plan.
 
 ### Follow-up — structured Loki logging design
 
