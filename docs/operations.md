@@ -40,6 +40,14 @@ subsyncd doctor --config /config/config.yaml
 
 `GET /healthz` means the HTTP process is alive. `GET /readyz` rechecks SQLite and media-root availability. Temporary provider or Arr failures do not make readiness fail; they are scheduled and logged instead.
 
+Provider network errors and HTTP 5xx responses are circuit-broken per provider instance and operation with persisted 1, 5, 15, and 60 minute retries. A provider-supplied `Retry-After` overrides that delay. SubDL HTTP 403 disables the instance until its key is corrected and the operator clears provider state:
+
+```bash
+subsyncd retry --config /config/config.yaml --provider subdl-main
+```
+
+The retry command clears all cooldown, quota, transient-failure, and disabled-authentication scopes for that one configured provider; it does not alter candidate rejections or search schedules.
+
 ## Sonarr and Radarr setup
 
 Each instance needs a unique `name`, API key, webhook secret, and one or more remote-to-local path mappings. Longest boundary-aware mapping wins. Mapping destinations must sit inside a configured media root, and existing parent symlinks are resolved before acceptance.

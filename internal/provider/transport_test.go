@@ -108,3 +108,153 @@ func TestTransportErrorDoesNotExposeRequestURLOrSignedQuery(t *testing.T) {
 		t.Fatalf("unsafe transport error = %v", err)
 	}
 }
+
+func TestTransportPersistsEscalatingTransientCircuitAndResetsAfterSuccess(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	states := &memoryStateStore{states: map[string]store.ProviderState{}}
+	failing := true
+	calls := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if failing {
+			return nil, errors.New("dial failed")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+
+	newTransport := func() Client {
+		gate := NewGate(states, clock, 1)
+		gate.Configure("subdl-main", 1000, 1, 1)
+		return Client{HTTP: httpClient, Gate: gate, Clock: clock, ProviderID: "subdl-main", ProviderType: "subdl"}
+	}
+	do := func(transport Client) (*http.Response, error) {
+		request, _ := http.NewRequest(http.MethodGet, "https://api.example/search", nil)
+		return transport.Do(context.Background(), OperationSearch, request)
+	}
+
+	transport := newTransport()
+	_, err := do(transport)
+	var cooldown *CooldownError
+	if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("first failure = %#v", err)
+	}
+	state, err := states.GetProviderState(context.Background(), "subdl-main", string(OperationSearch))
+	if err != nil || state.FailureAttempt != 1 {
+		t.Fatalf("first persisted state = %#v, %v", state, err)
+	}
+
+	// A new gate simulates a process restart: the open circuit must still avoid HTTP.
+	transport = newTransport()
+	_, err = do(transport)
+	if !errors.As(err, &cooldown) || calls != 1 {
+		t.Fatalf("restart call error/calls = %v/%d", err, calls)
+	}
+
+	clock.Advance(time.Minute + time.Second)
+	_, err = do(transport)
+	if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(clock.Now().Add(5*time.Minute)) {
+		t.Fatalf("second failure = %#v", err)
+	}
+	state, _ = states.GetProviderState(context.Background(), "subdl-main", string(OperationSearch))
+	if state.FailureAttempt != 2 {
+		t.Fatalf("second failure attempt = %d", state.FailureAttempt)
+	}
+
+	clock.Advance(5*time.Minute + time.Second)
+	failing = false
+	response, err := do(transport)
+	if err != nil {
+		t.Fatalf("recovery request: %v", err)
+	}
+	response.Body.Close()
+	state, _ = states.GetProviderState(context.Background(), "subdl-main", string(OperationSearch))
+	if state.FailureAttempt != 0 || state.Reason != "" || !state.ResetAt.IsZero() {
+		t.Fatalf("recovered state = %#v", state)
+	}
+
+	failing = true
+	_, err = do(transport)
+	if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(clock.Now().Add(time.Minute)) {
+		t.Fatalf("failure after recovery = %#v", err)
+	}
+}
+
+func TestTransportUsesRetryAfterForServerFailure(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	states := &memoryStateStore{states: map[string]store.ProviderState{}}
+	gate := NewGate(states, clock, 1)
+	gate.Configure("subdl-main", 1000, 1, 1)
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Retry-After": {"120"}}, Body: io.NopCloser(strings.NewReader("busy"))}, nil
+	})}
+	transport := Client{HTTP: client, Gate: gate, Clock: clock, ProviderID: "subdl-main", ProviderType: "subdl"}
+	request, _ := http.NewRequest(http.MethodGet, "https://api.example/search", nil)
+	response, err := transport.Do(context.Background(), OperationSearch, request)
+	if response != nil {
+		response.Body.Close()
+	}
+	var cooldown *CooldownError
+	if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("server failure = %#v", err)
+	}
+	request, _ = http.NewRequest(http.MethodGet, "https://api.example/search", nil)
+	_, err = transport.Do(context.Background(), OperationSearch, request)
+	if !errors.As(err, &cooldown) || calls != 1 {
+		t.Fatalf("blocked call error/calls = %v/%d", err, calls)
+	}
+}
+
+func TestTransportRecoveryPreservesNonTransientProviderState(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	wantReset := now.Add(-time.Minute)
+	states := &memoryStateStore{states: map[string]store.ProviderState{
+		"subdl-main/download": {ProviderID: "subdl-main", Scope: "download", Reason: "download_quota", Remaining: 0, ResetAt: wantReset, FailureAttempt: 2},
+	}}
+	gate := NewGate(states, clock, 1)
+	gate.Configure("subdl-main", 1000, 1, 1)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	transport := Client{HTTP: client, Gate: gate, Clock: clock, ProviderID: "subdl-main", ProviderType: "subdl"}
+	request, _ := http.NewRequest(http.MethodGet, "https://api.example/download", nil)
+	response, err := transport.Do(context.Background(), OperationDownload, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	state, err := states.GetProviderState(context.Background(), "subdl-main", string(OperationDownload))
+	if err != nil || state.FailureAttempt != 0 || state.Reason != "download_quota" || !state.ResetAt.Equal(wantReset) {
+		t.Fatalf("preserved state = %#v, %v", state, err)
+	}
+}
+
+func TestTransientCircuitEscalatesAndIsOperationScoped(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	states := &memoryStateStore{states: map[string]store.ProviderState{}}
+	gate := NewGate(states, clock, 1)
+	gate.Configure("provider", 1000, 1, 1)
+
+	for attempt, delay := range []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, time.Hour} {
+		state, err := gate.RecordTransientFailure(context.Background(), "provider", OperationSearch, "network_error", time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.FailureAttempt != attempt+1 || !state.ResetAt.Equal(clock.Now().Add(delay)) {
+			t.Fatalf("attempt %d state = %#v", attempt+1, state)
+		}
+		clock.Advance(delay + time.Second)
+	}
+
+	// A search outage must not block an independent download operation.
+	release, err := gate.Acquire(context.Background(), "provider", "https://api.example", OperationDownload)
+	if err != nil {
+		t.Fatalf("download operation was blocked by search circuit: %v", err)
+	}
+	release()
+}

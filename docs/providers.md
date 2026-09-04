@@ -111,6 +111,10 @@ Each provider instance has its own token bucket and active-request semaphore. Ac
 
 `RateLimit`, `RateLimit-Policy`, `X-RateLimit-*`, numeric/date `Retry-After`, and provider JSON reset values are persisted. The most restrictive future reset wins. A worker never sleeps through a remote cooldown: it releases the lease and schedules at or after reset with up to 10% positive jitter. Provider cooldowns do not advance the missing-result or technical-failure counters.
 
+Network failures and HTTP 5xx responses open a persisted circuit for that provider instance and operation (`auth`, `search`, or `download`). The circuit is shared by every queued media item and survives restart, preventing a provider outage from producing one request per file. Consecutive failures retry after 1, 5, 15, then 60 minutes (capped at 60 minutes); an applicable provider `Retry-After` value takes precedence. Any non-5xx HTTP response proves connectivity and resets only the transient failure streak. It does not erase quota, rate-limit, or disabled-authentication state, and a search circuit does not block downloads.
+
+A SubDL HTTP 403 on search or download is treated as a rejected API key and disables that configured provider instance persistently. This state intentionally has no automatic expiry: fix or replace the key, then run `subsyncd retry --provider NAME` to clear it. Transient and quota failures never blacklist subtitle candidates.
+
 When the provider supplies no reset, compiled fallbacks are:
 
 | Provider condition | Fallback |

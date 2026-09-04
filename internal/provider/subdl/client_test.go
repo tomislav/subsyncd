@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -185,7 +186,62 @@ func TestDownloadStreamsWithinLimitAndRejectsExternalRedirect(t *testing.T) {
 	}
 }
 
+func TestForbiddenSearchDisablesProviderUntilExplicitRetry(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	client, states := newTestClientWithState(t, server, 1<<20)
+	query := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}
+	_, err := client.Search(context.Background(), query)
+	var authentication *baseprovider.AuthenticationError
+	if !errors.As(err, &authentication) {
+		t.Fatalf("first search error = %T %v", err, err)
+	}
+	state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth))
+	if err != nil || !state.Disabled {
+		t.Fatalf("disabled state = %#v, %v", state, err)
+	}
+	_, err = client.Search(context.Background(), query)
+	var disabled *baseprovider.DisabledError
+	if !errors.As(err, &disabled) || calls != 1 {
+		t.Fatalf("second search error/calls = %T %v/%d", err, err, calls)
+	}
+}
+
+func TestForbiddenDownloadDisablesProviderUntilExplicitRetry(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	client, states := newTestClientWithState(t, server, 1<<20)
+	_, err := client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/forbidden"}, io.Discard)
+	var authentication *baseprovider.AuthenticationError
+	if !errors.As(err, &authentication) {
+		t.Fatalf("first download error = %T %v", err, err)
+	}
+	state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth))
+	if err != nil || !state.Disabled {
+		t.Fatalf("disabled state = %#v, %v", state, err)
+	}
+	_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/forbidden"}, io.Discard)
+	var disabled *baseprovider.DisabledError
+	if !errors.As(err, &disabled) || calls != 1 {
+		t.Fatalf("second download error/calls = %T %v/%d", err, err, calls)
+	}
+}
+
 func newTestClient(t *testing.T, server *httptest.Server, maxBytes int64) *Client {
+	t.Helper()
+	client, _ := newTestClientWithState(t, server, maxBytes)
+	return client
+}
+
+func newTestClientWithState(t *testing.T, server *httptest.Server, maxBytes int64) (*Client, *testStateStore) {
 	t.Helper()
 	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
 	states := &testStateStore{states: map[string]store.ProviderState{}}
@@ -196,7 +252,7 @@ func newTestClient(t *testing.T, server *httptest.Server, maxBytes int64) *Clien
 	if err != nil {
 		t.Fatal(err)
 	}
-	return client
+	return client, states
 }
 
 func episodeMedia() domain.Media {

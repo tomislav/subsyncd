@@ -36,10 +36,25 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("provider %s request failed", c.ProviderID)
+		state, persistErr := c.Gate.RecordTransientFailure(ctx, c.ProviderID, operation, "network_error", time.Time{})
+		if persistErr != nil {
+			return nil, persistErr
+		}
+		return nil, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}
 	}
 	now := c.Clock.Now()
 	window, found := ParseRateLimit(now, response.Header)
+	if response.StatusCode >= http.StatusInternalServerError && response.StatusCode <= 599 {
+		var resetAt time.Time
+		if found && window.Remaining <= 0 {
+			resetAt = window.ResetAt
+		}
+		state, persistErr := c.Gate.RecordTransientFailure(ctx, c.ProviderID, operation, fmt.Sprintf("http_%d", response.StatusCode), resetAt)
+		if persistErr != nil {
+			return response, persistErr
+		}
+		return response, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}
+	}
 	if response.StatusCode == http.StatusTooManyRequests && !found {
 		window = RateLimitWindow{Name: "fallback", Remaining: 0, ResetAt: FallbackReset(now, c.ProviderType, CooldownRateLimit), Source: "fallback"}
 		found = !window.ResetAt.IsZero()
@@ -52,6 +67,9 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		if response.StatusCode == http.StatusTooManyRequests {
 			return response, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: throttle.Reason, ResetAt: throttle.ResetAt}
 		}
+	}
+	if err := c.Gate.ResetTransientFailures(ctx, c.ProviderID, operation); err != nil {
+		return response, err
 	}
 	if response.StatusCode == http.StatusUnauthorized {
 		return response, &AuthenticationError{Message: "HTTP 401"}

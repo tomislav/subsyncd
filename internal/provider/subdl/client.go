@@ -210,6 +210,9 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusForbidden {
+		if err := c.transport.DisableAuthentication(ctx, "SubDL API key rejected (HTTP 403)"); err != nil {
+			return nil, fmt.Errorf("disable SubDL provider: %w", err)
+		}
 		return nil, &baseprovider.AuthenticationError{Message: "API key rejected"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -473,6 +476,12 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 		return baseprovider.DownloadMetadata{}, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusForbidden {
+		if err := c.transport.DisableAuthentication(ctx, "SubDL API key rejected (HTTP 403)"); err != nil {
+			return baseprovider.DownloadMetadata{}, fmt.Errorf("disable SubDL provider: %w", err)
+		}
+		return baseprovider.DownloadMetadata{}, &baseprovider.AuthenticationError{Message: "API key rejected"}
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("SubDL download returned HTTP %d", response.StatusCode)
 	}

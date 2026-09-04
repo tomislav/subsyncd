@@ -23,7 +23,7 @@ Important invariants:
 - Embedded subtitle inventory is fingerprint-cached; sidecars are scanned live before searches.
 - Provider file hashes are calculated lazily, persisted by algorithm, and reusable only for an exact path/file-ID/size/mtime fingerprint.
 - Providers are compiled-in adapters behind the common interface.
-- Remote provider cooldowns are persisted and release worker leases; provider code must not sleep through them.
+- Remote provider cooldowns are persisted and release worker leases; provider code must not sleep through them. Network and HTTP 5xx failures open a provider-instance/operation circuit for 1, 5, 15, then 60 minutes and survive restart; an applicable `Retry-After` wins. A non-5xx response resets only the transient streak, never quota/auth state. SubDL HTTP 403 persistently disables its configured instance until `retry --provider` clears it.
 - All provider downloads are capped at 20 MiB by the workflow before reaching the common bounded extractor, even if an adapter mishandles writer errors. ZIP, RAR, and plain subtitle payloads are accepted; traversal, links, nested archives, decompression-limit violations, invalid subtitle syntax, and ambiguous season-pack members fail closed.
 - A season-pack member must be uniquely identified by provider evidence, episode/range/absolute tokens, or the strict episode-title rule. Never select the first arbitrary archive member.
 - Pack-cache directories are content-addressed and immutable. A cache hit reloads its manifest and reruns the normal strict selector for the current episode. Never persist candidate download references, follow cache symlinks, or delete paths outside the exact cache layout. Cache writes are best-effort and must not reject an otherwise valid installation.

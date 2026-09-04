@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 
@@ -27,9 +29,12 @@ type Gate struct {
 	clock     Clock
 	sharedMax int
 	mu        sync.Mutex
+	stateMu   sync.Mutex
 	instances map[string]*instanceGate
 	origins   map[string]chan struct{}
 }
+
+var transientFailureDelays = [...]time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour}
 
 func NewGate(stateStore StateStore, clock Clock, sharedMax int) *Gate {
 	if sharedMax <= 0 {
@@ -115,4 +120,69 @@ func (g *Gate) checkState(ctx context.Context, providerID string, operation Oper
 
 func (g *Gate) Persist(ctx context.Context, throttle Throttle) error {
 	return g.store.PutProviderState(ctx, store.ProviderState{ProviderID: throttle.ProviderID, Scope: string(throttle.Scope), Reason: throttle.Reason, Limit: throttle.Limit, Remaining: throttle.Remaining, ResetAt: throttle.ResetAt, Disabled: throttle.Disabled})
+}
+
+func (g *Gate) RecordTransientFailure(ctx context.Context, providerID string, operation Operation, reason string, resetAt time.Time) (store.ProviderState, error) {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+
+	attempt := 1
+	existing, err := g.store.GetProviderState(ctx, providerID, string(operation))
+	if err == nil && existing.FailureAttempt > 0 && strings.HasPrefix(existing.Reason, "transient_") {
+		attempt = existing.FailureAttempt + 1
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return store.ProviderState{}, fmt.Errorf("read provider %s transient failure state: %w", providerID, err)
+	}
+	if reason == "" {
+		reason = "transient_failure"
+	} else if !strings.HasPrefix(reason, "transient_") {
+		reason = "transient_" + reason
+	}
+	if !resetAt.After(g.clock.Now()) {
+		index := attempt - 1
+		if index >= len(transientFailureDelays) {
+			index = len(transientFailureDelays) - 1
+		}
+		resetAt = g.clock.Now().Add(transientFailureDelays[index])
+	}
+	state := store.ProviderState{
+		ProviderID:     providerID,
+		Scope:          string(operation),
+		Reason:         reason,
+		Remaining:      0,
+		ResetAt:        resetAt,
+		FailureAttempt: attempt,
+	}
+	if err := g.store.PutProviderState(ctx, state); err != nil {
+		return store.ProviderState{}, fmt.Errorf("persist provider %s transient failure: %w", providerID, err)
+	}
+	return state, nil
+}
+
+func (g *Gate) ResetTransientFailures(ctx context.Context, providerID string, operation Operation) error {
+	g.stateMu.Lock()
+	defer g.stateMu.Unlock()
+
+	state, err := g.store.GetProviderState(ctx, providerID, string(operation))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read provider %s transient failure state: %w", providerID, err)
+	}
+	if state.FailureAttempt == 0 {
+		return nil
+	}
+	state.FailureAttempt = 0
+	if strings.HasPrefix(state.Reason, "transient_") {
+		state.Reason = ""
+		state.Limit = 0
+		state.Remaining = 0
+		state.ResetAt = time.Time{}
+		state.Disabled = false
+	}
+	if err := g.store.PutProviderState(ctx, state); err != nil {
+		return fmt.Errorf("reset provider %s transient failures: %w", providerID, err)
+	}
+	return nil
 }
