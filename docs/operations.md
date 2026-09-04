@@ -54,6 +54,15 @@ Enable download/import (including upgrades), rename, and file-delete events. `su
 
 Every instance also reconciles immediately at process start and every six hours using an independent persisted cursor. A failed instance does not roll back another instance's cursor.
 
+The daemon starts with one media workflow at a time. Increase this only when the host and media storage can sustain concurrent provider preparation and LAPSE reads:
+
+```yaml
+worker:
+  max_concurrent: 1 # valid range: 1..8
+```
+
+Search work is durable and strictly ordered by class: a newly imported or renamed file runs before an ordinary missing-subtitle retry, which runs before a scheduled upgrade check. Within one class, the oldest due time wins. A webhook sends a nonblocking advisory wake after its database commit, so a free slot is filled without waiting for the next poll. Wakes may coalesce during bursts; startup and the jittered recovery poll read SQLite again, so correctness never depends on receiving every signal. A new event for a media/language already being processed requests exactly one immediate rerun without starting a concurrent duplicate. Priority changes dispatch order only and never bypass provider rate limits or persisted cooldowns.
+
 For a missing language, search workflows run at absolute milestones from import or reset: immediately, about 30 minutes, 2 hours, 8 hours, 24 hours, 3 days, 7 days, 14 days, and every 14 days thereafter, with interval jitter. Sidecars are refreshed on every run. Provider search results are cached for six hours, so the 30-minute and 2-hour workflows normally perform local checks without another provider request; under an unchanged empty result, external searches normally occur around import, 8 hours, 24 hours, 3 days, 7 days, and 14 days. Provider cooldowns and technical-failure retries remain independent of this sequence.
 
 ## Embedded and external subtitle behavior
@@ -101,7 +110,7 @@ subsyncd --version
 
 Exit status is 0 for success, 1 for an operational failure, and 2 for invalid command usage. `serve`, `scan`, `search`, and `retry` take the nonblocking `/data/subsyncd.lock`; a second mutator fails immediately instead of racing the daemon. Stop the daemon before running a mutating one-shot command.
 
-`explain` reports the indexed media identity, embedded/sidecar tracks, missing/failure attempts, last outcome and next attempt, candidates with score/identity evidence, active candidate rejections with reason and expiry, managed installation and LAPSE provenance, reusable pack count, and provider cooldowns. `search --retry-rejected` clears the rejection records for only the selected media/language before performing the manual search; any candidate that deterministically fails again is immediately re-quarantined.
+`explain` reports the indexed media identity, embedded/sidecar tracks, human-readable search priority, pending-rerun state, missing/failure attempts, last outcome and next attempt, candidates with score/identity evidence, active candidate rejections with reason and expiry, managed installation and LAPSE provenance, reusable pack count, and provider cooldowns. `search --retry-rejected` clears the rejection records for only the selected media/language before performing the manual search; any candidate that deterministically fails again is immediately re-quarantined.
 
 ## Silo notification
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,9 +23,106 @@ import (
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
+	"subsyncd/internal/httpapi"
+	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
 	"subsyncd/internal/worker"
+	"subsyncd/internal/workflow"
 )
+
+func TestWebhookWakeDispatchesPersistedSearch(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	wake := make(chan struct{}, 1)
+	notify := func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+	catalogSource := wakeCatalog{now: now}
+	handler := catalog.WebhookHandler{Instance: "radarr-main", InstanceType: "radarr", Catalog: catalogSource, Store: database.Repository(), Languages: []domain.Language{"en"}, Now: func() time.Time { return now }, OnApplied: notify}
+	api := httpapi.Server{Instances: map[string]httpapi.Instance{"radarr-main": {Token: "webhook-key", Handler: handler}}}.Handler()
+	service := newWakeWorkflow()
+	background := &worker.Worker{Repository: database.Repository(), Workflow: service, Clock: fixedE2EClock{now: now}, Wake: wake, MaxWorkflows: 2, PollInterval: time.Hour, LeaseDuration: 5 * time.Minute, RenewInterval: time.Minute, ShutdownTimeout: time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- background.Run(ctx) }()
+
+	postWebhook(t, api, `{"eventType":"Download","movieFile":{"id":1,"path":"/media/one.mkv","size":100}}`)
+	first := waitForWakeWorkflow(t, service.started)
+	postWebhook(t, api, `{"eventType":"Download","movieFile":{"id":2,"path":"/media/two.mkv","size":100}}`)
+	second := waitForWakeWorkflow(t, service.started)
+	if first == second {
+		t.Fatalf("webhook dispatch IDs = %d/%d", first, second)
+	}
+	service.release(first)
+	service.release(second)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fixedE2EClock struct{ now time.Time }
+
+func (c fixedE2EClock) Now() time.Time { return c.now }
+
+type wakeCatalog struct{ now time.Time }
+
+func (c wakeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Media, error) {
+	return domain.Media{Ref: ref, Fingerprint: domain.MediaFingerprint{Path: fmt.Sprintf("/media/%d.mkv", ref.FileID), FileID: ref.FileID, Size: 100, ModTime: c.now}, Title: "Movie"}, nil
+}
+
+func (wakeCatalog) ListMediaChangedSince(context.Context, time.Time) ([]domain.Media, error) {
+	return nil, nil
+}
+
+type wakeWorkflow struct {
+	mu       sync.Mutex
+	started  chan int64
+	releases map[int64]chan struct{}
+}
+
+func newWakeWorkflow() *wakeWorkflow {
+	return &wakeWorkflow{started: make(chan int64, 2), releases: make(map[int64]chan struct{})}
+}
+
+func (w *wakeWorkflow) Run(ctx context.Context, request workflow.Request) (workflow.Result, error) {
+	w.mu.Lock()
+	release := make(chan struct{})
+	w.releases[request.MediaID] = release
+	w.mu.Unlock()
+	w.started <- request.MediaID
+	select {
+	case <-release:
+		return workflow.Result{Outcome: workflow.OutcomeSatisfied}, nil
+	case <-ctx.Done():
+		return workflow.Result{}, ctx.Err()
+	}
+}
+
+func (w *wakeWorkflow) release(mediaID int64) {
+	w.mu.Lock()
+	release := w.releases[mediaID]
+	w.mu.Unlock()
+	close(release)
+}
+
+func waitForWakeWorkflow(t *testing.T, started <-chan int64) int64 {
+	t.Helper()
+	select {
+	case mediaID := <-started:
+		return mediaID
+	case <-time.After(time.Second):
+		t.Fatal("persisted webhook search did not start")
+		return 0
+	}
+}
 
 func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	root := t.TempDir()
@@ -240,6 +338,7 @@ func e2eConfig(t *testing.T, root, arrURL, providerURL, siloURL string) config.C
 	}
 	return config.Config{
 		DataDir: filepath.Join(root, "data"), MediaRoots: []string{root}, Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Worker:    config.WorkerConfig{MaxConcurrent: 1},
 		Instances: []config.InstanceConfig{{Name: "radarr-main", Type: "radarr", URL: arrURL, APIKey: "arr-key", WebhookToken: "webhook-key", PathMappings: []config.PathMapping{{Remote: "/remote/movies", Local: root}}}},
 		Providers: map[string]config.ProviderSpec{"opensubtitles-main": {Type: "opensubtitles", RequestsPerSecond: 100, Burst: 10, MaxConcurrent: 1, Settings: *providerNode.Content[0]}},
 		Languages: map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"opensubtitles-main"}}}, AllowHearingImpaired: true, MinimumReleaseScore: 35,

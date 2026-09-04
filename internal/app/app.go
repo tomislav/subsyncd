@@ -499,7 +499,7 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 		fmt.Fprintf(&output, "  track: language=%s embedded=%t forced=%t sdh=%t protected=%t\n", track.Language, track.Embedded, track.Forced, track.SDH, track.Protected)
 	}
 	if status, statusErr := a.Repository.GetSearchStatus(ctx, mediaID, language); statusErr == nil {
-		fmt.Fprintf(&output, "search: state=%s outcome=%s missing_attempt=%d failure_attempt=%d next_attempt=%s\n", status.State, status.LastOutcome, status.Attempt, status.FailureAttempt, status.NextAttemptAt.Format(time.RFC3339Nano))
+		fmt.Fprintf(&output, "search: state=%s outcome=%s priority=%s rerun_pending=%t missing_attempt=%d failure_attempt=%d next_attempt=%s\n", status.State, status.LastOutcome, status.Priority, status.RerunPending, status.Attempt, status.FailureAttempt, status.NextAttemptAt.Format(time.RFC3339Nano))
 	} else if errors.Is(statusErr, sql.ErrNoRows) {
 		fmt.Fprintf(&output, "search: not scheduled\n")
 	} else {

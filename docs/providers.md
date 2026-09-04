@@ -132,6 +132,8 @@ Every due workflow refreshes local sidecar inventory, but a retry does not neces
 
 Managed nonexact subtitles are reconsidered after 7 days for scores 35–59, 30 days for 60–84, and 90 days for 85–99. Exact-hash installations are terminal until the media fingerprint changes.
 
+The persisted daemon queue has three strict classes: Arr imports and renames (`import`), missing/rejected subtitle searches and reconciliation discoveries (`missing`), and successful nonexact reassessments (`upgrade`). Higher classes are leased first, then older due times. Technical failures and provider throttles retain the job's class. Webhook wakeups accelerate dispatch but do not alter schedules, provider ordering, cache validity, token buckets, or cooldown enforcement.
+
 ## Credential-gated contracts
 
 Default tests are local-only. To deliberately exercise current public provider APIs:

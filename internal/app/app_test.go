@@ -164,6 +164,34 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 	}
 }
 
+func TestExplainShowsSearchPriority(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	now := application.Clock.Now()
+	media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 8}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Priority.mkv"), FileID: 8, Size: 100, ModTime: now}, Title: "Priority"}
+	mediaID, _, err := application.Repository.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, store.SearchPriorityImport); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, nil); err != nil {
+		t.Fatal(err)
+	}
+	output, err := application.Explain(context.Background(), "tv", "movie", 8, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "priority=import") || !strings.Contains(output, "rerun_pending=false") {
+		t.Fatalf("Explain() search status = %q", output)
+	}
+}
+
 func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 	cfg := testConfig(t)
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)

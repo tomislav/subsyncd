@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: private standalone GitHub and GHCR publication verified
-- Next task: stage a filesystem-allowlisted canary deployment on Hades before enabling broad mounts or Arr webhooks
-- Latest follow-up: private standalone repository and dual-platform image publication
+- Current task: priority-aware continuous daemon dispatch implemented locally
+- Next task: implement the approved score-tier LAPSE tournament, then publish both changes
+- Latest follow-up: priority search dispatch and coalesced webhook wakeups
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — priority-aware continuous search dispatch
+
+- Commits: `241b067 feat: prioritize persisted subtitle searches`, `6eca35b feat: classify search lifecycle priorities`, `f01ec7b feat: configure workflow concurrency`, `f7e85f7 feat: wake workers after catalog changes`, and `24f6a7c feat: continuously refill search workers`.
+- Migration `008_search_priorities.sql` preserves existing rows as missing-priority work and adds durable priority plus same-key rerun state. Leasing is strict import (300), missing/rejected/reconciliation (200), then successful nonexact upgrade (100), followed by due time and stable identity. Technical failures and throttles retain priority.
+- Import/rename arriving during an active lease preserves its owner and coalesces any number of arrivals into one immediately due import-priority rerun. The stale attempt's completion cannot overwrite that event schedule. A second completion without another event ends normally.
+- `worker.max_concurrent` defaults to one, accepts 1–8, and controls media workflows. Daemon mode leases only free slots and refills on startup, a capacity-one nonblocking webhook/reconciliation wake, each completion, and the jittered recovery poll. `RunOnce` retains deterministic bounded-batch behavior. Reconciliation and notifications remain independently maintained.
+- `explain` now exposes human-readable priority and whether a same-key rerun is pending. Unit and tagged end-to-end coverage proves migration compatibility, strict ordering, priority lifecycle, wake coalescing after partial webhook success, immediate free-slot fill, completion refill, lost-wake recovery, concurrency bounds, bounded shutdown, and persisted webhook-to-daemon dispatch.
+- Verification through this boundary used race-enabled storage, schedule, worker, catalog, config, and application suites plus the focused tagged end-to-end webhook wake test. The final repository-wide gate is deferred until the LAPSE tournament is implemented in the same approved execution sequence.
 
 ### Task 1 — domain and configuration
 

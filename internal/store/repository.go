@@ -46,6 +46,19 @@ const (
 	SearchPriorityImport  SearchPriority = 300
 )
 
+func (p SearchPriority) String() string {
+	switch p {
+	case SearchPriorityUpgrade:
+		return "upgrade"
+	case SearchPriorityMissing:
+		return "missing"
+	case SearchPriorityImport:
+		return "import"
+	default:
+		return "unknown"
+	}
+}
+
 type SearchLease struct {
 	MediaID        int64
 	Language       string
@@ -153,6 +166,8 @@ type SearchStatus struct {
 	FailureAttempt int
 	NextAttemptAt  time.Time
 	LastOutcome    string
+	Priority       SearchPriority
+	RerunPending   bool
 }
 
 type MediaRecord struct {
@@ -355,9 +370,12 @@ func (r *Repository) ListMediaByInstance(ctx context.Context, instance string) (
 func (r *Repository) GetSearchStatus(ctx context.Context, mediaID int64, language domain.Language) (SearchStatus, error) {
 	var status SearchStatus
 	var next int64
-	err := r.store.db.QueryRowContext(ctx, `SELECT state, attempt, failure_attempt, next_attempt_at_ns, last_outcome FROM search_states WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&status.State, &status.Attempt, &status.FailureAttempt, &next, &status.LastOutcome)
+	err := r.store.db.QueryRowContext(ctx, `SELECT state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, priority, rerun_requested FROM search_states WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&status.State, &status.Attempt, &status.FailureAttempt, &next, &status.LastOutcome, &status.Priority, &status.RerunPending)
 	if err != nil {
 		return SearchStatus{}, fmt.Errorf("get search status: %w", err)
+	}
+	if !validSearchPriority(status.Priority) {
+		return SearchStatus{}, fmt.Errorf("get search status: corrupt priority %d", status.Priority)
 	}
 	status.NextAttemptAt = fromUnixNano(next)
 	return status, nil

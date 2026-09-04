@@ -14,6 +14,8 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 - Season packs use one bounded extractor and fail closed when the target member is ambiguous.
 - Deterministic candidate failures are quarantined for the exact media/release evidence, allowing later-ranked results to advance without repeated downloads; operational failures remain retryable.
 - Provider cooldowns, search schedules, leases, candidate evidence/rejections, install provenance, and notifications survive restarts.
+- Persisted searches favor new imports, then missing subtitles, then upgrade checks. Webhooks wake free workers immediately, while coalesced signals and periodic polling recover safely after bursts or restarts.
+- Media workflow concurrency is configurable from one to eight and defaults to one, which is the conservative choice for LAPSE and network-mounted media.
 
 See [providers.md](docs/providers.md) for search/scoring behavior and [operations.md](docs/operations.md) for deployment, webhooks, commands, recovery, and upgrades.
 
