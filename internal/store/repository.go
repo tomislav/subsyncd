@@ -80,6 +80,10 @@ type SearchCompletion struct {
 	Priority              SearchPriority
 }
 
+type SearchCompletionResult struct {
+	RerunScheduled bool
+}
+
 type NotificationRequest struct {
 	Notifier      string
 	DedupeKey     string
@@ -640,7 +644,7 @@ func (r *Repository) RenewSearchLease(ctx context.Context, jobID string, now tim
 	return requireOneRow(result, "search lease "+jobID+" not found")
 }
 
-func (r *Repository) CompleteSearch(ctx context.Context, completion SearchCompletion) error {
+func (r *Repository) CompleteSearch(ctx context.Context, completion SearchCompletion) (SearchCompletionResult, error) {
 	state := "complete"
 	next := int64(0)
 	if !completion.NextAttemptAt.IsZero() {
@@ -656,9 +660,20 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		advanceFailure = 1
 	}
 	if completion.Priority != 0 && !validSearchPriority(completion.Priority) {
-		return fmt.Errorf("invalid search priority %d", completion.Priority)
+		return SearchCompletionResult{}, fmt.Errorf("invalid search priority %d", completion.Priority)
 	}
-	result, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SearchCompletionResult{}, fmt.Errorf("begin search completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var rerunScheduled bool
+	if err := tx.QueryRowContext(ctx, `SELECT rerun_requested FROM search_states WHERE lease_owner=?`, completion.JobID).Scan(&rerunScheduled); errors.Is(err, sql.ErrNoRows) {
+		return SearchCompletionResult{}, fmt.Errorf("search lease %s not found", completion.JobID)
+	} else if err != nil {
+		return SearchCompletionResult{}, fmt.Errorf("read search completion state: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE search_states SET
 		state=CASE WHEN rerun_requested=1 THEN 'pending' ELSE ? END,
 		attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN 0 ELSE attempt+? END,
 		failure_attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN 0 ELSE failure_attempt+? END,
@@ -668,27 +683,34 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL
 		WHERE lease_owner=?`, state, completion.ResetMissingAttempt, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.Outcome, completion.Priority, completion.Priority, completion.JobID)
 	if err != nil {
-		return fmt.Errorf("complete search: %w", err)
+		return SearchCompletionResult{}, fmt.Errorf("complete search: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("count completed search: %w", err)
+		return SearchCompletionResult{}, fmt.Errorf("count completed search: %w", err)
 	}
 	if count != 1 {
-		return fmt.Errorf("search lease %s not found", completion.JobID)
+		return SearchCompletionResult{}, fmt.Errorf("search lease %s not found", completion.JobID)
 	}
-	return nil
+	if err := tx.Commit(); err != nil {
+		return SearchCompletionResult{}, fmt.Errorf("commit search completion: %w", err)
+	}
+	return SearchCompletionResult{RerunScheduled: rerunScheduled}, nil
 }
 
-func (r *Repository) EnqueueNotification(ctx context.Context, request NotificationRequest) error {
+func (r *Repository) EnqueueNotification(ctx context.Context, request NotificationRequest) (bool, error) {
 	if request.Notifier == "" || request.DedupeKey == "" || !json.Valid(request.PayloadJSON) || request.NextAttemptAt.IsZero() {
-		return fmt.Errorf("notification notifier, dedupe key, valid payload, and due time are required")
+		return false, fmt.Errorf("notification notifier, dedupe key, valid payload, and due time are required")
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES (?, ?, 0, ?, '', ?) ON CONFLICT DO NOTHING`, request.Notifier, request.PayloadJSON, request.NextAttemptAt.UnixNano(), request.DedupeKey)
+	result, err := r.store.db.ExecContext(ctx, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES (?, ?, 0, ?, '', ?) ON CONFLICT DO NOTHING`, request.Notifier, request.PayloadJSON, request.NextAttemptAt.UnixNano(), request.DedupeKey)
 	if err != nil {
-		return fmt.Errorf("enqueue notification: %w", err)
+		return false, fmt.Errorf("enqueue notification: %w", err)
 	}
-	return nil
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count enqueued notification: %w", err)
+	}
+	return count == 1, nil
 }
 
 func (r *Repository) LeaseDueNotifications(ctx context.Context, now time.Time, limit int, duration time.Duration) ([]NotificationLease, error) {

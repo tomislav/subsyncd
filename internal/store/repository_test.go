@@ -263,14 +263,18 @@ func TestSearchLeaseRenewalAndAttemptAccountingAreCompareAndSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := now.Add(30 * time.Minute)
-	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "missing", NextAttemptAt: next, AdvanceMissingAttempt: true, ResetFailureAttempt: true}); err != nil {
+	completionResult, err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "missing", NextAttemptAt: next, AdvanceMissingAttempt: true, ResetFailureAttempt: true})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if completionResult.RerunScheduled {
+		t.Fatal("ordinary completion unexpectedly reported a rerun")
 	}
 	leases, err = repo.LeaseDueSearches(context.Background(), next, 1, 5*time.Minute)
 	if err != nil || len(leases) != 1 || leases[0].Attempt != 1 || leases[0].FailureAttempt != 0 {
 		t.Fatalf("missing completion lease = %#v, %v", leases, err)
 	}
-	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "transport_error", NextAttemptAt: next.Add(time.Minute), AdvanceFailureAttempt: true}); err != nil {
+	if _, err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "transport_error", NextAttemptAt: next.Add(time.Minute), AdvanceFailureAttempt: true}); err != nil {
 		t.Fatal(err)
 	}
 	leases, err = repo.LeaseDueSearches(context.Background(), next.Add(time.Minute), 1, 5*time.Minute)
@@ -283,9 +287,13 @@ func TestNotificationLeaseRetryCompletionAndDedupeLifecycle(t *testing.T) {
 	repo := openTestRepository(t)
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	payload := []byte(`{"path":"/media/movie.mkv"}`)
-	for range 2 {
-		if err := repo.EnqueueNotification(context.Background(), NotificationRequest{Notifier: "silo", DedupeKey: "install:1:sum", PayloadJSON: payload, NextAttemptAt: now}); err != nil {
+	for attempt := range 2 {
+		inserted, err := repo.EnqueueNotification(context.Background(), NotificationRequest{Notifier: "silo", DedupeKey: "install:1:sum", PayloadJSON: payload, NextAttemptAt: now})
+		if err != nil {
 			t.Fatal(err)
+		}
+		if inserted != (attempt == 0) {
+			t.Fatalf("enqueue %d inserted = %t, want %t", attempt, inserted, attempt == 0)
 		}
 	}
 	jobs, err := repo.LeaseDueNotifications(context.Background(), now, 10, 5*time.Minute)
@@ -718,8 +726,12 @@ func TestApplyMediaEventDuringLeaseRequestsOneRerun(t *testing.T) {
 		t.Fatalf("competing lease = %#v, %v", competing, err)
 	}
 
-	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "installed", NextAttemptAt: now.Add(24 * time.Hour), Priority: SearchPriorityUpgrade}); err != nil {
+	completionResult, err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: leases[0].JobID, Outcome: "installed", NextAttemptAt: now.Add(24 * time.Hour), Priority: SearchPriorityUpgrade})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !completionResult.RerunScheduled {
+		t.Fatal("completion did not report the consumed same-key rerun")
 	}
 	rerun, err := repo.LeaseDueSearches(context.Background(), now.Add(2*time.Minute), 1, 5*time.Minute)
 	if err != nil || len(rerun) != 1 {
@@ -728,8 +740,12 @@ func TestApplyMediaEventDuringLeaseRequestsOneRerun(t *testing.T) {
 	if rerun[0].Priority != SearchPriorityImport {
 		t.Fatalf("rerun priority = %d, want %d", rerun[0].Priority, SearchPriorityImport)
 	}
-	if err := repo.CompleteSearch(context.Background(), SearchCompletion{JobID: rerun[0].JobID, Outcome: "satisfied"}); err != nil {
+	completionResult, err = repo.CompleteSearch(context.Background(), SearchCompletion{JobID: rerun[0].JobID, Outcome: "satisfied"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if completionResult.RerunScheduled {
+		t.Fatal("second completion unexpectedly reported another rerun")
 	}
 	if third, err := repo.LeaseDueSearches(context.Background(), now.Add(48*time.Hour), 1, 5*time.Minute); err != nil || len(third) != 0 {
 		t.Fatalf("unexpected third lease = %#v, %v", third, err)

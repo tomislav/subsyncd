@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/notifier"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/schedule"
 	"subsyncd/internal/store"
 	"subsyncd/internal/workflow"
@@ -43,9 +45,9 @@ type Reconciler interface {
 type Repository interface {
 	LeaseDueSearches(context.Context, time.Time, int, time.Duration) ([]store.SearchLease, error)
 	RenewSearchLease(context.Context, string, time.Time, time.Duration) error
-	CompleteSearch(context.Context, store.SearchCompletion) error
+	CompleteSearch(context.Context, store.SearchCompletion) (store.SearchCompletionResult, error)
 	GetMedia(context.Context, int64) (domain.Media, error)
-	EnqueueNotification(context.Context, store.NotificationRequest) error
+	EnqueueNotification(context.Context, store.NotificationRequest) (bool, error)
 	LeaseDueNotifications(context.Context, time.Time, int, time.Duration) ([]store.NotificationLease, error)
 	RenewNotificationLease(context.Context, string, time.Time, time.Duration) error
 	CompleteNotification(context.Context, store.NotificationCompletion) error
@@ -68,6 +70,7 @@ type Worker struct {
 	MaxWorkflows      int
 	NotificationBatch int
 	Wake              <-chan struct{}
+	Events            *observability.Emitter
 
 	reconcileMu   sync.Mutex
 	lastReconcile map[string]time.Time
@@ -95,6 +98,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			return
 		}
 		for _, lease := range leases {
+			w.logLease(workCtx, lease)
 			activeSearches++
 			go func(lease store.SearchLease) {
 				searchesDone <- searchDone{err: w.runSearchLease(workCtx, lease)}
@@ -161,8 +165,13 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	searches, err := w.Repository.LeaseDueSearches(ctx, w.Clock.Now(), w.SearchBatch, w.LeaseDuration)
 	if err != nil {
 		failures = append(failures, err)
-	} else if err := w.processSearches(ctx, searches); err != nil {
-		failures = append(failures, err)
+	} else {
+		for _, lease := range searches {
+			w.logLease(ctx, lease)
+		}
+		if err := w.processSearches(ctx, searches); err != nil {
+			failures = append(failures, err)
+		}
 	}
 	notifications, err := w.Repository.LeaseDueNotifications(ctx, w.Clock.Now(), w.NotificationBatch, w.LeaseDuration)
 	if err != nil {
@@ -199,28 +208,70 @@ func (w *Worker) processSearchLease(ctx context.Context, lease store.SearchLease
 }
 
 func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) error {
+	started := time.Now()
 	jobCtx, cancelJob := context.WithCancel(ctx)
 	defer cancelJob()
+	jobCtx = observability.WithAttrs(jobCtx,
+		slog.String("job_id", lease.JobID),
+		slog.Int64("media_id", lease.MediaID),
+		slog.String("language", lease.Language),
+		slog.String("priority", lease.Priority.String()),
+		slog.Int("attempt", lease.Attempt),
+		slog.Int("failure_attempt", lease.FailureAttempt),
+	)
+	events := w.Events.For("worker")
+	events.Log(jobCtx, slog.LevelInfo, "job.started", "subtitle job started")
 	renewal := w.renewSearchLease(jobCtx, cancelJob, lease.JobID)
 	media, err := w.Repository.GetMedia(jobCtx, lease.MediaID)
 	var result workflow.Result
 	if err == nil {
+		jobCtx = observability.WithAttrs(jobCtx,
+			slog.String("instance", media.Ref.Instance),
+			slog.String("media_kind", string(media.Ref.Kind)),
+			slog.Int64("file_id", media.Ref.FileID),
+		)
 		result, err = w.Workflow.Run(jobCtx, workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)})
 	}
 	if renewErr := renewal.finish(); renewErr != nil {
+		events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
 		return renewErr
 	}
 	if jobCtx.Err() != nil {
+		w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, nil)
 		return jobCtx.Err()
 	}
 	if err != nil {
 		completion := schedule.Scheduler{Clock: w.Clock}.Failure(lease.JobID, lease.FailureAttempt, "workflow_error")
-		return errors.Join(err, w.Repository.CompleteSearch(jobCtx, completion))
+		completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
+		if completionErr != nil {
+			w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, completionErr)
+			return errors.Join(err, completionErr)
+		}
+		events.Log(jobCtx, slog.LevelWarn, "job.retry_scheduled", "subtitle job retry scheduled",
+			slog.String("reason", "workflow_error"),
+			slog.Time("retry_at", completion.NextAttemptAt),
+			slog.Int("next_failure_attempt", lease.FailureAttempt+1),
+		)
+		w.logRerun(jobCtx, completionResult)
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow", completion.NextAttemptAt, started, err)
+		return err
 	}
-	return w.completeWorkflow(jobCtx, lease, media, result)
+	completion, err := w.workflowCompletion(jobCtx, lease, media, result)
+	if err != nil {
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "notification_enqueue", time.Time{}, started, err)
+		return err
+	}
+	completionResult, err := w.Repository.CompleteSearch(jobCtx, completion)
+	if err != nil {
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, err)
+		return err
+	}
+	w.logRerun(jobCtx, completionResult)
+	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, nil)
+	return nil
 }
 
-func (w *Worker) completeWorkflow(ctx context.Context, lease store.SearchLease, media domain.Media, result workflow.Result) error {
+func (w *Worker) workflowCompletion(ctx context.Context, lease store.SearchLease, media domain.Media, result workflow.Result) (store.SearchCompletion, error) {
 	completion := store.SearchCompletion{JobID: lease.JobID, Outcome: string(result.Outcome)}
 	switch result.Outcome {
 	case workflow.OutcomeSatisfied:
@@ -232,7 +283,7 @@ func (w *Worker) completeWorkflow(ctx context.Context, lease store.SearchLease, 
 		completion.ResetFailureAttempt = true
 	case workflow.OutcomeInstalled:
 		if err := w.enqueueNotifications(ctx, media, result.Installation); err != nil {
-			return err
+			return store.SearchCompletion{}, err
 		}
 		completion.NextAttemptAt = result.NextUpgrade
 		if !result.NextUpgrade.IsZero() {
@@ -247,9 +298,9 @@ func (w *Worker) completeWorkflow(ctx context.Context, lease store.SearchLease, 
 	case workflow.OutcomeThrottled:
 		completion.NextAttemptAt = w.throttleRetryAt(result.RetryAt)
 	default:
-		return fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
+		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
 	}
-	return w.Repository.CompleteSearch(ctx, completion)
+	return completion, nil
 }
 
 func (w *Worker) enqueueNotifications(ctx context.Context, media domain.Media, installation store.Installation) error {
@@ -269,8 +320,17 @@ func (w *Worker) enqueueNotifications(ctx context.Context, media domain.Media, i
 		rawKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s", name, installation.MediaID, installation.Language, installation.Checksum)
 		sum := sha256.Sum256([]byte(rawKey))
 		request := store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: w.Clock.Now()}
-		if err := w.Repository.EnqueueNotification(ctx, request); err != nil {
+		inserted, err := w.Repository.EnqueueNotification(ctx, request)
+		if err != nil {
 			return err
+		}
+		if inserted {
+			key := request.DedupeKey
+			if len(key) > 12 {
+				key = key[:12]
+			}
+			w.Events.For("worker").Log(ctx, slog.LevelInfo, "notification.queued", "subtitle notification queued",
+				slog.String("notifier", name), slog.String("notification_key", key))
 		}
 	}
 	return nil
@@ -292,8 +352,14 @@ func (w *Worker) processNotifications(ctx context.Context, leases []store.Notifi
 }
 
 func (w *Worker) processNotificationLease(ctx context.Context, lease store.NotificationLease, semaphore chan struct{}) error {
+	started := time.Now()
 	jobCtx, cancelJob := context.WithCancel(ctx)
 	defer cancelJob()
+	jobCtx = observability.WithAttrs(jobCtx,
+		slog.String("notification_id", lease.JobID),
+		slog.String("notifier", lease.Notifier),
+		slog.Int("attempt", lease.Attempt),
+	)
 	renewal := w.renewNotificationLease(jobCtx, cancelJob, lease.JobID)
 	select {
 	case semaphore <- struct{}{}:
@@ -325,7 +391,27 @@ func (w *Worker) processNotificationLease(ctx context.Context, lease store.Notif
 			completion.NextAttemptAt = w.Clock.Now().Add(schedule.FailureDelay(lease.Attempt))
 		}
 	}
-	return w.Repository.CompleteNotification(jobCtx, completion)
+	if err := w.Repository.CompleteNotification(jobCtx, completion); err != nil {
+		events := w.Events.For("worker")
+		events.Log(jobCtx, slog.LevelError, "notification.failed", "notification completion failed",
+			append([]slog.Attr{slog.String("outcome", "failed"), slog.Int64("duration_ms", time.Since(started).Milliseconds())}, events.ErrorAttrs("notification_completion", err)...)...)
+		return err
+	}
+	events := w.Events.For("worker")
+	switch completion.Result {
+	case "success":
+		events.Log(jobCtx, slog.LevelInfo, "notification.delivered", "subtitle notification delivered",
+			slog.String("outcome", "success"), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+	case "retryable_error":
+		attrs := []slog.Attr{slog.String("outcome", "retry_scheduled"), slog.Time("retry_at", completion.NextAttemptAt), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		attrs = append(attrs, events.ErrorAttrs("notification_delivery", deliveryErr)...)
+		events.Log(jobCtx, slog.LevelWarn, "notification.retry_scheduled", "subtitle notification retry scheduled", attrs...)
+	default:
+		attrs := []slog.Attr{slog.String("outcome", "failed"), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		attrs = append(attrs, events.ErrorAttrs("notification_delivery", deliveryErr)...)
+		events.Log(jobCtx, slog.LevelError, "notification.failed", "subtitle notification failed", attrs...)
+	}
+	return nil
 }
 
 func (w *Worker) renewSearchLease(ctx context.Context, cancel context.CancelFunc, jobID string) leaseRenewal {
@@ -381,11 +467,18 @@ func (w *Worker) reconcileDue(ctx context.Context) error {
 		if !last.IsZero() && now.Sub(last) < w.ReconcileInterval {
 			continue
 		}
+		started := time.Now()
+		events := w.Events.For("worker")
+		events.Log(ctx, slog.LevelInfo, "reconcile.started", "catalog reconciliation started", slog.String("instance", name))
 		if err := w.Reconcilers[name].Run(ctx); err != nil {
+			events.Log(ctx, slog.LevelError, "reconcile.failed", "catalog reconciliation failed",
+				append([]slog.Attr{slog.String("instance", name), slog.Int64("duration_ms", time.Since(started).Milliseconds())}, events.ErrorAttrs("reconciliation", err)...)...)
 			failures = append(failures, fmt.Errorf("reconcile %s: %w", name, err))
 			continue
 		}
 		w.lastReconcile[name] = now
+		events.Log(ctx, slog.LevelInfo, "reconcile.completed", "catalog reconciliation completed",
+			slog.String("instance", name), slog.String("outcome", "success"), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
 	}
 	return errors.Join(failures...)
 }
@@ -463,6 +556,9 @@ func (w *Worker) prepare() error {
 	if w.NotificationBatch > defaultNotificationBatch {
 		w.NotificationBatch = defaultNotificationBatch
 	}
+	if w.Events == nil {
+		w.Events = observability.Discard()
+	}
 	return nil
 }
 
@@ -498,11 +594,65 @@ func (w *Worker) drainDaemon(activeSearches int, maintenanceActive bool, searche
 		case <-timer.C:
 			if !timedOut {
 				timedOut = true
+				w.Events.For("worker").Log(context.Background(), slog.LevelWarn, "worker.drain_timed_out", "worker drain timed out",
+					slog.Int("active_searches", activeSearches), slog.Bool("maintenance_active", maintenanceActive))
 				cancel()
 			}
 		}
 	}
 	return nil
+}
+
+func (w *Worker) logLease(ctx context.Context, lease store.SearchLease) {
+	w.Events.For("worker").Log(ctx, slog.LevelInfo, "job.leased", "subtitle job leased",
+		slog.String("job_id", lease.JobID),
+		slog.Int64("media_id", lease.MediaID),
+		slog.String("language", lease.Language),
+		slog.String("priority", lease.Priority.String()),
+		slog.Int("attempt", lease.Attempt),
+		slog.Int("failure_attempt", lease.FailureAttempt),
+	)
+}
+
+func (w *Worker) logRerun(ctx context.Context, result store.SearchCompletionResult) {
+	if !result.RerunScheduled {
+		return
+	}
+	w.Events.For("worker").Log(ctx, slog.LevelInfo, "job.rerun_requested", "subtitle job rerun requested",
+		slog.String("priority", store.SearchPriorityImport.String()))
+}
+
+func (w *Worker) logJobCompleted(ctx context.Context, level slog.Level, outcome, reason string, next time.Time, started time.Time, err error) {
+	attrs := []slog.Attr{
+		slog.String("outcome", outcome),
+		slog.String("reason", reason),
+		slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+	}
+	if !next.IsZero() {
+		attrs = append(attrs, slog.Time("next_attempt_at", next))
+	}
+	events := w.Events.For("worker")
+	if err != nil {
+		attrs = append(attrs, events.ErrorAttrs(reason, err)...)
+	}
+	events.Log(ctx, level, "job.completed", "subtitle job completed", attrs...)
+}
+
+func completionReason(outcome workflow.Outcome) string {
+	switch outcome {
+	case workflow.OutcomeSatisfied:
+		return "satisfied"
+	case workflow.OutcomeInstalled:
+		return "installed"
+	case workflow.OutcomeNoResult:
+		return "missing_backoff"
+	case workflow.OutcomeRejected:
+		return "candidate_rejected"
+	case workflow.OutcomeThrottled:
+		return "provider_throttle"
+	default:
+		return "unsupported_outcome"
+	}
 }
 
 func (w *Worker) reportUnlessCanceled(err error) {

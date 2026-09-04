@@ -250,10 +250,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	workerRunner := options.Worker
 	if workerRunner == nil {
-		workerEvents := events.For("worker")
-		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, OnError: func(err error) {
-			workerEvents.Log(context.Background(), slog.LevelError, "worker.cycle_failed", "background cycle failed", workerEvents.ErrorAttrs("background_cycle", err)...)
-		}}
+		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
 	}
 
 	application := &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}

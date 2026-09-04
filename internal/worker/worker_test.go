@@ -1,17 +1,20 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/notifier"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 	"subsyncd/internal/testutil"
 	"subsyncd/internal/workflow"
@@ -34,6 +37,62 @@ func TestRunOnceLimitsWorkflowConcurrencyAndRenewsLeases(t *testing.T) {
 	}
 	if len(repository.searchCompletions) != 5 {
 		t.Fatalf("search completions = %d, want 5", len(repository.searchCompletions))
+	}
+}
+
+func TestRunOnceLogsCorrelatedSearchJobLifecycle(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	repository.searches[0].Priority = store.SearchPriorityImport
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := testWorker(repository, &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeSatisfied}}, testutil.NewClock(now))
+	worker.Events = events
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	records := workerLogRecords(t, logs.String())
+	for _, event := range []string{"job.leased", "job.started", "job.completed"} {
+		record := findWorkerEvent(t, records, event)
+		if record["job_id"] != "job-1ns" || record["media_id"] != float64(1) || record["language"] != "en" || record["priority"] != "import" {
+			t.Fatalf("%s correlation = %#v", event, record)
+		}
+	}
+	completed := findWorkerEvent(t, records, "job.completed")
+	if completed["outcome"] != "satisfied" || completed["instance"] != "sonarr" || completed["media_kind"] != "movie" || completed["file_id"] != float64(1) {
+		t.Fatalf("completion fields = %#v", completed)
+	}
+	if _, ok := completed["duration_ms"].(float64); !ok {
+		t.Fatalf("duration_ms = %#v", completed["duration_ms"])
+	}
+}
+
+func TestRunOnceLogsTechnicalRetryAndSameKeyRerun(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	repository.completionResults = []store.SearchCompletionResult{{RerunScheduled: true}}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", Redact: func(error) string { return "sanitized" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := testWorker(repository, &workerWorkflow{err: errors.New("secret failure")}, testutil.NewClock(now))
+	worker.Events = events
+	if err := worker.RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce() error = nil")
+	}
+	records := workerLogRecords(t, logs.String())
+	findWorkerEvent(t, records, "job.retry_scheduled")
+	findWorkerEvent(t, records, "job.rerun_requested")
+	completed := findWorkerEvent(t, records, "job.completed")
+	if completed["outcome"] != "failed" || completed["error"] != "sanitized" || completed["error_kind"] != "workflow" {
+		t.Fatalf("failed completion = %#v", completed)
+	}
+	if strings.Contains(logs.String(), "secret failure") {
+		t.Fatalf("unsanitized workflow error leaked: %s", logs.String())
 	}
 }
 
@@ -185,6 +244,34 @@ func TestRunOncePersistsAndDeliversNotificationAfterInstallation(t *testing.T) {
 	}
 	if len(repository.enqueued) != 1 || delivery.calls != 1 || len(repository.notificationCompletions) != 1 || repository.notificationCompletions[0].Result != "success" {
 		t.Fatalf("notifications = enqueued %#v calls %d completions %#v", repository.enqueued, delivery.calls, repository.notificationCompletions)
+	}
+}
+
+func TestRunOnceLogsReconciliationAndNotificationLifecycle(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(0, now)
+	repository.notifications = []store.NotificationLease{{ID: 1, Notifier: "silo", PayloadJSON: notificationJSON(t, repository.media[1], "/private/media/movie.en.srt"), Attempt: 1, JobID: "notification-1"}}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := testWorker(repository, &workerWorkflow{}, testutil.NewClock(now))
+	worker.Events = events
+	worker.Reconcilers = map[string]Reconciler{"sonarr": &workerReconciler{}}
+	worker.Notifiers = map[string]notifier.Notifier{"silo": &workerNotifier{}}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	records := workerLogRecords(t, logs.String())
+	findWorkerEvent(t, records, "reconcile.started")
+	findWorkerEvent(t, records, "reconcile.completed")
+	delivered := findWorkerEvent(t, records, "notification.delivered")
+	if delivered["notification_id"] != "notification-1" || delivered["notifier"] != "silo" || delivered["attempt"] != float64(1) {
+		t.Fatalf("notification fields = %#v", delivered)
+	}
+	if strings.Contains(logs.String(), "/private/media") || strings.Contains(logs.String(), "subtitle_path") {
+		t.Fatalf("notification payload leaked: %s", logs.String())
 	}
 }
 
@@ -342,6 +429,12 @@ func TestRunCancelsWorkflowAfterDrainTimeout(t *testing.T) {
 	started := make(chan struct{})
 	service := &workerWorkflow{started: started, release: make(chan struct{})}
 	worker := testWorker(repository, service, testutil.NewClock(now))
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.Events = events
 	worker.ShutdownTimeout = 20 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -356,6 +449,7 @@ func TestRunCancelsWorkflowAfterDrainTimeout(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker did not cancel active workflow after drain timeout")
 	}
+	findWorkerEvent(t, workerLogRecords(t, logs.String()), "worker.drain_timed_out")
 }
 
 func testWorker(repository *workerRepository, service Workflow, clock *testutil.Clock) *Worker {
@@ -372,6 +466,7 @@ type workerRepository struct {
 	completingSearch        bool
 	renewedDuringCompletion bool
 	completeErrors          []error
+	completionResults       []store.SearchCompletionResult
 	enqueued                []store.NotificationRequest
 	dedupe                  map[string]bool
 	notifications           []store.NotificationLease
@@ -424,7 +519,7 @@ func (r *workerRepository) RenewSearchLease(context.Context, string, time.Time, 
 	}
 	return nil
 }
-func (r *workerRepository) CompleteSearch(_ context.Context, completion store.SearchCompletion) error {
+func (r *workerRepository) CompleteSearch(_ context.Context, completion store.SearchCompletion) (store.SearchCompletionResult, error) {
 	r.mu.Lock()
 	r.completingSearch = true
 	r.mu.Unlock()
@@ -437,28 +532,33 @@ func (r *workerRepository) CompleteSearch(_ context.Context, completion store.Se
 		r.completeErrors = r.completeErrors[1:]
 		r.completingSearch = false
 		r.mu.Unlock()
-		return err
+		return store.SearchCompletionResult{}, err
 	}
 	r.searchCompletions = append(r.searchCompletions, completion)
+	result := store.SearchCompletionResult{}
+	if len(r.completionResults) > 0 {
+		result = r.completionResults[0]
+		r.completionResults = r.completionResults[1:]
+	}
 	r.completingSearch = false
 	r.mu.Unlock()
-	return nil
+	return result, nil
 }
 func (r *workerRepository) GetMedia(_ context.Context, mediaID int64) (domain.Media, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.media[mediaID], nil
 }
-func (r *workerRepository) EnqueueNotification(_ context.Context, request store.NotificationRequest) error {
+func (r *workerRepository) EnqueueNotification(_ context.Context, request store.NotificationRequest) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.dedupe[request.DedupeKey] {
-		return nil
+		return false, nil
 	}
 	r.dedupe[request.DedupeKey] = true
 	r.enqueued = append(r.enqueued, request)
 	r.notifications = append(r.notifications, store.NotificationLease{ID: int64(len(r.notifications) + 1), Notifier: request.Notifier, PayloadJSON: request.PayloadJSON, JobID: "notification-new"})
-	return nil
+	return true, nil
 }
 func (r *workerRepository) LeaseDueNotifications(context.Context, time.Time, int, time.Duration) ([]store.NotificationLease, error) {
 	r.mu.Lock()
@@ -488,6 +588,7 @@ type workerWorkflow struct {
 	release         <-chan struct{}
 	outcome         workflow.Result
 	outcomes        []workflow.Result
+	err             error
 }
 
 type controlledWorkflow struct {
@@ -597,7 +698,7 @@ func (w *workerWorkflow) Run(ctx context.Context, _ workflow.Request) (workflow.
 		w.installOutcomes++
 		w.mu.Unlock()
 	}
-	return result, nil
+	return result, w.err
 }
 
 type workerNotifier struct {
@@ -624,4 +725,33 @@ func notificationJSON(t *testing.T, media domain.Media, subtitlePath string) []b
 		t.Fatal(err)
 	}
 	return payload
+}
+
+func workerLogRecords(t *testing.T, output string) []map[string]any {
+	t.Helper()
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	records := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func findWorkerEvent(t *testing.T, records []map[string]any, event string) map[string]any {
+	t.Helper()
+	for _, record := range records {
+		if record["event"] == event {
+			return record
+		}
+	}
+	t.Fatalf("event %q not found in %#v", event, records)
+	return nil
 }
