@@ -354,6 +354,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		for tierEnd < len(eligible) && eligible[tierEnd].Score.Total == eligible[tierStart].Score.Total {
 			tierEnd++
 		}
+		result.Decisions = append(result.Decisions, Decision{Stage: "tournament_tier", Reason: fmt.Sprintf("evaluating score %d", eligible[tierStart].Score.Total)})
 		analyzedTier := make([]analyzedCandidate, 0, tierEnd-tierStart)
 		for index := tierStart; index < tierEnd; index++ {
 			if err := ctx.Err(); err != nil {
@@ -363,6 +364,9 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 			path, decisions, prepareErr := s.downloadAndSelect(ctx, request, item.Candidate, workspace, index)
 			result.Decisions = append(result.Decisions, decisions...)
 			if prepareErr != nil {
+				if err := ctx.Err(); err != nil {
+					return result, err
+				}
 				recorded, rejectionErr := s.recordCandidateRejection(ctx, request, item.Candidate, "", prepareErr)
 				if rejectionErr != nil {
 					return result, rejectionErr
@@ -376,11 +380,17 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 			downloaded := downloadedCandidate{candidate: item.Candidate, score: item.Score, priority: item.ProviderPriority, path: path}
 			analyzed, syncErr := s.analyzeCandidate(ctx, request, downloaded, installed, existing)
 			if syncErr != nil {
+				if err := ctx.Err(); err != nil {
+					return result, err
+				}
 				if err := s.handleCandidateFailure(ctx, request, item.Candidate, path, syncErr, &candidateFailures); err != nil {
 					return result, err
 				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: syncErr.Error()})
+				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_analysis", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
 				continue
+			}
+			if !analyzed.bypass {
+				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_analysis", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "solid"})
 			}
 			analyzedTier = append(analyzedTier, analyzed)
 		}
@@ -391,13 +401,29 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 			}
 			ready, syncErr := s.finalizeCandidate(ctx, request, analyzed, workspace, tierStart+index)
 			if syncErr != nil {
+				if err := ctx.Err(); err != nil {
+					return result, err
+				}
 				if err := s.handleCandidateFailure(ctx, request, analyzed.candidate, analyzed.path, syncErr, &candidateFailures); err != nil {
 					return result, err
 				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "synchronization", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: syncErr.Error()})
+				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_finalize", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
+				if index+1 < len(analyzedTier) {
+					result.Decisions = append(result.Decisions, Decision{Stage: "fallback", Reason: "next candidate in tier"})
+				}
 				continue
 			}
+			if !analyzed.bypass {
+				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_finalize", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: "solid"})
+			}
+			result.Decisions = append(result.Decisions, Decision{Stage: "early_stop", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: fmt.Sprintf("installed from score %d; lower tiers skipped", analyzed.score.Total)})
 			return s.install(ctx, request, ready, existing, installed, result)
+		}
+		if tierEnd < len(eligible) {
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			result.Decisions = append(result.Decisions, Decision{Stage: "fallback", Reason: "next score tier"})
 		}
 		tierStart = tierEnd
 	}
@@ -411,6 +437,14 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return result, nil
 	}
 	return result, errors.Join(candidateFailures...)
+}
+
+func lapseFailureDecision(failure error) string {
+	var verdict *syncer.VerdictError
+	if errors.As(failure, &verdict) {
+		return "non-solid"
+	}
+	return "error"
 }
 
 func (s *Service) handleCandidateFailure(ctx context.Context, request Request, candidate domain.Candidate, path string, failure error, candidateFailures *[]error) error {

@@ -257,6 +257,143 @@ func TestAnalyzedTierOrderingIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestTournamentAnalysisFallbackToNextScoreTier(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.ReleaseGroup = "GROUP"
+	leader := broadCandidate("leader")
+	leader.ReleaseNames = []string{"Movie.2024-GROUP"}
+	lower := broadCandidate("lower")
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{verdicts: map[string]string{"leader": "unsure"}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{lower, leader}}}, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.Repository = repository
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Candidate.ResultID != "lower" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(providerFake.downloaded, []string{"leader", "lower"}) || !slices.Equal(synchronizer.analyzed, []string{"leader", "lower"}) || !slices.Equal(synchronizer.synchronized, []string{"lower"}) || len(repository.rejections) != 1 {
+		t.Fatalf("downloads/analyzed/synchronized/rejections = %#v/%#v/%#v/%d", providerFake.downloaded, synchronizer.analyzed, synchronizer.synchronized, len(repository.rejections))
+	}
+	for _, expected := range []string{"tournament_tier", "lapse_analysis", "fallback", "early_stop"} {
+		if !hasDecisionStage(result.Decisions, expected) {
+			t.Fatalf("decisions %#v missing stage %q", result.Decisions, expected)
+		}
+	}
+}
+
+func TestTournamentSynchronizationFallbackWithinTie(t *testing.T) {
+	first := broadCandidate("first")
+	second := broadCandidate("second")
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{confidence: map[string]float64{"first": 0.9, "second": 0.8}, synchronizeErrors: map[string]error{"first": errors.New("lapse process failed")}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{first, second}}}, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.Repository = repository
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Candidate.ResultID != "second" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(synchronizer.analyzed, []string{"first", "second"}) || !slices.Equal(synchronizer.synchronized, []string{"first", "second"}) || len(repository.rejections) != 0 {
+		t.Fatalf("analyzed/synchronized/rejections = %#v/%#v/%d", synchronizer.analyzed, synchronizer.synchronized, len(repository.rejections))
+	}
+}
+
+func TestTournamentSynchronizationFallbackToLowerTier(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.ReleaseGroup = "GROUP"
+	first := broadCandidate("first")
+	first.ReleaseNames = []string{"Movie.2024-GROUP"}
+	second := broadCandidate("second")
+	second.ReleaseNames = []string{"Movie.2024-GROUP"}
+	lower := broadCandidate("lower")
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{synchronizeErrors: map[string]error{"first": errors.New("first failed"), "second": errors.New("second failed")}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{first, second, lower}}}, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.Repository = repository
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Candidate.ResultID != "lower" || len(repository.rejections) != 0 {
+		t.Fatalf("Run() = %#v, %v, rejections=%#v", result, err, repository.rejections)
+	}
+}
+
+func TestTournamentTransientAnalysisFallbackDoesNotBlacklist(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.ReleaseGroup = "GROUP"
+	leader := broadCandidate("leader")
+	leader.ReleaseNames = []string{"Movie.2024-GROUP"}
+	lower := broadCandidate("lower")
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{analyzeErrors: map[string]error{"leader": errors.New("temporary lapse failure")}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{leader, lower}}}, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.Repository = repository
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Candidate.ResultID != "lower" || len(repository.rejections) != 0 {
+		t.Fatalf("Run() = %#v, %v, rejections=%#v", result, err, repository.rejections)
+	}
+}
+
+func TestTournamentAllTransientFallbackReturnsError(t *testing.T) {
+	one, two := broadCandidate("one"), broadCandidate("two")
+	synchronizer := &fakeSynchronizer{analyzeErrors: map[string]error{"one": errors.New("one failed"), "two": errors.New("two failed")}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{one, two}}}, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	service.Repository = repository
+	if _, err := service.Run(context.Background(), serviceRequest(t)); err == nil || len(repository.rejections) != 0 {
+		t.Fatalf("Run() error/rejections = %v/%#v", err, repository.rejections)
+	}
+}
+
+func TestTournamentStopsOnCancellation(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.ReleaseGroup = "GROUP"
+	leader := broadCandidate("leader")
+	leader.ReleaseNames = []string{"Movie.2024-GROUP"}
+	lower := broadCandidate("lower")
+	ctx, cancel := context.WithCancel(context.Background())
+	providerFake := &fakeProvider{id: "provider"}
+	synchronizer := &fakeSynchronizer{analyzeHook: func(candidate domain.Candidate) {
+		if candidate.ResultID == "leader" {
+			cancel()
+		}
+	}}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{leader, lower}}}, nil, synchronizer, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	_, err := service.Run(ctx, request)
+	if !errors.Is(err, context.Canceled) || !slices.Equal(providerFake.downloaded, []string{"leader"}) || len(synchronizer.synchronized) != 0 {
+		t.Fatalf("Run() = %v, downloads=%#v synchronized=%#v", err, providerFake.downloaded, synchronizer.synchronized)
+	}
+}
+
+func hasDecisionStage(decisions []Decision, stage string) bool {
+	for _, decision := range decisions {
+		if decision.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
+func decisionWithStage(decisions []Decision, stage string) (Decision, bool) {
+	for _, decision := range decisions {
+		if decision.Stage == stage {
+			return decision, true
+		}
+	}
+	return Decision{}, false
+}
+
 func analyzedTestCandidate(providerID, resultID string, priority int, rating, confidence float64) analyzedCandidate {
 	return analyzedCandidate{downloadedCandidate: downloadedCandidate{candidate: domain.Candidate{ProviderID: providerID, ResultID: resultID, Rating: rating}, priority: priority}, analysis: domain.SyncResult{Confidence: confidence}}
 }
@@ -622,7 +759,7 @@ func TestServiceTreatsPackCacheWriteAsBestEffort(t *testing.T) {
 	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "pack" || cache.puts != 1 {
 		t.Fatalf("Run() = %#v, %v, cache puts=%d", result, err, cache.puts)
 	}
-	if len(result.Decisions) != 1 || result.Decisions[0].Stage != "pack_cache" || !strings.Contains(result.Decisions[0].Reason, "cache unavailable") {
+	if decision, found := decisionWithStage(result.Decisions, "pack_cache"); !found || !strings.Contains(decision.Reason, "cache unavailable") {
 		t.Fatalf("cache decision = %#v", result.Decisions)
 	}
 }
@@ -635,7 +772,7 @@ func TestServiceBoundsProviderDownloadEvenWhenProviderIgnoresWriteError(t *testi
 	if err != nil || result.Outcome != OutcomeRejected {
 		t.Fatalf("Run() = %#v, %v", result, err)
 	}
-	if len(result.Decisions) != 1 || !strings.Contains(result.Decisions[0].Reason, "exceeds") {
+	if decision, found := decisionWithStage(result.Decisions, "candidate"); !found || !strings.Contains(decision.Reason, "exceeds") {
 		t.Fatalf("download decision = %#v", result.Decisions)
 	}
 }
@@ -848,20 +985,32 @@ func (zeroReader) Read(payload []byte) (int, error) {
 }
 
 type fakeSynchronizer struct {
-	confidence       map[string]float64
-	verdicts         map[string]string
-	analyzeErr       error
-	rejectText       string
-	rejectAll        bool
-	analyzeCalls     int
-	synchronizeCalls int
-	analyzed         []string
-	synchronized     []string
+	confidence        map[string]float64
+	verdicts          map[string]string
+	analyzeErr        error
+	rejectText        string
+	rejectAll         bool
+	analyzeCalls      int
+	synchronizeCalls  int
+	analyzed          []string
+	synchronized      []string
+	analyzeErrors     map[string]error
+	synchronizeErrors map[string]error
+	analyzeHook       func(domain.Candidate)
 }
 
-func (f *fakeSynchronizer) AnalyzeCandidate(_ context.Context, candidate domain.Candidate, _ string, subtitle string) (domain.SyncResult, error) {
+func (f *fakeSynchronizer) AnalyzeCandidate(ctx context.Context, candidate domain.Candidate, _ string, subtitle string) (domain.SyncResult, error) {
 	f.analyzeCalls++
 	f.analyzed = append(f.analyzed, candidate.ResultID)
+	if f.analyzeHook != nil {
+		f.analyzeHook(candidate)
+	}
+	if err := ctx.Err(); err != nil {
+		return domain.SyncResult{}, err
+	}
+	if err := f.analyzeErrors[candidate.ResultID]; err != nil {
+		return domain.SyncResult{}, err
+	}
 	if f.analyzeErr != nil {
 		return domain.SyncResult{}, f.analyzeErr
 	}
@@ -878,6 +1027,9 @@ func (f *fakeSynchronizer) AnalyzeCandidate(_ context.Context, candidate domain.
 func (f *fakeSynchronizer) SynchronizeCandidate(_ context.Context, candidate domain.Candidate, _ string, input, output string) (domain.SyncResult, error) {
 	f.synchronizeCalls++
 	f.synchronized = append(f.synchronized, candidate.ResultID)
+	if err := f.synchronizeErrors[candidate.ResultID]; err != nil {
+		return domain.SyncResult{}, err
+	}
 	payload, err := os.ReadFile(input)
 	if err != nil {
 		return domain.SyncResult{}, err
