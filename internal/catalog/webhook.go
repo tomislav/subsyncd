@@ -116,6 +116,11 @@ type MediaEventStore interface {
 	ApplyMediaEvent(context.Context, store.MediaEventMutation) (bool, error)
 }
 
+type WebhookResult struct {
+	EventCount   int
+	AppliedCount int
+}
+
 // WebhookHandler normalizes an Arr payload, hydrates current media metadata for
 // imports and renames, and atomically persists each resulting state change.
 type WebhookHandler struct {
@@ -128,11 +133,12 @@ type WebhookHandler struct {
 	OnApplied    func()
 }
 
-func (h WebhookHandler) Handle(ctx context.Context, body []byte) error {
+func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult, error) {
 	events, err := NormalizeWebhook(h.Instance, h.InstanceType, body)
 	if err != nil {
-		return err
+		return WebhookResult{}, err
 	}
+	result := WebhookResult{EventCount: len(events)}
 	appliedAny := false
 	defer func() {
 		if appliedAny && h.OnApplied != nil {
@@ -151,15 +157,18 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) error {
 		if event.Type != EventDelete {
 			media, err := h.Catalog.GetMedia(ctx, event.Ref)
 			if err != nil {
-				return fmt.Errorf("hydrate %s event %s: %w", h.Instance, event.EventID, err)
+				return result, fmt.Errorf("hydrate %s event %s: %w", h.Instance, event.EventID, err)
 			}
 			mutation.Media = media
 		}
 		applied, err := h.Store.ApplyMediaEvent(ctx, mutation)
 		if err != nil {
-			return fmt.Errorf("apply %s event %s: %w", h.Instance, event.EventID, err)
+			return result, fmt.Errorf("apply %s event %s: %w", h.Instance, event.EventID, err)
 		}
 		appliedAny = appliedAny || applied
+		if applied {
+			result.AppliedCount++
+		}
 	}
-	return nil
+	return result, nil
 }

@@ -139,14 +139,19 @@ func TestWebhookHandlerHydratesImportsAndAppliesDeletesWithoutHydration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.Handle(context.Background(), download); err != nil {
+	result, err := handler.Handle(context.Background(), download)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.EventCount != 1 || result.AppliedCount != 1 {
+		t.Fatalf("download result = %#v", result)
 	}
 	deleted, err := os.ReadFile(filepath.Join("testdata", "sonarr_delete.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.Handle(context.Background(), deleted); err != nil {
+	result, err = handler.Handle(context.Background(), deleted)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if catalog.calls != 1 {
@@ -170,17 +175,29 @@ func TestWebhookHandlerOnAppliedTracksCommittedWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.Handle(context.Background(), body); err != nil {
+	result, err := handler.Handle(context.Background(), body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.Handle(context.Background(), body); err != nil {
+	if result.EventCount != 1 || result.AppliedCount != 1 {
+		t.Fatalf("first webhook result = %#v", result)
+	}
+	result, err = handler.Handle(context.Background(), body)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.EventCount != 1 || result.AppliedCount != 0 {
+		t.Fatalf("duplicate webhook result = %#v", result)
 	}
 	if wakes != 1 {
 		t.Fatalf("wake callbacks = %d, want 1", wakes)
 	}
-	if err := handler.Handle(context.Background(), []byte(`{"eventType":"Test"}`)); !errors.Is(err, ErrIgnoredEvent) {
+	result, err = handler.Handle(context.Background(), []byte(`{"eventType":"Test"}`))
+	if !errors.Is(err, ErrIgnoredEvent) {
 		t.Fatalf("test event error = %v", err)
+	}
+	if result.EventCount != 0 || result.AppliedCount != 0 {
+		t.Fatalf("ignored webhook result = %#v", result)
 	}
 	if wakes != 1 {
 		t.Fatalf("ignored event changed wake callbacks to %d", wakes)
@@ -194,8 +211,12 @@ func TestWebhookHandlerOnAppliedSurvivesLaterFileFailure(t *testing.T) {
 	wakes := 0
 	handler := WebhookHandler{Instance: "main", InstanceType: "sonarr", Catalog: catalog, Store: eventStore, Languages: []domain.Language{"hr"}, Now: func() time.Time { return now }, OnApplied: func() { wakes++ }}
 	body := []byte(`{"eventType":"Download","episodeFiles":[{"id":1001,"path":"/tv/one.mkv"},{"id":1002,"path":"/tv/two.mkv"}]}`)
-	if err := handler.Handle(context.Background(), body); err == nil {
+	result, err := handler.Handle(context.Background(), body)
+	if err == nil {
 		t.Fatal("Handle() error = nil")
+	}
+	if result.EventCount != 2 || result.AppliedCount != 1 {
+		t.Fatalf("partial webhook result = %#v", result)
 	}
 	if wakes != 1 {
 		t.Fatalf("wake callbacks = %d, want 1 after partial commit", wakes)

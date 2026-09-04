@@ -44,7 +44,6 @@ type Runner interface {
 }
 
 type Options struct {
-	Logger         *slog.Logger
 	Events         *observability.Emitter
 	Clock          provider.Clock
 	HTTPClient     *http.Client
@@ -73,7 +72,6 @@ type App struct {
 	Worker      Runner
 	Handler     http.Handler
 	Listener    net.Listener
-	Logger      *slog.Logger
 	Events      *observability.Emitter
 	Command     string
 	Clock       provider.Clock
@@ -163,10 +161,6 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	clock := options.Clock
 	if clock == nil {
 		clock = provider.SystemClock{}
-	}
-	logger := options.Logger
-	if logger == nil {
-		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
 	events := options.Events
 	if events == nil {
@@ -262,8 +256,8 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		}}
 	}
 
-	application := &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Logger: logger, Events: events, Clock: clock}
-	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Logger: logger}.Handler()
+	application := &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}
+	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	return application, nil
 }
 
