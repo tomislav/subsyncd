@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: conventional review repairs executing inline; Tasks 1–5 complete
-- Next task: surface incomplete installation rollback failures
+- Current task: conventional review repairs executing inline; Tasks 1–6 complete
+- Next task: integration coverage, durable operator documentation, and final verification
 - Latest follow-up: typed Arr reconciliation, fail-closed multi-episode indexing, bounded forced shutdown, and visible rollback failures
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 6 — visible installation rollback failures
+
+- Installer rollback now joins the initiating failure with removal, restoration, directory-sync, or unused-backup cleanup failures instead of discarding them.
+- A first-install sidecar that cannot be removed is reported explicitly and remains protected as untracked inventory. A failed managed replacement restoration retains its last known-good rollback copy rather than deleting it.
+- Joined rollback failures remain ordinary technical workflow errors; they do not produce `rejected` outcomes or candidate quarantine entries.
+- Verification: the focused first-install test reproduced the swallowed removal failure; all three restoration/classification tests and `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/workflow -race -count=1` plus `git diff --check` pass. Next task: integration and durable documentation.
 
 ### Conventional repairs Task 5 — bounded forced shutdown
 

@@ -52,6 +52,22 @@ func TestServiceUsesRefreshedFilesystemFingerprintForProviderSearch(t *testing.T
 	}
 }
 
+func TestServiceTreatsInstallationRollbackFailureAsTechnical(t *testing.T) {
+	request := serviceRequest(t)
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{exactCandidate("exact")}}}
+	providerFake := &fakeProvider{id: "provider"}
+	installer := &fakeInstaller{err: errors.Join(errors.New("database unavailable"), errors.New("remove newly published subtitle: directory not empty"))}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, installer)
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	result, err := service.Run(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "remove newly published subtitle") {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if result.Outcome == OutcomeRejected || len(service.Repository.(*workflowRepository).rejections) != 0 {
+		t.Fatalf("rollback failure outcome/rejections = %q/%#v", result.Outcome, service.Repository.(*workflowRepository).rejections)
+	}
+}
+
 func TestServiceHonorsHearingImpairedInventoryPolicy(t *testing.T) {
 	current := inventory.Inventory{Tracks: []inventory.Track{{Language: "en", Embedded: true, SDH: true}}}
 

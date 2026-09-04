@@ -153,21 +153,30 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	committedFile := false
 	restore := func(cause error) (store.Installation, error) {
+		restoreErrors := []error{cause}
 		if committedFile {
 			if rollbackPath == "" {
-				_ = os.Remove(destination)
+				if removeErr := os.Remove(destination); removeErr != nil {
+					restoreErrors = append(restoreErrors, fmt.Errorf("remove newly published subtitle: %w", removeErr))
+				} else if syncErr := syncDirectory(parent); syncErr != nil {
+					restoreErrors = append(restoreErrors, fmt.Errorf("sync subtitle directory after rollback: %w", syncErr))
+				}
 			} else if renameErr := os.Rename(rollbackPath, destination); renameErr != nil {
-				return store.Installation{}, fmt.Errorf("%v; restore previous subtitle: %w", cause, renameErr)
+				restoreErrors = append(restoreErrors, fmt.Errorf("restore previous subtitle: %w", renameErr))
 			} else {
 				rollbackPath = ""
+				if syncErr := syncDirectory(parent); syncErr != nil {
+					restoreErrors = append(restoreErrors, fmt.Errorf("sync subtitle directory after rollback: %w", syncErr))
+				}
 			}
-			_ = syncDirectory(parent)
 		}
-		if rollbackPath != "" {
-			_ = os.Remove(rollbackPath)
+		if rollbackPath != "" && !committedFile {
+			if removeErr := os.Remove(rollbackPath); removeErr != nil {
+				restoreErrors = append(restoreErrors, fmt.Errorf("remove unused rollback subtitle: %w", removeErr))
+			}
 		}
 		_ = os.Remove(stagedPath)
-		return store.Installation{}, cause
+		return store.Installation{}, errors.Join(restoreErrors...)
 	}
 	if err := verifyReplacementUnchanged(destination, existing, replacing); err != nil {
 		return restore(err)

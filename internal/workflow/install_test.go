@@ -124,6 +124,79 @@ func TestInstallerRestoresManagedSubtitleAcrossFaults(t *testing.T) {
 	}
 }
 
+func TestInstallReportsFirstInstallRemovalFailure(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "Movie.en.srt")
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), installSRT)
+	repository := &installationRepository{}
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, Fault: func(stage InstallStage) error {
+		if stage != StageDatabase {
+			return nil
+		}
+		if err := os.Remove(destination); err != nil {
+			return err
+		}
+		if err := os.Mkdir(destination, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(destination, "blocker"), []byte("x"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("database unavailable")
+	}}
+	_, err := installer.Install(context.Background(), installRequest(source, destination))
+	if err == nil || !strings.Contains(err.Error(), "database unavailable") || !strings.Contains(err.Error(), "remove newly published subtitle") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if repository.recordCalls != 0 {
+		t.Fatalf("record calls = %d, want 0", repository.recordCalls)
+	}
+}
+
+func TestInstallPreservesRollbackWhenRestoreFails(t *testing.T) {
+	root := t.TempDir()
+	destination := writeInstallFile(t, filepath.Join(root, "Movie.en.srt"), installSRT)
+	repository := &installationRepository{found: true, installation: store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(installSRT))}}
+	replacement := strings.Replace(installSRT, "Hello", "Replacement", 1)
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), replacement)
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, Fault: func(stage InstallStage) error {
+		if stage != StageDatabase {
+			return nil
+		}
+		if err := os.Remove(destination); err != nil {
+			return err
+		}
+		if err := os.Mkdir(destination, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(destination, "blocker"), []byte("x"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("database unavailable")
+	}}
+	_, err := installer.Install(context.Background(), installRequest(source, destination))
+	if err == nil || !strings.Contains(err.Error(), "database unavailable") || !strings.Contains(err.Error(), "restore previous subtitle") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rollback string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".subsyncd-rollback-") {
+			rollback = filepath.Join(root, entry.Name())
+		}
+	}
+	if rollback == "" {
+		t.Fatal("last known-good rollback was removed")
+	}
+	payload, err := os.ReadFile(rollback)
+	if err != nil || string(payload) != installSRT {
+		t.Fatalf("rollback payload = %q, %v", payload, err)
+	}
+}
+
 func TestInstallerCleanupFailureDoesNotUndoCommittedReplacement(t *testing.T) {
 	root := t.TempDir()
 	destination := writeInstallFile(t, filepath.Join(root, "Movie.en.srt"), installSRT)
