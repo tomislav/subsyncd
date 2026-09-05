@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish and deploy the Stage 3 outside-scope webhook boundary, then configure a real scoped Radarr webhook trial
-- Next safe action: wait for the immutable multiarch image, deploy it to the two-movie canary, install the Radarr connection, and verify one mapped plus one outside-scope delivery
-- Latest follow-up: commit `629a050` makes typed outside-scope import/rename webhooks ignored successes
+- Current task: observe the first natural six-hour reconciliation after the scoped real-webhook Stage 3 deployment
+- Next safe action: after that cycle passes, explicitly approve one exact Sonarr media mapping or broader rollout; do not broaden automatically
+- Latest follow-up: Stage 3 mapped, duplicate, and actual outside-scope Radarr webhook deliveries passed on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Hades Stage 3 Task 2 — direct image and real Radarr webhook
+
+- GitHub `main` was pushed through `4ddbcaf`; workflow `33952193028` passed its Verify job and began multiarch publication, but deployment did not wait for it. A fresh local arm64 image was built from the same commit, returned `subsyncd sha-4ddbcaf`, and was streamed to Hades as `subsyncd:hades-stage3-4ddbcaf` (`sha256:0f2ead23eea7daa98628ce51f80c52ea61acf43674abd5ec8c22a74391443e3f`). Rollbacks are `compose.yml.before-stage3-4ddbcaf` and `data.before-stage3-4ddbcaf`.
+- Radarr connection ID `8` (`subsyncd daemon canary`) enables download/upgrade, rename, and movie-file delete events. Its connection test returned 200 and subsyncd ignored the test payload with HTTP 204.
+- A mapped file-1440 rename applied once, woke one import-priority job, and completed embedded `satisfied` in 6 ms. Exact redelivery was a 204 duplicate with no second job. One payload derived in memory from an actual current unmapped movie returned ignored 204 with no event/media/search mutation or wake.
+- Final state remained two media rows, two completed searches, five audit events, zero candidates/installations/provider cache/hashes, healthy, and ready. The real connection and canary remain active pending one natural six-hour reconciliation; mappings and every other Hades service remain unchanged.
 
 ### Hades Stage 3 Task 1 — safe outside-scope webhooks
 
