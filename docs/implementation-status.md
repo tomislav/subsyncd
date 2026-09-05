@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: human-readable media identity in structured logs is implemented and verified locally
-- Next safe action after GitHub publication: rotate the affected SubDL key, then deploy the immutable image only after separate approval
-- Latest follow-up: implementation commit `5f03cf4` has not been deployed; no subsyncd container is running on Hades
+- Current task: the local production-access runbook convention is installed and verified
+- Next safe action: push the tracked runbook convention when requested; production deployment still requires separate approval and rotation of the affected SubDL key
+- Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Local production-access runbook convention
+
+- Commit `7338264` adds the exact Git ignore rule for `.agents/production.local.md`, a sanitized tracked `.agents/production.example.md` schema, and an `AGENTS.md` instruction to read the local file before production debugging or deployment when present.
+- The ignored local runbook records the Hades SSH alias, Arcane project and Compose paths, `/opt/subsyncd` configuration/data locations, service exposure, bounded read-only diagnostic commands, and explicit approval boundaries. It contains no credentials or `.env` values and is mode `0600`.
+- Read-only discovery confirmed Arcane project `subsyncd` at `/var/lib/docker/volumes/arcane_arcane-data/_data/projects/subsyncd`, with runtime configuration `/opt/subsyncd/config.yaml` and data `/opt/subsyncd/data`. At observation time, Arcane resolved the service but no production container existed; agents must recheck time-sensitive state.
+- Verification passed `git check-ignore -v .agents/production.local.md`, the local mode check, `git diff --check`, and focused credential-pattern scanning. No Hades state was changed and the ignored local file was not staged or committed.
 
 ### Human-readable media identity in structured logs
 
