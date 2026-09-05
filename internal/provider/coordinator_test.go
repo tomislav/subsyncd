@@ -65,18 +65,36 @@ func (c *memoryCache) PutProviderCache(_ context.Context, entry store.ProviderCa
 	return nil
 }
 
-func TestCoordinatorRunsExactProvidersSequentiallyAndStopsOnExactResult(t *testing.T) {
-	first := &fakeProvider{id: "first", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{SearchExactHash: nil}}
-	second := &fakeProvider{id: "second", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{SearchExactHash: {{ProviderID: "second", ResultID: "exact", ExactHash: true}}}}
-	third := &fakeProvider{id: "third", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{SearchExactHash: {{ProviderID: "third", ResultID: "never", ExactHash: true}}}}
-	coordinator := newTestCoordinator(first, second, third)
-
-	result := coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
-	if len(result.Candidates) != 1 || result.Candidates[0].ResultID != "exact" {
-		t.Fatalf("candidates = %#v", result.Candidates)
+func TestCoordinatorExactModeReturnsEveryExactCandidateInProviderOrder(t *testing.T) {
+	first := &fakeProvider{id: "first", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{
+		SearchExactHash: {
+			{ProviderID: "first", ResultID: "not-exact"},
+			{ProviderID: "first", ResultID: "exact-a", ExactHash: true},
+		},
+	}}
+	second := &fakeProvider{id: "second", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{
+		SearchExactHash: {{ProviderID: "second", ResultID: "exact-b", ExactHash: true}},
+	}}
+	result := newTestCoordinator(first, second).Search(context.Background(), SearchQuery{
+		Media: testQueryMedia(), Language: "en", Mode: SearchExactHash,
+	})
+	if got := candidateIDs(result.Candidates); !slices.Equal(got, []string{"exact-a", "exact-b"}) {
+		t.Fatalf("exact candidates = %#v", got)
 	}
-	if len(first.calls) != 1 || len(second.calls) != 1 || len(third.calls) != 0 {
-		t.Fatalf("calls = %#v / %#v / %#v", first.calls, second.calls, third.calls)
+	if !slices.Equal(first.calls, []SearchMode{SearchExactHash}) || !slices.Equal(second.calls, []SearchMode{SearchExactHash}) {
+		t.Fatalf("calls = %#v / %#v", first.calls, second.calls)
+	}
+}
+
+func TestCoordinatorBroadModeNeverCallsExactSearch(t *testing.T) {
+	item := &fakeProvider{id: "only", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{
+		SearchBroad: {{ProviderID: "only", ResultID: "broad"}},
+	}}
+	result := newTestCoordinator(item).Search(context.Background(), SearchQuery{
+		Media: testQueryMedia(), Language: "en", Mode: SearchBroad,
+	})
+	if len(result.Candidates) != 1 || !slices.Equal(item.calls, []SearchMode{SearchBroad}) {
+		t.Fatalf("result/calls = %#v / %#v", result, item.calls)
 	}
 }
 
@@ -88,7 +106,7 @@ func TestCoordinatorRunsBroadSearchesConcurrentlyAndIsolatesErrors(t *testing.T)
 	coordinator := newTestCoordinator(first, second)
 	done := make(chan SearchResult, 1)
 	go func() {
-		done <- coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
+		done <- coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad})
 	}()
 	for range 2 {
 		<-started
@@ -100,23 +118,10 @@ func TestCoordinatorRunsBroadSearchesConcurrentlyAndIsolatesErrors(t *testing.T)
 	}
 }
 
-func TestCoordinatorClearsExactPhaseFailureAfterSuccessfulBroadSearch(t *testing.T) {
-	provider := &fakeProvider{
-		id:           "only",
-		capabilities: Capabilities{ExactFileHash: true},
-		candidates:   map[SearchMode][]domain.Candidate{SearchBroad: {}},
-		err:          map[SearchMode]error{SearchExactHash: context.DeadlineExceeded},
-	}
-	result := newTestCoordinator(provider).Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
-	if len(result.Candidates) != 0 || len(result.Errors) != 0 {
-		t.Fatalf("successful broad phase retained stale exact failure: %#v", result)
-	}
-}
-
 func TestCoordinatorCachesNormalizedResultsForSixHours(t *testing.T) {
 	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "opaque-id"}}}}
 	coordinator := newTestCoordinator(provider)
-	query := SearchQuery{Media: testQueryMedia(), Language: "en"}
+	query := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad}
 	first := coordinator.Search(context.Background(), query)
 	second := coordinator.Search(context.Background(), query)
 	if len(first.Candidates) != 1 || len(second.Candidates) != 1 || len(provider.calls) != 1 {
@@ -136,7 +141,7 @@ func TestCoordinatorDeduplicatesStableCandidateIdentityBeforeCaching(t *testing.
 		{ProviderID: "only", ResultID: "same", Language: "hr", Kind: domain.MediaMovie, Title: "Conflicting title", Year: 1999, Season: 9, Episode: 8, AbsoluteEpisode: 77, ExternalIDs: domain.ExternalIDs{IMDb: "tt999", TMDB: 999, TVDB: 999}},
 	}}}
 	coordinator := newTestCoordinator(provider)
-	query := SearchQuery{Media: testQueryMedia(), Language: "en"}
+	query := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad}
 
 	first := coordinator.Search(context.Background(), query)
 	second := coordinator.Search(context.Background(), query)
@@ -185,7 +190,7 @@ func TestCoordinatorDeduplicatesLegacyCachedCandidates(t *testing.T) {
 func TestCoordinatorNeverCachesDownloadURLs(t *testing.T) {
 	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "https://signed.example/subtitle?token=secret"}}}}
 	coordinator := newTestCoordinator(provider)
-	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
+	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad})
 	cache := coordinator.Cache.(*memoryCache)
 	for _, entry := range cache.entries {
 		if strings.Contains(string(entry.ResultsJSON), "signed.example") || strings.Contains(string(entry.ResultsJSON), "secret") {
@@ -205,7 +210,7 @@ func TestCoordinatorNeverCachesCredentialBearingCandidateIDs(t *testing.T) {
 		}}},
 	}}}}
 	coordinator := newTestCoordinator(provider)
-	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
+	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad})
 	cache := coordinator.Cache.(*memoryCache)
 	for _, entry := range cache.entries {
 		if strings.Contains(string(entry.ResultsJSON), "api_key") || strings.Contains(string(entry.ResultsJSON), "secret") || strings.Contains(string(entry.ResultsJSON), "signed.example") {
@@ -227,7 +232,7 @@ func TestCoordinatorLogsSearchAttemptsAndCacheStateWithoutMediaDetails(t *testin
 	item := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "https://signed.example/subtitle?token=secret"}}}}
 	coordinator := newTestCoordinator(item)
 	coordinator.Events = events
-	query := SearchQuery{Media: testQueryMedia(), Language: "en"}
+	query := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad}
 
 	coordinator.Search(context.Background(), query)
 	coordinator.Search(context.Background(), query)
@@ -264,7 +269,7 @@ func TestCoordinatorClassifiesCanceledSearchAsWarning(t *testing.T) {
 	coordinator := newTestCoordinator(item)
 	coordinator.Events = events
 
-	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
+	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad})
 
 	completed := providerEvents(providerLogRecords(t, logs.String()), "provider.search_completed")
 	if len(completed) != 1 || completed[0]["outcome"] != "canceled" || completed[0]["level"] != "warn" {
@@ -279,4 +284,12 @@ func newTestCoordinator(providers ...Provider) *Coordinator {
 
 func testQueryMedia() domain.Media {
 	return domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaEpisode, FileID: 42}, Fingerprint: domain.MediaFingerprint{Path: "/media/show.mkv", FileID: 42, Size: 100, ModTime: time.Unix(0, 1)}, ReleaseName: "Show.S01E01.1080p.WEB-DL-GROUP"}
+}
+
+func candidateIDs(candidates []domain.Candidate) []string {
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.ResultID)
+	}
+	return ids
 }

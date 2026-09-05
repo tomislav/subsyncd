@@ -40,26 +40,38 @@ type SearchResult struct {
 }
 
 func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResult {
+	switch query.Mode {
+	case SearchExactHash:
+		return c.searchExact(ctx, query)
+	case SearchBroad:
+		return c.searchBroad(ctx, query)
+	default:
+		return SearchResult{Errors: map[string]error{"coordinator": fmt.Errorf("unsupported search mode %q", query.Mode)}}
+	}
+}
+
+func (c *Coordinator) searchExact(ctx context.Context, query SearchQuery) SearchResult {
 	result := SearchResult{Errors: make(map[string]error)}
-	for _, provider := range c.Providers {
-		if !provider.Capabilities().ExactFileHash || !provider.SupportsLanguage(query.Language) {
+	for _, item := range c.Providers {
+		if !item.Capabilities().ExactFileHash || !item.SupportsLanguage(query.Language) {
 			continue
 		}
-		exactQuery := query
-		exactQuery.Mode = SearchExactHash
-		candidates, err := c.searchProvider(ctx, provider, exactQuery)
+		candidates, err := c.searchProvider(ctx, item, query)
 		if err != nil {
-			result.Errors[provider.ID()] = err
+			result.Errors[item.ID()] = err
 			continue
 		}
 		for _, candidate := range candidates {
 			if candidate.ExactHash {
-				result.Candidates = []domain.Candidate{candidate}
-				return result
+				result.Candidates = append(result.Candidates, candidate)
 			}
 		}
 	}
+	return result
+}
 
+func (c *Coordinator) searchBroad(ctx context.Context, query SearchQuery) SearchResult {
+	result := SearchResult{Errors: make(map[string]error)}
 	type broadResult struct {
 		index      int
 		providerID string
@@ -74,9 +86,7 @@ func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResul
 		}
 		active++
 		go func(index int, provider Provider) {
-			broadQuery := query
-			broadQuery.Mode = SearchBroad
-			candidates, err := c.searchProvider(ctx, provider, broadQuery)
+			candidates, err := c.searchProvider(ctx, provider, query)
 			channel <- broadResult{index: index, providerID: provider.ID(), candidates: candidates, err: err}
 		}(index, provider)
 	}

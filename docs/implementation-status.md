@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: the codebase correctness-repair design and implementation plan are approved and committed
-- Next safe action: choose subagent-driven or inline execution, then implement Task 1 with strict red-green-refactor TDD; production remains out of scope
+- Current task: codebase correctness-repair Task 1 (explicit provider search modes) is implemented and committed
+- Next safe action: implement Task 2 (exact-first workflow fallback); production remains out of scope
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 1 — explicit provider search modes
+
+- `Coordinator.Search` now accepts only `SearchExactHash` or `SearchBroad` and dispatches exactly one requested mode. Unsupported modes return a coordinator error without invoking providers.
+- Exact mode runs eligible providers sequentially in configured order, retains every candidate marked `ExactHash`, and records provider errors. Broad mode retains concurrent provider calls and configured provider ordering while forwarding the requested mode unchanged.
+- Focused RED/GREEN command: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/provider -race -count=1 -run 'TestCoordinator(ExactModeReturnsEveryExactCandidateInProviderOrder|BroadModeNeverCallsExactSearch)'`.
+- Full provider verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/provider/... -race -count=1`.
+- Next task: exact-first workflow fallback after exact-mode exhaustion.
 
 ### Codebase correctness-repair design
 
