@@ -8,7 +8,8 @@ Resolved build and runtime components:
 
 | Component | Resolved version |
 | --- | --- |
-| Go toolchain | 1.27.0 (`go 1.27`) |
+| Go toolchain | 1.27.1 (`go 1.27.1`) |
+| Arr API client | `github.com/cplieger/arrapi/v2` v2.0.5 |
 | Runtime base | Debian 13.2 slim, glibc 2.41-12 |
 | FFmpeg / FFprobe | 7.1.5-0+deb13u1 |
 | LAPSE release assets | v2.0.5; the bundled executable reports `2.0.0` |
@@ -36,6 +37,12 @@ Verification passed:
 - complete Go module graph inspection with no Bazarr module/runtime dependency
 
 The attempted linux/amd64 smoke build on this arm64 host reached the amd64 Go toolchain but its legacy Docker/QEMU environment crashed inside `go mod download`. The amd64 LAPSE archive itself was downloaded and checksum-verified. Run a native amd64 or BuildKit/buildx CI build before publishing the amd64 image.
+
+## Stable Arr reconciliation dependency boundary — 2026-09-05
+
+The pending release pins `github.com/cplieger/arrapi/v2` v2.0.5 and Go 1.27.1. Arrapi is private to the catalog package and will own bounded, retried history/current-entity requests; subsyncd's existing hardened detail client remains temporarily for metadata that scoring and provenance require.
+
+Arrapi retry diagnostics pass through a subsyncd-owned `slog` handler that discards every upstream message, attribute, and group. It emits only `arr.request_retry` or `arr.request_retries_exhausted` with the configured instance. Returned errors retain bounded operation, status, kind, and retryability fields without response bodies, request paths, URLs, API keys, or media paths. Client construction remains offline and accepts reverse-proxy base paths.
 
 ## Rootless identity defaults — 2026-09-04
 

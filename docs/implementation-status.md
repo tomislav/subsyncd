@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: arrapi stable-identity reconciliation implementation planning
-- Next task: choose inline or subagent-driven execution, then execute the approved plan test-first
-- Latest follow-up: approved the written design and created a resumable seven-task implementation plan
-- Runtime module: `subsyncd` on Go 1.27
+- Current task: arrapi stable-identity reconciliation implementation
+- Next task: persist stable Arr entity identity and upgrade rows in place (Task 2)
+- Latest follow-up: Task 1 established the pinned arrapi client and privacy boundary
+- Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Arrapi stable-identity reconciliation Task 1 — bounded client boundary
+
+- Pinned `github.com/cplieger/arrapi/v2` v2.0.5 and aligned the module, Docker builder, and GitHub verification job on Go 1.27.1.
+- Added private Sonarr/Radarr interfaces and offline constructors in `internal/catalog`; arrapi concrete types do not escape into domain, store, workflow, provider, or application interfaces.
+- Added a privacy boundary for arrapi retries and failures. Retry logging discards upstream messages, attributes, and groups and emits only bounded catalog events plus instance identity. Safe errors expose only instance, operation, failure class, status, and retryability.
+- TDD evidence: the focused test first failed because arrapi and the private constructors were absent. Verification passed with the focused catalog race test, exact module-version inspection (`github.com/cplieger/arrapi/v2 v2.0.5`), and `git diff --check`.
+- Next task: migration 010 and entity-first persistence, including upgrade-in-place, legacy adoption, conflict rejection, and lease/rerun preservation.
 
 ### Follow-up — arrapi stable-identity reconciliation design
 
