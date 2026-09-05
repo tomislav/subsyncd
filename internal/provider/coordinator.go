@@ -19,7 +19,7 @@ import (
 
 const (
 	searchCacheTTL                  = 6 * time.Hour
-	normalizedCandidateCacheVersion = "candidate-v3"
+	normalizedCandidateCacheVersion = "candidate-v4"
 )
 
 type SearchCache interface {

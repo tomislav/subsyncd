@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: all four scoring-review findings and the related target-source alias mismatch are repaired and locally verified
-- Next safe action: push the verified scoring repair as authorized; production deployment still requires a separate explicit request
-- Latest follow-up: alternative release evidence, SubDL identity/deduplication, and conservative catalog streaming-service enrichment passed race tests, vet, tagged E2E, and independent code review
+- Current task: explicit OpenSubtitles AI and machine translation exclusions are implemented and locally verified
+- Next safe action: push the verified translation exclusion repair as authorized; production deployment still requires a separate explicit request
+- Latest follow-up: exact and broad OpenSubtitles requests explicitly exclude both translation categories on every page; pre-policy search caches are invalidated
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### OpenSubtitles translation exclusions — 2026-09-05
+
+- Commit: `fix: exclude AI and machine translated OpenSubtitles results` (this commit, based on `5865d09`). The prior scoring repair was pushed to GitHub as `5865d09`.
+- Every exact-hash and broad search page explicitly sends `ai_translated=exclude` and `machine_translated=exclude`. The provider applies these documented API filters; no translation opt-in configuration was added.
+- Normalized search-cache version advances from `candidate-v3` to `candidate-v4`, preventing pre-policy search results from bypassing the exclusions. Existing installed subtitles and downloaded pack caches remain unchanged; no startup searches, schedule resets, or production mutations were added.
+- RED confirmed missing flags on both pages in both search phases and reuse of a pre-policy cache entry. GREEN passed `go test ./internal/provider/... -race -count=1`, `go vet ./internal/provider/...`, and `git diff --check`. All HTTP tests used local fake servers; no live provider calls.
+- Next task: publish this verified change as authorized; production rollout remains separately scoped.
 
 ### Scoring review repairs — 2026-09-05
 

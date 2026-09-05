@@ -95,6 +95,38 @@ func TestSearchAuthenticatesPaginatesAndNormalizesExactCandidates(t *testing.T) 
 	}
 }
 
+func TestSearchExcludesAIAndMachineTranslationsOnEveryPage(t *testing.T) {
+	for _, mode := range []baseprovider.SearchMode{baseprovider.SearchExactHash, baseprovider.SearchBroad} {
+		t.Run(string(mode), func(t *testing.T) {
+			pages := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/login":
+					io.WriteString(w, `{"token":"token","expires_in":3600}`)
+				case "/api/v1/subtitles":
+					pages++
+					for _, flag := range []string{"ai_translated", "machine_translated"} {
+						if got := r.URL.Query().Get(flag); got != "exclude" {
+							t.Errorf("page %s: %s = %q, want exclude", r.URL.Query().Get("page"), flag, got)
+						}
+					}
+					io.WriteString(w, `{"total_pages":2,"data":[]}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, staticHasher{result: FileHash{MovieHash: "0123456789abcdef", ByteSize: 196608}}, 1024)
+			if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: mode}); err != nil {
+				t.Fatal(err)
+			}
+			if pages != 2 {
+				t.Fatalf("search pages = %d, want 2", pages)
+			}
+		})
+	}
+}
+
 func TestNormalizeCandidatesKeepsFeatureIDsOnlyForMovies(t *testing.T) {
 	item := searchItem{}
 	item.Attributes.Language = "en"

@@ -187,6 +187,28 @@ func TestCoordinatorDoesNotReuseInferredIdentityCache(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDoesNotReusePreTranslationExclusionCache(t *testing.T) {
+	p := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "fresh", Language: "en"}}}}
+	c := newTestCoordinator(p)
+	q := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad}
+	q.Media.Title, q.Media.Year = "Example Movie", 2020
+	f := q.Media.Fingerprint
+	// Historical v3 results predate explicit OpenSubtitles translation exclusions.
+	legacy := fmt.Sprintf("candidate-v3\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s\x00%d\x00%d", p.ID(), q.Mode, q.Language, q.Media.Ref.Instance, q.Media.Ref.FileID, f.Size, f.ModTime.UnixNano(), q.Media.ReleaseName, q.Media.Season, q.Media.Episode)
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(legacy)))
+	encoded, err := json.Marshal([]domain.Candidate{{ProviderID: "only", ResultID: "stale", Language: "en", Title: q.Media.Title, Year: q.Media.Year}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Cache.PutProviderCache(context.Background(), store.ProviderCacheEntry{Key: key, ProviderID: p.ID(), ResultsJSON: encoded, ExpiresAt: c.Clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	got := c.Search(context.Background(), q)
+	if len(p.calls) != 1 || len(got.Candidates) != 1 || got.Candidates[0].ResultID != "fresh" {
+		t.Fatalf("pre-exclusion cache reused: calls=%v result=%#v", p.calls, got)
+	}
+}
+
 func TestCoordinatorDeduplicatesLegacyCachedCandidates(t *testing.T) {
 	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{}}
 	coordinator := newTestCoordinator(provider)

@@ -85,6 +85,8 @@ func (c *Client) SupportsLanguage(language domain.Language) bool {
 func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]domain.Candidate, error) {
 	parameters := url.Values{}
 	parameters.Set("languages", openSubtitlesLanguage(query.Language))
+	parameters.Set("ai_translated", "exclude")
+	parameters.Set("machine_translated", "exclude")
 	if query.Mode == baseprovider.SearchExactHash {
 		hash, err := c.fileHash(ctx, query.Media)
 		if err != nil {
