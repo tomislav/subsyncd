@@ -23,6 +23,9 @@ import (
 func TestRunOnceLimitsWorkflowConcurrencyAndRenewsLeases(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(5, now)
+	// Keep completions overlapping other live jobs so their lease renewals
+	// exercise the same concurrency allowed by the real per-job repository.
+	repository.completionDelay = 20 * time.Millisecond
 	service := &workerWorkflow{delay: 35 * time.Millisecond, outcome: workflow.Result{Outcome: workflow.OutcomeSatisfied}}
 	worker := testWorker(repository, service, testutil.NewClock(now))
 	worker.RenewInterval = 5 * time.Millisecond
@@ -634,7 +637,7 @@ type workerRepository struct {
 	searchCompletions       []store.SearchCompletion
 	searchRenewals          int
 	completionDelay         time.Duration
-	completingSearch        bool
+	completingSearch        map[string]bool
 	renewedDuringCompletion bool
 	completeErrors          []error
 	completionResults       []store.SearchCompletionResult
@@ -680,11 +683,11 @@ func (r *workerRepository) enqueueSearch(lease store.SearchLease) {
 	r.searches = append(r.searches, lease)
 	r.media[lease.MediaID] = domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaMovie, FileID: lease.MediaID}, Fingerprint: domain.MediaFingerprint{Path: "/media/movie.mkv", FileID: lease.MediaID, Size: 100, ModTime: lease.LeaseUntil.Add(-5 * time.Minute)}, Title: "Movie"}
 }
-func (r *workerRepository) RenewSearchLease(context.Context, string, time.Time, time.Duration) error {
+func (r *workerRepository) RenewSearchLease(_ context.Context, jobID string, _ time.Time, _ time.Duration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.searchRenewals++
-	if r.completingSearch {
+	if r.completingSearch[jobID] {
 		r.renewedDuringCompletion = true
 		return errors.New("lease already completing")
 	}
@@ -692,7 +695,10 @@ func (r *workerRepository) RenewSearchLease(context.Context, string, time.Time, 
 }
 func (r *workerRepository) CompleteSearch(_ context.Context, completion store.SearchCompletion) (store.SearchCompletionResult, error) {
 	r.mu.Lock()
-	r.completingSearch = true
+	if r.completingSearch == nil {
+		r.completingSearch = make(map[string]bool)
+	}
+	r.completingSearch[completion.JobID] = true
 	r.mu.Unlock()
 	if r.completionDelay > 0 {
 		time.Sleep(r.completionDelay)
@@ -701,7 +707,7 @@ func (r *workerRepository) CompleteSearch(_ context.Context, completion store.Se
 	if len(r.completeErrors) > 0 {
 		err := r.completeErrors[0]
 		r.completeErrors = r.completeErrors[1:]
-		r.completingSearch = false
+		delete(r.completingSearch, completion.JobID)
 		r.mu.Unlock()
 		return store.SearchCompletionResult{}, err
 	}
@@ -711,7 +717,7 @@ func (r *workerRepository) CompleteSearch(_ context.Context, completion store.Se
 		result = r.completionResults[0]
 		r.completionResults = r.completionResults[1:]
 	}
-	r.completingSearch = false
+	delete(r.completingSearch, completion.JobID)
 	r.mu.Unlock()
 	return result, nil
 }

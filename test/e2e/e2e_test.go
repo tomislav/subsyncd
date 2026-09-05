@@ -185,8 +185,8 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	if providerCounts.download.Load() != 1 || providerCounts.exact.Load() != 1 || providerCounts.broad.Load() != 1 || siloCalls.Load() != 1 {
 		t.Fatalf("first run counts exact/broad/download/silo = %d/%d/%d/%d", providerCounts.exact.Load(), providerCounts.broad.Load(), providerCounts.download.Load(), siloCalls.Load())
 	}
-	if countingRunner.work.Load() != 2 {
-		t.Fatalf("LAPSE work calls = %d, want one analysis and one synchronization", countingRunner.work.Load())
+	if countingRunner.work.Load() != 1 {
+		t.Fatalf("LAPSE work calls = %d, want one synchronization", countingRunner.work.Load())
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)

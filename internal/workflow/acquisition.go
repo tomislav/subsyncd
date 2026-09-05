@@ -89,7 +89,7 @@ func (s *Service) tryExactCandidates(
 		if !found {
 			priority = len(s.ProviderOrder)
 		}
-		analyzed, err := s.analyzeCandidate(ctx, request, downloadedCandidate{candidate: candidate, score: score, priority: priority, path: path}, installed, existing)
+		prepared, err := s.prepareCandidate(ctx, request, downloadedCandidate{candidate: candidate, score: score, priority: priority, path: path}, installed, existing, workspace, -index-2)
 		if err != nil {
 			if handleErr := s.handleCandidateFailure(ctx, request, candidate, path, err, candidateFailures); handleErr != nil {
 				return false, handleErr
@@ -99,17 +99,7 @@ func (s *Service) tryExactCandidates(
 			}
 			continue
 		}
-		finalized, err := s.finalizeCandidate(ctx, request, analyzed, workspace, -index-1)
-		if err != nil {
-			if handleErr := s.handleCandidateFailure(ctx, request, candidate, path, err, candidateFailures); handleErr != nil {
-				return false, handleErr
-			}
-			if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {
-				return false, cleanupErr
-			}
-			continue
-		}
-		*result, err = s.install(ctx, request, finalized, existing, installed, *result)
+		*result, err = s.install(ctx, request, prepared, existing, installed, *result)
 		if err != nil {
 			// Accept only the installer's direct pre-publication validation
 			// error. Wrapped/joined infrastructure or rollback errors remain
@@ -120,7 +110,7 @@ func (s *Service) tryExactCandidates(
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return false, ctxErr
 			}
-			if handleErr := s.handleCandidateFailure(ctx, request, candidate, finalized.path, err, candidateFailures); handleErr != nil {
+			if handleErr := s.handleCandidateFailure(ctx, request, candidate, prepared.path, err, candidateFailures); handleErr != nil {
 				return false, handleErr
 			}
 			if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {

@@ -117,13 +117,13 @@ func TestWorkflowLogsDebugScoringAndTypedLapsePhases(t *testing.T) {
 	if len(evaluated) != 1 || evaluated[0]["provider"] != "provider" || evaluated[0]["candidate_id"] != "broad" || evaluated[0]["eligible"] != true || evaluated[0]["relative_path"] != "Movie.mkv" {
 		t.Fatalf("evaluated = %#v", evaluated)
 	}
-	for _, event := range []string{"lapse.analysis_completed", "lapse.sync_completed"} {
+	for _, event := range []string{"lapse.sync_completed"} {
 		matches := workflowEvents(records, event)
 		if len(matches) != 1 || matches[0]["verdict"] != "solid" || matches[0]["ratio"] != float64(1) || matches[0]["parts"] != float64(1) || matches[0]["compatibility_version"] == "" {
 			t.Fatalf("%s = %#v", event, matches)
 		}
 	}
-	for _, phase := range []string{"analysis", "sync"} {
+	for _, phase := range []string{"sync"} {
 		startedEvent := "lapse." + phase + "_started"
 		completedEvent := "lapse." + phase + "_completed"
 		started := workflowEvents(records, startedEvent)
@@ -209,7 +209,7 @@ func TestWorkflowLogsLapseFailureOnceAndSanitizesIt(t *testing.T) {
 	}
 	candidate := broadCandidate("failure")
 	providerFake := &fakeProvider{id: "provider"}
-	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{analyzeErr: errors.New("secret output at " + request.Media.Fingerprint.Path)}, &fakeInstaller{})
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{synchronizeErr: errors.New("secret output at " + request.Media.Fingerprint.Path)}, &fakeInstaller{})
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
 	service.Events = events
 
@@ -217,13 +217,13 @@ func TestWorkflowLogsLapseFailureOnceAndSanitizesIt(t *testing.T) {
 		t.Fatal("Run() succeeded, want technical failure")
 	}
 	records := workflowLogRecords(t, logs.String())
-	started := workflowEvents(records, "lapse.analysis_started")
+	started := workflowEvents(records, "lapse.sync_started")
 	failed := workflowEvents(records, "lapse.failed")
 	completed := workflowEvents(records, "search.completed")
-	if len(started) != 1 || started[0]["phase"] != "analysis" || workflowEventIndex(records, "lapse.analysis_started") >= workflowEventIndex(records, "lapse.failed") {
+	if len(started) != 1 || started[0]["phase"] != "sync" || workflowEventIndex(records, "lapse.sync_started") >= workflowEventIndex(records, "lapse.failed") {
 		t.Fatalf("LAPSE start/failure order = %s", logs.String())
 	}
-	if len(failed) != 1 || failed[0]["phase"] != "analysis" || failed[0]["error"] != "LAPSE unavailable" {
+	if len(failed) != 1 || failed[0]["phase"] != "sync" || failed[0]["error"] != "LAPSE unavailable" {
 		t.Fatalf("LAPSE failure = %#v", failed)
 	}
 	if len(completed) != 1 || completed[0]["outcome"] != "failed" || len(workflowEvents(records, "search.failed")) != 0 {

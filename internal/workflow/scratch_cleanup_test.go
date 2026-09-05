@@ -112,16 +112,9 @@ func TestDownloadScratchRetainsOnlySelectedAfterCaching(t *testing.T) {
 
 type cleanupSynchronizer struct {
 	fakeSynchronizer
-	analyze func(domain.Candidate, string)
-	sync    func(domain.Candidate, string, string) error
+	sync func(domain.Candidate, string, string) error
 }
 
-func (s *cleanupSynchronizer) AnalyzeCandidate(ctx context.Context, c domain.Candidate, media, path string) (domain.SyncResult, error) {
-	if s.analyze != nil {
-		s.analyze(c, path)
-	}
-	return s.fakeSynchronizer.AnalyzeCandidate(ctx, c, media, path)
-}
 func (s *cleanupSynchronizer) SynchronizeCandidate(ctx context.Context, c domain.Candidate, media, input, output string) (domain.SyncResult, error) {
 	if s.sync != nil {
 		if err := s.sync(c, input, output); err != nil {
@@ -133,32 +126,28 @@ func (s *cleanupSynchronizer) SynchronizeCandidate(ctx context.Context, c domain
 func TestScratchTiesSurviveUntilFallbackAndFailedOutputIsReleased(t *testing.T) {
 	var first, failedSource, failedOutput string
 	sync := &cleanupSynchronizer{fakeSynchronizer: fakeSynchronizer{confidence: map[string]float64{"first": 0.8, "second": 0.9}}}
-	sync.analyze = func(c domain.Candidate, path string) {
-		if c.ResultID == "first" {
-			first = path
-		} else {
-			if _, err := os.ReadFile(first); err != nil {
-				t.Fatalf("viable tie removed: %v", err)
-			}
-		}
-	}
 	sync.sync = func(c domain.Candidate, input, output string) error {
-		if c.ResultID == "second" {
-			failedSource = input
-			failedOutput = output
-			if err := os.WriteFile(output, []byte("partial"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			return errors.New("sync failed")
+		if c.ResultID == "first" {
+			first = input
+			return nil
 		}
+		if _, err := os.ReadFile(first); err != nil {
+			t.Fatalf("viable tie removed: %v", err)
+		}
+		failedSource, failedOutput = input, output
+		if err := os.WriteFile(output, []byte("partial"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("sync failed")
+	}
+	installer := &broadValidationInstaller{before: func(InstallRequest) {
 		for _, path := range []string{failedSource, failedOutput} {
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Errorf("failed candidate scratch survives: %s: %v", path, err)
 			}
 		}
-		return nil
-	}
-	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("first"), broadCandidate("second")}}}, nil, sync, nil)
+	}}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("first"), broadCandidate("second")}}}, nil, sync, installer)
 	service.LapsePolicy.Mode = "always"
 	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
 	result, err := service.Run(context.Background(), serviceRequest(t))
@@ -177,7 +166,7 @@ func (i *cleanupInstaller) Install(ctx context.Context, request InstallRequest) 
 }
 
 func TestDiscardedSelectedScratchReleasedBeforeNextDownload(t *testing.T) {
-	for _, phase := range []string{"exact_install", "broad_analysis"} {
+	for _, phase := range []string{"exact_install", "broad_preparation"} {
 		t.Run(phase, func(t *testing.T) {
 			temp := t.TempDir()
 			t.Setenv("TMPDIR", temp)

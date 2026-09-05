@@ -19,17 +19,12 @@ type scratchSynchronizer struct {
 	cancel context.CancelFunc
 }
 
-func (s *scratchSynchronizer) AnalyzeCandidate(ctx context.Context, candidate domain.Candidate, media, subtitle string) (domain.SyncResult, error) {
-	s.check(subtitle)
-	if s.cancel != nil {
-		s.cancel()
-	}
-	return s.fakeSynchronizer.AnalyzeCandidate(ctx, candidate, media, subtitle)
-}
-
 func (s *scratchSynchronizer) SynchronizeCandidate(ctx context.Context, candidate domain.Candidate, media, input, output string) (domain.SyncResult, error) {
 	s.check(input)
 	s.check(output)
+	if s.cancel != nil {
+		s.cancel()
+	}
 	return s.fakeSynchronizer.SynchronizeCandidate(ctx, candidate, media, input, output)
 }
 
@@ -57,7 +52,7 @@ func TestWorkflowScratchUsesSystemTempAndCleansUp(t *testing.T) {
 			case "rejection":
 				synchronizer.rejectAll = true
 			case "error":
-				synchronizer.analyzeErr = errors.New("analysis failed")
+				synchronizer.synchronizeErr = errors.New("synchronization failed")
 			case "cancellation":
 				synchronizer.cancel = cancel
 			}
@@ -67,7 +62,7 @@ func TestWorkflowScratchUsesSystemTempAndCleansUp(t *testing.T) {
 			service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
 			result, err := service.Run(ctx, request)
 			if checks == 0 {
-				t.Fatal("no candidate reached analysis")
+				t.Fatal("no candidate reached preparation")
 			}
 			if outcome == "success" && (err != nil || result.Outcome != OutcomeInstalled || synchronizer.synchronizeCalls != 1) {
 				t.Fatalf("Run()=%+v,%v", result, err)
@@ -76,7 +71,7 @@ func TestWorkflowScratchUsesSystemTempAndCleansUp(t *testing.T) {
 				t.Fatalf("rejection Run()=%+v,%v", result, err)
 			}
 			if outcome == "error" && err == nil {
-				t.Fatal("analysis failure did not propagate")
+				t.Fatal("preparation failure did not propagate")
 			}
 			if outcome == "cancellation" && !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancellation error=%v", err)

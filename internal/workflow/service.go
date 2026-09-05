@@ -82,7 +82,6 @@ type PackCache interface {
 }
 
 type CandidateSynchronizer interface {
-	AnalyzeCandidate(context.Context, domain.Candidate, string, string) (domain.SyncResult, error)
 	SynchronizeCandidate(context.Context, domain.Candidate, string, string, string) (domain.SyncResult, error)
 }
 
@@ -147,18 +146,13 @@ type downloadedCandidate struct {
 	path      string
 }
 
-type analyzedCandidate struct {
+// preparedCandidate retains the immutable selected source for rejection identity
+// separately from the installable artifact and the result that produced it.
+type preparedCandidate struct {
 	downloadedCandidate
-	analysis domain.SyncResult
-	bypass   bool
-}
-
-type finalizedCandidate struct {
-	candidate domain.Candidate
-	score     domain.Score
-	priority  int
-	sync      domain.SyncResult
-	path      string
+	sync   domain.SyncResult
+	output string
+	bypass bool
 }
 
 func (s *Service) Run(ctx context.Context, request Request) (result Result, runErr error) {
@@ -273,29 +267,27 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 					result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 				} else {
 					downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, path: cached.Path}
-					analyzed, prepareErr := s.analyzeCandidate(ctx, request, downloaded, activeInstallation, existing)
+					prepared, prepareErr := s.prepareCandidate(ctx, request, downloaded, activeInstallation, existing, workspace, -1)
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return result, ctxErr
+					}
 					if prepareErr == nil {
-						var finalized finalizedCandidate
-						finalized, prepareErr = s.finalizeCandidate(ctx, request, analyzed, workspace, 0)
-						if prepareErr == nil {
-							result, prepareErr = s.install(ctx, request, finalized, existing, activeInstallation, result)
-							if prepareErr != nil {
-								if _, rejected := prepareErr.(*subtitleValidationError); !rejected {
-									return result, prepareErr
-								}
-								if ctxErr := ctx.Err(); ctxErr != nil {
-									return result, ctxErr
-								}
-							} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
-								return result, nil
+						result, prepareErr = s.install(ctx, request, prepared, existing, activeInstallation, result)
+						if prepareErr != nil {
+							if _, rejected := prepareErr.(*subtitleValidationError); !rejected {
+								return result, prepareErr
 							}
-							// The cache owns the source. Only its private synchronized
-							// derivative is disposable when provider fallback is needed.
-							if cleanupErr := removeWorkflowArtifact(workspace, finalized.path); cleanupErr != nil {
-								return result, cleanupErr
+							if ctxErr := ctx.Err(); ctxErr != nil {
+								return result, ctxErr
 							}
-							result.Outcome = ""
+						} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
+							return result, nil
 						}
+						// The cache owns the source; only its private derivative is disposable.
+						if cleanupErr := removeWorkflowArtifact(workspace, prepared.output); cleanupErr != nil {
+							return result, cleanupErr
+						}
+						result.Outcome = ""
 					}
 					if prepareErr != nil {
 						recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
@@ -454,7 +446,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 			tierEnd++
 		}
 		result.Decisions = append(result.Decisions, Decision{Stage: "tournament_tier", Reason: fmt.Sprintf("evaluating score %d", eligible[tierStart].Score.Total)})
-		analyzedTier := make([]analyzedCandidate, 0, tierEnd-tierStart)
+		preparedTier := make([]preparedCandidate, 0, tierEnd-tierStart)
 		for index := tierStart; index < tierEnd; index++ {
 			if err := ctx.Err(); err != nil {
 				return result, err
@@ -477,7 +469,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				continue
 			}
 			downloaded := downloadedCandidate{candidate: item.Candidate, score: item.Score, priority: item.ProviderPriority, path: path}
-			analyzed, syncErr := s.analyzeCandidate(ctx, request, downloaded, activeInstallation, existing)
+			prepared, syncErr := s.prepareCandidate(ctx, request, downloaded, activeInstallation, existing, workspace, index)
 			if syncErr != nil {
 				if err := ctx.Err(); err != nil {
 					return result, err
@@ -488,40 +480,20 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				if err := removeWorkflowArtifact(workspace, path); err != nil {
 					return result, err
 				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_analysis", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
+				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_prepare", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
 				continue
 			}
-			if !analyzed.bypass {
-				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_analysis", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "solid"})
+			if !prepared.bypass {
+				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_prepare", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "solid"})
 			}
-			analyzedTier = append(analyzedTier, analyzed)
+			preparedTier = append(preparedTier, prepared)
 		}
-		sortAnalyzed(analyzedTier)
-		for index, analyzed := range analyzedTier {
+		sortPrepared(preparedTier)
+		for index, prepared := range preparedTier {
 			if err := ctx.Err(); err != nil {
 				return result, err
 			}
-			ready, syncErr := s.finalizeCandidate(ctx, request, analyzed, workspace, tierStart+index)
-			if syncErr != nil {
-				if err := ctx.Err(); err != nil {
-					return result, err
-				}
-				if err := s.handleCandidateFailure(ctx, request, analyzed.candidate, analyzed.path, syncErr, &candidateFailures); err != nil {
-					return result, err
-				}
-				if err := removeWorkflowArtifact(workspace, analyzed.path); err != nil {
-					return result, err
-				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_finalize", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
-				if index+1 < len(analyzedTier) {
-					result.Decisions = append(result.Decisions, Decision{Stage: "fallback", Reason: "next candidate in tier"})
-				}
-				continue
-			}
-			if !analyzed.bypass {
-				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_finalize", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: "solid"})
-			}
-			result, err = s.install(ctx, request, ready, existing, activeInstallation, result)
+			result, err = s.install(ctx, request, prepared, existing, activeInstallation, result)
 			if err != nil {
 				// Only the installer's direct pre-publication content rejection
 				// permits fallback. Wrapped infrastructure/rollback errors are terminal.
@@ -532,20 +504,20 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 					return result, ctxErr
 				}
 				// Rejection identity follows the selected source, not the LAPSE
-				// derivative, just as it does for analysis/finalization failures.
-				if handleErr := s.handleCandidateFailure(ctx, request, analyzed.candidate, analyzed.path, err, &candidateFailures); handleErr != nil {
+				// derivative, just as it does for preparation failures.
+				if handleErr := s.handleCandidateFailure(ctx, request, prepared.candidate, prepared.path, err, &candidateFailures); handleErr != nil {
 					return result, handleErr
 				}
-				result.Decisions = append(result.Decisions, candidateFailureDecision("installation", analyzed.candidate, err))
+				result.Decisions = append(result.Decisions, candidateFailureDecision("installation", prepared.candidate, err))
 			} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
-				result.Decisions = append(result.Decisions, Decision{Stage: "early_stop", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: fmt.Sprintf("installed from score %d; lower tiers skipped", analyzed.score.Total)})
+				result.Decisions = append(result.Decisions, Decision{Stage: "early_stop", ProviderID: prepared.candidate.ProviderID, ResultID: prepared.candidate.ResultID, Reason: fmt.Sprintf("installed from score %d; lower tiers skipped", prepared.score.Total)})
 				return result, nil
 			}
-			if cleanupErr := errors.Join(removeWorkflowArtifact(workspace, analyzed.path), removeWorkflowArtifact(workspace, ready.path)); cleanupErr != nil {
+			if cleanupErr := errors.Join(removeWorkflowArtifact(workspace, prepared.path), removeWorkflowArtifact(workspace, prepared.output)); cleanupErr != nil {
 				return result, cleanupErr
 			}
 			result.Outcome = ""
-			if index+1 < len(analyzedTier) {
+			if index+1 < len(preparedTier) {
 				result.Decisions = append(result.Decisions, Decision{Stage: "fallback", Reason: "next candidate in tier"})
 			}
 		}
@@ -987,46 +959,31 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	return selected, decisions, nil
 }
 
-func (s *Service) analyzeCandidate(ctx context.Context, request Request, item downloadedCandidate, installed bool, existing store.Installation) (analyzedCandidate, error) {
+func (s *Service) prepareCandidate(ctx context.Context, request Request, item downloadedCandidate, installed bool, existing store.Installation, workspace string, index int) (ready preparedCandidate, retErr error) {
 	if !match.Eligible(item.score, s.minimumScore()) {
-		return analyzedCandidate{}, fmt.Errorf("candidate score is below threshold or identity was rejected")
+		return preparedCandidate{}, fmt.Errorf("candidate score is below threshold or identity was rejected")
 	}
 	if installed {
 		if sameInstalledCandidate(existing, request.Media, item.candidate) {
-			return analyzedCandidate{}, fmt.Errorf("provider candidate is already installed")
+			return preparedCandidate{}, fmt.Errorf("provider candidate is already installed")
 		}
 		allowed, err := ShouldUpgradeForMedia(existing, request.Media, item.score, item.candidate.ExactHash, s.MinimumUpgradeDelta)
 		if err != nil || !allowed {
 			if err != nil {
-				return analyzedCandidate{}, err
+				return preparedCandidate{}, err
 			}
-			return analyzedCandidate{}, fmt.Errorf("candidate does not satisfy upgrade policy")
+			return preparedCandidate{}, fmt.Errorf("candidate does not satisfy upgrade policy")
 		}
 	}
 	if item.candidate.ExactHash {
-		return analyzedCandidate{downloadedCandidate: item, analysis: domain.SyncResult{Verdict: "exact_hash", Mode: "bypass", Reference: "provider_hash", Ratio: 1, Confidence: 1, Agreement: 1, Coverage: 1, Parts: 1}, bypass: true}, nil
+		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "exact_hash", Mode: "bypass", Reference: "provider_hash", Ratio: 1, Confidence: 1, Agreement: 1, Coverage: 1, Parts: 1}, bypass: true}, nil
 	}
 	if canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
-		return analyzedCandidate{downloadedCandidate: item, analysis: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
+		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
-	s.logLapseStarted(ctx, "analysis", item.candidate)
-	startedAt := time.Now()
-	analysis, err := s.Synchronizer.AnalyzeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path)
-	if err != nil {
-		s.logLapseFailure(ctx, "analysis", item.candidate, time.Since(startedAt), err)
-		return analyzedCandidate{}, err
-	}
-	s.logLapseCompleted(ctx, "analysis", item.candidate, analysis, time.Since(startedAt))
-	if analysis.Verdict != "solid" {
-		return analyzedCandidate{}, fmt.Errorf("LAPSE analysis was not solid")
-	}
-	return analyzedCandidate{downloadedCandidate: item, analysis: analysis}, nil
-}
-
-func (s *Service) finalizeCandidate(ctx context.Context, request Request, item analyzedCandidate, workspace string, index int) (ready finalizedCandidate, retErr error) {
-	if item.bypass {
-		return finalizedCandidate{candidate: item.candidate, score: item.score, priority: item.priority, sync: item.analysis, path: item.path}, nil
-	}
+	// Cached preparation reserves -1, exact candidates use lower negative
+	// indexes, and broad candidates retain their shortlist index after ranking.
+	// Each preparation therefore owns a distinct output even across fallback.
 	extension := strings.ToLower(filepath.Ext(item.path))
 	output := filepath.Join(workspace, fmt.Sprintf("synchronized-%d%s", index, extension))
 	defer func() {
@@ -1041,16 +998,13 @@ func (s *Service) finalizeCandidate(ctx context.Context, request Request, item a
 	synchronized, err := s.Synchronizer.SynchronizeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path, output)
 	if err != nil {
 		s.logLapseFailure(ctx, "sync", item.candidate, time.Since(startedAt), err)
-		return finalizedCandidate{}, err
+		return preparedCandidate{}, err
 	}
 	s.logLapseCompleted(ctx, "sync", item.candidate, synchronized, time.Since(startedAt))
 	if synchronized.Verdict != "solid" {
-		return finalizedCandidate{}, fmt.Errorf("LAPSE synchronization was not solid")
+		return preparedCandidate{}, fmt.Errorf("LAPSE synchronization was not solid")
 	}
-	// Use analysis confidence for ranking because every candidate was compared at
-	// the same stage; retain the synchronization metadata that produced the file.
-	synchronized.Confidence = item.analysis.Confidence
-	return finalizedCandidate{candidate: item.candidate, score: item.score, priority: item.priority, sync: synchronized, path: output}, nil
+	return preparedCandidate{downloadedCandidate: item, sync: synchronized, output: output}, nil
 }
 
 func sameInstalledCandidate(existing store.Installation, media domain.Media, candidate domain.Candidate) bool {
@@ -1127,10 +1081,10 @@ func candidateHasEpisodeEvidence(media domain.Media, candidate domain.Candidate)
 	return match.HasEpisodeEvidence(media, candidate)
 }
 
-func (s *Service) install(ctx context.Context, request Request, prepared finalizedCandidate, existing store.Installation, installed bool, result Result) (Result, error) {
-	destination := subtitleDestination(request.Media.Fingerprint.Path, request.Language, prepared.path)
+func (s *Service) install(ctx context.Context, request Request, prepared preparedCandidate, existing store.Installation, installed bool, result Result) (Result, error) {
+	destination := subtitleDestination(request.Media.Fingerprint.Path, request.Language, prepared.output)
 	if installed {
-		if !strings.EqualFold(filepath.Ext(existing.Path), filepath.Ext(prepared.path)) {
+		if !strings.EqualFold(filepath.Ext(existing.Path), filepath.Ext(prepared.output)) {
 			result.Outcome = OutcomeRejected
 			result.Decisions = append(result.Decisions, Decision{Stage: "installation", ProviderID: prepared.candidate.ProviderID, ResultID: prepared.candidate.ResultID, Reason: "format-changing upgrades are not supported"})
 			return result, nil
@@ -1143,7 +1097,7 @@ func (s *Service) install(ctx context.Context, request Request, prepared finaliz
 	}
 	s.workflowEvents().Log(ctx, slog.LevelInfo, "candidate.selected", "subtitle candidate selected", slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("exact_hash", prepared.candidate.ExactHash), slog.String("selection_mode", selectionMode))
 	startedAt := time.Now()
-	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, SourcePath: prepared.path, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync})
+	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, SourcePath: prepared.output, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync})
 	if err != nil {
 		attrs := append([]slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}, s.workflowEvents().ErrorAttrs("installation", err)...)
 		s.workflowEvents().Log(ctx, slog.LevelError, "subtitle.install_failed", "subtitle installation failed", attrs...)
@@ -1250,11 +1204,11 @@ func credentialFreeResultID(value string) string {
 	return value
 }
 
-func sortAnalyzed(candidates []analyzedCandidate) {
+func sortPrepared(candidates []preparedCandidate) {
 	sort.SliceStable(candidates, func(left, right int) bool {
 		a, b := candidates[left], candidates[right]
-		if a.analysis.Confidence != b.analysis.Confidence {
-			return a.analysis.Confidence > b.analysis.Confidence
+		if a.sync.Confidence != b.sync.Confidence {
+			return a.sync.Confidence > b.sync.Confidence
 		}
 		if a.priority != b.priority {
 			return a.priority < b.priority

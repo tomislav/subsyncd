@@ -18,10 +18,14 @@ import (
 type broadValidationInstaller struct {
 	fakeInstaller
 	failure   error
+	before    func(InstallRequest)
 	attempted []string
 }
 
 func (i *broadValidationInstaller) Install(ctx context.Context, r InstallRequest) (store.Installation, error) {
+	if i.before != nil {
+		i.before(r)
+	}
 	i.attempted = append(i.attempted, r.Candidate.ResultID)
 	if r.Candidate.ResultID == "first" && i.failure != nil {
 		return store.Installation{}, i.failure
@@ -40,13 +44,6 @@ type broadOutputSynchronizer struct {
 }
 
 func (s *broadOutputSynchronizer) SynchronizeCandidate(ctx context.Context, c domain.Candidate, media, input, output string) (domain.SyncResult, error) {
-	if c.ResultID == "second" && s.firstOutput != "" {
-		for _, path := range []string{s.firstSource, s.firstOutput} {
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				s.t.Errorf("rejected install scratch survives: %s (%v)", path, err)
-			}
-		}
-	}
 	result, err := s.fakeSynchronizer.SynchronizeCandidate(ctx, c, media, input, output)
 	if c.ResultID == "first" {
 		s.firstSource = input
@@ -69,7 +66,15 @@ func TestBroadInstallationContentFailureFallsBack(t *testing.T) {
 				first.ReleaseNames = []string{"Movie.2024-GROUP"}
 			}
 			synchronizer := &broadOutputSynchronizer{t: t, invalid: true}
-			installer := &broadValidationInstaller{}
+			installer := &broadValidationInstaller{before: func(r InstallRequest) {
+				if r.Candidate.ResultID == "second" {
+					for _, path := range []string{synchronizer.firstSource, synchronizer.firstOutput} {
+						if _, err := os.Stat(path); !os.IsNotExist(err) {
+							t.Errorf("rejected install scratch survives: %v", err)
+						}
+					}
+				}
+			}}
 			service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{first, second}}}, nil, synchronizer, installer)
 			service.LapsePolicy.Mode = "always"
 			service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
@@ -93,7 +98,7 @@ func TestBroadInstallationContentFailureFallsBack(t *testing.T) {
 			if early != 1 {
 				t.Fatalf("early stops=%d", early)
 			}
-			if synchronizer.analyzeCalls != 2 || synchronizer.synchronizeCalls != 2 || len(installer.attempted) != 2 {
+			if synchronizer.analyzeCalls != 0 || synchronizer.synchronizeCalls != 2 || len(installer.attempted) != 2 {
 				t.Fatalf("unexpected fallback calls: %+v %+v", synchronizer, installer)
 			}
 		})
@@ -118,7 +123,7 @@ func TestBroadInstallationTechnicalFailureIsTerminal(t *testing.T) {
 			service.LapsePolicy.Mode = "always"
 			service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
 			result, err := service.Run(context.Background(), serviceRequest(t))
-			if !errors.Is(err, failure) || len(installer.attempted) != 1 || synchronizer.synchronizeCalls != 1 {
+			if !errors.Is(err, failure) || len(installer.attempted) != 1 || synchronizer.synchronizeCalls != 2 {
 				t.Fatalf("Run=%+v,%v; attempts=%v", result, err, installer.attempted)
 			}
 			if len(service.Repository.(*workflowRepository).rejections) != 0 {
