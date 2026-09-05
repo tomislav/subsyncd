@@ -11,11 +11,10 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 - **Movies and TV shows:** connect one or more Sonarr and Radarr instances.
 - **Your languages, your providers:** choose a different provider order for each language. Adding a language schedules searches for already-indexed media after a restart.
 - **Checks what you already have:** detects embedded subtitles and separate subtitle files before searching.
-- **Release-aware matching:** compares file hashes and release details to find suitable subtitles.
-- **Automatic synchronization:** uses bundled LAPSE to check and adjust timing in one run when a candidate needs verification.
+- **Smart matching and synchronization:** scores candidates against your media’s identity and release details, then uses bundled LAPSE to verify and adjust timing when needed.
 - **Season-pack support:** extracts the matching episode from ZIP and RAR downloads, skipping ambiguous matches.
-- **Ongoing searches and upgrades:** retries missing subtitles and looks for better matches for subtitles it manages.
-- **Respects your files:** protects existing subtitles and user edits from automatic replacement.
+- **Ongoing searches:** keeps checking for missing subtitles when no suitable match is available.
+- **Safe subtitle upgrades:** can replace subtitles it installed with better matches, while protecting manually added subtitles and any files you’ve edited.
 - **Remembers its progress:** saves search history and provider limits across restarts, and avoids repeatedly downloading rejected results.
 - **Optional Silo refresh:** asks Silo to rescan a media file after installing subtitles.
 
@@ -165,14 +164,13 @@ docker compose exec subsyncd subsyncd doctor
 
 To stay on a particular build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. Back up `data/` with the service stopped before upgrading; it holds search history, caches, and records of installed subtitles.
 
-Logs are available through `docker compose logs`. Set `logging.level: debug` in your configuration and restart for more detail while troubleshooting. See [structured logging](docs/operations.md#structured-logging-and-grafana-loki) for log settings and Grafana Loki integration.
+Logs are available through `docker compose logs`. Set `logging.level: debug` in your configuration and restart for more detail while troubleshooting. See [logging](docs/logging.md) for available levels and troubleshooting details.
 
 ## Documentation and development
 
 - [Configuration example](config.example.yaml) — all settings in one place.
 - [Operations guide](docs/operations.md) — manual searches, diagnostics, Silo setup, backups, and troubleshooting.
 - [Provider guide](docs/providers.md) — language support, matching, synchronization, and retry schedules.
-- [Implementation status](docs/implementation-status.md) — shipped behavior and known follow-ups.
 
 To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.0.5. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
 

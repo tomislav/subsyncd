@@ -13,6 +13,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Follow-up — README scoring feature, 2026-09-06
+
+- Commit: this documentation update commit, based on `ede363e`.
+- Replaced the release-aware matching feature bullet with the approved plain-language description of candidate scoring and conditional LAPSE verification. No runtime behavior changed.
+- Combined matching and synchronization into one feature bullet. Clarified that upgrades replace service-installed subtitles with better matches while protecting manually added or edited files; missing-subtitle searches now have their own bullet.
+- Removed the implementation-status link from the README at the user's request; the contributor ledger remains available through AGENTS.md.
+- Removed collector-specific references from the README and the detailed pipeline/query examples from the operations guide. Retained JSON logging, log levels, privacy behavior, workflow diagnostics, and Docker Compose log commands; updated the logging anchor.
+- Verification: checked README wording, logging links, absence of collector-specific content in the README/operations guide, and `git diff --check`; runtime tests are unnecessary for these documentation-only changes.
+- Simplified the operations and provider guides around setup, everyday commands, matching, upgrades, and troubleshooting. Added a concise logging guide; moved detailed persistence, scoring, scheduling, and event contracts to `docs/development/` and corrected their relative links. No runtime behavior changed.
+- Guide verification passed: all local Markdown links resolve, user-guide code fences balance, README logging links target the new guide, provider defaults and Compose CLI examples match configuration parsers and the image entrypoint, and `git diff --check` is clean. No runtime tests or live-service requests were needed.
+- Publication: included in the user-requested push to GitHub `main`.
+- Next task: retain the existing operational follow-ups.
+
 ### Remaining systems code review — 2026-09-05
 
 - Reviewed `9d292c4`, the pushed temporary workspace/LAPSE repair. Commit: `docs: record remaining systems review findings` (this documentation commit, based on `9d292c4`).
