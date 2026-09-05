@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: arrapi stable-identity reconciliation design review
-- Next task: user review, then write the test-driven implementation plan
-- Latest follow-up: diagnosed the live reconciliation contract mismatch and recorded the approved arrapi/stable-entity repair design
+- Current task: arrapi stable-identity reconciliation implementation planning
+- Next task: choose inline or subagent-driven execution, then execute the approved plan test-first
+- Latest follow-up: approved the written design and created a resumable seven-task implementation plan
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -22,6 +22,14 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Existing rows adopt `entity_id` lazily on their next successful hydration. No startup or full-library network backfill is introduced. Delete webhooks retain file-ID behavior; the one-time legacy limitation for a missed deletion before adoption is explicit.
 - The design also prevents failed reconciliation from retrying every recovery poll while retaining the durable cursor for a later scheduled attempt. Publication, GitHub push, and Hades deployment remain separate actions requiring approval.
 - Design-boundary verification: placeholder/ambiguity review and `git diff --check`. Next task: user review, then write the test-driven implementation plan.
+
+### Follow-up — arrapi stable-identity reconciliation implementation plan
+
+- The implementation plan is `docs/superpowers/plans/2026-09-05-arrapi-stable-identity-reconciliation.md`.
+- Seven reviewable, test-driven boundaries cover the pinned arrapi/toolchain and safe error boundary, stable entity persistence and upgrade-in-place behavior, scope-aware detail hydration, real API-shaped entity history, atomic entity deletions/audits, reconciliation failure backoff, and final documentation/full verification.
+- The plan keeps arrapi private to `internal/catalog`, retains only the narrow detail enrichment requests required for scoring/provenance fields absent from arrapi v2.0.5, and preserves offline startup plus file-oriented webhook/workflow behavior.
+- Plan self-review covers every approved design section with exact interfaces, fixtures, failure expectations, commands, and commits. Push, publication, and Hades mutation remain excluded.
+- Planning-boundary verification: spec coverage review, placeholder/type scan, and `git diff --check`. Next task: execute with the user's chosen workflow.
 
 ### Follow-up — isolated Hades daemon canary
 

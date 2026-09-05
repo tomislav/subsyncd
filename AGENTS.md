@@ -11,7 +11,7 @@ Read these documents before changing behavior:
 7. `docs/superpowers/specs/2026-09-04-priority-search-dispatch-design.md` and its matching plan before changing daemon queue dispatch, priorities, leases, or webhook wakeups
 8. `docs/superpowers/specs/2026-09-04-lapse-score-tier-tournament-design.md` and its matching plan before changing shortlist preparation, LAPSE evaluation, early stopping, or synchronization fallback
 9. `docs/superpowers/specs/2026-09-04-structured-loki-logging-design.md` and its matching plan before changing logging levels, event ownership, fields, privacy, or Alloy/Loki guidance
-10. `docs/superpowers/specs/2026-09-05-arrapi-stable-identity-reconciliation-design.md` before changing Sonarr/Radarr clients, catalog identities, history reconciliation, or reconciliation cursor behavior
+10. `docs/superpowers/specs/2026-09-05-arrapi-stable-identity-reconciliation-design.md` and its matching plan before changing Sonarr/Radarr clients, catalog identities, history reconciliation, or reconciliation cursor behavior
 
 `AGENTS.md` and `docs/implementation-status.md` are the authoritative entry points for current behavior. Historical design material that lived outside the original `subsyncd/` subtree is not required by the standalone repository.
 

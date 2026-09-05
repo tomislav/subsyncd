@@ -1,6 +1,6 @@
 # Arrapi Stable-Identity Reconciliation Design
 
-**Status:** Approved in chat; written design awaiting review
+**Status:** Approved; implementation planned
 
 ## Purpose
 
@@ -70,6 +70,7 @@ Migration `010_media_entity_ids.sql` adds:
 
 ```sql
 ALTER TABLE media ADD COLUMN entity_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE events ADD COLUMN entity_id INTEGER NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX media_entity_identity_idx
     ON media(instance, kind, entity_id)
     WHERE entity_id > 0;
@@ -89,6 +90,17 @@ prevents a movie or episode upgrade from creating a second logical media row.
 The repository gains a stable-identity lookup used by reconciliation. It
 returns an explicit not-found result rather than treating absence as failure.
 Conflicting entity and file identities fail the complete transaction.
+
+The existing unsupported multi-episode rule remains deterministic. Sonarr
+detail hydration sorts every episode attached to a file and uses the earliest
+episode ID as that row's canonical `entity_id`, while retaining the complete
+attached-ID set only inside the catalog operation. A history event addressed to
+another attached episode may hydrate that same unsupported file, but the
+adapter must prove membership and canonicalize the present change to the
+earliest ID before final reduction. When Sonarr emits deletion rows for every
+attached episode, the canonical row deletes the stored media and the remaining
+rows become harmless unknown audits. No combined-episode provider or LAPSE work
+is enabled.
 
 Legacy rows are upgraded lazily when a webhook, manual search, or reconciled
 live state hydrates them. There is no automatic full-library backfill and no
@@ -133,10 +145,14 @@ the last history row was a deletion, because current Arr state wins over an
 intermediate upgrade tombstone. A current rename remains a rename for audit;
 other present states normalize to import.
 
+After current-state hydration, present Sonarr changes are collapsed once more
+by canonical entity ID. This removes duplicate history work when several
+episode-addressed records resolve to the same unsupported multi-episode file.
+
 When no current file exists, return an absent entity change. The reconciler
-looks up the previously stored file by entity ID and emits a delete only when a
-mapping exists. An unknown entity produces an idempotent audit without deleting
-another row.
+emits an entity-addressed delete, and the repository resolves its previously
+stored file inside the reconciliation transaction. An unknown entity produces
+an idempotent audit without deleting another row.
 
 ## Scope and path mapping
 
@@ -177,10 +193,13 @@ Any malformed record, lookup conflict, hydration failure, unsafe path, database
 failure, or cursor failure rolls back the whole page. Existing event IDs remain
 `reconcile:<instance>:<history-id>`.
 
-An audit-only mutation stores instance, kind, history ID, and event type with a
-zero file ID. Repository validation explicitly allows zero only for this typed
-reconciliation no-op; webhook/import/rename/delete mutations still require a
-positive file reference. Replays remain idempotent.
+An unresolved entity-addressed deletion stores instance, kind, stable entity
+ID, history ID, and event type with a zero file ID. Repository validation
+allows a zero file ID only for a delete carrying a positive entity ID;
+webhook/import/rename mutations still require a positive file reference. If the
+entity lookup succeeds, the transaction records the resolved current file ID
+and links the audit to its media row before completing searches. Replays remain
+idempotent.
 
 ## Webhooks and manual commands
 
