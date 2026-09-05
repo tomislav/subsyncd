@@ -31,7 +31,7 @@ var (
 	}
 	rangeEndpointBeforePattern = regexp.MustCompile(`(?i)(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})$`)
 	rangeEndpointAfterPattern  = regexp.MustCompile(`(?i)^(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})(?:$|[^[:alnum:]])`)
-	episodeContinuationPattern = regexp.MustCompile(`(?i)^[ ._-]*(?:s\d{1,3}e\d{0,4}|\d{1,3}x\d{0,4}|e\d{0,4})`)
+	episodeContinuationPattern = regexp.MustCompile(`(?i)^(?:s\d{1,3}e\d{0,4}|\d{1,3}x\d{0,4}|e\d{0,4})`)
 	absolutePattern            = regexp.MustCompile(`(?i)(?:\bEP|\bABS(?:OLUTE)?[ ._-]*)(\d{2,5})\b`)
 	forcedPattern              = regexp.MustCompile(`(?i)(?:^|[ ._-])forced(?:[ ._-]|$)`)
 )
@@ -263,15 +263,17 @@ func hasInvalidOrAmbiguousRangeEvidence(name string) bool {
 }
 
 func episodeContinuation(name string, offset int) bool {
-	match := episodeContinuationPattern.FindStringIndex(name[offset:])
+	suffix := strings.TrimLeftFunc(name[offset:], func(r rune) bool {
+		return unicode.IsSpace(r) || r == '.' || r == '_' || r == '-'
+	})
+	match := episodeContinuationPattern.FindStringIndex(suffix)
 	if match == nil {
 		return false
 	}
-	end := offset + match[1]
-	if end == len(name) {
+	if match[1] == len(suffix) {
 		return true
 	}
-	next, _ := utf8.DecodeRuneInString(name[end:])
+	next, _ := utf8.DecodeRuneInString(suffix[match[1]:])
 	return !isAlphaNumeric(next)
 }
 

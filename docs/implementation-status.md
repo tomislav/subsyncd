@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Tasks 1–9 and the final review fix wave are implemented and locally verified; production remains out of scope
-- Next safe action: re-review the final fix wave, then request separate approval before any push, image publication, or deployment
+- Current task: codebase correctness-repair Tasks 1–9, the final review fix wave, and its authorized focused follow-up are implemented and locally verified; production remains out of scope
+- Next safe action: re-review the focused follow-up, then request separate approval before any push, image publication, or deployment
 - Latest follow-up: the complete local verification matrix passed without live Arr, provider, Silo, or production-host access
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs final follow-up — cancellation errors and Unicode whitespace
+
+- Exact acquisition preserves the original installer error before considering cancellation-only handling. Cancellation plus a failed filesystem rollback therefore retains both causes; only direct pre-publication content-validation errors consult cancellation before candidate rejection/fallback.
+- Episode continuation detection now trims Unicode whitespace with the existing dot, underscore, and hyphen separators, then applies the same episode-shape and Unicode alphanumeric boundary checks. Tabs, nonbreaking spaces, and em spaces in separated, incomplete, or extra episode expressions fail closed in range parsing and both selectors. Valid ranges, `S01E01.1080p`, and ordinary release suffixes remain accepted.
+- The real-installer/SQLite regression observed RED when publication succeeded, cancellation prevented persistence, rollback removal failed, and `Service.Run` exposed only cancellation. GREEN proves cancellation and the rollback path error remain discoverable, no later exact/broad candidate runs, no rejection or installation is persisted, and the obstructed destination remains available for inspection. Direct cancellation and existing content-validation fallback controls also pass.
+- Parser and selector regressions observed RED for all three whitespace classes before the shared continuation fix. Controls cover all supported range forms and whitespace-separated resolution/edition/release text without broad false positives.
+- Verification passed focused RED/GREEN, `go test ./internal/pack ./internal/workflow -race -count=1`, `go test ./... -race -count=1`, `go vet ./...`, tagged E2E with `-race -count=1`, provider-contract with all six credential variables explicitly unset, Compose validation, and diff checks. Full/E2E required approved loopback access for fake local servers; all three provider contracts skipped. Privacy scanning found only existing placeholders/syntax; the tracked prohibited-reference scan returned no matches.
+- Commit: `fix: preserve rollback errors and reject whitespace continuations` (focused follow-up based on `b7d8448`). No live services, production hosts, image builds, pushes, publication, or deployment were used. Next safe action: independent re-review of this follow-up.
 
 ### Conventional repairs final review — archive ambiguity and content-validation fallback
 

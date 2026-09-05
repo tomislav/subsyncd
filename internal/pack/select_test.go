@@ -174,6 +174,56 @@ func TestEpisodeSelectionPreservesExplicitRangesAndReleaseSuffixes(t *testing.T)
 	}
 }
 
+func TestEpisodeRangeAndSelectionRejectWhitespaceContinuations(t *testing.T) {
+	for label, separator := range map[string]string{"tab": "\t", "nbsp": "\u00a0", "em space": "\u2003"} {
+		t.Run(label, func(t *testing.T) {
+			for _, expression := range []string{
+				"S01E01" + separator + "E03",
+				"S01E01" + separator + "E",
+				"S01E01-" + separator + "S01E",
+				"1x01-" + separator + "1x",
+				"S01E01-E03" + separator + "E05",
+				"S01E01-S01E03" + separator + "S01E",
+				"1x01-1x03" + separator + "1x05",
+			} {
+				t.Run(expression, func(t *testing.T) {
+					name := "Show." + expression + ".srt"
+					if _, _, _, found := episodeRange(name); found {
+						t.Errorf("episodeRange(%q) unexpectedly matched", name)
+					}
+					for label, selector := range map[string]func(Manifest, domain.Candidate, domain.Media, bool) (Member, error){
+						"Select": Select, "SelectSingleEpisode": SelectSingleEpisode,
+					} {
+						selected, err := selector(Manifest{Members: []Member{{SafeName: name}}}, domain.Candidate{}, domain.Media{Season: 1, Episode: 1}, false)
+						var selection *SelectionError
+						if !errors.As(err, &selection) {
+							t.Errorf("%s(%q) = %#v, %v; want rejection", label, name, selected, err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestEpisodeSelectionPreservesWhitespaceReleaseSuffixes(t *testing.T) {
+	for _, separator := range []string{"\t", "\u00a0", "\u2003"} {
+		for _, suffix := range []string{"1080p", "Extended", "Édition", "S01Extras", "1xSpeed"} {
+			for expression, rule := range map[string]string{
+				"S01E01": "episode_token", "S01E01-E03": "episode_range", "S01E01-S01E03": "episode_range", "1x01-1x03": "episode_range",
+			} {
+				name := "Show." + expression + separator + suffix + ".srt"
+				for _, selector := range []func(Manifest, domain.Candidate, domain.Media, bool) (Member, error){Select, SelectSingleEpisode} {
+					selected, err := selector(Manifest{Members: []Member{{SafeName: name}}}, domain.Candidate{}, domain.Media{Season: 1, Episode: 1}, false)
+					if err != nil || selected.SelectionRule != rule {
+						t.Errorf("selection(%q) = %#v, %v; want %s", name, selected, err, rule)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestSelectSingleMovieEnforcesForcedPolicy(t *testing.T) {
 	manifest := Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.forced.srt", Forced: true}}}
 	_, err := SelectSingleMovie(manifest, domain.Candidate{Forced: true}, false)

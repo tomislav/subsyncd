@@ -175,3 +175,91 @@ func TestServiceExactJoinedInstallValidationFailureRemainsTerminal(t *testing.T)
 		t.Fatalf("joined installation failure created rejections: %#v", got)
 	}
 }
+
+func TestServiceExactCancellationPreservesInstallerRollbackError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := serviceRequest(t)
+	request.Media.EntityID = 1
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repository := database.Repository()
+	request.MediaID, _, err = repository.UpsertMedia(ctx, request.Media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("first"), exactCandidate("unused")}},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+	}}
+	adapter := &fakeProvider{id: "provider"}
+	destination := filepath.Join(filepath.Dir(request.Media.Fingerprint.Path), "Movie.en.srt")
+	installer := Installer{Repository: repository, MediaRoots: []string{filepath.Dir(destination)}, NotifierNames: []string{"silo"}, Fault: func(stage InstallStage) error {
+		if stage != StageDatabase {
+			return nil
+		}
+		payload, err := os.ReadFile(destination)
+		if err != nil || !strings.Contains(string(payload), "first") {
+			t.Fatalf("published subtitle = %q, %v", payload, err)
+		}
+		// A nonempty directory makes the real rollback removal fail after
+		// cancellation causes the SQLite installation transaction to fail.
+		if err := os.Remove(destination); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(destination, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeInstallFile(t, filepath.Join(destination, "blocker"), "x")
+		cancel()
+		return nil
+	}}
+	service := testService(t, inventory.Inventory{}, searcher, nil, nil, installer)
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, runErr := service.Run(ctx, request)
+	if !errors.Is(runErr, context.Canceled) {
+		t.Errorf("Run() lost cancellation: %v", runErr)
+	}
+	var rollbackErr *os.PathError
+	if !errors.As(runErr, &rollbackErr) || rollbackErr.Op != "remove" || rollbackErr.Path != destination {
+		t.Errorf("Run() lost rollback removal failure: %v", runErr)
+	}
+	if result.Outcome != "" || !slices.Equal(adapter.downloaded, []string{"first"}) || len(searcher.queries) != 1 || searcher.queries[0].Mode != provider.SearchExactHash {
+		t.Fatalf("outcome/downloads/searches = %s/%v/%v", result.Outcome, adapter.downloaded, searcher.queries)
+	}
+	// Use an uncanceled context to inspect durable state after the failed run.
+	inspection := context.Background()
+	rejections, err := repository.ListCandidateRejections(inspection, request.MediaID, "en", service.Clock.Now())
+	if err != nil || len(rejections) != 0 {
+		t.Fatalf("cancellation created rejections: %#v, %v", rejections, err)
+	}
+	if _, found, err := repository.GetInstallation(inspection, request.MediaID, "en"); err != nil || found {
+		t.Fatalf("uncommitted installation found/error = %v/%v", found, err)
+	}
+	if entries, err := os.ReadDir(destination); err != nil || len(entries) != 1 || entries[0].Name() != "blocker" {
+		t.Fatalf("rollback obstruction = %v, %v", entries, err)
+	}
+}
+
+func TestServiceExactDirectInstallCancellationRemainsTerminal(t *testing.T) {
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("first"), exactCandidate("unused")}},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+	}}
+	adapter := &fakeProvider{id: "provider"}
+	installer := &fakeInstaller{err: context.Canceled}
+	service := testService(t, inventory.Inventory{}, searcher, nil, nil, installer)
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if !errors.Is(err, context.Canceled) || result.Outcome != "" || installer.calls != 1 || !slices.Equal(adapter.downloaded, []string{"first"}) || len(searcher.queries) != 1 {
+		t.Fatalf("outcome/error/installs/downloads/searches = %s/%v/%d/%v/%d", result.Outcome, err, installer.calls, adapter.downloaded, len(searcher.queries))
+	}
+	if got := service.Repository.(*workflowRepository).rejections; len(got) != 0 {
+		t.Fatalf("cancellation created rejections: %#v", got)
+	}
+}
