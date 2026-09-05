@@ -8,22 +8,30 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cplieger/arrapi/v2"
+
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 )
 
 type Sonarr struct {
 	client     *arrClient
+	entity     sonarrEntityClient
 	mappings   []config.PathMapping
 	mediaRoots []string
 }
 
-func NewSonarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string) (*Sonarr, error) {
+func NewSonarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string, events *observability.Emitter) (*Sonarr, error) {
 	client, err := newArrClient(instance, rawURL, apiKey, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Sonarr{client: client, mappings: mappings, mediaRoots: mediaRoots}, nil
+	entity, err := newSonarrEntityClient(instance, rawURL, apiKey, events)
+	if err != nil {
+		return nil, err
+	}
+	return &Sonarr{client: client, entity: entity, mappings: mappings, mediaRoots: mediaRoots}, nil
 }
 
 type arrQuality struct {
@@ -151,27 +159,84 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 	return media, episodeIDs, nil
 }
 
-func (s *Sonarr) ListChangesSince(ctx context.Context, since time.Time) ([]HistoryChange, error) {
-	var history []arrHistoryRecord
-	query := url.Values{"date": {since.UTC().Format(time.RFC3339Nano)}, "includeEpisode": {"true"}, "includeSeries": {"true"}}
-	if err := s.client.getJSON(ctx, "/api/v3/history/since", query, &history); err != nil {
-		return nil, err
+func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]HistoryChange, error) {
+	history, err := s.entity.HistorySince(ctx, since, arrapi.EventDownloadImported, arrapi.EventFileRenamed, arrapi.EventFileDeleted)
+	if err != nil {
+		return nil, safeArrAPIError(s.client.instance, "history", err)
 	}
-	changes, err := reduceHistory(s.client.instance, domain.MediaEpisode, history, func(record arrHistoryRecord) int64 { return record.EpisodeFileID }, sonarrHistoryEvent)
+	changes, err := reduceHistoryByEntity(history, domain.MediaEpisode, through, func(record arrapi.HistoryRecord) int64 { return int64(record.EpisodeID) })
 	if err != nil {
 		return nil, err
 	}
-	for index := range changes {
-		if changes[index].Type == EventDelete {
+	type hydratedFile struct {
+		media      domain.Media
+		episodeIDs []int64
+	}
+	hydrated := make(map[int64]hydratedFile)
+	present := make(map[int64]HistoryChange)
+	finalized := make([]HistoryChange, 0, len(changes))
+	for _, change := range changes {
+		episode, err := s.entity.EpisodeByID(ctx, int(change.EntityID))
+		if err != nil {
+			if arrapi.IsNotFound(err) {
+				change.Type = EventDelete
+				change.State = HistoryAbsent
+				finalized = append(finalized, change)
+				continue
+			}
+			return nil, safeArrAPIError(s.client.instance, "episode_current", err)
+		}
+		if !episode.HasFile || episode.EpisodeFile == nil {
+			change.Type = EventDelete
+			change.State = HistoryAbsent
+			finalized = append(finalized, change)
 			continue
 		}
-		item, err := s.GetMedia(ctx, changes[index].Ref)
-		if err != nil {
-			return nil, fmt.Errorf("hydrate Sonarr history file %d: %w", changes[index].Ref.FileID, err)
+		fileID := int64(episode.EpisodeFile.ID)
+		if fileID <= 0 {
+			return nil, fmt.Errorf("Sonarr episode %d has invalid current file identity", change.EntityID)
 		}
-		changes[index].Media = item
+		if _, err := MapPath(episode.EpisodeFile.Path, s.mappings, s.mediaRoots); err != nil {
+			if IsOutsideScope(err) {
+				change.Type = EventDelete
+				change.State = HistoryOutsideScope
+				finalized = append(finalized, change)
+				continue
+			}
+			return nil, fmt.Errorf("map current Sonarr episode %d: %w", change.EntityID, err)
+		}
+		item, ok := hydrated[fileID]
+		if !ok {
+			media, episodeIDs, err := s.hydrateMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: fileID})
+			if err != nil {
+				return nil, fmt.Errorf("hydrate Sonarr history entity %d: %w", change.EntityID, err)
+			}
+			item = hydratedFile{media: media, episodeIDs: episodeIDs}
+			hydrated[fileID] = item
+		}
+		attached := false
+		for _, episodeID := range item.episodeIDs {
+			if episodeID == change.EntityID {
+				attached = true
+				break
+			}
+		}
+		if !attached {
+			return nil, fmt.Errorf("Sonarr history episode %d is not attached to current file %d", change.EntityID, fileID)
+		}
+		change.EntityID = item.media.EntityID
+		change.Media = item.media
+		change.State = HistoryPresent
+		if change.Type != EventRename {
+			change.Type = EventImport
+		}
+		present[change.EntityID] = change
 	}
-	return changes, nil
+	for _, change := range present {
+		finalized = append(finalized, change)
+	}
+	sortHistoryChanges(finalized)
+	return finalized, nil
 }
 
 func alternateTitleStrings(titles []arrAlternateTitle) []string {

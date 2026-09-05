@@ -78,7 +78,7 @@ func (c wakeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Me
 	return domain.Media{EntityID: ref.FileID, Ref: ref, Fingerprint: domain.MediaFingerprint{Path: fmt.Sprintf("/media/%d.mkv", ref.FileID), FileID: ref.FileID, Size: 100, ModTime: c.now}, Title: "Movie"}, nil
 }
 
-func (wakeCatalog) ListChangesSince(context.Context, time.Time) ([]catalog.HistoryChange, error) {
+func (wakeCatalog) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
 	return nil, nil
 }
 
@@ -157,7 +157,7 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	// Keep this black-box path focused on LAPSE and exercise the compatibility
 	// policy explicitly; score-bypass behavior is covered by workflow tests.
 	cfg.Sync.Policy = "always"
-	arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root})
+	arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestEmbeddedSubtitlePreventsProviderAccess(t *testing.T) {
 	defer providerServer.Close()
 	cfg := e2eConfig(t, root, arr.URL, providerServer.URL, "")
 	cfg.Silo.Enabled = false
-	arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root})
+	arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestExactHashInstallsWithoutLapseOrBroadSearch(t *testing.T) {
 	defer providerServer.Close()
 	cfg := e2eConfig(t, root, arr.URL, providerServer.URL, "")
 	cfg.Silo.Enabled = false
-	arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root})
+	arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *t
 
 	sonarr := newReconciliationSonarrServer(t, now)
 	defer sonarr.Close()
-	sonarrCatalog, err := catalog.NewSonarr("sonarr-main", sonarr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root})
+	sonarrCatalog, err := catalog.NewSonarr("sonarr-main", sonarr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

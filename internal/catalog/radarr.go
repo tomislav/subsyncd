@@ -3,26 +3,33 @@ package catalog
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strconv"
 	"time"
 
+	"github.com/cplieger/arrapi/v2"
+
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 )
 
 type Radarr struct {
 	client     *arrClient
+	entity     radarrEntityClient
 	mappings   []config.PathMapping
 	mediaRoots []string
 }
 
-func NewRadarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string) (*Radarr, error) {
+func NewRadarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string, events *observability.Emitter) (*Radarr, error) {
 	client, err := newArrClient(instance, rawURL, apiKey, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Radarr{client: client, mappings: mappings, mediaRoots: mediaRoots}, nil
+	entity, err := newRadarrEntityClient(instance, rawURL, apiKey, events)
+	if err != nil {
+		return nil, err
+	}
+	return &Radarr{client: client, entity: entity, mappings: mappings, mediaRoots: mediaRoots}, nil
 }
 
 type radarrMovieFile struct {
@@ -86,24 +93,53 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	}, nil
 }
 
-func (r *Radarr) ListChangesSince(ctx context.Context, since time.Time) ([]HistoryChange, error) {
-	var history []arrHistoryRecord
-	query := url.Values{"date": {since.UTC().Format(time.RFC3339Nano)}, "includeMovie": {"true"}}
-	if err := r.client.getJSON(ctx, "/api/v3/history/since", query, &history); err != nil {
-		return nil, err
+func (r *Radarr) ListChanges(ctx context.Context, since, through time.Time) ([]HistoryChange, error) {
+	history, err := r.entity.HistorySince(ctx, since, arrapi.EventDownloadImported, arrapi.EventFileRenamed, arrapi.EventFileDeleted)
+	if err != nil {
+		return nil, safeArrAPIError(r.client.instance, "history", err)
 	}
-	changes, err := reduceHistory(r.client.instance, domain.MediaMovie, history, func(record arrHistoryRecord) int64 { return record.MovieFileID }, radarrHistoryEvent)
+	changes, err := reduceHistoryByEntity(history, domain.MediaMovie, through, func(record arrapi.HistoryRecord) int64 { return int64(record.MovieID) })
 	if err != nil {
 		return nil, err
 	}
 	for index := range changes {
-		if changes[index].Type == EventDelete {
+		movie, err := r.entity.MovieByID(ctx, int(changes[index].EntityID))
+		if err != nil {
+			if arrapi.IsNotFound(err) {
+				changes[index].Type = EventDelete
+				changes[index].State = HistoryAbsent
+				continue
+			}
+			return nil, safeArrAPIError(r.client.instance, "movie_current", err)
+		}
+		if !movie.HasFile || movie.MovieFile == nil {
+			changes[index].Type = EventDelete
+			changes[index].State = HistoryAbsent
 			continue
 		}
-		item, err := r.GetMedia(ctx, changes[index].Ref)
-		if err != nil {
-			return nil, fmt.Errorf("hydrate Radarr history file %d: %w", changes[index].Ref.FileID, err)
+		if movie.MovieFile.ID <= 0 {
+			return nil, fmt.Errorf("Radarr movie %d has invalid current file identity", changes[index].EntityID)
 		}
+		if _, err := MapPath(movie.MovieFile.Path, r.mappings, r.mediaRoots); err != nil {
+			if IsOutsideScope(err) {
+				changes[index].Type = EventDelete
+				changes[index].State = HistoryOutsideScope
+				continue
+			}
+			return nil, fmt.Errorf("map current Radarr movie %d: %w", changes[index].EntityID, err)
+		}
+		ref := domain.MediaRef{Instance: r.client.instance, Kind: domain.MediaMovie, FileID: int64(movie.MovieFile.ID)}
+		item, err := r.GetMedia(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("hydrate Radarr history entity %d: %w", changes[index].EntityID, err)
+		}
+		if item.EntityID != changes[index].EntityID {
+			return nil, fmt.Errorf("Radarr history entity %d resolved to entity %d", changes[index].EntityID, item.EntityID)
+		}
+		if changes[index].Type != EventRename {
+			changes[index].Type = EventImport
+		}
+		changes[index].State = HistoryPresent
 		changes[index].Media = item
 	}
 	return changes, nil

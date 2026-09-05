@@ -1,0 +1,28 @@
+[
+  {
+    "id": 6101,
+    "seriesId": 10,
+    "episodeId": 102,
+    "sourceTitle": "Example.Show.S01E01-E02.1080p.WEB-DL-GROUP",
+    "eventType": "downloadFolderImported",
+    "date": "2026-09-05T05:20:00Z",
+    "data": {"fileId": "1001"}
+  },
+  {
+    "id": 6102,
+    "seriesId": 10,
+    "episodeId": 101,
+    "sourceTitle": "Example.Show.S01E01-E02.1080p.WEB-DL-GROUP",
+    "eventType": "episodeFileRenamed",
+    "date": "2026-09-05T05:21:00Z",
+    "data": {"fileId": "1001"}
+  },
+  {
+    "id": 6103,
+    "seriesId": 10,
+    "episodeId": 101,
+    "eventType": "grabbed",
+    "date": "2026-09-05T05:22:00Z",
+    "data": {}
+  }
+]

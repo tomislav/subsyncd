@@ -47,7 +47,7 @@ type fakeCatalog struct{}
 func (fakeCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
 	return domain.Media{}, nil
 }
-func (fakeCatalog) ListChangesSince(context.Context, time.Time) ([]catalog.HistoryChange, error) {
+func (fakeCatalog) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
 	return nil, nil
 }
 
@@ -56,7 +56,7 @@ type staticCatalog struct{ media domain.Media }
 func (c staticCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
 	return c.media, nil
 }
-func (staticCatalog) ListChangesSince(context.Context, time.Time) ([]catalog.HistoryChange, error) {
+func (staticCatalog) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
 	return nil, nil
 }
 

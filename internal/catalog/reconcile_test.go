@@ -14,14 +14,16 @@ type fakeReconcileCatalog struct {
 	changes []HistoryChange
 	err     error
 	since   time.Time
+	through time.Time
 }
 
 func (f *fakeReconcileCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
 	return domain.Media{}, errors.New("not used")
 }
 
-func (f *fakeReconcileCatalog) ListChangesSince(_ context.Context, since time.Time) ([]HistoryChange, error) {
+func (f *fakeReconcileCatalog) ListChanges(_ context.Context, since, through time.Time) ([]HistoryChange, error) {
 	f.since = since
+	f.through = through
 	return f.changes, f.err
 }
 
@@ -47,7 +49,7 @@ func (f *fakeReconcileStore) CommitReconciliation(_ context.Context, _ string, c
 
 func TestReconcilerDoesNotAdvanceCursorWhenPageCommitFails(t *testing.T) {
 	start := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
-	catalog := &fakeReconcileCatalog{changes: []HistoryChange{{HistoryID: 1, Type: EventImport, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1}, OccurredAt: start}}}
+	catalog := &fakeReconcileCatalog{changes: []HistoryChange{{HistoryID: 1, EntityID: 101, Kind: domain.MediaEpisode, Type: EventImport, State: HistoryPresent, Media: domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1}}, OccurredAt: start}}}
 	store := &fakeReconcileStore{cursor: start, commitErr: errors.New("disk full")}
 	reconciler := Reconciler{Instance: "sonarr-main", Catalog: catalog, Store: store, Languages: []domain.Language{"hr"}, Now: func() time.Time { return start.Add(time.Hour) }}
 
@@ -64,8 +66,8 @@ func TestReconcilerConvertsHistoryChanges(t *testing.T) {
 	pageEnd := start.Add(time.Hour)
 	media := domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 7}, Title: "Episode"}
 	changes := []HistoryChange{
-		{HistoryID: 41, Type: EventImport, Ref: media.Ref, Media: media, OccurredAt: start.Add(10 * time.Minute)},
-		{HistoryID: 42, Type: EventDelete, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 8}, OccurredAt: start.Add(20 * time.Minute)},
+		{HistoryID: 41, EntityID: 101, Kind: domain.MediaEpisode, Type: EventImport, State: HistoryPresent, Media: media, OccurredAt: start.Add(10 * time.Minute)},
+		{HistoryID: 42, EntityID: 102, Kind: domain.MediaEpisode, Type: EventDelete, State: HistoryAbsent, OccurredAt: start.Add(20 * time.Minute)},
 	}
 	catalog := &fakeReconcileCatalog{changes: changes}
 	backend := &fakeReconcileStore{cursor: start}
@@ -73,8 +75,8 @@ func TestReconcilerConvertsHistoryChanges(t *testing.T) {
 	if err := reconciler.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !catalog.since.Equal(start) || !backend.committed.Equal(pageEnd) {
-		t.Fatalf("since/committed = %s/%s", catalog.since, backend.committed)
+	if !catalog.since.Equal(start) || !catalog.through.Equal(pageEnd) || !backend.committed.Equal(pageEnd) {
+		t.Fatalf("since/through/committed = %s/%s/%s", catalog.since, catalog.through, backend.committed)
 	}
 	if len(backend.mutations) != 2 {
 		t.Fatalf("mutations = %#v", backend.mutations)
@@ -83,7 +85,7 @@ func TestReconcilerConvertsHistoryChanges(t *testing.T) {
 	if first.EventID != "reconcile:sonarr-main:41" || first.Type != "import" || first.Ref != media.Ref || first.Media.Ref != media.Ref || !first.At.Equal(changes[0].OccurredAt) || first.Priority != store.SearchPriorityMissing || len(first.Languages) != 2 {
 		t.Fatalf("first mutation = %#v", first)
 	}
-	if second.EventID != "reconcile:sonarr-main:42" || second.Type != "delete" || second.Ref.FileID != 8 || second.Media.Ref.FileID != 0 || !second.At.Equal(changes[1].OccurredAt) || second.Priority != store.SearchPriorityMissing {
+	if second.EventID != "reconcile:sonarr-main:42" || second.Type != "delete" || second.EntityID != 102 || second.Ref.Kind != domain.MediaEpisode || second.Ref.FileID != 0 || second.Media.Ref.FileID != 0 || !second.At.Equal(changes[1].OccurredAt) || second.Priority != store.SearchPriorityMissing {
 		t.Fatalf("second mutation = %#v", second)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,7 +36,7 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	}))
 	defer server.Close()
 
-	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root})
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestSonarrGetMediaIndexesMultiEpisodeFileAsUnsupported(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root})
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestSonarrGetMediaRejectsFileWithoutEpisodes(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", nil, []string{t.TempDir()})
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", nil, []string{t.TempDir()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,23 +116,117 @@ func TestSonarrGetMediaRejectsFileWithoutEpisodes(t *testing.T) {
 	}
 }
 
-func TestSonarrListChangesSinceHydratesLatestRelevantHistory(t *testing.T) {
+func TestSonarrHistoryCollapsesAttachedEpisodesToCanonicalEntity(t *testing.T) {
 	root := t.TempDir()
+	history, err := os.ReadFile("testdata/sonarr_history.json")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var historyDate string
 	fileRequests := 0
+	currentRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v3/history/since":
 			historyDate = r.URL.Query().Get("date")
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 10, "eventType": "downloadFolderImported", "date": "2026-09-04T10:00:00Z", "episodeFileId": 1001},
-				{"id": 11, "eventType": "grabbed", "date": "2026-09-04T10:15:00Z", "episodeFileId": 1001},
-				{"id": 12, "eventType": "episodeFileRenamed", "date": "2026-09-04T10:30:00Z", "episodeFileId": 1001},
-			})
+			if got := r.URL.Query().Get("includeEpisode"); got != "false" {
+				t.Errorf("includeEpisode = %q, want false", got)
+			}
+			if got := r.URL.Query().Get("includeSeries"); got != "false" {
+				t.Errorf("includeSeries = %q, want false", got)
+			}
+			_, _ = w.Write(history)
+		case r.URL.Path == "/api/v3/episode/101":
+			currentRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
+		case r.URL.Path == "/api/v3/episode/102":
+			currentRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
 		case r.URL.Path == "/api/v3/episodefile/1001":
 			fileRequests++
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 1, "dateAdded": "2026-09-04T10:00:00Z"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 1, "dateAdded": "2026-09-05T05:20:00Z"})
+		case r.URL.Path == "/api/v3/episode" && r.URL.Query().Get("episodeFileId") == "1001":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "title": "Second"},
+				{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "title": "First"},
+			})
+		case r.URL.Path == "/api/v3/series/10":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Show"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 9, 5, 5, 0, 0, 123456789, time.UTC)
+	changes, err := catalog.ListChanges(context.Background(), since, time.Date(2026, 9, 5, 6, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || changes[0].HistoryID != 6102 || changes[0].EntityID != 101 || changes[0].Type != EventRename || changes[0].State != HistoryPresent || changes[0].Media.Ref.FileID != 1001 || changes[0].Media.EntityID != 101 {
+		t.Fatalf("changes = %#v", changes)
+	}
+	if fileRequests != 1 {
+		t.Fatalf("episode file requests = %d, want 1", fileRequests)
+	}
+	if currentRequests != 2 {
+		t.Fatalf("current episode requests = %d, want 2", currentRequests)
+	}
+	if historyDate != "2026-09-05T05:00:00Z" {
+		t.Fatalf("history date = %q, want RFC3339 seconds", historyDate)
+	}
+}
+
+func TestSonarrHistoryAbsentDoesNotHydrateDetail(t *testing.T) {
+	fileRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v3/history/since" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 20, "seriesId": 10, "episodeId": 103, "eventType": "downloadFolderImported", "date": "2026-09-05T10:00:00Z", "data": map[string]string{"fileId": "1002"}},
+				{"id": 21, "seriesId": 10, "episodeId": 103, "eventType": "episodeFileDeleted", "date": "2026-09-05T11:00:00Z", "data": map[string]string{}},
+			})
+			return
+		}
+		if r.URL.Path == "/api/v3/episode/103" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 103, "seriesId": 10, "hasFile": false})
+			return
+		}
+		fileRequests++
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", nil, []string{t.TempDir()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || changes[0].HistoryID != 21 || changes[0].EntityID != 103 || changes[0].Type != EventDelete || changes[0].State != HistoryAbsent || changes[0].Media.Ref.FileID != 0 {
+		t.Fatalf("changes = %#v", changes)
+	}
+	if fileRequests != 0 {
+		t.Fatalf("hydration requests = %d, want 0", fileRequests)
+	}
+}
+
+func TestSonarrHistoryRejectsEpisodeMissingFromCurrentFile(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v3/history/since":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 30, "seriesId": 10, "episodeId": 104, "eventType": "downloadFolderImported", "date": "2026-09-05T11:00:00Z", "data": map[string]string{"fileId": "1004"}}})
+		case r.URL.Path == "/api/v3/episode/104":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 104, "seriesId": 10, "hasFile": true, "episodeFile": map[string]any{"id": 1004, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
+		case r.URL.Path == "/api/v3/episodefile/1004":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1004, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 1})
 		case r.URL.Path == "/api/v3/episode":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1}})
 		case r.URL.Path == "/api/v3/series/10":
@@ -141,73 +236,11 @@ func TestSonarrListChangesSinceHydratesLatestRelevantHistory(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root})
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	since := time.Date(2026, 9, 4, 9, 0, 0, 123, time.UTC)
-	changes, err := catalog.ListChangesSince(context.Background(), since)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 1 || changes[0].HistoryID != 12 || changes[0].Type != EventRename || changes[0].Ref.FileID != 1001 || changes[0].Media.Ref.FileID != 1001 || !changes[0].OccurredAt.Equal(time.Date(2026, 9, 4, 10, 30, 0, 0, time.UTC)) {
-		t.Fatalf("changes = %#v", changes)
-	}
-	if fileRequests != 1 {
-		t.Fatalf("episode file requests = %d, want 1", fileRequests)
-	}
-	if historyDate != since.Format(time.RFC3339Nano) {
-		t.Fatalf("history date = %q, want %q", historyDate, since.Format(time.RFC3339Nano))
-	}
-}
-
-func TestSonarrListChangesSinceImportThenDeleteDoesNotHydrate(t *testing.T) {
-	fileRequests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/api/v3/history/since" {
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 20, "eventType": "downloadFolderImported", "date": "2026-09-04T10:00:00Z", "episodeFileId": 1002},
-				{"id": 21, "eventType": "episodeFileDeleted", "date": "2026-09-04T11:00:00Z", "episodeFileId": 1002},
-			})
-			return
-		}
-		fileRequests++
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", nil, []string{t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	changes, err := catalog.ListChangesSince(context.Background(), time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(changes) != 1 || changes[0].HistoryID != 21 || changes[0].Type != EventDelete || changes[0].Ref.FileID != 1002 || changes[0].Media.Ref.FileID != 0 {
-		t.Fatalf("changes = %#v", changes)
-	}
-	if fileRequests != 0 {
-		t.Fatalf("hydration requests = %d, want 0", fileRequests)
-	}
-}
-
-func TestSonarrListChangesSinceRejectsMalformedRelevantHistory(t *testing.T) {
-	for name, record := range map[string]map[string]any{
-		"missing history id": {"eventType": "episodeFileDeleted", "date": "2026-09-04T11:00:00Z", "episodeFileId": 1002},
-		"missing file id":    {"id": 21, "eventType": "episodeFileDeleted", "date": "2026-09-04T11:00:00Z"},
-		"missing date":       {"id": 21, "eventType": "episodeFileDeleted", "episodeFileId": 1002},
-	} {
-		t.Run(name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode([]map[string]any{record}) }))
-			defer server.Close()
-			catalog, err := NewSonarr("sonarr-main", server.URL, "secret", nil, []string{t.TempDir()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := catalog.ListChangesSince(context.Background(), time.Time{}); err == nil {
-				t.Fatal("ListChangesSince() error = nil")
-			}
-		})
+	if _, err := catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)); err == nil || !strings.Contains(err.Error(), "not attached") {
+		t.Fatalf("ListChanges() error = %v, want membership failure", err)
 	}
 }

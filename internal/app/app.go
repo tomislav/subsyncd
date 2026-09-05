@@ -171,7 +171,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 
-	catalogs, err := buildCatalogs(cfg, options.Catalogs)
+	catalogs, err := buildCatalogs(cfg, options.Catalogs, events)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	return application, nil
 }
 
-func buildCatalogs(cfg config.Config, supplied map[string]catalog.Catalog) (map[string]catalog.Catalog, error) {
+func buildCatalogs(cfg config.Config, supplied map[string]catalog.Catalog, events *observability.Emitter) (map[string]catalog.Catalog, error) {
 	if supplied != nil {
 		result := make(map[string]catalog.Catalog, len(supplied))
 		for name, item := range supplied {
@@ -277,9 +277,9 @@ func buildCatalogs(cfg config.Config, supplied map[string]catalog.Catalog) (map[
 		var err error
 		switch instance.Type {
 		case "sonarr":
-			item, err = catalog.NewSonarr(instance.Name, instance.URL, instance.APIKey, instance.PathMappings, cfg.MediaRoots)
+			item, err = catalog.NewSonarr(instance.Name, instance.URL, instance.APIKey, instance.PathMappings, cfg.MediaRoots, events)
 		case "radarr":
-			item, err = catalog.NewRadarr(instance.Name, instance.URL, instance.APIKey, instance.PathMappings, cfg.MediaRoots)
+			item, err = catalog.NewRadarr(instance.Name, instance.URL, instance.APIKey, instance.PathMappings, cfg.MediaRoots, events)
 		default:
 			err = fmt.Errorf("unknown Arr instance type %q", instance.Type)
 		}

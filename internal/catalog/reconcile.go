@@ -29,18 +29,22 @@ func (r Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("read %s reconciliation cursor: %w", r.Instance, err)
 	}
 	pageEnd := r.Now().UTC()
-	changes, err := r.Catalog.ListChangesSince(ctx, cursor)
+	changes, err := r.Catalog.ListChanges(ctx, cursor, pageEnd)
 	if err != nil {
 		return fmt.Errorf("list %s history since %s: %w", r.Instance, cursor, err)
 	}
 	mutations := make([]store.MediaEventMutation, 0, len(changes))
 	for _, change := range changes {
+		ref := change.Media.Ref
+		if ref.Instance == "" {
+			ref = domain.MediaRef{Instance: r.Instance, Kind: change.Kind}
+		}
 		mutations = append(mutations, store.MediaEventMutation{
 			EventID:   fmt.Sprintf("reconcile:%s:%d", r.Instance, change.HistoryID),
 			Type:      string(change.Type),
-			EntityID:  change.Media.EntityID,
+			EntityID:  change.EntityID,
 			Media:     change.Media,
-			Ref:       change.Ref,
+			Ref:       ref,
 			Languages: r.Languages,
 			At:        change.OccurredAt,
 			Priority:  store.SearchPriorityMissing,

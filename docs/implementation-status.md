@@ -6,12 +6,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: arrapi stable-identity reconciliation implementation
-- Next task: replace custom file-based history DTOs with arrapi entity reconciliation (Task 4)
-- Latest follow-up: Task 3 added stable detail identity and typed outside-scope handling
+- Next task: resolve entity-addressed deletion and audit mutations atomically with the reconciliation cursor (Task 5)
+- Latest follow-up: Task 4 replaced fabricated file-based history with arrapi current-state reconciliation
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Arrapi stable-identity reconciliation Task 4 — entity history and current state
+
+- The catalog contract now accepts both the durable `since` cursor and captured `through` page end. History changes carry stable entity/kind, typed current state, event type, and hydrated media only when present; no physical file ID is used as the history reduction key.
+- Radarr and Sonarr use arrapi v2.0.5 for `/api/v3/history/since` and current movie/episode reads. Relevant history is reduced by `movieId`/`episodeId`, after-page records are filtered before collapse, and current state decides present, absent, or outside-scope behavior. Rename survives only as the latest present change; other present states normalize to import, while absent/outside normalize to delete.
+- Sonarr verifies that each triggering episode belongs to the current file, caches detail hydration per file, and collapses attached multi-episode history to the deterministic canonical episode. The existing hardened client remains only for richer file/series/movie detail metadata.
+- Sanitized fixtures mirror live API shapes: imports may contain `data.fileId`; deletes retain entity IDs and omit file IDs; unknown events are ignored. Tests cover RFC3339-second requests, page-end filtering, replacement resolution, no-file state, outside scope, malformed identity, attached-episode collapse, and membership failure.
+- Verification passed with the complete race-enabled catalog and application suites, the focused history suites, `git diff --check`, and a negative scan proving the history fixtures contain no top-level `movieFileId` or `episodeFileId`.
+- Next task: allow zero-file, positive-entity delete mutations, resolve known rows inside the reconciliation transaction, retain unknown audits, and advance the cursor only with the whole page.
 
 ### Arrapi stable-identity reconciliation Task 3 — detail identity and scope
 

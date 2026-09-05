@@ -9,13 +9,23 @@ import (
 
 type Catalog interface {
 	GetMedia(context.Context, domain.MediaRef) (domain.Media, error)
-	ListChangesSince(context.Context, time.Time) ([]HistoryChange, error)
+	ListChanges(context.Context, time.Time, time.Time) ([]HistoryChange, error)
 }
+
+type HistoryState string
+
+const (
+	HistoryPresent      HistoryState = "present"
+	HistoryAbsent       HistoryState = "absent"
+	HistoryOutsideScope HistoryState = "outside_scope"
+)
 
 type HistoryChange struct {
 	HistoryID  int64
+	EntityID   int64
+	Kind       domain.MediaKind
 	Type       EventType
-	Ref        domain.MediaRef
+	State      HistoryState
 	Media      domain.Media
 	OccurredAt time.Time
 }
