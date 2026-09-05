@@ -293,7 +293,12 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	workerRunner := options.Worker
 	if workerRunner == nil {
-		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
+		instances := make([]string, 0, len(cfg.Instances))
+		for _, instance := range cfg.Instances {
+			instances = append(instances, instance.Name)
+		}
+		workerRepository := repository.WithSearchScope(instances, languages)
+		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
 	}
 
 	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}

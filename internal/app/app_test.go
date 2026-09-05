@@ -961,3 +961,35 @@ func TestAnalyzeSyncRemovesPrivateSpeechCacheOnFailure(t *testing.T) {
 		t.Fatalf("private diagnostic cache remains: %v", err)
 	}
 }
+
+func TestNewScopesOnlyWorkerSearchClaims(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	now := time.Now()
+	for index, route := range []struct {
+		instance string
+		language domain.Language
+	}{{"removed", "en"}, {"tv", "hr"}, {"tv", "en"}} {
+		media := domain.Media{EntityID: int64(index + 1), Ref: domain.MediaRef{Instance: route.instance, Kind: domain.MediaMovie, FileID: int64(index + 1)}, Fingerprint: domain.MediaFingerprint{FileID: int64(index + 1), Path: filepath.Join(cfg.MediaRoots[0], fmt.Sprintf("%d.mkv", index)), Size: 100, ModTime: now}, Title: "Movie"}
+		id, _, err := application.Repository.UpsertMedia(context.Background(), media)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := application.Repository.UpsertSearchStateWithPriority(context.Background(), id, route.language, now, store.SearchPriorityMissing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	background := application.Worker.(*worker.Worker)
+	leases, err := background.Repository.LeaseDueSearches(context.Background(), now, 1, time.Minute)
+	if err != nil || len(leases) != 1 || leases[0].MediaID != 3 || leases[0].Language != "en" {
+		t.Fatalf("worker scope claims=%+v error=%v", leases, err)
+	}
+	leases, err = application.Repository.LeaseDueSearches(context.Background(), now, 10, time.Minute)
+	if err != nil || len(leases) != 2 {
+		t.Fatalf("ordinary repository claims=%+v error=%v", leases, err)
+	}
+}

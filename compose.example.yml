@@ -30,7 +30,7 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=512m,uid=${PUID:-1000},gid=${PGID:-1000}
     expose:
       - "8097"
-    stop_grace_period: 45s
+    stop_grace_period: 75s
     mem_limit: 2g
     cpus: 2.0
     pids_limit: 256

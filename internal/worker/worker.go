@@ -86,6 +86,9 @@ type Worker struct {
 }
 
 func (w *Worker) Run(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	if err := w.prepare(); err != nil {
 		return err
 	}
@@ -97,16 +100,22 @@ func (w *Worker) Run(ctx context.Context) error {
 	maintenanceActive := false
 
 	dispatch := func() {
+		if ctx.Err() != nil {
+			return
+		}
 		available := w.MaxWorkflows - activeSearches
 		if available <= 0 {
 			return
 		}
-		leases, err := w.Repository.LeaseDueSearches(workCtx, w.Clock.Now(), available, w.LeaseDuration)
+		leases, err := w.Repository.LeaseDueSearches(ctx, w.Clock.Now(), available, w.LeaseDuration)
 		if err != nil {
 			w.report(err)
 			return
 		}
 		for _, lease := range leases {
+			if ctx.Err() != nil {
+				return
+			}
 			w.logLease(workCtx, lease)
 			activeSearches++
 			go func(lease store.SearchLease) {
@@ -115,11 +124,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 	}
 	startMaintenance := func() {
-		if maintenanceActive {
+		if ctx.Err() != nil || maintenanceActive {
 			return
 		}
 		maintenanceActive = true
-		go func() { maintenanceDone <- w.runMaintenance(workCtx) }()
+		go func() { maintenanceDone <- w.runMaintenance(ctx, workCtx) }()
 	}
 
 	dispatch()
@@ -149,27 +158,39 @@ func (w *Worker) Run(ctx context.Context) error {
 
 type searchDone struct{ err error }
 
-func (w *Worker) runMaintenance(ctx context.Context) error {
+func (w *Worker) runMaintenance(dispatchCtx, ctx context.Context) error {
+	if err := dispatchCtx.Err(); err != nil {
+		return err
+	}
 	var failures []error
-	if err := w.reconcileDue(ctx); err != nil {
+	if err := w.reconcileDueContexts(dispatchCtx, ctx); err != nil {
 		failures = append(failures, err)
 	}
-	notifications, err := w.Repository.LeaseDueNotifications(ctx, w.Clock.Now(), w.NotificationBatch, w.LeaseDuration)
+	if err := dispatchCtx.Err(); err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	notifications, err := w.Repository.LeaseDueNotifications(dispatchCtx, w.Clock.Now(), w.NotificationBatch, w.LeaseDuration)
 	if err != nil {
 		failures = append(failures, err)
-	} else if err := w.processNotifications(ctx, notifications); err != nil {
+	} else if err := w.processNotificationsContexts(dispatchCtx, ctx, notifications); err != nil {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
 }
 
 func (w *Worker) RunOnce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := w.prepare(); err != nil {
 		return err
 	}
 	var failures []error
 	if err := w.reconcileDue(ctx); err != nil {
 		failures = append(failures, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(append(failures, err)...)
 	}
 	searches, err := w.Repository.LeaseDueSearches(ctx, w.Clock.Now(), w.SearchBatch, w.LeaseDuration)
 	if err != nil {
@@ -181,6 +202,9 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		if err := w.processSearches(ctx, searches); err != nil {
 			failures = append(failures, err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(append(failures, err)...)
 	}
 	notifications, err := w.Repository.LeaseDueNotifications(ctx, w.Clock.Now(), w.NotificationBatch, w.LeaseDuration)
 	if err != nil {
@@ -213,6 +237,9 @@ func (w *Worker) processSearchLease(ctx context.Context, lease store.SearchLease
 		return ctx.Err()
 	}
 	defer func() { <-semaphore }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return w.runSearchLease(ctx, lease)
 }
 
@@ -334,6 +361,10 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 }
 
 func (w *Worker) processNotifications(ctx context.Context, leases []store.NotificationLease) error {
+	return w.processNotificationsContexts(ctx, ctx, leases)
+}
+
+func (w *Worker) processNotificationsContexts(dispatchCtx, ctx context.Context, leases []store.NotificationLease) error {
 	semaphore := make(chan struct{}, w.MaxWorkflows)
 	errorsByIndex := make([]error, len(leases))
 	var wait sync.WaitGroup
@@ -341,14 +372,17 @@ func (w *Worker) processNotifications(ctx context.Context, leases []store.Notifi
 		wait.Add(1)
 		go func(index int, lease store.NotificationLease) {
 			defer wait.Done()
-			errorsByIndex[index] = w.processNotificationLease(ctx, lease, semaphore)
+			errorsByIndex[index] = w.processNotificationLeaseContexts(dispatchCtx, ctx, lease, semaphore)
 		}(index, lease)
 	}
 	wait.Wait()
 	return errors.Join(errorsByIndex...)
 }
 
-func (w *Worker) processNotificationLease(ctx context.Context, lease store.NotificationLease, semaphore chan struct{}) error {
+func (w *Worker) processNotificationLeaseContexts(dispatchCtx, ctx context.Context, lease store.NotificationLease, semaphore chan struct{}) error {
+	if err := dispatchCtx.Err(); err != nil {
+		return err
+	}
 	started := time.Now()
 	jobCtx, cancelJob := context.WithCancel(ctx)
 	defer cancelJob()
@@ -360,8 +394,14 @@ func (w *Worker) processNotificationLease(ctx context.Context, lease store.Notif
 	renewal := w.renewNotificationLease(jobCtx, cancelJob, lease.JobID)
 	select {
 	case semaphore <- struct{}{}:
+	case <-dispatchCtx.Done():
+		return errors.Join(renewal.finish(), dispatchCtx.Err())
 	case <-jobCtx.Done():
 		return errors.Join(renewal.finish(), jobCtx.Err())
+	}
+	defer func() { <-semaphore }()
+	if err := errors.Join(dispatchCtx.Err(), jobCtx.Err()); err != nil {
+		return errors.Join(renewal.finish(), err)
 	}
 	var payload workflow.NotificationPayload
 	err := json.Unmarshal(lease.PayloadJSON, &payload)
@@ -372,7 +412,6 @@ func (w *Worker) processNotificationLease(ctx context.Context, lease store.Notif
 	if err == nil {
 		err = destination.SubtitleChanged(jobCtx, payload.Media, payload.SubtitlePath)
 	}
-	<-semaphore
 	if renewErr := renewal.finish(); renewErr != nil {
 		return renewErr
 	}
@@ -447,6 +486,10 @@ func (w *Worker) renew(ctx context.Context, cancelJob context.CancelFunc, renew 
 }
 
 func (w *Worker) reconcileDue(ctx context.Context) error {
+	return w.reconcileDueContexts(ctx, ctx)
+}
+
+func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 	w.reconcileMu.Lock()
 	defer w.reconcileMu.Unlock()
 	if w.reconcileAttempts == nil {
@@ -460,6 +503,9 @@ func (w *Worker) reconcileDue(ctx context.Context) error {
 	var failures []error
 	now := w.Clock.Now()
 	for _, name := range names {
+		if err := dispatchCtx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
 		attempt := w.reconcileAttempts[name]
 		delay := w.ReconcileInterval
 		if attempt.Failures > 0 {

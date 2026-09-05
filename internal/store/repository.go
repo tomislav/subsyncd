@@ -16,7 +16,22 @@ import (
 )
 
 type Repository struct {
-	store *Store
+	store       *Store
+	searchScope *searchScope
+}
+
+type searchScope struct {
+	instances []string
+	languages []domain.Language
+}
+
+// WithSearchScope returns an independent claim policy sharing the same database.
+// Empty instance or language lists disable claims; the original remains unscoped.
+// Renewal, completion, and notification delivery are independent of this policy.
+func (r *Repository) WithSearchScope(instances []string, languages []domain.Language) *Repository {
+	clone := *r
+	clone.searchScope = &searchScope{instances: append([]string(nil), instances...), languages: append([]domain.Language(nil), languages...)}
+	return &clone
 }
 
 type TrackRecord struct {
@@ -651,7 +666,23 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 		return nil, fmt.Errorf("begin search lease: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT media_id, language, attempt, failure_attempt, priority FROM search_states WHERE state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?) ORDER BY priority DESC, next_attempt_at_ns, media_id, language LIMIT ?`, now.UnixNano(), now.UnixNano(), limit)
+	query := `SELECT media_id, language, attempt, failure_attempt, priority FROM search_states JOIN media ON media.id=search_states.media_id WHERE media.deleted=0 AND state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`
+	args := []any{now.UnixNano(), now.UnixNano()}
+	if scope := r.searchScope; scope != nil {
+		if len(scope.instances) == 0 || len(scope.languages) == 0 {
+			return nil, nil
+		}
+		query += ` AND media.instance IN (` + strings.TrimSuffix(strings.Repeat("?,", len(scope.instances)), ",") + `) AND language IN (` + strings.TrimSuffix(strings.Repeat("?,", len(scope.languages)), ",") + `)`
+		for _, instance := range scope.instances {
+			args = append(args, instance)
+		}
+		for _, language := range scope.languages {
+			args = append(args, string(language))
+		}
+	}
+	query += ` ORDER BY priority DESC, next_attempt_at_ns, media_id, language LIMIT ?`
+	args = append(args, limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("select due searches: %w", err)
 	}
