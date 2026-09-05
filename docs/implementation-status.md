@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: review of remaining systems completed at `9d292c4`; thirteen actionable findings recorded
-- Next safe action: implement the remaining-system review findings when requested, beginning with Arr redirect credential forwarding and stale inventory identity updates
-- Latest follow-up: scratch/LAPSE repair `9d292c4` is pushed; subsequent review changes documentation only, with no production rollout
+- Current task: single-run LAPSE feasibility verified against v2.0.5; implementation proposal pending approval
+- Next safe action: review the proposed single-run candidate evaluation design before changing the tournament workflow
+- Latest follow-up: remaining-system repairs are pushed at `3ad9aee`; current feasibility work changes documentation only, with no runtime or production modification
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -867,3 +867,13 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Commit: this publication-ledger commit, following `2466415`; runtime code remains `5407480`. The final scoped re-review approved F1 and F2 with no new actionable issues. All thirteen original findings and both combined-review integration findings are closed under the documented contracts. Full verification evidence above remains current; subsequent commits changed documentation only.
 - Migration decision: preserve only positively proven historical deletion; absent/pruned or conflicting chronology stays active to avoid suppressing legitimate reimports. Ambiguous older rows can still need reconciliation or operator correction. No scoring-policy change or production deployment is included.
 - Publication: proceed with the user-authorized fast-forward of main and GitHub push. Next task: observe repository CI; production rollout remains a separate operator action.
+
+### Verification — single-run LAPSE candidate evaluation (2026-09-05)
+
+- Runtime commit: `3ad9aee`; this is an uncommitted documentation-only verification entry. User requested verification and a suggestion/plan, not implementation or production changes.
+- Verified official LAPSE v2.0.5 tag at source commit `8d57e43ad72c2d05794d83591cf311499ae64c22`. `engine/main.cpp` computes the same verdict/ranking metrics before both save branches; `--dry-run` only skips the writer. Output mode exposes every field subsyncd consumes, including confidence, agreement, coverage, offset/ratio, parts/splits, verdict, written and output. Strict non-solid results refuse writes.
+- Downloaded the official macOS arm64 archive to temporary storage and verified SHA-256 `779bc2438eb33ff9c5168679f79b815e0efce1b7d9a37fec9b2ac1272b3f935e` against GitHub release metadata. A seeded 100-cue subtitle-reference fixture shifted by 4200ms returned identical decision JSON for dry and output runs (solid, offset -4200ms, confidence1); only the output run created the file, whose cue timings matched the reference. Input checksum remained unchanged; no backup was created. A 40-cue periodic uncertain fixture returned exit2/unsure identically in both strict runs and created no output. No --force or relaxed confidence was used.
+- Verified upstream quirk: dry-run solid reports written=true even though no file exists. Keep existing exit/protocol/verdict checks plus actual output-path, regular-file, size and subtitle-syntax validation; never rely on written alone. These are native synthetic contract tests, not a Linux/Hades benchmark or complete audio/split-format matrix.
+- Proposed plan: use the existing validated output-producing SynchronizeCandidate once per LAPSE-required candidate, retaining source identity/checksum separately from its temporary output and SyncResult. Preserve exact/score bypass, lazy score tiers, all equal-score comparisons and existing tie-breaks; install the best already-produced output without another LAPSE process. Apply to broad and cached-pack paths, keep cached sources immutable, retain fallback artifacts until no longer needed, and keep fingerprint/atomic installation/outbox/rollback guards. Keep Analyze for read-only analyze-sync diagnostics.
+- Verification plan before shipping: focused TDD process-count/tie/fallback/cleanup/rejection-provenance tests, strict malformed/missing/invalid output and cancellation cases, cached packs/upgrades/bypass regressions, real pinned Linux binary fixture comparisons, full race/vet/tagged E2E, and updated operational events/docs. A unique evaluated winner changes two LAPSE invocations to one; three tied viable candidates change four to three. Runtime savings require cold/warm-cache measurement and are not claimed as a fixed percentage.
+- Next task: obtain agreement on this proposal, then write the implementation design/plan and implement in isolation if requested. No service restart, provider call, production media access, configuration change, code edit, commit, or push performed in this verification.
