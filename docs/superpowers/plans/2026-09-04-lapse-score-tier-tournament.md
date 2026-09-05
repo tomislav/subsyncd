@@ -316,7 +316,7 @@ git commit -m "test: protect lapse tournament invariants"
 
 - [ ] **Step 1: Update durable documentation**
 
-Replace statements that every top-three candidate is prepared/synchronized. Document lazy tiers, equal-score confidence comparison, one-winner synchronization, technical versus deterministic fallback, and the measured pre-change baselines: Arrival `12m11s` and 1917 `24m55s`.
+Replace statements that every top-three candidate is prepared/synchronized. Document lazy tiers, equal-score confidence comparison, one-winner synchronization, technical versus deterministic fallback, and the measured pre-change baselines: Example Movie B `12m11s` and Example Movie A `24m55s`.
 
 - [ ] **Step 2: Run the complete verification gate**
 
@@ -340,6 +340,6 @@ git commit -m "docs: document lapse score-tier tournament"
 
 Push `main`; wait for GitHub verification and the multi-architecture image publication to finish. Record the commit, workflow URL, immutable image tag, and verification evidence.
 
-- [ ] **Step 5: Prepare but do not automatically run the Hades comparison**
+- [ ] **Step 5: Prepare but do not automatically run the production comparison**
 
-Create a recovery checkpoint and an explicit canary command that preserves the valid 1917 and Arrival sidecars. Because an unchanged managed candidate is correctly satisfied without LAPSE, a meaningful performance comparison requires a separately authorized test fixture, copied media, or reversible removal of installation state. Present that choice to the user before any production mutation.
+Create a recovery checkpoint and an explicit canary command that preserves the valid Example Movie A and Example Movie B sidecars. Because an unchanged managed candidate is correctly satisfied without LAPSE, a meaningful performance comparison requires a separately authorized test fixture, copied media, or reversible removal of installation state. Present that choice to the user before any production mutation.

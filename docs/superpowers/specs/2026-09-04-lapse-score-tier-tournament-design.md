@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Reduce repeated media reads while preserving score-based candidate choice, LAPSE validation, deterministic rejection, upgrade safety, and fallback behavior. The 1917 production canary evaluated three candidates with both dry-run and synchronization passes, requiring six reads of a 22.1 GB media file and 24 minutes 55 seconds. The normal path should require one analysis and one synchronization pass when the highest-scored candidate is unique and valid.
+Reduce repeated media reads while preserving score-based candidate choice, LAPSE validation, deterministic rejection, upgrade safety, and fallback behavior. The Example Movie A production canary evaluated three candidates with both dry-run and synchronization passes, requiring six reads of a 22.1 GB media file and 24 minutes 55 seconds. The normal path should require one analysis and one synchronization pass when the highest-scored candidate is unique and valid.
 
 This change is independent of daemon queue scheduling. It applies identically to manual searches and daemon workflows.
 
@@ -74,7 +74,7 @@ Early stopping is structural rather than heuristic:
 - Lower-scored candidates are considered only when every candidate in each higher tier is unusable or final synchronization fails.
 - Exact-hash and permitted score-bypass candidates preserve their current zero-LAPSE path.
 
-For the recorded 1917 candidate scores `39`, `38`, `37`, and `37`, the new normal path would analyze and synchronize only score-39 candidate `304766`. The fourth result remains outside the three-candidate shortlist. This statement describes expected control flow; production performance must be measured after implementation rather than inferred from the baseline.
+For the recorded Example Movie A candidate scores `39`, `38`, `37`, and `37`, the new normal path would analyze and synchronize only score-39 candidate `304766`. The fourth result remains outside the three-candidate shortlist. This statement describes expected control flow; production performance must be measured after implementation rather than inferred from the baseline.
 
 ## Internal structure
 
@@ -129,7 +129,7 @@ Tests must prove the exact call counts and selection behavior:
 - context cancellation stops the current LAPSE process group and does not start another candidate;
 - race-enabled tests remain clean.
 
-Run the complete race-enabled Go suite, `go vet ./...`, tagged end-to-end tests, and `git diff --check`. Update architecture, operations, README feature behavior, and the implementation-status ledger. After publishing a verified image, repeat a narrowly scoped Hades canary only with explicit preservation/rollback steps because the current 1917 and Arrival sidecars are valid production artifacts.
+Run the complete race-enabled Go suite, `go vet ./...`, tagged end-to-end tests, and `git diff --check`. Update architecture, operations, README feature behavior, and the implementation-status ledger. After publishing a verified image, repeat a narrowly scoped production canary only with explicit preservation/rollback steps because the current Example Movie A and Example Movie B sidecars are valid production artifacts.
 
 ## Non-goals
 

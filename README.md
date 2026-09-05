@@ -26,7 +26,7 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 | Sonarr | TV library, imports, upgrades, renames, and file deletions |
 | Radarr | Movie library, imports, upgrades, renames, and file deletions |
 | Silo (optional) | Refreshes subtitle inventory through its pre-1.0 native scan API |
-| LAPSE | Subtitle timing analysis and synchronization; included in the Docker image |
+| [LAPSE](https://github.com/Schwponaco-org/lapse) | Subtitle timing analysis and synchronization; included in the Docker image |
 
 TV files containing multiple episodes are currently unsupported and skipped during subtitle searches.
 
@@ -173,7 +173,6 @@ Logs are available through `docker compose logs`. Set `logging.level: debug` in 
 - [Operations guide](docs/operations.md) — manual searches, diagnostics, Silo setup, backups, and troubleshooting.
 - [Provider guide](docs/providers.md) — language support, matching, synchronization, and retry schedules.
 - [Implementation status](docs/implementation-status.md) — shipped behavior and known follow-ups.
-- [Hades manual canary](deploy/hades-canary/README.md) — a host-specific, limited deployment runbook.
 
 To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.0.5. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
 

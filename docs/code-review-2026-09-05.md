@@ -22,7 +22,7 @@ Locations: `internal/provider/opensubtitles/client.go:312–320,347–349`, `int
 
 Sonarr supplies the series IMDb ID. OpenSubtitles episode results supply an episode IMDb ID plus a separate `parent_imdb_id`; the adapter drops the parent and stores the episode ID as the comparable identity. The matcher rejects the mismatch before considering an exact hash. Thus a correct episode, including a hash-matched one, is rejected when both IDs are populated.
 
-A [response reported in the OpenSubtitles repository](https://github.com/opensubtitles/vlsub-opensubtitles-com/issues/11) demonstrates the distinction: Doctor Who S03E07 carries episode ID `1000251`, parent ID `436992`, and a true hash-match flag. Normalize episode results to the same series-identity namespace as the catalog, retaining separate episode evidence. Cover both exact and broad results, missing parent metadata, and genuine identity conflicts.
+A [response reported in the OpenSubtitles repository](https://github.com/opensubtitles/vlsub-opensubtitles-com/issues/11) demonstrates the distinction: the reported TV episode carries episode ID `1000251`, parent ID `436992`, and a true hash-match flag. Normalize episode results to the same series-identity namespace as the catalog, retaining separate episode evidence. Cover both exact and broad results, missing parent metadata, and genuine identity conflicts.
 
 ### 3. [P1] The first unusable exact result hides all alternatives
 

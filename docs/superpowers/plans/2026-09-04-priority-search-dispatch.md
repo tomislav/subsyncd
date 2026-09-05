@@ -496,4 +496,4 @@ git commit -m "docs: document priority search dispatch"
 
 - [ ] **Step 6: Push and observe publication**
 
-Push `main`, wait for verification and the multi-architecture image job, and report the commit, workflow URL, image tag, and test evidence to the user. Do not deploy the daemon to Hades as part of this plan.
+Push `main`, wait for verification and the multi-architecture image job, and report the commit, workflow URL, image tag, and test evidence to the user. Do not deploy the daemon to production as part of this plan.

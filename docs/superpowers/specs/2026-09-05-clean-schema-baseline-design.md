@@ -4,7 +4,7 @@ Date: 2026-09-05
 
 ## Objective
 
-Reset subsyncd's pre-release SQLite lineage to one current baseline because every deployment is intentionally rebuilt from scratch. Remove compatibility-only runtime branches, tests, and active documentation while retaining the migration mechanism needed for future releases. Rebuild the isolated Hades canary from a fresh database, remove the authorized S01E06 Croatian canary sidecar, and repeat the three-file acceptance workflow.
+Reset subsyncd's pre-release SQLite lineage to one current baseline because every deployment is intentionally rebuilt from scratch. Remove compatibility-only runtime branches, tests, and active documentation while retaining the migration mechanism needed for future releases. Rebuild the isolated production canary from a fresh database, remove the authorized S01E06 Croatian canary sidecar, and repeat the three-file acceptance workflow.
 
 ## Compatibility contract
 
@@ -47,19 +47,9 @@ Test-driven implementation will cover these boundaries:
 
 Verification will include the relevant red/green tests, the complete race-enabled Go suite, `go vet`, tagged end-to-end tests, a clean container build, a fresh-container `doctor` run, Compose rendering, and `git diff --check`.
 
-## Hades cutover and rollback
+## Deployment and rollback
 
-The cutover remains restricted to `/opt/subsyncd-daemon-canary` and the exact S01E06 Croatian sidecar. No other Hades service, database, subtitle, or media file is in scope.
-
-Before mutation, record current health, image, database counts, both reconciliation cursors, sidecar checksum, and a UTC cutover timestamp. Stop the daemon. Preserve the complete old data directory and copy the exact sidecar into a root-only rollback directory, then delete only:
-
-`/srv/media/tv/1883 (2021) [tvdbid-396390]/Season 01/1883.2021.S01E06.2160p.PMTP.WEB-DL.H265.SDR.DDP.5.1.English-HONE.hr.srt`
-
-Deploy a clean, verified arm64 image and create an empty `data` directory with the existing `1000:1000` ownership. Run `doctor` to create the baseline database. With the daemon still stopped, initialize both Arr reconciliation cursors to the recorded cutover timestamp so events occurring during the short outage remain eligible for reconciliation without replaying older library history.
-
-Start the daemon and require successful health, readiness, and reconciliation. Repost the two exact Radarr fixtures and the exact Sonarr S01E06 Download fixture so the fresh database contains exactly three media rows. The two movies must satisfy English from existing embedded inventory. S01E06 must satisfy English from its embedded stream, search Croatian through Titlovi, download candidates sequentially, require LAPSE unless current confidence policy permits a bypass, and atomically recreate the Croatian sidecar. Re-run Sonarr's native connection test plus mapped and actual outside-scope webhook checks. Verify no outside-scope media, no active lease, no unexpected provider download, and no warning/error log event.
-
-Rollback stops the baseline daemon, preserves its failed/new data directory, restores the old data directory and backed-up sidecar, restores the prior image/config if changed, and starts the prior build. A new baseline database must never be opened by an older build because the migration lineages differ.
+Keep deployment-specific paths, fixtures, and rollback instructions in the ignored local production runbook. Preserve the stopped data directory before a schema reset, and validate recovery against a separately scoped test library.
 
 ## Acceptance criteria
 
@@ -68,7 +58,7 @@ Rollback stops the baseline daemon, preserves its failed/new data directory, res
 - Current identity, fingerprint, audit, queue, rejection, and notification semantics remain intact.
 - Old schema lineage fails explicitly and cleanly.
 - Fresh local and container verification passes.
-- Hades runs the new image with a fresh baseline database and exactly the same three mapped media entities.
+- The production deployment runs the new image with a fresh baseline database and exactly the same three mapped media entities.
 - The authorized S01E06 Croatian sidecar is removed, then recreated only by the clean Titlovi/LAPSE workflow.
 - Both real Arr webhook connections remain active and scoped behavior is reverified.
 - Complete pre-cutover database and sidecar backups make rollback possible.

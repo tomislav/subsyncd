@@ -76,9 +76,9 @@ The level behavior is:
 
 Successful `/healthz` and `/readyz` requests are intentionally silent. Readiness emits only a transition to unhealthy and a later recovery, avoiding probe noise. Webhook paths exclude query strings. Error text passes through configuration-aware redaction and is normalized to one line. Credentials, bearer/API keys, provider URLs and bodies, notification payloads, absolute media/data/temp paths, command arguments, and raw LAPSE stdout/stderr are never intentional log fields. If root containment cannot be proven, even the debug relative path is omitted.
 
-### Alloy pipeline on Hades
+### Example Alloy pipeline
 
-Hades was verified with host Alloy `v1.19.2` and a managed Grafana Cloud Loki destination. Its existing Docker source collects both stdout and stderr. To avoid duplicate ingestion, add a `/subsyncd` drop rule to the existing general Docker target pipeline, then use this dedicated keep-before-parse pipeline. It promotes only the bounded application labels `service`, `environment`, `level`, `component`, and `event`; dynamic IDs remain in the original JSON line.
+This example was verified with Alloy `v1.19.2` and a managed Grafana Cloud Loki destination. It collects both stdout and stderr from Docker. To avoid duplicate ingestion, add a `/subsyncd` drop rule to the existing general Docker target pipeline, then use this dedicated keep-before-parse pipeline. It promotes only the bounded application labels `service`, `environment`, `level`, `component`, and `event`; dynamic IDs remain in the original JSON line.
 
 ```alloy
 discovery.relabel "subsyncd_logs" {
@@ -97,7 +97,7 @@ discovery.relabel "subsyncd_logs" {
 
   rule {
     target_label = "environment"
-    replacement  = "hades"
+    replacement  = "production"
   }
 }
 
@@ -140,16 +140,16 @@ loki.write "grafana_cloud_loki" {
 }
 ```
 
-The referenced `loki.write` name can instead be the existing Hades component. Loki credentials belong only in Alloy and its service environment, never in `subsyncd` YAML or Compose environment. Do not add `job_id`, `media_id`, `media_title`, `candidate_id`, `file_id`, `language`, or `provider` to `stage.labels`; their cardinality is unbounded.
+The referenced `loki.write` name can instead be your existing component. Loki credentials belong only in Alloy and its service environment, never in `subsyncd` YAML or Compose environment. Do not add `job_id`, `media_id`, `media_title`, `candidate_id`, `file_id`, `language`, or `provider` to `stage.labels`; their cardinality is unbounded.
 
-Grafana Cloud uses managed Loki, so Hades has no local Loki version to pin. These LogQL queries use its current JSON parser, duration numeric filter, and escaped literal-dot regex syntax:
+Grafana Cloud manages the Loki version when you use its hosted service. These LogQL queries use its current JSON parser, duration numeric filter, and escaped literal-dot regex syntax:
 
 ```logql
-{service="subsyncd", environment="hades", event="job.completed"} | json | outcome="failed"
-{service="subsyncd", environment="hades", event=~"provider\\.(cooldown_started|circuit_opened|auth_disabled)"} | json
-{service="subsyncd", environment="hades", event=~"lapse\\.(analysis_completed|sync_completed)"} | json | duration_ms > 600000
-{service="subsyncd", environment="hades", event="candidate.selected"} | json
-{service="subsyncd", environment="hades"} | json | job_id="JOB_ID"
+{service="subsyncd", environment="production", event="job.completed"} | json | outcome="failed"
+{service="subsyncd", environment="production", event=~"provider\\.(cooldown_started|circuit_opened|auth_disabled)"} | json
+{service="subsyncd", environment="production", event=~"lapse\\.(analysis_completed|sync_completed)"} | json | duration_ms > 600000
+{service="subsyncd", environment="production", event="candidate.selected"} | json
+{service="subsyncd", environment="production"} | json | job_id="JOB_ID"
 ```
 
 When diagnosing one workflow, start with the final query, then inspect `job.started`, provider search/download events, `candidate.selected`, any LAPSE phase, installation/notification, and `job.completed`. Long-running LAPSE work emits `lapse.analysis_started` or `lapse.sync_started` at `info` immediately before the subprocess call, followed by the matching completion or `lapse.failed` event. Start events contain correlation, phase, provider, candidate, and compatibility-version fields, but no duration or result fields. Candidate details require a temporary `SUBSYNCD_LOG_LEVEL=debug` restart; return to `info` immediately afterward.
@@ -223,7 +223,7 @@ Timeouts, crashes, malformed LAPSE protocol output, cancellation, filesystem fai
 
 LAPSE itself makes no internet request, but it reads the media to build a speech profile; on network storage, the first analysis can therefore read much or nearly all of the file. The profile cache is persisted under `/data/lapse-cache`, so later candidates for the unchanged media can reuse it. The confidence gate avoids that media read for strong first-install matches. A normal timeout is 30 minutes. Cancellation kills the entire LAPSE subprocess group.
 
-Before this tournament, production canaries took 12m11s for Arrival Croatian and 24m55s for 1917 Croatian; the latter performed three analyses plus three synchronization passes and read about 22.1 GB. With distinct candidate scores and a successful leader, the expected path is one analysis plus one synchronization. Equal-score ties still require one analysis per tied candidate because confidence is meaningful only within that metadata tier.
+With distinct candidate scores and a successful leader, the expected path is one analysis plus one synchronization. Equal-score ties still require one analysis per tied candidate because confidence is meaningful only within that metadata tier.
 
 Diagnostic analysis never installs a sidecar:
 

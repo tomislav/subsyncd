@@ -4,7 +4,7 @@
 
 Structured processing events now include a sanitized `media_title` after the media row resolves. Movies render as `Movie (Year)` and episodes as `Show - S01E02 - Episode Title`; values are normalized to one line and bounded to 2,048 Unicode code points. The field follows worker, workflow, provider, candidate, LAPSE, and completion events as JSON data and is deliberately excluded from the recommended Loki label set.
 
-Implementation commit `5f03cf4` passed the complete race-enabled Go suite, `go vet ./...`, the tagged race-enabled end-to-end suite, the provider-contract suite, standalone Compose rendering, diff hygiene, and the repository credential-pattern scan. No image was built or deployed to Hades.
+Implementation commit `5f03cf4` passed the complete race-enabled Go suite, `go vet ./...`, the tagged race-enabled end-to-end suite, the provider-contract suite, standalone Compose rendering, diff hygiene, and the repository credential-pattern scan. No image was built or deployed to production.
 
 ## Provider correctness and credential repair — 2026-09-05
 
@@ -12,7 +12,7 @@ OpenSubtitles hashing is now implemented internally with the canonical first/las
 
 Successful HTTP responses ignore non-authoritative `Retry-After` headers but continue to persist standard rate-limit windows. SubDL strips API-key query data from normalized candidate identities and reconstructs authentication only for outbound downloads. The `002_scrub_provider_credentials.sql` migration removes contaminated provider-derived rows from affected databases while retaining media, schedules, leases, reconciliation cursors, and unrelated rows; installed files whose contaminated provenance is removed remain protected on disk.
 
-Implementation commit `6f5dd3d` passed the complete race-enabled Go suite, `go vet ./...`, the tagged race-enabled end-to-end suite, the provider-contract suite, standalone Compose rendering, diff hygiene, and the repository credential-pattern scan. No image was published or deployed, and the stopped Hades service was not restarted.
+Implementation commit `6f5dd3d` passed the complete race-enabled Go suite, `go vet ./...`, the tagged race-enabled end-to-end suite, the provider-contract suite, standalone Compose rendering, diff hygiene, and the repository credential-pattern scan. No image was published or deployed, and the stopped production service was not restarted.
 
 ## Initial implementation baseline — 2026-09-04
 
@@ -76,4 +76,4 @@ Both Compose files rendered successfully with defaults and with `PUID=1234 PGID=
 
 The pending release adds SQLite-backed import/missing/upgrade priority, coalesced same-key reruns, capacity-aware webhook wake dispatch, and configurable `worker.max_concurrent` (default 1, range 1–8). The LAPSE workflow now evaluates the top-three cap lazily by release-score tier, analyzes equal-score ties before choosing by confidence, synchronizes one winner, and preserves fallback plus rejection semantics.
 
-The pre-change Hades baselines were 12m11s for Arrival Croatian and 24m55s/six LAPSE passes/about 22.1 GB for 1917 Croatian. Publication verification and the immutable image tag will be recorded after the final repository gate and GitHub Actions complete. No production canary is run automatically.
+The pre-change production baselines were 12m11s for Example Movie B Croatian and 24m55s/six LAPSE passes/about 22.1 GB for Example Movie A Croatian. Publication verification and the immutable image tag will be recorded after the final repository gate and GitHub Actions complete. No production canary is run automatically.

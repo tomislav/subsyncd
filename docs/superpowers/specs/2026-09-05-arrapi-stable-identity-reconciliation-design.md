@@ -11,7 +11,7 @@ a movie with `movieId`; Sonarr history identifies an episode with `episodeId`.
 Neither service guarantees a top-level historical file ID, and file-deletion
 records do not retain the deleted file ID.
 
-The change must stop the Hades reconciliation failure, recover imports, renames,
+The change must stop the production reconciliation failure, recover imports, renames,
 upgrades, and deletions without scanning the complete Arr library, preserve the
 existing webhook and SQLite transaction guarantees, and keep unrelated media
 outside an intentionally narrow canary mapping.
@@ -165,7 +165,7 @@ unsafe or broken paths. Introduce a typed outside-scope result for:
 Traversal, malformed absolute paths, filesystem inspection failures, and
 symlink-resolution failures remain hard errors. An outside-scope current entity
 is treated like absence only with respect to subsyncd's managed set: delete a
-previously indexed entity if one exists, otherwise skip it. This lets the Hades
+previously indexed entity if one exists, otherwise skip it. This lets the production
 two-movie canary consume production Radarr history without reading or indexing
 the rest of the movie library.
 
@@ -267,7 +267,7 @@ git diff --check
 ```
 
 No real Arr or subtitle-provider request belongs in ordinary or tagged end-to-end
-tests. Hades validation, image publication, and deployment require separate
+tests. production validation, image publication, and deployment require separate
 explicit approval after the implementation is committed and locally verified.
 
 ## Documentation
@@ -287,5 +287,5 @@ handoff ledger.
 - Exposing arrapi types outside the catalog adapter.
 - Sending file contents or provider traffic while reconciling outside-scope
   entities.
-- Publishing an image, pushing GitHub, or changing the Hades deployment as part
+- Publishing an image, pushing GitHub, or changing the production deployment as part
   of the local implementation.

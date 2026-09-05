@@ -27,7 +27,7 @@ identity uses parent-series identifiers. OpenSubtitles also preserves its
 - retain provider concurrency permits until response bodies are consumed or
   closed.
 
-No production deployment, provider request, or Hades mutation is part of this
+No production deployment, provider request, or production mutation is part of this
 work.
 
 ## Selected approach
@@ -348,7 +348,7 @@ git diff --check
 
 Ordinary and tagged tests use only sanitized fixtures, fake local servers, and
 temporary media. They must not contact real Arr instances, subtitle providers,
-Silo, or Hades.
+Silo, or production.
 
 ## Documentation and rollout
 

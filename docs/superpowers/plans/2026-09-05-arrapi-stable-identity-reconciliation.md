@@ -21,7 +21,7 @@
 - History requests overlap fractional-second cursors, filter records after the captured page end, and rely on stable reconciliation event IDs for replay safety.
 - Reconciliation mutations, stable-ID adoption, deletes, audit rows, schedules, and cursor advancement remain one SQLite transaction.
 - Ordinary and tagged end-to-end tests use sanitized fixtures and local fake servers only.
-- Do not publish, push, or deploy to Hades in this plan.
+- Do not publish, push, or deploy to production in this plan.
 
 ---
 
@@ -737,7 +737,7 @@ Expected: the build uses Go 1.27.1 without downloading another toolchain, and th
 
 - [ ] **Step 5: Review the implementation against the design**
 
-Read the final diff and verify every spec section has code/tests/docs evidence. Confirm there are no changes to provider routing, scoring, LAPSE, subtitle files, Silo, automatic webhooks, GitHub publishing, or Hades deployment.
+Read the final diff and verify every spec section has code/tests/docs evidence. Confirm there are no changes to provider routing, scoring, LAPSE, subtitle files, Silo, automatic webhooks, GitHub publishing, or production deployment.
 
 - [ ] **Step 6: Commit final documentation and verification record**
 
@@ -748,4 +748,4 @@ git commit -m "docs: document stable Arr reconciliation"
 
 - [ ] **Step 7: Report the local result and request separate deployment authority**
 
-Report commits, exact arrapi/Go versions, tests/build output, remaining legacy limitation, and whether the worktree is clean. Do not push, publish, or change Hades without a new explicit request.
+Report commits, exact arrapi/Go versions, tests/build output, remaining legacy limitation, and whether the worktree is clean. Do not push, publish, or change production without a new explicit request.

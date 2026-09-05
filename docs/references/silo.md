@@ -17,7 +17,7 @@ As checked on 2026-09-04, the phase-1 migration ledger marks `POST /api/v1/scan`
 
 ## Contract used by subsyncd
 
-Silo's native API accepts `POST /api/v1/scan` on its main API listener. The Hades container exposes that listener internally on port `8080`; deployments using Silo's published Compose may expose it differently on the host. The route requires an admin JWT or admin API key in the `Authorization: Bearer …` header. A valid targeted scan returns `202 Accepted`.
+Silo's native API accepts `POST /api/v1/scan` on its main API listener. The production container exposes that listener internally on port `8080`; deployments using Silo's published Compose may expose it differently on the host. The route requires an admin JWT or admin API key in the `Authorization: Bearer …` header. A valid targeted scan returns `202 Accepted`.
 
 The request body is:
 
@@ -36,8 +36,8 @@ The endpoint is available when Silo runs in `integrated` or `api` mode. It is no
 | Observed behavior | Decision | Proof |
 |---|---|---|
 | Silo documents native, authenticated targeted scans through `POST /api/v1/scan`. | Use the native route instead of the legacy Jellyfin-compatible Autoscan route. | `internal/notifier/silo_test.go` validates method, route, bearer header, body, and accepted response. |
-| A media-file target can complete without walking the sibling subtitle, while a directory target performs a subtree scan. | Send the mapped media file's parent directory, never the individual media or subtitle file. | `TestSiloPostsNativeTargetedScanWithMappedParentDirectory` plus the 2026-09-05 Hades file-versus-subtree test. |
-| The native API listener is port `8080` inside the current Hades Silo container. | Point container-network examples to `http://silo:8080`; do not assume the host-published port. | Live Hades reachability and accepted-scan test. |
+| A media-file target can complete without walking the sibling subtitle, while a directory target performs a subtree scan. | Send the mapped media file's parent directory, never the individual media or subtitle file. | `TestSiloPostsNativeTargetedScanWithMappedParentDirectory` plus the 2026-09-05 production file-versus-subtree test. |
+| The native API listener is port `8080` inside the current production Silo container. | Point container-network examples to `http://silo:8080`; do not assume the host-published port. | Live production reachability and accepted-scan test. |
 | Silo and `subsyncd` may see different mount paths. | Retain deterministic, boundary-aware longest-prefix mapping, including `/` on either side, before selecting the mapped media parent directory. | `TestRewritePathSupportsRootMappingsAndLongestPrefix` and `TestSiloPostsNativeTargetedScanWithMappedParentDirectory`. |
 | Admin API keys are credentials and Silo is still pre-release. | Never persist the key or include response bodies/transport URLs in errors; reject redirects and keep the notifier optional. | Failure, timeout, redirect, and secret-redaction notifier tests. |
 | Notification transport can be unavailable after a subtitle was safely committed. | Persist a deduplicated notification job and retry it independently; never roll back acquisition. | Worker and repository notification lifecycle tests. |

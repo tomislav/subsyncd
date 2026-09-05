@@ -523,4 +523,4 @@ git add test/e2e/e2e_test.go README.md docs AGENTS.md
 git commit -m "docs: document reliability repairs"
 ```
 
-Do not push, publish an image, or deploy to Hades in this plan. Those remain separate user-approved actions after local verification.
+Do not push, publish an image, or deploy to production in this plan. Those remain separate user-approved actions after local verification.

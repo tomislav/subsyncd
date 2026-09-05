@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the pre-release ten-migration SQLite lineage with one strict current baseline, remove compatibility-only code, and prove a recoverable clean Hades canary rebuild that recreates the authorized Croatian sidecar through Titlovi and LAPSE.
+**Goal:** Replace the pre-release ten-migration SQLite lineage with one strict current baseline, remove compatibility-only code, and prove a recoverable clean production canary rebuild that recreates the authorized Croatian sidecar through Titlovi and LAPSE.
 
-**Architecture:** Keep the general embedded migration runner, but make `001_baseline.sql` the only accepted lineage and reject unknown applied migration names before executing SQL. Persisted media always has a positive stable Arr entity ID while physical `file_id`, event-local zero identities, fingerprints, queues, and audit semantics remain unchanged. Hades receives a fresh database and a clean three-file end-to-end replay; the old database and exact sidecar remain recoverable backups.
+**Architecture:** Keep the general embedded migration runner, but make `001_baseline.sql` the only accepted lineage and reject unknown applied migration names before executing SQL. Persisted media always has a positive stable Arr entity ID while physical `file_id`, event-local zero identities, fingerprints, queues, and audit semantics remain unchanged. production receives a fresh database and a clean three-file end-to-end replay; the old database and exact sidecar remain recoverable backups.
 
 **Tech Stack:** Go 1.27.1, `modernc.org/sqlite`, embedded ordered SQL migrations, Docker BuildKit, GitHub Actions, Sonarr/Radarr v3 APIs, Titlovi, FFprobe, LAPSE v2.0.5.
 
@@ -19,7 +19,7 @@
 - Startup, readiness, and schema migration remain offline and perform no Arr, provider, Silo, or media scan.
 - Preserve fail-closed identity conflicts, transactional reconciliation, queue leases, fingerprints, rejection evidence, and notification behavior.
 - Historical plans remain immutable records; update active README, architecture, operations, implementation-status, and `AGENTS.md` only.
-- Hades scope is `/opt/subsyncd-daemon-canary` plus the exact S01E06 `.hr.srt`; no other service, media, subtitle, or database may be mutated.
+- The production deployment scope is `/opt/subsyncd-daemon-canary` plus the exact S01E06 `.hr.srt`; no other service, media, subtitle, or database may be mutated.
 - Back up the old canary database and exact sidecar before deleting either live target.
 - Never print credentials, webhook tokens, provider bodies, raw subtitle text, or absolute outside-scope media paths.
 
@@ -451,7 +451,6 @@ git commit -m "refactor: remove pre-release compatibility helpers"
 - Modify: `docs/operations.md:165-185`
 - Modify: `docs/implementation-status.md`
 - Modify: `AGENTS.md:50-56`
-- Modify: `deploy/hades-daemon-canary/README.md`
 
 **Interfaces:**
 - Consumes: the strict lineage/error behavior and positive entity contract from Tasks 1–3.
@@ -471,14 +470,14 @@ Remove statements about zero-entity rows, lazy adoption, missed deletion before 
 
 - [ ] **Step 2: Record implementation status without rewriting history**
 
-Add a new implementation-status section naming the new baseline, explicit lineage rejection, removed compatibility paths, verification commands, and the still-pending Hades clean cutover. Leave dated historical plans/specs unchanged.
+Add a new implementation-status section naming the new baseline, explicit lineage rejection, removed compatibility paths, verification commands, and the still-pending production clean cutover. Leave dated historical plans/specs unchanged.
 
 - [ ] **Step 3: Validate active documentation and formatting**
 
 Run:
 
 ```bash
-rg -n 'legacy|lazy adoption|zero.entity|001_initial|010_media_entity_ids' README.md AGENTS.md docs/architecture.md docs/operations.md deploy/hades-daemon-canary/README.md
+rg -n 'legacy|lazy adoption|zero.entity|001_initial|010_media_entity_ids' README.md AGENTS.md docs/architecture.md docs/operations.md
 git diff --check
 ```
 
@@ -487,7 +486,7 @@ Expected: only deliberate clean-baseline/unsupported-lineage wording remains; no
 - [ ] **Step 4: Commit active documentation**
 
 ```bash
-git add README.md AGENTS.md docs/architecture.md docs/operations.md docs/implementation-status.md deploy/hades-daemon-canary/README.md
+git add README.md AGENTS.md docs/architecture.md docs/operations.md docs/implementation-status.md
 git commit -m "docs: define clean database baseline"
 ```
 
@@ -500,7 +499,7 @@ git commit -m "docs: define clean database baseline"
 
 **Interfaces:**
 - Consumes: the complete clean-baseline implementation.
-- Produces: a clean tested commit SHA in shell variable `code_sha` and native arm64 image `ghcr.io/tomislav/subsyncd:sha-$code_sha` suitable for direct Hades loading and GitHub publication.
+- Produces: a clean tested commit SHA in shell variable `code_sha` and native arm64 image `ghcr.io/tomislav/subsyncd:sha-$code_sha` suitable for direct production loading and GitHub publication.
 
 - [ ] **Step 1: Format and inspect the complete patch**
 
@@ -555,146 +554,10 @@ run_id=$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databa
 gh run watch "$run_id" --exit-status
 ```
 
-Expected: GitHub Verify and multi-architecture publication jobs succeed. The direct Hades cutover may use the locally built image without waiting for publication, but final evidence must record the workflow result.
+Expected: GitHub Verify and multi-architecture publication jobs succeed. The direct production cutover may use the locally built image without waiting for publication, but final evidence must record the workflow result.
 
 ---
 
-### Task 6: Perform the recoverable clean Hades cutover
+## Deployment follow-up
 
-**Files:**
-- Modify on Hades: `/opt/subsyncd-daemon-canary/.env`
-- Replace on Hades: `/opt/subsyncd-daemon-canary/data/`
-- Back up then delete/recreate: exact S01E06 `.hr.srt` from the spec
-- Preserve using the concrete code SHA: `/opt/subsyncd-daemon-canary/data.before-schema-baseline-$code_sha/`
-- Preserve using the concrete code SHA: `/opt/subsyncd-daemon-canary/sidecar-backups/schema-baseline-$code_sha/1883.2021.S01E06.2160p.PMTP.WEB-DL.H265.SDR.DDP.5.1.English-HONE.hr.srt`
-
-**Interfaces:**
-- Consumes: verified image `ghcr.io/tomislav/subsyncd:sha-$code_sha`, existing root-only `.env`, existing exact mappings and webhook connections 8/10.
-- Produces: fresh baseline database, three mapped media rows, one recreated Croatian installation, active healthy daemon, and complete rollback artifacts.
-
-- [ ] **Step 1: Capture pre-cutover evidence and exact targets**
-
-On Hades, without printing secrets or paths outside scope, record:
-
-```text
-health and readiness
-current image ID/version
-media/events/search/candidate/installation counts
-radarr-daemon-canary and sonarr-daemon-canary cursor timestamps
-exact S01E06 sidecar size/mode/uid/gid/SHA-256
-UTC cutover timestamp
-```
-
-Resolve and assert the sidecar target as the exact absolute path in the spec. Abort if it is not a regular file with the documented Stage 5 SHA-256 `85299991788b0e8803a43d43a7b34a7a99a075b3c3a0c197e75ad4e29185244d`, unless the difference is investigated and explicitly recorded before continuing.
-
-- [ ] **Step 2: Stream the verified local image to Hades**
-
-Run locally:
-
-```bash
-docker save ghcr.io/tomislav/subsyncd:sha-$code_sha | ssh hades 'sudo docker load'
-```
-
-On Hades, inspect the loaded image and require arm64, user `1000:1000`, and version matching `sha-$code_sha`.
-
-- [ ] **Step 3: Stop, back up, and remove only authorized state**
-
-Stop `/opt/subsyncd-daemon-canary`. Copy its `.env` and Compose/config files with `.before-schema-baseline-$code_sha` suffixes. Move `data` to `data.before-schema-baseline-$code_sha`; do not recursively delete it. Create the root-only sidecar backup directory, copy the exact S01E06 `.hr.srt`, verify its backup checksum, then remove only the exact original sidecar. Confirm the media MKV remains present and the live `.hr.srt` is absent.
-
-- [ ] **Step 4: Create and validate the fresh baseline database**
-
-Create empty `data` as `1000:1000` mode `0750`. Update or add only `SUBSYNCD_IMAGE_TAG=sha-$code_sha` in the root-owned `.env`, preserving mode `0600`. Run:
-
-```bash
-sudo sh -c 'cd /opt/subsyncd-daemon-canary && docker compose --env-file .env -f compose.yml config -q'
-sudo sh -c 'cd /opt/subsyncd-daemon-canary && docker compose --env-file .env -f compose.yml run --rm --no-deps subsyncd-daemon-canary doctor --config /config/config.yaml'
-```
-
-Expected: configuration, SQLite, four media roots, LAPSE v2.0.5 compatibility, and FFprobe checks pass. Query `schema_migrations` and require exactly `001_baseline.sql`.
-
-- [ ] **Step 5: Seed both cutover cursors before startup**
-
-With no daemon using the new database, update only `radarr-daemon-canary` and `sonarr-daemon-canary` to the recorded UTC cutover timestamp. Verify both rows exist and have that exact cursor. This preserves the outage window for reconciliation while avoiding older production history.
-
-- [ ] **Step 6: Start and validate clean reconciliation**
-
-Start with `docker compose up -d --no-build`. Require `/healthz=ok`, `/readyz=ready`, healthy container state, correct image/version, and one successful immediate reconciliation for each instance. Any lineage, migration, mapping, filesystem, or reconciliation failure stops the cutover and triggers rollback evaluation.
-
-- [ ] **Step 7: Recreate the exact three-file catalog**
-
-Post the existing `webhook-1917.json`, `webhook-arrival.json`, and `webhook-1883-s01e06.json` fixtures sequentially with the root-owned tokens. Require HTTP 204 for each. Wait for all leases to clear.
-
-Expected:
-
-```text
-media = 3
-Radarr 529/file 1440 and Radarr 338/file 1168 are English satisfied from embedded inventory
-Sonarr 3913/file 10545 is English satisfied from embedded inventory
-no provider download for the two movies or English episode workflow
-```
-
-- [ ] **Step 8: Verify clean Titlovi/LAPSE sidecar recreation**
-
-Require the Croatian S01E06 workflow to search only `titlovi-main`, persist scored candidates, download sequentially, and install only after exact-hash/score-bypass policy or a `solid` LAPSE verdict. Record candidate ID, score, number of provider downloads, LAPSE analysis/sync duration and verdict, installation checksum, sidecar size/mode/uid/gid, and next upgrade time. Require exactly one Croatian installation and no second download after a successful first candidate.
-
-- [ ] **Step 9: Reverify the real Sonarr webhook scope**
-
-Run Sonarr connection ID 10's native Test and require Sonarr HTTP 200 plus subsyncd ignored HTTP 204 with no database mutation. Post the mapped Rename fixture and require one applied event, inventory-only English/Croatian completion, unchanged recreated sidecar checksum, and no provider download. Construct one actual unmapped Sonarr Download payload in memory, do not print/persist its path, delete the temporary payload, and require ignored HTTP 204 with identical database counts and no worker wake.
-
-- [ ] **Step 10: Run final live acceptance and retain rollback**
-
-Require:
-
-```text
-container running healthy on the concrete `sha-$code_sha` image
-health=ok and readiness=ready
-schema_migrations contains only 001_baseline.sql
-exactly 3 media rows with entity/file IDs 529/1440, 338/1168, 3913/10545
-0 active leases
-1 Croatian installation
-0 warn-level and 0 error-level structured events during the acceptance window
-Radarr connection 8 and Sonarr connection 10 still active
-old database directory and sidecar backup present with restrictive ownership
-```
-
-Leave the daemon running only after every assertion passes. Do not remove rollback artifacts.
-
----
-
-### Task 7: Record deployment evidence and close the baseline reset
-
-**Files:**
-- Modify: `deploy/hades-daemon-canary/compose.yml`
-- Modify: `deploy/hades-daemon-canary/README.md`
-- Modify: `docs/implementation-status.md`
-
-**Interfaces:**
-- Consumes: actual code SHA, image ID, CI run, Hades backup names, clean workflow metrics, final counts, and checksums from Tasks 5–6.
-- Produces: reproducible Stage 6 deployment record and immutable default canary image tag.
-
-- [ ] **Step 1: Pin and document only observed values**
-
-Set the daemon Compose default tag to the verified `sha-$code_sha`. Add a dated Stage 6 section covering baseline lineage, old-lineage rejection, backups, authorized sidecar deletion, cursor cutover, exact three-file replay, Titlovi/LAPSE evidence, Sonarr scope retest, final health/counts, CI run, and rollback command outline. Never include credentials, tokens, provider payloads, outside-scope paths, or subtitle contents.
-
-- [ ] **Step 2: Run the final repository verification**
-
-Run:
-
-```bash
-SUBSYNCD_IMAGE_TAG=sha-$code_sha SONARR_CANARY_API_KEY=x SONARR_CANARY_WEBHOOK_TOKEN=x RADARR_CANARY_API_KEY=x RADARR_CANARY_WEBHOOK_TOKEN=x TITLOVI_USERNAME=x TITLOVI_PASSWORD=x OPENSUBTITLES_API_KEY=x OPENSUBTITLES_USERNAME=x OPENSUBTITLES_PASSWORD=x docker compose -f deploy/hades-daemon-canary/compose.yml config -q
-git diff --check
-git status --short
-```
-
-Expected: Compose renders, documentation contains only observed evidence, and changes are limited to the deployment record/status files.
-
-- [ ] **Step 3: Commit and push the Stage 6 record**
-
-```bash
-git add deploy/hades-daemon-canary/compose.yml deploy/hades-daemon-canary/README.md docs/implementation-status.md
-git commit -m "deploy: record clean Hades baseline cutover"
-git push origin main
-git status --short --branch
-```
-
-Expected: `main` matches `origin/main` with a clean worktree. Report the code/deployment commits, fresh verification results, Hades image and health, exact scope/counts, recreated sidecar checksum, retained rollback locations, and final token/credential non-disclosure status.
+Host-specific cutover instructions and deployment records are maintained in the ignored local production runbook, outside public documentation.

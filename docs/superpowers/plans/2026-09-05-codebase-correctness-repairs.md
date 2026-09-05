@@ -20,8 +20,8 @@
 - Never log or persist credentials, provider URLs, download references, response bodies, absolute media paths, or raw LAPSE output.
 - Filesystem publication plus installation/outbox persistence is one logical commit. Failure to persist the outbox rolls back the file; remote delivery failure after commit does not.
 - Do not add a schema migration or configuration key.
-- Tests must use sanitized fixtures, local fake servers, and temporary media only. Do not contact Arr applications, providers, Silo, or Hades.
-- Do not build, publish, deploy, start, stop, or otherwise mutate Hades during this plan.
+- Tests must use sanitized fixtures, local fake servers, and temporary media only. Do not contact Arr applications, providers, Silo, or production.
+- Do not build, publish, deploy, start, stop, or otherwise mutate production during this plan.
 - Update `docs/implementation-status.md` with the commit, behavior, tests, and next task after every task boundary.
 
 ## File structure
@@ -1208,7 +1208,7 @@ Document these exact points:
 - `AGENTS.md`: replace the design-only wording for this repair with the final invariants, without duplicating full prose from the reference docs.
 - Design spec: set `**Status:** Implemented and locally verified` only after all verification below passes.
 
-Do not introduce comparisons to other projects, future API guesses, credentials, real production paths, or Hades-specific state.
+Do not introduce comparisons to other projects, future API guesses, credentials, real production paths, or host-specific state.
 
 - [ ] **Step 2: Run focused regression packages**
 
@@ -1264,4 +1264,4 @@ git status --short --branch
 git log -10 --oneline
 ```
 
-Expected: the worktree is clean and the task commits are present. Report local completion only. Pushing, image publication, and any Hades deployment require a separate explicit request.
+Expected: the worktree is clean and the task commits are present. Report local completion only. Pushing, image publication, and any production deployment require a separate explicit request.

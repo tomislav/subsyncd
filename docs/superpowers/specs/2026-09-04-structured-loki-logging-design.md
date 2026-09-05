@@ -283,7 +283,7 @@ Before completion, run the affected packages with `-race`, the complete `go test
 
 ## Rollout
 
-The default `info` output is intended to be safe for Hades without a temporary debug deployment. First deploy at `info` and verify JSON parsing, bounded labels, lifecycle coverage, and absence of secrets or absolute paths in Alloy/Loki. Enable `debug` only for a time-bounded diagnostic window, then restart at `info`.
+The default `info` output is intended to be safe for production without a temporary debug deployment. First deploy at `info` and verify JSON parsing, bounded labels, lifecycle coverage, and absence of secrets or absolute paths in Alloy/Loki. Enable `debug` only for a time-bounded diagnostic window, then restart at `info`.
 
 Existing provider, scoring, queue, synchronization, installation, and notification behavior must remain unchanged. Observability failures must never block a subtitle workflow; the synchronous standard-library handler is treated as best-effort process output and does not add retries or persistence.
 

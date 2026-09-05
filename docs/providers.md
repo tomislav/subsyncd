@@ -108,7 +108,7 @@ Known identity conflicts reject before points are considered. Conflicts include 
 
 Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). Exact episode coordinates, a parsed release range containing the episode, or an explicit containing pack earn episode evidence. The LAPSE bypass threshold is separate: `sync.bypass_score` defaults to 75. Reaching it is necessary but not sufficient; with the safe defaults, the candidate also needs an external-ID or title/year anchor, release-group evidence, matching season/episode evidence for TV, and an explicit edition match whenever Radarr identifies the target movie's edition. An edition-unknown candidate remains eligible but receives no edition points and must use LAPSE. Rating and popularity never substitute for these anchors.
 
-Edition comparison normalizes punctuation and recognizes Director's Cut, Extended, Remastered, Unrated, Theatrical, Final Cut, Special Edition, Ultimate Cut, Redux, and Anniversary Edition labels. Edition markers are read from the release descriptor after a movie year when present, so a title such as *The Final Cut (2004)* is not mistaken for an edition. An explicit matching edition contributes 10 points; an explicit mismatch is rejected.
+Edition comparison normalizes punctuation and recognizes Director's Cut, Extended, Remastered, Unrated, Theatrical, Final Cut, Special Edition, Ultimate Cut, Redux, and Anniversary Edition labels. Edition markers are read from the release descriptor after a movie year when present, so a title containing edition-like words is not mistaken for an edition. An explicit matching edition contributes 10 points; an explicit mismatch is rejected.
 
 Release score is primary and lower score tiers cannot outrank a solid higher tier. Within one equal-score tier, analysis confidence is followed by configured provider priority, provider rating, provider ID, then result ID. Popularity already contributes up to two points to the primary score. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default.
 
@@ -153,4 +153,4 @@ Default tests are local-only. To deliberately exercise current public provider A
 go test ./test/providercontract -tags=provider_contract -v
 ```
 
-The tests skip each provider unless its normal credential environment variables are present. They execute one bounded broad search for *The Matrix (1999)* and do not download a subtitle.
+The tests skip each provider unless its normal credential environment variables are present. They execute one bounded broad search for a fixed movie query defined in the contract test and do not download a subtitle.

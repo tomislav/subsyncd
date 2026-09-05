@@ -838,7 +838,7 @@ In `docs/operations.md`, document the level matrix, required/common event fields
 
 ```text
 service="subsyncd"
-environment="hades"
+environment="production"
 level=<parsed level>
 component=<parsed component>
 event=<parsed event>
@@ -851,14 +851,14 @@ The pipeline must collect both Docker streams and leave the original JSON line q
 Include working examples for:
 
 ```logql
-{service="subsyncd", environment="hades", event="job.completed"} | json | outcome="failed"
-{service="subsyncd", environment="hades", event=~"provider.(cooldown_started|circuit_opened|auth_disabled)"} | json
-{service="subsyncd", environment="hades", event=~"lapse.(analysis_completed|sync_completed)"} | json | duration_ms > 600000
-{service="subsyncd", environment="hades", event="candidate.selected"} | json
-{service="subsyncd", environment="hades"} | json | job_id="JOB_ID"
+{service="subsyncd", environment="production", event="job.completed"} | json | outcome="failed"
+{service="subsyncd", environment="production", event=~"provider.(cooldown_started|circuit_opened|auth_disabled)"} | json
+{service="subsyncd", environment="production", event=~"lapse.(analysis_completed|sync_completed)"} | json | duration_ms > 600000
+{service="subsyncd", environment="production", event="candidate.selected"} | json
+{service="subsyncd", environment="production"} | json | job_id="JOB_ID"
 ```
 
-Validate the regex escaping and numeric filters against the documented Loki version used on Hades; if the installed version requires a different valid syntax, document that verified syntax exactly.
+Validate the regex escaping and numeric filters against the documented Loki version used on production; if the installed version requires a different valid syntax, document that verified syntax exactly.
 
 - [ ] **Step 5: Run documentation and focused privacy tests**
 
@@ -890,16 +890,16 @@ Run buffer-backed unit fixtures at both `info` and `debug`, then search the capt
 
 - [ ] **Step 8: Update the implementation ledger and commit documentation**
 
-Record every implementation commit, adopted event/schema behavior, tests run, and the next Hades canary step in `docs/implementation-status.md`.
+Record every implementation commit, adopted event/schema behavior, tests run, and the next production canary step in `docs/implementation-status.md`.
 
 ```bash
 git add AGENTS.md README.md docs/operations.md docs/implementation-status.md internal/app/app_test.go
 git commit -m "docs: operate structured Loki logging"
 ```
 
-- [ ] **Step 9: Perform the controlled Hades log rollout after publication approval**
+- [ ] **Step 9: Perform the controlled production log rollout after publication approval**
 
-This step is operational and requires the user's separate deployment approval. Publish the verified immutable image through the existing GitHub workflow, pin Hades to its SHA tag, keep `logging.level: info`, and restart only the `subsyncd` canary/service. Verify:
+This step is operational and requires the user's separate deployment approval. Publish the verified immutable image through the existing GitHub workflow, pin production to its SHA tag, keep `logging.level: info`, and restart only the `subsyncd` canary/service. Verify:
 
 ```text
 doctor/startup remains healthy
