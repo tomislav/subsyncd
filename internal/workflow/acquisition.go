@@ -104,7 +104,13 @@ func (s *Service) tryExactCandidates(
 			continue
 		}
 		*result, err = s.install(ctx, request, finalized, existing, installed, *result)
-		return err == nil, err
+		if err != nil {
+			return false, err
+		}
+		if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
+			return true, nil
+		}
+		result.Outcome = ""
 	}
 	return false, nil
 }

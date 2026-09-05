@@ -463,6 +463,98 @@ func TestServiceExactPhaseErrorsAndRecordsRemainPhaseCorrect(t *testing.T) {
 	})
 }
 
+func TestServiceExactFormatChangingUpgradeContinuesToCompatibleCandidate(t *testing.T) {
+	request := serviceRequest(t)
+	existingCandidate := broadCandidate("installed")
+	repository := &workflowRepository{found: true, installation: matchingInstallation(request, existingCandidate, []byte(`{"total":35}`))}
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("different-format"), exactCandidate("compatible")}},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+	}}
+	adapter := &fakeProvider{
+		id:        "provider",
+		payloads:  map[string][]byte{"different-format": []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nFirst\n")},
+		filenames: map[string]string{"different-format": "different-format.vtt"},
+	}
+	installer := &fakeInstaller{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, installer)
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "compatible" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(adapter.downloaded, []string{"different-format", "compatible"}) || installer.calls != 1 || installer.request.Candidate.ResultID != "compatible" {
+		t.Fatalf("downloads/install = %#v/%d %#v", adapter.downloaded, installer.calls, installer.request.Candidate)
+	}
+	if len(searcher.queries) != 1 || searcher.queries[0].Mode != provider.SearchExactHash {
+		t.Fatalf("queries = %#v", searcher.queries)
+	}
+}
+
+func TestServiceExactFormatChangingRejectionDoesNotMaskLaterInstallFailure(t *testing.T) {
+	request := serviceRequest(t)
+	existingCandidate := broadCandidate("installed")
+	repository := &workflowRepository{found: true, installation: matchingInstallation(request, existingCandidate, []byte(`{"total":35}`))}
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("different-format"), exactCandidate("compatible")}},
+	}}
+	adapter := &fakeProvider{
+		id:        "provider",
+		payloads:  map[string][]byte{"different-format": []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nFirst\n")},
+		filenames: map[string]string{"different-format": "different-format.vtt"},
+	}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{err: errors.New("database unavailable")})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), request)
+	if err == nil || result.Outcome != "" || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
+func TestServiceExactTechnicalFailureWinsOverIneligibleBroadCandidates(t *testing.T) {
+	broad := broadCandidate("forced")
+	broad.Forced = true
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("network-failure")}},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broad}},
+	}}
+	adapter := &fakeProvider{id: "provider", downloadErrors: map[string]error{"network-failure": errors.New("temporary network failure")}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err == nil || result.Outcome != "" || !strings.Contains(err.Error(), "temporary network failure") {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if len(repository.rejections) != 0 {
+		t.Fatalf("technical failure created rejections: %#v", repository.rejections)
+	}
+}
+
+func TestServiceExactDownloadCooldownSurvivesSuccessfulEmptyBroadSearch(t *testing.T) {
+	reset := time.Date(2026, 9, 5, 16, 0, 0, 0, time.UTC)
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("throttled")}},
+		provider.SearchBroad:     {},
+	}}
+	adapter := &fakeProvider{id: "provider", downloadErrors: map[string]error{
+		"throttled": &provider.CooldownError{ProviderID: "provider", Scope: provider.OperationDownload, ResetAt: reset},
+	}}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
 func TestRunStopsAfterUniqueHighestScoreInstalls(t *testing.T) {
 	request := serviceRequest(t)
 	request.Media.ReleaseGroup = "GROUP"

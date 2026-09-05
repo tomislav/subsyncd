@@ -330,8 +330,8 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		if len(s.ProviderOrder) > 0 && len(search.Errors) >= len(s.ProviderOrder) {
 			return result, fmt.Errorf("all %d assigned subtitle providers failed", len(s.ProviderOrder))
 		}
-		if len(candidateFailures) != 0 {
-			return result, errors.Join(candidateFailures...)
+		if classified, failureErr, found := classifyCandidateFailures(result, candidateFailures); found {
+			return classified, failureErr
 		}
 		if len(exactRecords) != 0 {
 			result.Outcome = OutcomeRejected
@@ -412,6 +412,9 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 			result.Outcome = OutcomeSatisfied
 			result.Installation = existing
 			return result, nil
+		}
+		if classified, failureErr, found := classifyCandidateFailures(result, candidateFailures); found {
+			return classified, failureErr
 		}
 		result.Outcome = OutcomeRejected
 		return result, nil
@@ -504,16 +507,11 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		}
 		tierStart = tierEnd
 	}
-	if len(candidateFailures) == 0 {
-		result.Outcome = OutcomeRejected
-		return result, nil
+	if classified, failureErr, found := classifyCandidateFailures(result, candidateFailures); found {
+		return classified, failureErr
 	}
-	if retry, unavailable := unavailableErrors(candidateFailures); unavailable {
-		result.Outcome = OutcomeThrottled
-		result.RetryAt = retry
-		return result, nil
-	}
-	return result, errors.Join(candidateFailures...)
+	result.Outcome = OutcomeRejected
+	return result, nil
 }
 
 func (s *Service) workflowEvents() *observability.Emitter {
@@ -1236,4 +1234,16 @@ func unavailableErrors(failures []error) (time.Time, bool) {
 		}
 	}
 	return earliest, true
+}
+
+func classifyCandidateFailures(result Result, failures []error) (Result, error, bool) {
+	if len(failures) == 0 {
+		return result, nil, false
+	}
+	if retry, unavailable := unavailableErrors(failures); unavailable {
+		result.Outcome = OutcomeThrottled
+		result.RetryAt = retry
+		return result, nil, true
+	}
+	return result, errors.Join(failures...), true
 }
