@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"subsyncd/internal/catalog"
+	"subsyncd/internal/cli"
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
@@ -275,6 +277,14 @@ install: {file_mode: "0644"}
 	if err := os.WriteFile(configPath, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "data"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	initialized, err := store.Open(context.Background(), filepath.Join(root, "data", "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialized.Close()
 	var logs bytes.Buffer
 	application, err := Open(context.Background(), configPath, OpenOptions{
 		LogWriter: &logs, Version: "sha-test", Command: "doctor",
@@ -356,9 +366,25 @@ sync: {lapse_path: /usr/local/bin/lapse, timeout: 1m}
 		t.Fatal("Open() error = nil")
 	}
 	for _, forbidden := range []string{"api-secret", root} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("direct Open leaked %q: %v", forbidden, err)
+		}
 		if strings.Contains(logs.String(), forbidden) {
 			t.Fatalf("startup failure log contains %q: %s", forbidden, logs.String())
 		}
+	}
+	var cliLogs bytes.Buffer
+	command := cli.Command{Stderr: &cliLogs, Open: func(ctx context.Context, path, command string) (cli.Backend, error) {
+		return Open(ctx, path, OpenOptions{LogWriter: &cliLogs, Command: command, Runtime: Options{SkipLapseCheck: true, ProbeRunner: probeRunner{err: errors.New("api-secret " + root + "/data/private " + os.TempDir() + "/scratch /usr/local/bin/lapse")}}})
+	}}
+	if code := command.Run(context.Background(), []string{"serve", "--config", configPath}); code != cli.ExitFailure {
+		t.Fatalf("code=%d", code)
+	}
+	if strings.Contains(cliLogs.String(), "subsyncd:") || strings.Contains(cliLogs.String(), "api-secret") || strings.Contains(cliLogs.String(), root) || strings.Contains(cliLogs.String(), "/usr/local/bin/lapse") {
+		t.Fatalf("duplicate/raw startup output: %s", cliLogs.String())
+	}
+	if strings.Count(cliLogs.String(), "service.start_failed") != 1 {
+		t.Fatalf("failure ownership: %s", cliLogs.String())
 	}
 	records := decodeLogRecords(t, logs.String())
 	if got := records[len(records)-1]["event"]; got != "service.start_failed" {
@@ -744,4 +770,194 @@ func decodeLogRecords(t *testing.T, output string) []map[string]any {
 		records = append(records, record)
 	}
 	return records
+}
+
+func TestNewLocksBeforePersistentAssembly(t *testing.T) {
+	cfg := testConfig(t)
+	options := Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}}
+	first, err := New(context.Background(), cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	cfg.Instances[0].Name = "unexpected"
+	options.Catalogs = map[string]catalog.Catalog{"unexpected": fakeCatalog{}}
+	second, err := New(context.Background(), cfg, options)
+	if err == nil {
+		second.Close()
+		t.Fatal("second mutable assembly succeeded while first owns lifecycle")
+	}
+	inspection, err := sql.Open("sqlite", filepath.Join(cfg.DataDir, "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inserted int
+	if err := inspection.QueryRow(`SELECT count(*) FROM instances WHERE name='unexpected'`).Scan(&inserted); err != nil {
+		t.Fatal(err)
+	}
+	inspection.Close()
+	if inserted != 0 {
+		t.Fatal("rejected second assembly persisted configured instance")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third, err := New(context.Background(), cfg, options)
+	if err != nil {
+		t.Fatalf("lock retained after Close: %v", err)
+	}
+	third.Close()
+}
+
+func TestDiagnosticAssemblyIsReadOnlyWhileMutatorOwnsLock(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	options := Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}}
+	first, err := New(ctx, cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	options.ReadOnly = true
+	diagnostic, err := New(ctx, cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer diagnostic.Close()
+	if err := diagnostic.Repository.EnsureInstance(ctx, "forbidden", "sonarr", "http://fake.invalid", time.Now()); err == nil {
+		t.Fatal("diagnostic database accepted write")
+	}
+	if _, err := diagnostic.Retry(ctx, "english"); err == nil {
+		t.Fatal("diagnostic accepted mutation")
+	}
+	if _, err := diagnostic.Doctor(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExplainReportsCompletedEmptyProbeWithoutRefresh(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	app, err := New(ctx, cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "movie.mkv"), FileID: 7, Size: 1, ModTime: time.Now()}, Title: "Movie"}
+	if err := os.WriteFile(media.Fingerprint.Path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(media.Fingerprint.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media.Fingerprint.ModTime = info.ModTime()
+	id, _, err := app.Repository.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"unprobed", "completed", "stale"} {
+		if state == "completed" {
+			if err := app.Repository.ReplaceTrackInventory(ctx, id, media.Fingerprint, media.Fingerprint, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if state == "stale" {
+			if err := os.WriteFile(media.Fingerprint.Path, []byte("changed"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		output, err := app.Explain(ctx, "tv", "movie", 7, "en")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output, "probe="+state) {
+			t.Fatalf("want probe=%s: %s", state, output)
+		}
+	}
+}
+
+func TestFailedAssemblyReleasesLockAndDiagnosticsDoNotInitialize(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	options := Options{ReadOnly: true, SkipLapseCheck: true, SkipProbeCheck: true, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}}
+	if app, err := New(ctx, cfg, options); err == nil {
+		app.Close()
+		t.Fatal("diagnostic initialized fresh data directory")
+	}
+	if _, err := os.Stat(cfg.DataDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("diagnostic created data: %v", err)
+	}
+	options.ReadOnly = false
+	if app, err := New(ctx, cfg, options); err == nil {
+		app.Close()
+		t.Fatal("expected unknown provider failure")
+	}
+	options.Providers = map[string]provider.Provider{"english": fakeProvider{id: "english"}}
+	app, err := New(ctx, cfg, options)
+	if err != nil {
+		t.Fatalf("failed assembly retained lock: %v", err)
+	}
+	defer app.Close()
+	for _, name := range []string{"pack-cache", "lapse-cache"} {
+		if err := os.RemoveAll(filepath.Join(cfg.DataDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "movie.mkv"), FileID: 7, Size: 1, ModTime: time.Now()}, Title: "Movie"}
+	id, _, err := app.Repository.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Languages["hr"] = config.LanguageConfig{Providers: []string{"english"}}
+	options.ReadOnly = true
+	diagnostic, err := New(ctx, cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer diagnostic.Close()
+	if _, err := diagnostic.Repository.GetSearchStatus(ctx, id, "hr"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("diagnostic backfilled language: %v", err)
+	}
+	for _, name := range []string{"pack-cache", "lapse-cache"} {
+		if _, err := os.Stat(filepath.Join(cfg.DataDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("diagnostic created %s: %v", name, err)
+		}
+	}
+}
+
+type diagnosticCacheRunner struct{ cache string }
+
+func (r *diagnosticCacheRunner) Run(_ context.Context, command syncer.Command) (syncer.Execution, error) {
+	for _, env := range command.Env {
+		if strings.HasPrefix(env, "LAPSE_CACHE=") {
+			r.cache = strings.TrimPrefix(env, "LAPSE_CACHE=")
+		}
+	}
+	if r.cache == "" {
+		return syncer.Execution{}, errors.New("missing cache")
+	}
+	if err := os.WriteFile(filepath.Join(r.cache, "speech.cache"), []byte("fake"), 0o600); err != nil {
+		return syncer.Execution{}, err
+	}
+	return syncer.Execution{}, errors.New("fake technical failure")
+}
+func TestAnalyzeSyncRemovesPrivateSpeechCacheOnFailure(t *testing.T) {
+	cfg := testConfig(t)
+	runner := &diagnosticCacheRunner{}
+	subtitle := filepath.Join(t.TempDir(), "sample.srt")
+	if err := os.WriteFile(subtitle, []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diagnostic := &App{Config: cfg, LapseRunner: runner, readOnly: true}
+	if _, err := diagnostic.AnalyzeSync(context.Background(), filepath.Join(cfg.MediaRoots[0], "movie.mkv"), subtitle); err == nil {
+		t.Fatal("expected fake failure")
+	}
+	if runner.cache == "" || withinRoots(runner.cache, []string{cfg.DataDir}) {
+		t.Fatalf("persistent or absent cache: %q", runner.cache)
+	}
+	if _, err := os.Stat(filepath.Dir(runner.cache)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private diagnostic cache remains: %v", err)
+	}
 }

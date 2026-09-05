@@ -1901,3 +1901,46 @@ func TestDeleteDuringLeaseRetainsOwnershipAndReimportCoalescesRerun(t *testing.T
 		})
 	}
 }
+
+func TestOpenReadOnlySeesWALRejectsWritesAndIncompleteSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	if db, err := OpenReadOnly(ctx, path); err == nil {
+		db.Close()
+		t.Fatal("created missing database")
+	}
+	writer, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := writer.Repository().EnsureInstance(ctx, "live", "sonarr", "http://fake.invalid", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := reader.db.QueryRow(`SELECT count(*) FROM instances WHERE name='live'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("WAL invisible: %d %v", count, err)
+	}
+	if _, err := reader.db.Exec(`DELETE FROM instances`); err == nil {
+		t.Fatal("read-only database accepted write")
+	}
+	reader.Close()
+	if _, err := writer.db.Exec(`DELETE FROM schema_migrations WHERE version='003_inventory_probes.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	if db, err := OpenReadOnly(ctx, path); err == nil {
+		db.Close()
+		t.Fatal("accepted incomplete schema")
+	}
+	if _, err := writer.db.Exec(`INSERT INTO schema_migrations(version) VALUES ('unknown.sql')`); err != nil {
+		t.Fatal(err)
+	}
+	if db, err := OpenReadOnly(ctx, path); err == nil {
+		db.Close()
+		t.Fatal("accepted unknown schema")
+	}
+}

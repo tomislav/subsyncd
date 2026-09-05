@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -203,6 +204,10 @@ func (c Command) usageError(message string) int {
 }
 
 func (c Command) failure(err error) int {
+	var reported interface{ AlreadyReported() bool }
+	if errors.As(err, &reported) && reported.AlreadyReported() {
+		return ExitFailure
+	}
 	_, _ = fmt.Fprintln(c.Stderr, "subsyncd:", err)
 	return ExitFailure
 }

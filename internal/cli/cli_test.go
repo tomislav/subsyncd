@@ -157,3 +157,20 @@ func TestInitializedBackendFailureUsesStructuredReporterInsteadOfPlainText(t *te
 		t.Fatalf("plain stderr = %q, want empty", stderr.String())
 	}
 }
+
+type alreadyReportedFailure struct{}
+
+func (alreadyReportedFailure) Error() string         { return "sanitized startup failure" }
+func (alreadyReportedFailure) AlreadyReported() bool { return true }
+func TestWrappedAlreadyReportedStartupFailureIsSilent(t *testing.T) {
+	var stderr bytes.Buffer
+	command := Command{Stderr: &stderr, Open: func(context.Context, string, string) (Backend, error) {
+		return nil, errors.Join(errors.New("outer startup wrapper"), alreadyReportedFailure{})
+	}}
+	if code := command.Run(context.Background(), []string{"doctor"}); code != ExitFailure {
+		t.Fatalf("exit=%d", code)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("duplicate output: %s", stderr.String())
+	}
+}

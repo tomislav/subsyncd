@@ -44,6 +44,9 @@ type Runner interface {
 }
 
 type Options struct {
+	// ReadOnly skips all durable initialization and rejects mutating commands.
+	// The default mutable lifecycle owns the process lock until App.Close.
+	ReadOnly       bool
 	Events         *observability.Emitter
 	Clock          provider.Clock
 	HTTPClient     *http.Client
@@ -76,8 +79,10 @@ type App struct {
 	Command     string
 	Clock       provider.Clock
 
-	closeOnce sync.Once
-	closeErr  error
+	mutationRelease func()
+	readOnly        bool
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 type OpenOptions struct {
@@ -86,6 +91,11 @@ type OpenOptions struct {
 	Command   string
 	Runtime   Options
 }
+
+type reportedStartupError struct{ message string }
+
+func (e *reportedStartupError) Error() string         { return e.message }
+func (e *reportedStartupError) AlreadyReported() bool { return true }
 
 func Open(ctx context.Context, configPath string, options OpenOptions) (*App, error) {
 	cfg, err := config.Load(configPath, os.LookupEnv)
@@ -114,10 +124,11 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 	)
 	runtimeOptions := options.Runtime
 	runtimeOptions.Events = events
+	runtimeOptions.ReadOnly = options.Command == "explain" || options.Command == "doctor" || options.Command == "analyze-sync"
 	application, err := New(ctx, cfg, runtimeOptions)
 	if err != nil {
 		appEvents.Log(ctx, slog.LevelError, "service.start_failed", "subsyncd failed to start", appEvents.ErrorAttrs("startup", err)...)
-		return nil, err
+		return nil, &reportedStartupError{message: redactedError(err, cfg)}
 	}
 	application.Command = options.Command
 	appEvents.Log(ctx, slog.LevelInfo, "service.ready", "subsyncd ready", slog.String("command", options.Command))
@@ -130,6 +141,21 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	if err := validateMediaRoots(cfg.MediaRoots); err != nil {
 		return nil, err
+	}
+	var release func()
+	if !options.ReadOnly {
+		if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+			return nil, fmt.Errorf("create data directory: %w", err)
+		}
+		release, err = (&App{Config: cfg}).acquireMutationLock()
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err != nil {
+				release()
+			}
+		}()
 	}
 	if !options.SkipLapseCheck {
 		if err := syncer.CheckCapabilities(ctx, cfg.Sync.LapsePath, options.LapseRunner); err != nil {
@@ -145,10 +171,11 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			return nil, fmt.Errorf("run ffprobe capability check: %w", err)
 		}
 	}
-	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
-		return nil, fmt.Errorf("create data directory: %w", err)
+	openStore := store.Open
+	if options.ReadOnly {
+		openStore = store.OpenReadOnly
 	}
-	database, err := store.Open(ctx, filepath.Join(cfg.DataDir, "subsyncd.db"))
+	database, err := openStore(ctx, filepath.Join(cfg.DataDir, "subsyncd.db"))
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +201,10 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	catalogs, err := buildCatalogs(cfg, options.Catalogs, events)
 	if err != nil {
 		return nil, err
+	}
+	if options.ReadOnly {
+		// Diagnostics expose persisted state only; no providers, workers or durable caches.
+		return &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Events: events, Clock: clock, readOnly: true}, nil
 	}
 	for _, instance := range cfg.Instances {
 		if err := repository.EnsureInstance(ctx, instance.Name, instance.Type, instance.URL, clock.Now()); err != nil {
@@ -265,7 +296,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		workerRunner = &worker.Worker{Repository: repository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
 	}
 
-	application := &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}
+	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	return application, nil
 }
@@ -455,6 +486,9 @@ func (a *App) Serve(ctx context.Context) error {
 
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
+		if a.mutationRelease != nil {
+			defer a.mutationRelease()
+		}
 		if a.Store != nil {
 			a.closeErr = a.Store.Close()
 		}
@@ -561,9 +595,12 @@ func (a *App) Retry(ctx context.Context, providerID string) (string, error) {
 }
 
 func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, languageTag string) (string, error) {
-	language, _, err := a.workflowFor(languageTag)
+	language, err := domain.ParseLanguage(languageTag)
 	if err != nil {
 		return "", err
+	}
+	if _, ok := a.Config.Languages[language]; !ok {
+		return "", fmt.Errorf("language %s is not configured", language)
 	}
 	if a.Catalogs[instance] == nil {
 		return "", fmt.Errorf("unknown instance %q", instance)
@@ -581,7 +618,17 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(&output, "inventory: tracks=%d fingerprint_size=%d fingerprint_mtime=%s\n", len(inventoryRecord.Tracks), inventoryRecord.CatalogFingerprint.Size, inventoryRecord.CatalogFingerprint.ModTime.Format(time.RFC3339Nano))
+	probeState := "unprobed"
+	if probe := inventoryRecord.ProbeFingerprint; probe != nil {
+		probeState = "stale"
+		catalog := inventoryRecord.CatalogFingerprint
+		if !inventoryRecord.Deleted && probe.Path == catalog.Path && probe.FileID == catalog.FileID && probe.Size == catalog.Size && probe.ModTime.Equal(catalog.ModTime) {
+			if info, statErr := os.Stat(catalog.Path); statErr == nil && info.Mode().IsRegular() && info.Size() == catalog.Size && info.ModTime().Equal(catalog.ModTime) {
+				probeState = "completed"
+			}
+		}
+	}
+	fmt.Fprintf(&output, "inventory: tracks=%d probe=%s fingerprint_size=%d fingerprint_mtime=%s\n", len(inventoryRecord.Tracks), probeState, inventoryRecord.CatalogFingerprint.Size, inventoryRecord.CatalogFingerprint.ModTime.Format(time.RFC3339Nano))
 	for _, track := range inventoryRecord.Tracks {
 		fmt.Fprintf(&output, "  track: language=%s embedded=%t forced=%t sdh=%t protected=%t\n", track.Language, track.Embedded, track.Forced, track.SDH, track.Protected)
 	}
@@ -651,7 +698,16 @@ func (a *App) AnalyzeSync(ctx context.Context, mediaPath, subtitlePath string) (
 	if !withinRoots(mediaPath, a.Config.MediaRoots) {
 		return "", fmt.Errorf("media path is outside configured roots")
 	}
-	result, err := a.Lapse.Analyze(ctx, mediaPath, subtitlePath)
+	workspace, err := os.MkdirTemp("", "subsyncd-diagnostic-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(workspace)
+	lapse, err := syncer.New(syncer.Options{Path: a.Config.Sync.LapsePath, CacheDir: filepath.Join(workspace, "speech"), AnalyzeTimeout: a.Config.Sync.Timeout, MediaRoots: a.Config.MediaRoots, Runner: a.LapseRunner})
+	if err != nil {
+		return "", err
+	}
+	result, err := lapse.Analyze(ctx, mediaPath, subtitlePath)
 	if err != nil {
 		return "", err
 	}
@@ -675,6 +731,12 @@ func (a *App) workflowFor(tag string) (domain.Language, *workflow.Service, error
 }
 
 func (a *App) acquireMutationLock() (func(), error) {
+	if a.readOnly {
+		return nil, fmt.Errorf("diagnostic application is read-only")
+	}
+	if a.mutationRelease != nil {
+		return func() {}, nil
+	}
 	lockPath := filepath.Join(a.Config.DataDir, "subsyncd.lock")
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -737,10 +799,16 @@ func redactedError(err error, cfg config.Config) string {
 			value = strings.ReplaceAll(value, secret, "[redacted]")
 		}
 	}
+	for _, path := range []string{cfg.DataDir, cfg.Sync.LapsePath} {
+		if path != "" {
+			value = strings.ReplaceAll(value, path, "[path]")
+		}
+	}
 	for _, root := range cfg.MediaRoots {
 		value = strings.ReplaceAll(value, root, "[media]")
 	}
-	return redactTemporaryRoot(value, os.TempDir())
+	value = redactTemporaryRoot(value, os.TempDir())
+	return observability.SafeText(value)
 }
 
 func redactTemporaryRoot(value, root string) string {

@@ -6,6 +6,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -38,6 +39,45 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+// OpenReadOnly reads the current schema and live WAL without creating or migrating it.
+func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
+	unavailable := func() (*Store, error) {
+		return nil, fmt.Errorf("diagnostic database unavailable or schema not current; initialize with serve or scan before retrying")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return unavailable()
+	}
+	uri := url.URL{Scheme: "file", Path: absolute, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"}
+	db, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return unavailable()
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		db.Close()
+		return unavailable()
+	}
+	allowed := map[string]struct{}{}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			allowed[entry.Name()] = struct{}{}
+		}
+	}
+	if err := validateAppliedMigrations(ctx, db, allowed); err != nil {
+		db.Close()
+		return unavailable()
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != len(allowed) {
+		db.Close()
+		return unavailable()
+	}
+	return &Store{db: db}, nil
 }
 
 func (s *Store) configure(ctx context.Context) error {
