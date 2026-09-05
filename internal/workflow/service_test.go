@@ -930,7 +930,7 @@ func TestServiceStrongAnchoredFirstInstallBypassesLapse(t *testing.T) {
 		t.Fatalf("sync provenance = %#v", installer.request.SyncResult)
 	}
 	selected := workflowEvents(workflowLogRecords(t, logs.String()), "candidate.selected")
-	if len(selected) != 1 || selected[0]["selection_mode"] != "score_bypass" || len(workflowEvents(workflowLogRecords(t, logs.String()), "lapse.analysis_completed")) != 0 {
+	if len(selected) != 1 || selected[0]["selection_mode"] != "score_bypass" || len(workflowEvents(workflowLogRecords(t, logs.String()), "lapse.analysis_started")) != 0 || len(workflowEvents(workflowLogRecords(t, logs.String()), "lapse.analysis_completed")) != 0 {
 		t.Fatalf("score-bypass events = %s", logs.String())
 	}
 }

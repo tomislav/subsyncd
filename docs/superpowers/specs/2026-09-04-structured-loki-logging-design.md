@@ -193,7 +193,9 @@ Provider state-transition events are emitted only when persisted state actually 
 ### LAPSE and installation
 
 ```text
+lapse.analysis_started
 lapse.analysis_completed
+lapse.sync_started
 lapse.sync_completed
 lapse.failed
 subtitle.installed
@@ -201,7 +203,7 @@ subtitle.provenance_refreshed
 subtitle.install_failed
 ```
 
-LAPSE events include phase, duration, bounded result vocabulary, mode, confidence, offset, ratio, agreement, coverage, part/split counts, and tool compatibility version when supplied by the typed result. They never include command lines or raw output. Installation logs include media/language, managed replacement state, checksum prefix if useful for correlation, duration, and safe outcome—not absolute destination or rollback paths.
+LAPSE start events are emitted at `info` immediately before analysis or synchronization and include only correlation, phase, provider, candidate, and compatibility version. Completion and failure events add duration and the bounded result fields that exist after execution: verdict, mode, confidence, offset, ratio, agreement, coverage, and part/split counts. They never include command lines or raw output. Installation logs include media/language, managed replacement state, checksum prefix if useful for correlation, duration, and safe outcome—not absolute destination or rollback paths.
 
 ### Notifications
 

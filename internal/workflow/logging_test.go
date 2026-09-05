@@ -86,7 +86,7 @@ func TestWorkflowLogsExactSelectionAndCommittedInstallWithoutLapse(t *testing.T)
 	if len(workflowEvents(workflowLogRecords(t, logs.String()), "subtitle.installed")) != 1 {
 		t.Fatalf("install event missing: %s", logs.String())
 	}
-	if strings.Contains(logs.String(), "Secret.Release.Name") || strings.Contains(logs.String(), request.Media.Fingerprint.Path) || len(workflowEvents(workflowLogRecords(t, logs.String()), "lapse.analysis_completed")) != 0 {
+	if strings.Contains(logs.String(), "Secret.Release.Name") || strings.Contains(logs.String(), request.Media.Fingerprint.Path) || len(workflowEvents(workflowLogRecords(t, logs.String()), "lapse.analysis_started")) != 0 || len(workflowEvents(workflowLogRecords(t, logs.String()), "lapse.analysis_completed")) != 0 {
 		t.Fatalf("exact-hash info logs leaked detail or invoked LAPSE: %s", logs.String())
 	}
 }
@@ -121,6 +121,22 @@ func TestWorkflowLogsDebugScoringAndTypedLapsePhases(t *testing.T) {
 		matches := workflowEvents(records, event)
 		if len(matches) != 1 || matches[0]["verdict"] != "solid" || matches[0]["ratio"] != float64(1) || matches[0]["parts"] != float64(1) || matches[0]["compatibility_version"] == "" {
 			t.Fatalf("%s = %#v", event, matches)
+		}
+	}
+	for _, phase := range []string{"analysis", "sync"} {
+		startedEvent := "lapse." + phase + "_started"
+		completedEvent := "lapse." + phase + "_completed"
+		started := workflowEvents(records, startedEvent)
+		if len(started) != 1 || started[0]["phase"] != phase || started[0]["provider"] != "provider" || started[0]["candidate_id"] != "broad" || started[0]["compatibility_version"] == "" {
+			t.Fatalf("%s = %#v", startedEvent, started)
+		}
+		for _, absent := range []string{"duration_ms", "verdict", "mode", "offset_ms", "ratio", "confidence", "agreement", "coverage", "parts", "splits"} {
+			if _, found := started[0][absent]; found {
+				t.Fatalf("%s contains premature result field %q: %#v", startedEvent, absent, started[0])
+			}
+		}
+		if workflowEventIndex(records, startedEvent) >= workflowEventIndex(records, completedEvent) {
+			t.Fatalf("%s did not precede %s: %s", startedEvent, completedEvent, logs.String())
 		}
 	}
 	if len(workflowEvents(records, "candidate.tier_started")) != 1 || len(workflowEvents(records, "candidate.early_stopped")) != 1 {
@@ -201,8 +217,12 @@ func TestWorkflowLogsLapseFailureOnceAndSanitizesIt(t *testing.T) {
 		t.Fatal("Run() succeeded, want technical failure")
 	}
 	records := workflowLogRecords(t, logs.String())
+	started := workflowEvents(records, "lapse.analysis_started")
 	failed := workflowEvents(records, "lapse.failed")
 	completed := workflowEvents(records, "search.completed")
+	if len(started) != 1 || started[0]["phase"] != "analysis" || workflowEventIndex(records, "lapse.analysis_started") >= workflowEventIndex(records, "lapse.failed") {
+		t.Fatalf("LAPSE start/failure order = %s", logs.String())
+	}
 	if len(failed) != 1 || failed[0]["phase"] != "analysis" || failed[0]["error"] != "LAPSE unavailable" {
 		t.Fatalf("LAPSE failure = %#v", failed)
 	}
@@ -262,4 +282,13 @@ func workflowEvents(records []map[string]any, event string) []map[string]any {
 		}
 	}
 	return matches
+}
+
+func workflowEventIndex(records []map[string]any, event string) int {
+	for index, record := range records {
+		if record["event"] == event {
+			return index
+		}
+	}
+	return -1
 }

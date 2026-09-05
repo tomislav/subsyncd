@@ -152,7 +152,7 @@ Grafana Cloud uses managed Loki, so Hades has no local Loki version to pin. Thes
 {service="subsyncd", environment="hades"} | json | job_id="JOB_ID"
 ```
 
-When diagnosing one workflow, start with the final query, then inspect `job.started`, provider search/download events, `candidate.selected`, any LAPSE phase, installation/notification, and `job.completed`. Candidate details require a temporary `SUBSYNCD_LOG_LEVEL=debug` restart; return to `info` immediately afterward.
+When diagnosing one workflow, start with the final query, then inspect `job.started`, provider search/download events, `candidate.selected`, any LAPSE phase, installation/notification, and `job.completed`. Long-running LAPSE work emits `lapse.analysis_started` or `lapse.sync_started` at `info` immediately before the subprocess call, followed by the matching completion or `lapse.failed` event. Start events contain correlation, phase, provider, candidate, and compatibility-version fields, but no duration or result fields. Candidate details require a temporary `SUBSYNCD_LOG_LEVEL=debug` restart; return to `info` immediately afterward.
 
 ## Sonarr and Radarr setup
 

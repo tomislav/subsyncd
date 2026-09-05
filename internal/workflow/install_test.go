@@ -111,7 +111,11 @@ func TestInstallerCreatesDeterministicNotificationIntents(t *testing.T) {
 			t.Fatal(err)
 		}
 		expectedPayload := NotificationPayload{Media: request.Media, SubtitlePath: destination}
-		expectedPayload.Media.Fingerprint.ModTime = expectedPayload.Media.Fingerprint.ModTime.UTC()
+		if !payload.Media.Fingerprint.ModTime.Equal(expectedPayload.Media.Fingerprint.ModTime) {
+			t.Fatalf("payload modification time = %v, want instant %v", payload.Media.Fingerprint.ModTime, expectedPayload.Media.Fingerprint.ModTime)
+		}
+		payload.Media.Fingerprint.ModTime = time.Time{}
+		expectedPayload.Media.Fingerprint.ModTime = time.Time{}
 		if !reflect.DeepEqual(payload, expectedPayload) || !intent.NextAttemptAt.Equal(now) {
 			t.Fatalf("payload/time = %#v/%v", payload, intent.NextAttemptAt)
 		}

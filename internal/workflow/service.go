@@ -676,6 +676,15 @@ func (s *Service) logLapseCompleted(ctx context.Context, phase string, candidate
 	s.workflowEvents().Log(ctx, level, event, "LAPSE phase completed", lapseAttrs(s, phase, candidate, result, duration)...)
 }
 
+func (s *Service) logLapseStarted(ctx context.Context, phase string, candidate domain.Candidate) {
+	s.workflowEvents().Log(ctx, slog.LevelInfo, "lapse."+phase+"_started", "LAPSE phase started",
+		slog.String("phase", phase),
+		slog.String("provider", observability.SafeText(candidate.ProviderID)),
+		slog.String("candidate_id", observability.SafeText(candidate.ResultID)),
+		slog.String("compatibility_version", lapseCompatibilityVersion(s)),
+	)
+}
+
 func (s *Service) logLapseFailure(ctx context.Context, phase string, candidate domain.Candidate, duration time.Duration, err error) {
 	result := domain.SyncResult{}
 	level := slog.LevelError
@@ -690,12 +699,7 @@ func (s *Service) logLapseFailure(ctx context.Context, phase string, candidate d
 }
 
 func lapseAttrs(s *Service, phase string, candidate domain.Candidate, result domain.SyncResult, duration time.Duration) []slog.Attr {
-	version := "unknown"
-	if versioned, ok := s.Synchronizer.(interface{ CompatibilityVersion() string }); ok {
-		if safe := observability.SafeText(versioned.CompatibilityVersion()); safe != "" {
-			version = safe
-		}
-	}
+	version := lapseCompatibilityVersion(s)
 	return []slog.Attr{
 		slog.String("phase", phase),
 		slog.String("provider", observability.SafeText(candidate.ProviderID)),
@@ -712,6 +716,16 @@ func lapseAttrs(s *Service, phase string, candidate domain.Candidate, result dom
 		slog.Int("splits", result.Splits),
 		slog.String("compatibility_version", version),
 	}
+}
+
+func lapseCompatibilityVersion(s *Service) string {
+	version := "unknown"
+	if versioned, ok := s.Synchronizer.(interface{ CompatibilityVersion() string }); ok {
+		if safe := observability.SafeText(versioned.CompatibilityVersion()); safe != "" {
+			version = safe
+		}
+	}
+	return version
 }
 
 func lapseFailureDecision(failure error) string {
@@ -930,6 +944,7 @@ func (s *Service) analyzeCandidate(ctx context.Context, request Request, item do
 	if canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
 		return analyzedCandidate{downloadedCandidate: item, analysis: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
+	s.logLapseStarted(ctx, "analysis", item.candidate)
 	startedAt := time.Now()
 	analysis, err := s.Synchronizer.AnalyzeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path)
 	if err != nil {
@@ -949,6 +964,7 @@ func (s *Service) finalizeCandidate(ctx context.Context, request Request, item a
 	}
 	extension := strings.ToLower(filepath.Ext(item.path))
 	output := filepath.Join(workspace, fmt.Sprintf("synchronized-%d%s", index, extension))
+	s.logLapseStarted(ctx, "sync", item.candidate)
 	startedAt := time.Now()
 	synchronized, err := s.Synchronizer.SynchronizeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path, output)
 	if err != nil {
