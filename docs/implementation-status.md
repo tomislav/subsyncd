@@ -6,12 +6,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: arrapi stable-identity reconciliation implementation
-- Next task: add per-instance reconciliation failure backoff without advancing the durable cursor (Task 6)
-- Latest follow-up: Task 5 made entity-addressed deletes and audits transactional
+- Next task: complete durable documentation and the full repository/container verification matrix (Task 7)
+- Latest follow-up: Task 6 added independent reconciliation failure backoff
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Arrapi stable-identity reconciliation Task 6 — failure backoff
+
+- Worker reconciliation timing now records the last attempt and consecutive failure count independently per Arr instance. Failures retry after 5 minutes, 15 minutes, 1 hour, then 6 hours indefinitely; success resets that instance to the normal configured reconciliation interval.
+- Attempt state is deliberately in memory. A process restart attempts reconciliation immediately, while the durable catalog cursor remains unchanged across every failure and still prevents a successful page gap.
+- `reconcile.failed` now includes bounded `attempt` and `retry_at` fields. Error detail continues through the configured observability redactor; the regression test proves upstream body/path markers do not enter JSON logs.
+- Clock-driven TDD evidence first reproduced retry on the 12:04:59 recovery poll. It now proves attempts exactly at 12:00, 12:05, 12:20, 13:20, and 19:20, then a six-hour post-success interval. A healthy second instance reconciles at its own six-hour boundary while the failing instance remains delayed.
+- Verification passed with the focused backoff test, complete race-enabled worker and catalog suites, and `git diff --check`. One pre-entity SQLite worker fixture was updated with its stable ID.
+- Next task: update README/architecture/operations/agent contracts, run the full unit/vet/e2e/container matrix, review the final diff against the approved design, and keep push/publication/Hades deployment out of scope.
 
 ### Arrapi stable-identity reconciliation Task 5 — atomic entity deletes
 

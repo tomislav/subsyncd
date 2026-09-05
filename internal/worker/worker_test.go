@@ -137,7 +137,7 @@ func TestTwoWorkersCannotProcessTheSameSQLiteLease(t *testing.T) {
 	}
 	defer database.Close()
 	repository := database.Repository()
-	media := domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaMovie, FileID: 1}, Fingerprint: domain.MediaFingerprint{Path: "/media/movie.mkv", FileID: 1, Size: 100, ModTime: now}, Title: "Movie"}
+	media := domain.Media{EntityID: 1, Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaMovie, FileID: 1}, Fingerprint: domain.MediaFingerprint{Path: "/media/movie.mkv", FileID: 1, Size: 100, ModTime: now}, Title: "Movie"}
 	mediaID, _, err := repository.UpsertMedia(context.Background(), media)
 	if err != nil {
 		t.Fatal(err)
@@ -327,6 +327,92 @@ func TestRunOnceReconcilesEachInstanceAtSixHourIntervals(t *testing.T) {
 	}
 	if first.calls != 2 || second.calls != 2 {
 		t.Fatalf("reconcile calls = %d/%d, want 2/2", first.calls, second.calls)
+	}
+}
+
+func TestRunOnceReconcileFailureBackoffAndSuccessReset(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	repository := newWorkerRepository(0, now)
+	failing := &sequenceReconciler{clock: clock, errs: []error{
+		errors.New("secret /private/media /api/v3/history/since"),
+		errors.New("failure two"),
+		errors.New("failure three"),
+		errors.New("failure four"),
+		nil,
+		nil,
+	}}
+	steady := &sequenceReconciler{clock: clock}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", Redact: func(error) string { return "redacted" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := testWorker(repository, &workerWorkflow{}, clock)
+	worker.Events = events
+	worker.Reconcilers = map[string]Reconciler{"failing": failing, "steady": steady}
+
+	run := func(wantError bool) {
+		t.Helper()
+		err := worker.RunOnce(context.Background())
+		if wantError && err == nil {
+			t.Fatal("RunOnce() error = nil")
+		}
+		if !wantError && err != nil {
+			t.Fatalf("RunOnce() error = %v", err)
+		}
+	}
+	run(true) // 12:00, failure 1
+	clock.Advance(5*time.Minute - time.Second)
+	run(false)
+	clock.Advance(time.Second)
+	run(true) // 12:05, failure 2
+	clock.Advance(15*time.Minute - time.Second)
+	run(false)
+	clock.Advance(time.Second)
+	run(true) // 12:20, failure 3
+	clock.Advance(time.Hour - time.Second)
+	run(false)
+	clock.Advance(time.Second)
+	run(true)                                   // 13:20, failure 4
+	clock.Advance(4*time.Hour + 40*time.Minute) // 18:00; steady is independently due
+	run(false)
+	clock.Advance(time.Hour + 20*time.Minute - time.Second)
+	run(false)
+	clock.Advance(time.Second)
+	run(false) // 19:20, failing succeeds
+	clock.Advance(6*time.Hour - time.Second)
+	run(false)
+	clock.Advance(time.Second)
+	run(false) // success restored the normal six-hour interval
+
+	wantFailing := []time.Time{
+		now,
+		now.Add(5 * time.Minute),
+		now.Add(20 * time.Minute),
+		now.Add(80 * time.Minute),
+		now.Add(7*time.Hour + 20*time.Minute),
+		now.Add(13*time.Hour + 20*time.Minute),
+	}
+	if len(failing.calls) != len(wantFailing) {
+		t.Fatalf("failing reconcile calls = %v, want %v", failing.calls, wantFailing)
+	}
+	for index := range wantFailing {
+		if !failing.calls[index].Equal(wantFailing[index]) {
+			t.Fatalf("failing reconcile calls = %v, want %v", failing.calls, wantFailing)
+		}
+	}
+	if len(steady.calls) != 3 || !steady.calls[0].Equal(now) || !steady.calls[1].Equal(now.Add(6*time.Hour)) || !steady.calls[2].Equal(now.Add(13*time.Hour+20*time.Minute-time.Second)) {
+		t.Fatalf("steady reconcile calls = %v", steady.calls)
+	}
+
+	records := workerLogRecords(t, logs.String())
+	failed := findWorkerEvent(t, records, "reconcile.failed")
+	if failed["attempt"] != float64(1) || failed["retry_at"] != now.Add(5*time.Minute).Format(time.RFC3339Nano) {
+		t.Fatalf("first reconcile failure fields = %#v", failed)
+	}
+	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "/private/media") || strings.Contains(logs.String(), "/api/v3/history") {
+		t.Fatalf("reconciliation log leaked upstream detail: %s", logs.String())
 	}
 }
 
@@ -818,6 +904,22 @@ type workerReconciler struct{ calls int }
 func (r *workerReconciler) Run(context.Context) error {
 	r.calls++
 	return nil
+}
+
+type sequenceReconciler struct {
+	clock *testutil.Clock
+	errs  []error
+	calls []time.Time
+}
+
+func (r *sequenceReconciler) Run(context.Context) error {
+	r.calls = append(r.calls, r.clock.Now())
+	if len(r.errs) == 0 {
+		return nil
+	}
+	err := r.errs[0]
+	r.errs = r.errs[1:]
+	return err
 }
 
 func notificationJSON(t *testing.T, media domain.Media, subtitlePath string) []byte {

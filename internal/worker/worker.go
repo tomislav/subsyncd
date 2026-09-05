@@ -42,6 +42,18 @@ type Reconciler interface {
 	Run(context.Context) error
 }
 
+type reconcileAttempt struct {
+	LastAttempt time.Time
+	Failures    int
+}
+
+var reconcileFailureDelays = [...]time.Duration{
+	5 * time.Minute,
+	15 * time.Minute,
+	time.Hour,
+	6 * time.Hour,
+}
+
 type Repository interface {
 	LeaseDueSearches(context.Context, time.Time, int, time.Duration) ([]store.SearchLease, error)
 	RenewSearchLease(context.Context, string, time.Time, time.Duration) error
@@ -72,8 +84,8 @@ type Worker struct {
 	Wake              <-chan struct{}
 	Events            *observability.Emitter
 
-	reconcileMu   sync.Mutex
-	lastReconcile map[string]time.Time
+	reconcileMu       sync.Mutex
+	reconcileAttempts map[string]reconcileAttempt
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -471,8 +483,8 @@ func (w *Worker) renew(ctx context.Context, cancelJob context.CancelFunc, renew 
 func (w *Worker) reconcileDue(ctx context.Context) error {
 	w.reconcileMu.Lock()
 	defer w.reconcileMu.Unlock()
-	if w.lastReconcile == nil {
-		w.lastReconcile = make(map[string]time.Time)
+	if w.reconcileAttempts == nil {
+		w.reconcileAttempts = make(map[string]reconcileAttempt)
 	}
 	names := make([]string, 0, len(w.Reconcilers))
 	for name := range w.Reconcilers {
@@ -482,20 +494,34 @@ func (w *Worker) reconcileDue(ctx context.Context) error {
 	var failures []error
 	now := w.Clock.Now()
 	for _, name := range names {
-		last := w.lastReconcile[name]
-		if !last.IsZero() && now.Sub(last) < w.ReconcileInterval {
+		attempt := w.reconcileAttempts[name]
+		delay := w.ReconcileInterval
+		if attempt.Failures > 0 {
+			index := attempt.Failures - 1
+			if index >= len(reconcileFailureDelays) {
+				index = len(reconcileFailureDelays) - 1
+			}
+			delay = reconcileFailureDelays[index]
+		}
+		if !attempt.LastAttempt.IsZero() && now.Before(attempt.LastAttempt.Add(delay)) {
 			continue
 		}
 		started := time.Now()
 		events := w.Events.For("worker")
 		events.Log(ctx, slog.LevelInfo, "reconcile.started", "catalog reconciliation started", slog.String("instance", name))
 		if err := w.Reconcilers[name].Run(ctx); err != nil {
+			attempt.LastAttempt = now
+			if attempt.Failures < len(reconcileFailureDelays) {
+				attempt.Failures++
+			}
+			w.reconcileAttempts[name] = attempt
+			retryAt := now.Add(reconcileFailureDelays[attempt.Failures-1])
 			events.Log(ctx, slog.LevelError, "reconcile.failed", "catalog reconciliation failed",
-				append([]slog.Attr{slog.String("instance", name), slog.Int64("duration_ms", time.Since(started).Milliseconds())}, events.ErrorAttrs("reconciliation", err)...)...)
+				append([]slog.Attr{slog.String("instance", name), slog.Int("attempt", attempt.Failures), slog.Time("retry_at", retryAt), slog.Int64("duration_ms", time.Since(started).Milliseconds())}, events.ErrorAttrs("reconciliation", err)...)...)
 			failures = append(failures, fmt.Errorf("reconcile %s: %w", name, err))
 			continue
 		}
-		w.lastReconcile[name] = now
+		w.reconcileAttempts[name] = reconcileAttempt{LastAttempt: now}
 		events.Log(ctx, slog.LevelInfo, "reconcile.completed", "catalog reconciliation completed",
 			slog.String("instance", name), slog.String("outcome", "success"), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
 	}
