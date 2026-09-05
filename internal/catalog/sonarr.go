@@ -161,7 +161,7 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 }
 
 func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]HistoryChange, error) {
-	history, err := s.entity.HistorySince(ctx, since, arrapi.EventDownloadImported, arrapi.EventFileRenamed, arrapi.EventFileDeleted)
+	history, err := readHistoryWindow(ctx, s.entity, since, through)
 	if err != nil {
 		return nil, safeArrAPIError(s.client.instance, "history", err)
 	}

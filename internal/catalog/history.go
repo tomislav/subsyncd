@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -72,4 +73,68 @@ func sortHistoryChanges(changes []HistoryChange) {
 		}
 		return changes[i].EntityID < changes[j].EntityID
 	})
+}
+
+// readHistoryWindow walks descending, bounded pages. Fractional cursors overlap
+// the complete second; transaction event IDs make that overlap idempotent.
+func readHistoryWindow(ctx context.Context, client arrHistoryClient, since, through time.Time) ([]arrapi.HistoryRecord, error) {
+	const pageSize = 100
+	lower := since.UTC().Truncate(time.Second)
+	seen := make(map[int]time.Time)
+	var records []arrapi.HistoryRecord
+	var oldest time.Time
+	received := 0
+	previousTotal := 0
+	for pageNumber := 1; ; pageNumber++ {
+		page, err := client.History(ctx, arrapi.HistoryOptions{Page: pageNumber, PageSize: pageSize})
+		if err != nil {
+			return nil, err
+		}
+		if page.Page != pageNumber || page.TotalRecords < previousTotal || page.PageSize != pageSize || len(page.Records) > pageSize || page.TotalRecords < len(page.Records) {
+			return nil, fmt.Errorf("invalid Arr history page")
+		}
+		previousTotal = page.TotalRecords
+		if len(page.Records) == 0 {
+			if received < page.TotalRecords {
+				return nil, fmt.Errorf("incomplete Arr history page")
+			}
+			return records, nil
+		}
+		progress := false
+		reachedLower := false
+		for _, record := range page.Records {
+			if record.ID <= 0 || record.Date.IsZero() {
+				return nil, fmt.Errorf("incomplete Arr history identity")
+			}
+			if date, duplicate := seen[record.ID]; duplicate {
+				if !date.Equal(record.Date) {
+					return nil, fmt.Errorf("inconsistent Arr history identity")
+				}
+				continue
+			}
+			seen[record.ID] = record.Date
+			if !oldest.IsZero() && record.Date.After(oldest) {
+				return nil, fmt.Errorf("unordered Arr history page")
+			}
+			oldest = record.Date
+			progress = true
+			if !since.IsZero() && record.Date.Before(lower) {
+				reachedLower = true
+				continue
+			}
+			if record.Date.After(through) {
+				continue
+			}
+			if _, relevant := historyEvent(record.EventType); relevant {
+				records = append(records, record)
+			}
+		}
+		if !progress {
+			return nil, fmt.Errorf("non-progressing Arr history page")
+		}
+		received += len(page.Records)
+		if reachedLower || page.TotalRecords > 0 && received >= page.TotalRecords {
+			return records, nil
+		}
+	}
 }

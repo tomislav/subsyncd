@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/cplieger/arrapi/v2"
@@ -13,7 +14,7 @@ import (
 )
 
 type arrHistoryClient interface {
-	HistorySince(context.Context, time.Time, ...arrapi.EventType) ([]arrapi.HistoryRecord, error)
+	History(context.Context, arrapi.HistoryOptions) (arrapi.HistoryPage, error)
 }
 
 type sonarrEntityClient interface {
@@ -103,6 +104,12 @@ func (e *arrAPIError) Error() string {
 	)
 }
 
+func (e *arrAPIError) Is(target error) bool {
+	return e.Kind == "canceled" && target == context.Canceled || e.Kind == "deadline" && target == context.DeadlineExceeded
+}
+func (e *arrAPIError) Temporary() bool { return e.Retryable }
+func (e *arrAPIError) Timeout() bool   { return e.Kind == "deadline" || e.Kind == "timeout" }
+
 func safeArrAPIError(instance, operation string, err error) error {
 	safe := &arrAPIError{
 		Instance:  instance,
@@ -110,6 +117,7 @@ func safeArrAPIError(instance, operation string, err error) error {
 		Kind:      "transport",
 		Retryable: true,
 	}
+	var timeout net.Error
 	var statusErr *arrapi.StatusError
 	var tooLargeErr *arrapi.ResponseTooLargeError
 	switch {
@@ -125,6 +133,8 @@ func safeArrAPIError(instance, operation string, err error) error {
 		safe.Retryable = false
 	case errors.Is(err, context.DeadlineExceeded):
 		safe.Kind = "deadline"
+	case errors.As(err, &timeout) && timeout.Timeout():
+		safe.Kind = "timeout"
 	}
 	return safe
 }

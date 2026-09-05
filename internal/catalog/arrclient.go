@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,7 +27,9 @@ func newArrClient(instance, rawURL, apiKey string, client *http.Client) (*arrCli
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	return &arrClient{instance: instance, baseURL: baseURL, apiKey: apiKey, http: client}, nil
+	policy := *client
+	policy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &arrClient{instance: instance, baseURL: baseURL, apiKey: apiKey, http: &policy}, nil
 }
 
 func (c *arrClient) getJSON(ctx context.Context, path string, query url.Values, destination any) error {
@@ -34,21 +37,32 @@ func (c *arrClient) getJSON(ctx context.Context, path string, query url.Values, 
 	endpoint.RawQuery = query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return fmt.Errorf("create request for Arr instance %s: %w", c.instance, err)
+		return safeArrAPIError(c.instance, "detail_request", err)
 	}
 	request.Header.Set("X-Api-Key", c.apiKey)
 	request.Header.Set("Accept", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
-		return fmt.Errorf("request Arr instance %s: %w", c.instance, err)
+		return safeArrAPIError(c.instance, "detail_request", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("Arr instance %s returned %s", c.instance, response.Status)
+		return &arrAPIError{Instance: c.instance, Operation: "detail_request", Kind: "status", StatusCode: response.StatusCode, Retryable: response.StatusCode >= 500}
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 16<<20))
+	const limit = 16 << 20
+	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return safeArrAPIError(c.instance, "detail_body", err)
+	}
+	if len(payload) > limit {
+		return &arrAPIError{Instance: c.instance, Operation: "detail_body", Kind: "response_too_large"}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	if err := decoder.Decode(destination); err != nil {
-		return fmt.Errorf("decode response from Arr instance %s: %w", c.instance, err)
+		return &arrAPIError{Instance: c.instance, Operation: "detail_decode", Kind: "invalid_json"}
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return &arrAPIError{Instance: c.instance, Operation: "detail_decode", Kind: "invalid_json"}
 	}
 	return nil
 }

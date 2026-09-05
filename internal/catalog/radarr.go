@@ -95,7 +95,7 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 }
 
 func (r *Radarr) ListChanges(ctx context.Context, since, through time.Time) ([]HistoryChange, error) {
-	history, err := r.entity.HistorySince(ctx, since, arrapi.EventDownloadImported, arrapi.EventFileRenamed, arrapi.EventFileDeleted)
+	history, err := readHistoryWindow(ctx, r.entity, since, through)
 	if err != nil {
 		return nil, safeArrAPIError(r.client.instance, "history", err)
 	}

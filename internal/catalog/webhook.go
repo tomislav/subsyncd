@@ -113,6 +113,7 @@ func stableEventID(instance, eventType string, kind domain.MediaKind, file webho
 }
 
 type MediaEventStore interface {
+	HasAppliedMediaEvent(context.Context, string) (bool, error)
 	ApplyMediaEvent(context.Context, store.MediaEventMutation) (bool, error)
 }
 
@@ -140,6 +141,7 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 	}
 	result := WebhookResult{EventCount: len(events)}
 	appliedAny := false
+	ignored := 0
 	defer func() {
 		if appliedAny && h.OnApplied != nil {
 			h.OnApplied()
@@ -147,6 +149,13 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 	}()
 	now := h.Now().UTC()
 	for _, event := range events {
+		committed, err := h.Store.HasAppliedMediaEvent(ctx, event.EventID)
+		if err != nil {
+			return result, fmt.Errorf("read applied webhook event: %w", err)
+		}
+		if committed {
+			continue
+		}
 		mutation := store.MediaEventMutation{
 			EventID:   event.EventID,
 			Type:      string(event.Type),
@@ -158,7 +167,8 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 			media, err := h.Catalog.GetMedia(ctx, event.Ref)
 			if err != nil {
 				if IsOutsideScope(err) {
-					return result, ErrIgnoredEvent
+					ignored++
+					continue
 				}
 				return result, fmt.Errorf("hydrate %s event %s: %w", h.Instance, event.EventID, err)
 			}
@@ -173,6 +183,9 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 		if applied {
 			result.AppliedCount++
 		}
+	}
+	if ignored == len(events) {
+		return result, ErrIgnoredEvent
 	}
 	return result, nil
 }

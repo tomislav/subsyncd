@@ -1667,3 +1667,27 @@ func testMedia() domain.Media {
 		Title:       "Show", Season: 1, Episode: 2, ExternalIDs: domain.ExternalIDs{TVDB: 1},
 	}
 }
+
+func TestHasAppliedMediaEventOnlyCommitted(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	m := testMedia()
+	event := MediaEventMutation{EventID: "durable-event", Type: "import", Ref: m.Ref, Media: m, EntityID: m.EntityID, At: time.Now()}
+	if yes, err := repo.HasAppliedMediaEvent(ctx, event.EventID); err != nil || yes {
+		t.Fatalf("unapplied=%t %v", yes, err)
+	}
+	bad := event
+	bad.Media.EntityID = 0
+	if _, err := repo.ApplyMediaEvent(ctx, bad); err == nil {
+		t.Fatal("invalid event committed")
+	}
+	if yes, err := repo.HasAppliedMediaEvent(ctx, event.EventID); err != nil || yes {
+		t.Fatalf("rollback recorded=%t %v", yes, err)
+	}
+	if _, err := repo.ApplyMediaEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if yes, err := repo.HasAppliedMediaEvent(ctx, event.EventID); err != nil || !yes {
+		t.Fatalf("commit missing=%t %v", yes, err)
+	}
+}

@@ -115,3 +115,11 @@ func TestMapPathPreservesPathCase(t *testing.T) {
 		t.Fatalf("mapped path = %q, want %q", got, want)
 	}
 }
+
+func TestMapPathRemoteRoot(t *testing.T) {
+	root := t.TempDir()
+	got, err := MapPath("/show/file.mkv", []config.PathMapping{{Remote: "/", Local: root}}, []string{root})
+	if err != nil || got != filepath.Join(root, "show/file.mkv") {
+		t.Fatalf("root mapping=%q %v", got, err)
+	}
+}

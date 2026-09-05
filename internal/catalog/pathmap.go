@@ -26,6 +26,9 @@ func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) 
 	candidates := make([]candidate, 0, len(mappings))
 	for _, mapping := range mappings {
 		prefix := strings.TrimSuffix(normalizeRemote(mapping.Remote), "/")
+		if normalizeRemote(mapping.Remote) == "/" {
+			prefix = "/"
+		}
 		if prefix == "" || !hasPathPrefix(normalizedRemote, prefix) {
 			continue
 		}
@@ -69,6 +72,9 @@ func normalizeRemote(path string) string {
 }
 
 func hasPathPrefix(path, prefix string) bool {
+	if prefix == "/" {
+		return strings.HasPrefix(path, "/")
+	}
 	if path == prefix {
 		return true
 	}

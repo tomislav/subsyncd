@@ -62,18 +62,18 @@ func TestRadarrHistoryResolvesLatestEntityStateWithinPageEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var historyDate string
+	var historyPage string
 	movieRequests := 0
 	fileRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/api/v3/history/since":
-			historyDate = r.URL.Query().Get("date")
-			if got := r.URL.Query().Get("includeMovie"); got != "false" {
-				t.Errorf("includeMovie = %q, want false", got)
+		case "/api/v3/history":
+			historyPage = r.URL.Query().Get("page")
+			if r.URL.Query().Get("pageSize") != "100" || r.URL.Query().Get("sortDirection") != "descending" {
+				t.Error("history request is not bounded and descending")
 			}
-			_, _ = w.Write(history)
+			writeHistoryFixture(t, w, history)
 		case "/api/v3/movie/400":
 			movieRequests++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 400, "title": "Example Movie", "year": 2026, "hasFile": true, "movieFile": map[string]any{"id": 1532, "path": "/remote/movies/movie.mkv", "size": 1}})
@@ -104,8 +104,8 @@ func TestRadarrHistoryResolvesLatestEntityStateWithinPageEnd(t *testing.T) {
 	if movieRequests != 2 {
 		t.Fatalf("movie requests = %d, want current-state plus detail", movieRequests)
 	}
-	if historyDate != "2026-09-05T05:00:00Z" {
-		t.Fatalf("history date = %q, want RFC3339 seconds", historyDate)
+	if historyPage != "1" {
+		t.Fatalf("history page = %q, want 1", historyPage)
 	}
 }
 
@@ -113,8 +113,8 @@ func TestRadarrHistoryReturnsAbsentWithoutDetailHydration(t *testing.T) {
 	fileRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v3/history/since":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 40, "movieId": 402, "eventType": "movieFileDeleted", "date": "2026-09-05T12:00:00Z", "data": map[string]string{}}})
+		case "/api/v3/history":
+			writeHistoryRecords(t, w, []map[string]any{{"id": 40, "movieId": 402, "eventType": "movieFileDeleted", "date": "2026-09-05T12:00:00Z", "data": map[string]string{}}})
 		case "/api/v3/movie/402":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 402, "hasFile": false})
 		default:
@@ -144,8 +144,8 @@ func TestRadarrHistoryReturnsOutsideScopeWithoutDetailHydration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/api/v3/history/since":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 50, "movieId": 403, "eventType": "downloadFolderImported", "date": "2026-09-05T12:00:00Z", "data": map[string]string{"fileId": "1700"}}})
+		case "/api/v3/history":
+			writeHistoryRecords(t, w, []map[string]any{{"id": 50, "movieId": 403, "eventType": "downloadFolderImported", "date": "2026-09-05T12:00:00Z", "data": map[string]string{"fileId": "1700"}}})
 		case "/api/v3/movie/403":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 403, "hasFile": true, "movieFile": map[string]any{"id": 1700, "path": "/unmapped/movie.mkv"}})
 		default:

@@ -1684,3 +1684,14 @@ func allSeriesKeys(ids domain.ExternalIDs, title string, year int) []string {
 func StrongestSeriesKey(ids domain.ExternalIDs, title string, year int) string {
 	return strongestSeriesKey(ids, title, year)
 }
+
+// HasAppliedMediaEvent avoids hydration for retained, committed webhook identities.
+// ApplyMediaEvent still performs transactional deduplication for concurrent arrivals.
+func (r *Repository) HasAppliedMediaEvent(ctx context.Context, eventID string) (bool, error) {
+	var found bool
+	err := r.store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE event_id=? AND outcome='applied')`, eventID).Scan(&found)
+	if err != nil {
+		return false, fmt.Errorf("read applied media event: %w", err)
+	}
+	return found, nil
+}

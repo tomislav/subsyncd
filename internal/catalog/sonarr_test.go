@@ -125,21 +125,18 @@ func TestSonarrHistoryCollapsesAttachedEpisodesToCanonicalEntity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var historyDate string
+	var historyPage string
 	fileRequests := 0
 	currentRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == "/api/v3/history/since":
-			historyDate = r.URL.Query().Get("date")
-			if got := r.URL.Query().Get("includeEpisode"); got != "false" {
-				t.Errorf("includeEpisode = %q, want false", got)
+		case r.URL.Path == "/api/v3/history":
+			historyPage = r.URL.Query().Get("page")
+			if r.URL.Query().Get("pageSize") != "100" || r.URL.Query().Get("sortDirection") != "descending" {
+				t.Error("history request is not bounded and descending")
 			}
-			if got := r.URL.Query().Get("includeSeries"); got != "false" {
-				t.Errorf("includeSeries = %q, want false", got)
-			}
-			_, _ = w.Write(history)
+			writeHistoryFixture(t, w, history)
 		case r.URL.Path == "/api/v3/episode/101":
 			currentRequests++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
@@ -179,8 +176,8 @@ func TestSonarrHistoryCollapsesAttachedEpisodesToCanonicalEntity(t *testing.T) {
 	if currentRequests != 2 {
 		t.Fatalf("current episode requests = %d, want 2", currentRequests)
 	}
-	if historyDate != "2026-09-05T05:00:00Z" {
-		t.Fatalf("history date = %q, want RFC3339 seconds", historyDate)
+	if historyPage != "1" {
+		t.Fatalf("history page = %q, want 1", historyPage)
 	}
 }
 
@@ -188,8 +185,8 @@ func TestSonarrHistoryAbsentDoesNotHydrateDetail(t *testing.T) {
 	fileRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/api/v3/history/since" {
-			_ = json.NewEncoder(w).Encode([]map[string]any{
+		if r.URL.Path == "/api/v3/history" {
+			writeHistoryRecords(t, w, []map[string]any{
 				{"id": 20, "seriesId": 10, "episodeId": 103, "eventType": "downloadFolderImported", "date": "2026-09-05T10:00:00Z", "data": map[string]string{"fileId": "1002"}},
 				{"id": 21, "seriesId": 10, "episodeId": 103, "eventType": "episodeFileDeleted", "date": "2026-09-05T11:00:00Z", "data": map[string]string{}},
 			})
@@ -224,8 +221,8 @@ func TestSonarrHistoryRejectsEpisodeMissingFromCurrentFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == "/api/v3/history/since":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 30, "seriesId": 10, "episodeId": 104, "eventType": "downloadFolderImported", "date": "2026-09-05T11:00:00Z", "data": map[string]string{"fileId": "1004"}}})
+		case r.URL.Path == "/api/v3/history":
+			writeHistoryRecords(t, w, []map[string]any{{"id": 30, "seriesId": 10, "episodeId": 104, "eventType": "downloadFolderImported", "date": "2026-09-05T11:00:00Z", "data": map[string]string{"fileId": "1004"}}})
 		case r.URL.Path == "/api/v3/episode/104":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 104, "seriesId": 10, "hasFile": true, "episodeFile": map[string]any{"id": 1004, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
 		case r.URL.Path == "/api/v3/episodefile/1004":

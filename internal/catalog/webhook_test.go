@@ -264,3 +264,45 @@ func TestWebhookHandlerOnAppliedSurvivesLaterFileFailure(t *testing.T) {
 		t.Fatalf("wake callbacks = %d, want 1 after partial commit", wakes)
 	}
 }
+
+type mixedScopeCatalog struct{ fakeEventCatalog }
+
+func (f *mixedScopeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Media, error) {
+	f.calls++
+	if ref.FileID == 1 {
+		return domain.Media{}, ErrOutsideScope
+	}
+	return domain.Media{Ref: ref, EntityID: ref.FileID}, f.err
+}
+func TestWebhookMixedScopeContinues(t *testing.T) {
+	c := &mixedScopeCatalog{}
+	s := &fakeEventStore{}
+	wakes := 0
+	h := WebhookHandler{Instance: "main", InstanceType: "sonarr", Catalog: c, Store: s, Now: time.Now, OnApplied: func() { wakes++ }}
+	got, err := h.Handle(t.Context(), []byte(`{"eventType":"Download","episodeFiles":[{"id":1},{"id":2}]}`))
+	if err != nil || got.AppliedCount != 1 || c.calls != 2 || wakes != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d wakes=%d", got, err, c.calls, wakes)
+	}
+}
+func TestWebhookCommittedRedeliverySkipsHydration(t *testing.T) {
+	c := &fakeEventCatalog{media: domain.Media{EntityID: 2}}
+	s := &fakeEventStore{}
+	h := WebhookHandler{Instance: "main", InstanceType: "radarr", Catalog: c, Store: s, Now: time.Now}
+	body := []byte(`{"eventType":"Download","movieFile":{"id":2}}`)
+	if _, err := h.Handle(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+	c.err = errors.New("old file no longer exists")
+	got, err := h.Handle(t.Context(), body)
+	if err != nil || got.AppliedCount != 0 || c.calls != 1 {
+		t.Fatalf("duplicate result=%+v err=%v calls=%d", got, err, c.calls)
+	}
+}
+func (f *fakeEventStore) HasAppliedMediaEvent(_ context.Context, id string) (bool, error) {
+	for _, m := range f.mutations {
+		if m.EventID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}

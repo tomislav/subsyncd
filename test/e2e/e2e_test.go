@@ -532,13 +532,14 @@ func newReconciliationSonarrServer(t *testing.T, now time.Time) *httptest.Server
 			return
 		}
 		switch request.URL.Path {
-		case "/api/v3/history/since":
-			_ = json.NewEncoder(response).Encode([]map[string]any{
-				{"id": 101, "seriesId": 11, "episodeId": 101, "eventType": "downloadFolderImported", "date": now.Add(-30 * time.Minute), "data": map[string]string{"fileId": "1001"}},
-				{"id": 102, "seriesId": 12, "episodeId": 102, "eventType": "episodeFileDeleted", "date": now.Add(-20 * time.Minute), "data": map[string]string{}},
-				{"id": 103, "seriesId": 13, "episodeId": 103, "eventType": "downloadFolderImported", "date": now.Add(-10 * time.Minute), "data": map[string]string{"fileId": "1003"}},
+		case "/api/v3/history":
+			_ = json.NewEncoder(response).Encode(map[string]any{"page": 1, "pageSize": 100, "totalRecords": 4, "records": []map[string]any{
 				{"id": 104, "seriesId": 15, "episodeId": 105, "eventType": "downloadFolderImported", "date": now.Add(-5 * time.Minute), "data": map[string]string{"fileId": "1005"}},
-			})
+				{"id": 103, "seriesId": 13, "episodeId": 103, "eventType": "downloadFolderImported", "date": now.Add(-10 * time.Minute), "data": map[string]string{"fileId": "1003"}},
+				{"id": 102, "seriesId": 12, "episodeId": 102, "eventType": "episodeFileDeleted", "date": now.Add(-20 * time.Minute), "data": map[string]string{}},
+				{"id": 101, "seriesId": 11, "episodeId": 101, "eventType": "downloadFolderImported", "date": now.Add(-30 * time.Minute), "data": map[string]string{"fileId": "1001"}},
+			}})
+
 		case "/api/v3/episode/101":
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": 101, "seriesId": 11, "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 11, "path": "/remote/tv/Show.S01E01.mkv"}})
 		case "/api/v3/episode/102":
@@ -636,8 +637,8 @@ func newArrServer(t *testing.T, mediaPath string) *httptest.Server {
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": 42, "movieId": 9, "path": "/remote/movies/" + filepath.Base(mediaPath), "size": 196608, "dateAdded": time.Now().UTC(), "sceneName": "Movie.2024.1080p.WEB-DL-GROUP", "releaseGroup": "GROUP", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-1080p", "resolution": 1080, "source": "WEB-DL"}}, "mediaInfo": map[string]any{"runTime": "01:30:00"}})
 		case "/api/v3/movie/9":
 			_, _ = io.WriteString(response, `{"id":9,"title":"Movie","year":2024,"imdbId":"tt1234567","tmdbId":9}`)
-		case "/api/v3/history/since":
-			_, _ = io.WriteString(response, `[]`)
+		case "/api/v3/history":
+			_, _ = io.WriteString(response, `{"records":[],"totalRecords":0,"page":1,"pageSize":100}`)
 		default:
 			http.NotFound(response, request)
 		}
