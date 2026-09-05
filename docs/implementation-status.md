@@ -5,13 +5,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: observe the isolated Hades daemon canary after the stable-identity Stage 2 hydration test
-- Next safe action: leave the two-movie canary running, then explicitly choose between a real Arr webhook trial, one exact additional media mapping, or GitHub publication
-- Latest follow-up: Stage 2 adopted stable IDs for both mapped movies without provider traffic
+- Current task: publish and deploy the Stage 3 outside-scope webhook boundary, then configure a real scoped Radarr webhook trial
+- Next safe action: wait for the immutable multiarch image, deploy it to the two-movie canary, install the Radarr connection, and verify one mapped plus one outside-scope delivery
+- Latest follow-up: commit `629a050` makes typed outside-scope import/rename webhooks ignored successes
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Hades Stage 3 Task 1 — safe outside-scope webhooks
+
+- Import/rename hydration now converts only wrapped `ErrOutsideScope` into `ErrIgnoredEvent`. The HTTP boundary returns 204, persists no event/media/search mutation, and emits no worker wake. Unsafe mapping/filesystem errors continue through the normal failure path; delete webhooks remain file-ID addressed.
+- TDD RED evidence reproduced the existing wrapped scope error instead of the ignored sentinel. GREEN verification passed the focused test, affected catalog/http/app race suites, complete race suite, `go vet ./...`, tagged race-enabled end-to-end suite, and `git diff --check`.
+- Code commit: `629a050`. Next: publish the documented boundary, deploy its immutable image to the isolated canary, and create the real Radarr webhook connection.
 
 ### Follow-up — stable-identity Hades Stage 2 hydration
 

@@ -89,7 +89,7 @@ http://subsyncd:8097/webhooks/sonarr-main?token=THE_SONARR_WEBHOOK_TOKEN
 http://subsyncd:8097/webhooks/radarr-main?token=THE_RADARR_WEBHOOK_TOKEN
 ```
 
-Enable download/import, upgrade, rename, and file-delete events. Connections are configured manually; `subsyncd` does not create or modify Arr settings. Arr test events return success but create no work. Exact redeliveries are transactionally idempotent.
+Enable download/import, upgrade, rename, and file-delete events. Connections are configured manually; `subsyncd` does not create or modify Arr settings. Arr test events and imports/renames that are deliberately outside configured path scope return an ignored success and create no work. Unsafe path/filesystem failures still fail the request. Exact redeliveries are transactionally idempotent.
 
 Reconciliation uses `github.com/cplieger/arrapi/v2` v2.0.5 for bounded history and current movie/episode requests. It runs immediately after startup without blocking startup itself, normally repeats every six hours, and backs failures off after 5 minutes, 15 minutes, 1 hour, then 6 hours. Second-resolution history requests deliberately overlap the fractional persisted cursor; stable Arr history event IDs make that replay harmless. Existing databases adopt stable entity IDs lazily on later hydration—there is no startup full-library backfill or network burst. A historical deletion for a legacy row that has not yet been adopted cannot be matched and remains an unknown audit until another live event hydrates that row.
 
