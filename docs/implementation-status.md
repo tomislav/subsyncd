@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 2 (exact-first workflow fallback) is implemented and committed
-- Next safe action: implement Task 3 (archive and forced-member safety); production remains out of scope
+- Current task: codebase correctness-repair Task 3 (archive and forced-member safety) is implemented locally; production remains out of scope
+- Next safe action: implement Task 4 (deleted managed-sidecar recovery) after this task commit
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 3 — conservative archive evidence and universal forced-member policy
+
+- Episode ranges now require complete, hyphenated episode-token endpoints. The selector accepts `S01E01-E03`, same-season `S01E01-S01E03`, and `1x01-1x03`; it rejects separator-derived pseudo-ranges, release suffixes, non-token boundaries, cross-season/reversed ranges, and chained ambiguous forms. Ordinary `S01E01.1080p` evidence remains a single episode rather than becoming a range.
+- Movie/plain single-member selection now passes through `SelectSingleMovie`, which applies the existing forced-subtitle policy and returns bounded typed `pack.SelectionError` diagnostics. A forced-only member is therefore a candidate-local `pack_selection` rejection, allowing the exact-candidate phase to continue; multi-member movies remain fail-closed.
+- RED/GREEN coverage added for conservative range parsing, forced-only single-movie selection, and exact-candidate continuation after a forced plain payload. Focused and complete archive/workflow package suites run with `-race`; no providers, Silo, Hades, images, or deployments were touched.
+- Commit: `fix: tighten subtitle member evidence`.
+- Next task: deleted managed-sidecar recovery.
 
 ### Conventional repairs Task 2 — exact-first workflow fallback
 

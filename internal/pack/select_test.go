@@ -40,6 +40,59 @@ func TestSelectDoesNotMisclassifyRangeStartAsSingleEpisode(t *testing.T) {
 	}
 }
 
+func TestEpisodeRangeRequiresExplicitHyphenatedEndpoint(t *testing.T) {
+	accepted := map[string][3]int{
+		"Show.S01E01-E03.srt":    {1, 1, 3},
+		"Show.S01E01-S01E03.srt": {1, 1, 3},
+		"Show.1x01-1x03.srt":     {1, 1, 3},
+	}
+	for name, want := range accepted {
+		season, from, to, found := episodeRange(name)
+		if !found || [3]int{season, from, to} != want {
+			t.Errorf("episodeRange(%q) = %d,%d,%d,%v", name, season, from, to, found)
+		}
+	}
+	for _, name := range []string{
+		"Show.S01E01.1080p.srt",
+		"Show.S01E01.2024.srt",
+		"Show.S01E01.E03.srt",
+		"Show.S01E01_E03.srt",
+		"Show.S01E01 E03.srt",
+		"Show.S01E03-E01.srt",
+		"Show.S01E01-S02E03.srt",
+		"Show.S01E01-E03p.srt",
+		"Show.S01E01-E03é.srt",
+		"Show.S01E01-E03-S01E05.srt",
+	} {
+		if _, _, _, found := episodeRange(name); found {
+			t.Errorf("episodeRange(%q) unexpectedly matched", name)
+		}
+	}
+
+	evidence := memberEvidence("Show.S01E01.1080p.srt", "Show")
+	if evidence.EpisodeFrom != 1 || evidence.EpisodeTo != 1 {
+		t.Fatalf("memberEvidence() = %#v, want single episode evidence", evidence)
+	}
+	selected, err := Select(Manifest{Members: []Member{evidence}}, domain.Candidate{}, domain.Media{Season: 1, Episode: 1}, false)
+	if err != nil || selected.SelectionRule == "episode_range" {
+		t.Fatalf("suffix selection = %#v, %v", selected, err)
+	}
+}
+
+func TestSelectSingleMovieEnforcesForcedPolicy(t *testing.T) {
+	manifest := Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.forced.srt", Forced: true}}}
+	_, err := SelectSingleMovie(manifest, domain.Candidate{Forced: true}, false)
+	var selection *SelectionError
+	if !errors.As(err, &selection) || selection.Rule != "forced_policy" {
+		t.Fatalf("error = %T %v", err, err)
+	}
+
+	selected, err := SelectSingleMovie(Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.srt"}}}, domain.Candidate{}, false)
+	if err != nil || selected.SelectionRule != "single_movie" {
+		t.Fatalf("selection = %#v, %v", selected, err)
+	}
+}
+
 func TestSelectDeduplicatesRepeatedProviderDirectEvidence(t *testing.T) {
 	media := domain.Media{Season: 1, Episode: 2}
 	direct := domain.PackMemberRef{Filename: "episode.srt", Season: 1, Episode: 2}

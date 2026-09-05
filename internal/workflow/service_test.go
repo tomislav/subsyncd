@@ -365,6 +365,35 @@ func TestServiceTriesExactCandidatesSequentiallyAndSkipsBroadAfterSuccess(t *tes
 	}
 }
 
+func TestServiceExactCandidatesRejectForcedOnlyMovieMemberAndContinue(t *testing.T) {
+	forced := exactCandidate("forced")
+	good := exactCandidate("good")
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{forced, good}},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+	}}
+	adapter := &fakeProvider{id: "provider", filenames: map[string]string{"forced": "Movie.forced.srt"}}
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "good" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(adapter.downloaded, []string{"forced", "good"}) {
+		t.Fatalf("downloads = %#v", adapter.downloaded)
+	}
+	if len(repository.rejections) != 1 || repository.rejections[0].ResultID != "forced" || repository.rejections[0].ReasonCode != "pack_selection" {
+		t.Fatalf("candidate rejections = %#v", repository.rejections)
+	}
+	decision, found := decisionWithStage(result.Decisions, "candidate")
+	if !found || decision.SelectionRule != "forced_policy" || decision.ReasonCode != "pack_selection" {
+		t.Fatalf("selection decision = %#v", result.Decisions)
+	}
+}
+
 func TestServiceFallsBackToBroadAfterExactCandidateFailure(t *testing.T) {
 	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
 		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("broken")}},

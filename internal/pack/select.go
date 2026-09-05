@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"subsyncd/internal/domain"
 )
@@ -21,10 +23,16 @@ type SelectionError struct {
 func (e *SelectionError) Error() string { return "subtitle archive member rejected: " + e.Reason }
 
 var (
-	episodeTokenPattern = regexp.MustCompile(`(?i)(?:s(\d{1,3})e(\d{1,4})|(\d{1,3})x(\d{1,4}))`)
-	episodeRangePattern = regexp.MustCompile(`(?i)(?:s(\d{1,3})e(\d{1,4})[-_. ]+e?(\d{1,4})|(\d{1,3})x(\d{1,4})[-_. ]+(?:\d{1,3}x)?(\d{1,4}))`)
-	absolutePattern     = regexp.MustCompile(`(?i)(?:\bEP|\bABS(?:OLUTE)?[ ._-]*)(\d{2,5})\b`)
-	forcedPattern       = regexp.MustCompile(`(?i)(?:^|[ ._-])forced(?:[ ._-]|$)`)
+	episodeTokenPattern  = regexp.MustCompile(`(?i)(?:s(\d{1,3})e(\d{1,4})|(\d{1,3})x(\d{1,4}))`)
+	episodeRangePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,4})-e(\d{1,4})`),
+		regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,4})-s(\d{1,3})e(\d{1,4})`),
+		regexp.MustCompile(`(?i)(\d{1,3})x(\d{1,4})-(\d{1,3})x(\d{1,4})`),
+	}
+	rangeEndpointBeforePattern = regexp.MustCompile(`(?i)(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})$`)
+	rangeEndpointAfterPattern  = regexp.MustCompile(`(?i)^(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})(?:$|[^[:alnum:]])`)
+	absolutePattern            = regexp.MustCompile(`(?i)(?:\bEP|\bABS(?:OLUTE)?[ ._-]*)(\d{2,5})\b`)
+	forcedPattern              = regexp.MustCompile(`(?i)(?:^|[ ._-])forced(?:[ ._-]|$)`)
 )
 
 func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, wantForced bool) (Member, error) {
@@ -126,6 +134,22 @@ func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media do
 	return Member{}, err
 }
 
+// SelectSingleMovie permits only one archive member after applying the same
+// forced-subtitle policy used for every other selection shape.
+func SelectSingleMovie(manifest Manifest, candidate domain.Candidate, wantForced bool) (Member, error) {
+	members := eligibleMembers(manifest.Members, wantForced)
+	if candidate.Forced && !wantForced || len(members) == 0 {
+		return Member{}, selectionError(manifest, "forced_policy", 0, "no members satisfy the forced-subtitle policy")
+	}
+	if len(members) != 1 || len(manifest.Members) != 1 {
+		return Member{}, selectionError(manifest, "single_movie", len(members), "movie candidate must contain exactly one eligible subtitle member")
+	}
+	selected := members[0]
+	selected.SelectionRule = "single_movie"
+	selected.SelectionEvidence = "single movie subtitle member satisfies subtitle policy"
+	return selected, nil
+}
+
 func eligibleMembers(members []Member, wantForced bool) []Member {
 	result := make([]Member, 0, len(members))
 	for _, member := range members {
@@ -179,20 +203,67 @@ func episodeToken(name string) (int, int, bool) {
 }
 
 func episodeRange(name string) (int, int, int, bool) {
-	match := episodeRangePattern.FindStringSubmatch(name)
-	if len(match) == 0 {
+	for patternIndex, pattern := range episodeRangePatterns {
+		for _, match := range pattern.FindAllStringSubmatchIndex(name, -1) {
+			if season, from, to, found := acceptedEpisodeRange(name, match, patternIndex); found {
+				return season, from, to, true
+			}
+		}
+	}
+	return 0, 0, 0, false
+}
+
+func acceptedEpisodeRange(name string, match []int, patternIndex int) (int, int, int, bool) {
+	if !completeRangeToken(name, match[0], match[1]) || rangeIsChained(name, match[0], match[1]) {
 		return 0, 0, 0, false
 	}
-	if match[1] != "" {
-		season, _ := strconv.Atoi(match[1])
-		from, _ := strconv.Atoi(match[2])
-		to, _ := strconv.Atoi(match[3])
-		return season, from, to, true
+	season, from, to, endSeason := parseRangeMatch(name, match, patternIndex)
+	if season <= 0 || from <= 0 || to <= 0 || endSeason != season || from > to {
+		return 0, 0, 0, false
 	}
-	season, _ := strconv.Atoi(match[4])
-	from, _ := strconv.Atoi(match[5])
-	to, _ := strconv.Atoi(match[6])
 	return season, from, to, true
+}
+
+func parseRangeMatch(name string, match []int, patternIndex int) (season, from, to, endSeason int) {
+	value := func(index int) int {
+		parsed, _ := strconv.Atoi(name[match[index]:match[index+1]])
+		return parsed
+	}
+	switch patternIndex {
+	case 0:
+		season, from, to = value(2), value(4), value(6)
+		return season, from, to, season
+	case 1:
+		return value(2), value(4), value(8), value(6)
+	default:
+		return value(2), value(4), value(8), value(6)
+	}
+}
+
+func completeRangeToken(name string, start, end int) bool {
+	if start > 0 {
+		previous, _ := utf8.DecodeLastRuneInString(name[:start])
+		if isAlphaNumeric(previous) {
+			return false
+		}
+	}
+	if end < len(name) {
+		next, _ := utf8.DecodeRuneInString(name[end:])
+		if isAlphaNumeric(next) {
+			return false
+		}
+	}
+	return true
+}
+
+func rangeIsChained(name string, start, end int) bool {
+	before := start > 0 && name[start-1] == '-' && rangeEndpointBeforePattern.MatchString(name[:start-1])
+	after := end < len(name) && name[end] == '-' && rangeEndpointAfterPattern.MatchString(name[end+1:])
+	return before || after
+}
+
+func isAlphaNumeric(value rune) bool {
+	return unicode.IsLetter(value) || unicode.IsNumber(value)
 }
 
 func absoluteEpisode(name string) (int, bool) {
@@ -219,7 +290,7 @@ func memberEvidence(name, seriesTitle string) Member {
 
 func filenameTitle(name, seriesTitle string) string {
 	stem := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
-	stem = episodeRangePattern.ReplaceAllString(stem, " ")
+	stem = removeAcceptedEpisodeRanges(stem)
 	stem = episodeTokenPattern.ReplaceAllString(stem, " ")
 	stem = absolutePattern.ReplaceAllString(stem, " ")
 	stem = forcedPattern.ReplaceAllString(stem, " ")
@@ -229,6 +300,20 @@ func filenameTitle(name, seriesTitle string) string {
 		normalized = strings.TrimSpace(strings.TrimPrefix(normalized, series))
 	}
 	return normalized
+}
+
+func removeAcceptedEpisodeRanges(name string) string {
+	for patternIndex, pattern := range episodeRangePatterns {
+		matches := pattern.FindAllStringSubmatchIndex(name, -1)
+		for index := len(matches) - 1; index >= 0; index-- {
+			match := matches[index]
+			if _, _, _, found := acceptedEpisodeRange(name, match, patternIndex); !found {
+				continue
+			}
+			name = name[:match[0]] + " " + name[match[1]:]
+		}
+	}
+	return name
 }
 
 func normalizeTitle(value string) string {

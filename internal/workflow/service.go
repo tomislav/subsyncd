@@ -890,7 +890,10 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 			return "", nil, err
 		}
 	} else if len(manifest.Members) == 1 {
-		member = manifest.Members[0]
+		member, err = pack.SelectSingleMovie(manifest, extractionCandidate, false)
+		if err != nil {
+			return "", nil, err
+		}
 	} else {
 		return "", nil, fmt.Errorf("movie candidate archive contains multiple subtitle files")
 	}
