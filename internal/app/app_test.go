@@ -993,3 +993,72 @@ func TestNewScopesOnlyWorkerSearchClaims(t *testing.T) {
 		t.Fatalf("ordinary repository claims=%+v error=%v", leases, err)
 	}
 }
+
+// A retained catalog deletion must not prevent scanning later active media.
+func TestScanSkipsDeletedMedia(t *testing.T) {
+	for _, concurrentDelete := range []bool{false, true} {
+		t.Run(fmt.Sprint(concurrentDelete), func(t *testing.T) {
+			ctx := context.Background()
+			cfg := testConfig(t)
+			application, err := New(ctx, cfg, Options{SkipLapseCheck: true, SkipProbeCheck: true, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer application.Close()
+			var active domain.Media
+			for i := int64(1); i <= 2; i++ {
+				path := filepath.Join(cfg.MediaRoots[0], fmt.Sprintf("movie%d.mkv", i))
+				if err := os.WriteFile(path, []byte("media"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: i}, EntityID: i, Fingerprint: domain.MediaFingerprint{Path: path, FileID: i, Size: info.Size(), ModTime: info.ModTime()}}
+				if _, _, err := application.Repository.UpsertMedia(ctx, media); err != nil {
+					t.Fatal(err)
+				}
+				if i == 1 {
+					if _, err := application.Repository.ApplyMediaEvent(ctx, store.MediaEventMutation{EventID: "deleted", Type: "delete", Ref: media.Ref, At: time.Now()}); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					active = media
+				}
+			}
+			if result, err := application.Scan(ctx, "tv", false); err != nil || result != "scan complete: instance=tv media=1 force_probe=false" {
+				t.Fatalf("ordinary scan=%q error=%v", result, err)
+			}
+			calls := 0
+			application.Inventory.Probe.Runner = scanProbeFunc(func(path string) error {
+				calls++
+				if path != active.Fingerprint.Path {
+					t.Errorf("probed tombstone %q", path)
+				}
+				if concurrentDelete {
+					_, err := application.Repository.ApplyMediaEvent(ctx, store.MediaEventMutation{EventID: "concurrent-delete", Type: "delete", Ref: active.Ref, At: time.Now()})
+					return err
+				}
+				return nil
+			})
+			result, err := application.Scan(ctx, "tv", true)
+			if concurrentDelete {
+				if !errors.Is(err, store.ErrStaleInventory) {
+					t.Fatalf("concurrent delete error=%v", err)
+				}
+			} else if err != nil || result != "scan complete: instance=tv media=1 force_probe=true" {
+				t.Fatalf("scan=%q error=%v", result, err)
+			}
+			if calls != 1 {
+				t.Fatalf("probe calls=%d, want active media only", calls)
+			}
+		})
+	}
+}
+
+type scanProbeFunc func(string) error
+
+func (f scanProbeFunc) Run(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	return []byte(`{"streams":[]}`), nil, f(args[len(args)-1])
+}

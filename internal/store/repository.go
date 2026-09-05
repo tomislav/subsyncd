@@ -396,7 +396,7 @@ func (r *Repository) FindMediaByEntity(ctx context.Context, instance string, kin
 }
 
 func (r *Repository) ListMediaByInstance(ctx context.Context, instance string) ([]MediaRecord, error) {
-	rows, err := r.store.db.QueryContext(ctx, `SELECT id FROM media WHERE instance=? ORDER BY id`, instance)
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id FROM media WHERE instance=? AND deleted=0 ORDER BY id`, instance)
 	if err != nil {
 		return nil, fmt.Errorf("list media for instance: %w", err)
 	}
@@ -1615,7 +1615,7 @@ func (r *Repository) EnsureConfiguredLanguageSearches(ctx context.Context, insta
 		for _, language := range languages {
 			result, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, next_attempt_at_ns, last_outcome, priority)
 				SELECT id, ?, CASE WHEN unsupported_reason='' THEN 'pending' ELSE 'complete' END, CASE WHEN unsupported_reason='' THEN ? ELSE 0 END, unsupported_reason, ?
-				FROM media WHERE instance=?
+				FROM media WHERE instance=? AND deleted=0
 				ON CONFLICT(media_id, language) DO NOTHING`, language.String(), now.UnixNano(), SearchPriorityMissing, instance)
 			if err != nil {
 				return 0, fmt.Errorf("backfill configured language %s for instance %s: %w", language, instance, err)

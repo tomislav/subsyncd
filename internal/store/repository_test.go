@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -1942,5 +1943,120 @@ func TestOpenReadOnlySeesWALRejectsWritesAndIncompleteSchema(t *testing.T) {
 	if db, err := OpenReadOnly(ctx, path); err == nil {
 		db.Close()
 		t.Fatal("accepted unknown schema")
+	}
+}
+
+func TestInventoryMigrationPreservesKnownHistoricalDeletions(t *testing.T) {
+	for _, lineage := range []string{"001", "002"} {
+		for _, scenario := range []string{"deleted", "equal_time_deleted", "active", "mixed_searches", "reimport", "equal_time_reimport", "manual_reimport", "pruned_audit", "no_searches"} {
+			t.Run(lineage+"/"+scenario, func(t *testing.T) {
+				ctx := context.Background()
+				path := filepath.Join(t.TempDir(), "state.db")
+				db, err := Open(ctx, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				repo := db.Repository()
+				media := testMedia()
+				at := time.Now().Add(-time.Hour).UTC()
+				apply := func(eventType, eventID string, when time.Time, langs []domain.Language) {
+					t.Helper()
+					_, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: eventID, Type: eventType, Ref: media.Ref, EntityID: media.EntityID, Media: media, Languages: langs, At: when})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				apply("import", "import", at, []domain.Language{"en"})
+				id, _, err := repo.FindMedia(ctx, media.Ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				deletionAt := at.Add(time.Minute)
+				if scenario == "equal_time_deleted" {
+					deletionAt = at
+				}
+				if scenario != "active" {
+					apply("delete", "delete", deletionAt, nil)
+				}
+				switch scenario {
+				case "mixed_searches":
+					if _, err := db.db.Exec(`INSERT INTO search_states(media_id,language,state,next_attempt_at_ns) VALUES (?,'hr','pending',0)`, id); err != nil {
+						t.Fatal(err)
+					}
+				case "reimport":
+					apply("import", "reimport", deletionAt.Add(time.Minute), []domain.Language{"hr"})
+				case "equal_time_reimport":
+					apply("rename", "reimport", deletionAt, nil)
+				case "manual_reimport":
+					if _, _, err := repo.UpsertMedia(ctx, media); err != nil {
+						t.Fatal(err)
+					}
+				case "pruned_audit":
+					if _, err := db.db.Exec(`DELETE FROM events`); err != nil {
+						t.Fatal(err)
+					}
+				case "no_searches":
+					if _, err := db.db.Exec(`DELETE FROM search_states`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Recreate the supported pre-003 schema. Existing event/search/update
+				// chronology comes from the real mutation methods above.
+				if _, err := db.db.Exec(`DROP TRIGGER invalidate_inventory_probe; DROP TABLE inventory_probes; ALTER TABLE media DROP COLUMN deleted; DELETE FROM schema_migrations WHERE version='003_inventory_probes.sql'`); err != nil {
+					t.Fatal(err)
+				}
+				if lineage == "001" {
+					if _, err := db.db.Exec(`DELETE FROM schema_migrations WHERE version='002_scrub_provider_credentials.sql'`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db, err = Open(ctx, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				repo = db.Repository()
+				wantDeleted := scenario == "deleted" || scenario == "equal_time_deleted"
+				record, err := repo.GetTrackInventory(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if record.Deleted != wantDeleted {
+					t.Errorf("upgraded deleted=%t, want %t", record.Deleted, wantDeleted)
+				}
+				inserted, err := repo.EnsureConfiguredLanguageSearches(ctx, []string{media.Ref.Instance}, []domain.Language{"de"}, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantInserted := int64(1)
+				if wantDeleted {
+					wantInserted = 0
+				}
+				if inserted != wantInserted {
+					t.Errorf("backfill inserted=%d, want %d", inserted, wantInserted)
+				}
+				scoped := repo.WithSearchScope([]string{media.Ref.Instance}, []domain.Language{"de"})
+				leases, err := scoped.LeaseDueSearches(ctx, time.Now().Add(time.Minute), 1, time.Minute)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (len(leases) == 0) != wantDeleted {
+					t.Errorf("claims=%v deleted=%t", leases, wantDeleted)
+				}
+				if wantDeleted {
+					if err := repo.ReplaceTrackInventory(ctx, id, record.CatalogFingerprint, media.Fingerprint, nil); !errors.Is(err, ErrStaleInventory) {
+						t.Errorf("historical delete inventory error=%v", err)
+					}
+					fp := media.Fingerprint
+					install := Installation{MediaID: id, Language: "de", Path: "/media/movie.de.srt", Checksum: "sum", MediaPath: fp.Path, MediaFileID: fp.FileID, MediaSize: fp.Size, MediaModTimeNS: fp.ModTime.UnixNano()}
+					if _, err := repo.RecordInstallationWithNotifications(ctx, install, nil); err == nil {
+						t.Error("historical delete accepted installation")
+					}
+				}
+			})
+		}
 	}
 }
