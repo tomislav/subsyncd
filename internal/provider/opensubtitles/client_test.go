@@ -355,7 +355,7 @@ func openHashRepository(t *testing.T) *store.Repository {
 }
 
 func episodeMedia() domain.Media {
-	return domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaEpisode, FileID: 42}, Fingerprint: domain.MediaFingerprint{Path: "/media/show.mkv", FileID: 42}, Title: "Example Show", Year: 2024, Season: 1, Episode: 2, ExternalIDs: domain.ExternalIDs{IMDb: "tt1234567", TMDB: 7654}}
+	return domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaEpisode, FileID: 42}, EntityID: 24, Fingerprint: domain.MediaFingerprint{Path: "/media/show.mkv", FileID: 42}, Title: "Example Show", Year: 2024, Season: 1, Episode: 2, ExternalIDs: domain.ExternalIDs{IMDb: "tt1234567", TMDB: 7654}}
 }
 
 func readFixture(t *testing.T, name string) []byte {

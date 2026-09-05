@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: arrapi stable-identity reconciliation implementation
-- Next task: complete durable documentation and the full repository/container verification matrix (Task 7)
-- Latest follow-up: Task 6 added independent reconciliation failure backoff
+- Current task: none; arrapi stable-identity reconciliation is locally complete
+- Next safe action: review and explicitly authorize a GitHub push, image publication, or Hades deployment separately
+- Latest follow-up: Task 7 completed durable documentation and the full verification matrix
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Arrapi stable-identity reconciliation Task 7 — durable contract and release gate
+
+- Durable README, architecture, operations, release, and contributor guidance now distinguishes stable movie/episode entity identity from replaceable physical file identity. It records arrapi v2.0.5 ownership of history/current-entity requests, the temporary detail-enrichment client, atomic entity lifecycle behavior, second-resolution cursor overlap, replay safety, narrow-canary outside-scope handling, lazy legacy adoption, and 5m/15m/1h/6h failure backoff.
+- Startup remains offline and performs no full-library identity backfill. The compatibility limit remains explicit: a historical deletion for a legacy zero-entity row cannot be linked because Arr does not retain the deleted physical file ID; it is audited as unknown and the row remains until later live hydration or operator action.
+- The first full race run exposed one pre-entity OpenSubtitles persistence fixture. Root-cause tracing showed production hydration already provided positive identity; the shared hydrated-media fixture was corrected at its source, its focused race suite passed, and the complete matrix was rerun afterward.
+- Fresh verification passed `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, `docker compose -f compose.example.yml config --quiet`, the obsolete-symbol/toolchain/version scans, and `git diff --check`. A native arm64 image `sha256:9138534acd0cd9e4196abf7a95693656f50bf92aa7427551c427dbe98d66d4fb` built with Go 1.27.1 and returned `subsyncd arrapi-local` from `--version` as UID/GID `1000:1000`.
+- Implementation commits are `a2246e9` (bounded arrapi client), `8ef2561` (stable persistence), `4848059` (scoped detail identity), `485c188` (entity history/current state), `5ff7f54` (atomic entity deletion), and `43f398f` (failure backoff), followed by this documentation/verification boundary. Final scope review found no changes to provider routing, scoring, LAPSE, subtitle handling, Silo, automatic webhook management, publication behavior, or Hades deployment.
+- Nothing was pushed, published, or deployed. The next action requires separate explicit authority.
 
 ### Arrapi stable-identity reconciliation Task 6 — failure backoff
 

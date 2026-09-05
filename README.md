@@ -16,7 +16,8 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 - Deterministic candidate failures are quarantined for the exact media/release evidence, allowing later-ranked results to advance without repeated downloads; operational failures remain retryable.
 - Provider cooldowns, quotas, operation-scoped outage circuits, search schedules, leases, candidate evidence/rejections, install provenance, and notifications survive restarts. Transient provider failures back off globally instead of generating one request per media file.
 - Persisted searches favor new imports, then missing subtitles, then upgrade checks. Webhooks wake free workers immediately, while coalesced signals and periodic polling recover safely after bursts or restarts.
-- Sonarr/Radarr history reconciliation applies imports, renames, and deletions together with its cursor, so a failed page is retried without losing changes.
+- Sonarr/Radarr reconciliation tracks the stable movie or episode identity separately from the replaceable physical file identity. Imports, renames, upgrades, deletions, audit rows, and the cursor commit together, so a failed page is retried without losing changes.
+- Deliberately unmapped Arr media is skipped safely, allowing narrow canaries without indexing or reading the rest of a library. Unsafe mappings and filesystem failures still fail closed.
 - Sonarr files containing multiple episodes are indexed and explained as unsupported, but never sent to providers or LAPSE until combined-episode matching is implemented safely.
 - Media workflow concurrency is configurable from one to eight and defaults to one, which is the conservative choice for LAPSE and network-mounted media.
 - Shutdown is bounded even when an external tool ignores cancellation; unfinished durable leases are left for recovery after restart.
@@ -51,7 +52,7 @@ docker compose -f compose.example.yml up -d
 docker compose -f compose.example.yml exec subsyncd subsyncd doctor --config /config/config.yaml
 ```
 
-The `ghcr.io/tomislav/subsyncd:latest` production image supports Linux amd64 and arm64. It contains Go 1.27-built `subsyncd`, FFmpeg/FFprobe and timezone data from Debian 13.2, and checksummed LAPSE v2.0.5 release assets. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image defaults to unprivileged UID/GID `1000:1000`; Compose can select another existing host identity through `PUID` and `PGID` without starting the container as root. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
+The `ghcr.io/tomislav/subsyncd:latest` production image supports Linux amd64 and arm64. It contains Go 1.27.1-built `subsyncd`, FFmpeg/FFprobe and timezone data from Debian 13.2, and checksummed LAPSE v2.0.5 release assets. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image defaults to unprivileged UID/GID `1000:1000`; Compose can select another existing host identity through `PUID` and `PGID` without starting the container as root. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
 
 ## Structured logs
 
@@ -66,7 +67,7 @@ logging:
 
 ## Native build
 
-Requirements are Go 1.27, `ffprobe`, and a compatible LAPSE v2.0.5 executable.
+Requirements are Go 1.27.1, `ffprobe`, and a compatible LAPSE v2.0.5 executable.
 
 ```bash
 go build -trimpath -o subsyncd ./cmd/subsyncd
@@ -89,6 +90,8 @@ http://subsyncd:8097/webhooks/radarr-main?token=THE_RADARR_WEBHOOK_TOKEN
 ```
 
 Enable download/import, upgrade, rename, and file-delete events. Connections are configured manually; `subsyncd` does not create or modify Arr settings. Arr test events return success but create no work. Exact redeliveries are transactionally idempotent.
+
+Reconciliation uses `github.com/cplieger/arrapi/v2` v2.0.5 for bounded history and current movie/episode requests. It runs immediately after startup without blocking startup itself, normally repeats every six hours, and backs failures off after 5 minutes, 15 minutes, 1 hour, then 6 hours. Second-resolution history requests deliberately overlap the fractional persisted cursor; stable Arr history event IDs make that replay harmless. Existing databases adopt stable entity IDs lazily on later hydration—there is no startup full-library backfill or network burst. A historical deletion for a legacy row that has not yet been adopted cannot be matched and remains an unknown audit until another live event hydrates that row.
 
 ## Development and tests
 

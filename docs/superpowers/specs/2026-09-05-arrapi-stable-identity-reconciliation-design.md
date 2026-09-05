@@ -1,6 +1,6 @@
 # Arrapi Stable-Identity Reconciliation Design
 
-**Status:** Approved; implementation planned
+**Status:** Implemented and locally verified
 
 ## Purpose
 

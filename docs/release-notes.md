@@ -40,9 +40,15 @@ The attempted linux/amd64 smoke build on this arm64 host reached the amd64 Go to
 
 ## Stable Arr reconciliation dependency boundary — 2026-09-05
 
-The pending release pins `github.com/cplieger/arrapi/v2` v2.0.5 and Go 1.27.1. Arrapi is private to the catalog package and will own bounded, retried history/current-entity requests; subsyncd's existing hardened detail client remains temporarily for metadata that scoring and provenance require.
+The pending release pins `github.com/cplieger/arrapi/v2` v2.0.5 and Go 1.27.1. Arrapi is private to the catalog package and owns bounded, retried history/current-entity requests; subsyncd's existing hardened detail client remains temporarily for metadata that scoring and provenance require.
 
 Arrapi retry diagnostics pass through a subsyncd-owned `slog` handler that discards every upstream message, attribute, and group. It emits only `arr.request_retry` or `arr.request_retries_exhausted` with the configured instance. Returned errors retain bounded operation, status, kind, and retryability fields without response bodies, request paths, URLs, API keys, or media paths. Client construction remains offline and accepts reverse-proxy base paths.
+
+Media rows now persist the stable Arr movie/episode identity separately from the replaceable movie-file/episode-file identity. Entity imports, renames, upgrades, known and unknown deletions, audit rows, schedules, and cursor advancement are atomic. Whole-second history requests overlap the fractional cursor and stable history event IDs make replay safe. Deliberately unmapped current entities are consumed outside scope, while unsafe path/filesystem failures retain the prior cursor.
+
+Legacy zero-entity rows adopt identity only on later successful hydration; startup remains offline and does not backfill or scan the complete Arr library. The documented compatibility limit is a historical deletion that arrives before legacy adoption: Arr supplies no deleted physical file ID, so subsyncd records an unknown audit and leaves that row unchanged. Failed reconciliation retries independently per instance after 5 minutes, 15 minutes, 1 hour, then 6 hours; success restores the normal six-hour interval.
+
+Fresh local verification passed the complete race-enabled Go suite, `go vet ./...`, the tagged race-enabled end-to-end suite, standalone Compose rendering, contract scans, and `git diff --check`. A native arm64 image built with Go 1.27.1 as `subsyncd:arrapi-local`; its local content ID is `sha256:9138534acd0cd9e4196abf7a95693656f50bf92aa7427551c427dbe98d66d4fb`, configured user `1000:1000`, and `--version` reports `subsyncd arrapi-local`. This is a local image, not a registry digest; nothing was published or deployed by this verification.
 
 ## Rootless identity defaults — 2026-09-04
 
