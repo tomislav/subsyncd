@@ -43,7 +43,7 @@ func (i Inventory) Satisfies(language domain.Language, allowHI bool) bool {
 
 type Repository interface {
 	GetTrackInventory(context.Context, int64) (store.InventoryRecord, error)
-	ReplaceTrackInventory(context.Context, int64, domain.MediaFingerprint, []store.TrackRecord) error
+	ReplaceTrackInventory(context.Context, int64, domain.MediaFingerprint, domain.MediaFingerprint, []store.TrackRecord) error
 	GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error)
 }
 
@@ -66,8 +66,13 @@ func (s Service) Refresh(ctx context.Context, mediaID int64, media domain.Media,
 		return Inventory{}, fmt.Errorf("get cached inventory: %w", err)
 	}
 
+	// The request may carry Arr DateAdded instead of the live mtime. Only its
+	// path/file ID identifies the requested file; the stored snapshot guards CAS.
+	if stored.Deleted || filepath.Clean(stored.CatalogFingerprint.Path) != fingerprint.Path || stored.CatalogFingerprint.FileID != fingerprint.FileID {
+		return Inventory{}, store.ErrStaleInventory
+	}
 	var embedded []Track
-	if !forceProbe && fingerprintsEqual(stored.Fingerprint, fingerprint) {
+	if !forceProbe && stored.ProbeFingerprint != nil && fingerprintsEqual(*stored.ProbeFingerprint, fingerprint) {
 		for _, track := range stored.Tracks {
 			if track.Embedded {
 				embedded = append(embedded, fromStoreTrack(track))
@@ -98,7 +103,16 @@ func (s Service) Refresh(ctx context.Context, mediaID int64, media domain.Media,
 	for _, track := range tracks {
 		storedTracks = append(storedTracks, toStoreTrack(mediaID, track))
 	}
-	if err := s.Repository.ReplaceTrackInventory(ctx, mediaID, fingerprint, storedTracks); err != nil {
+	// A successful probe must describe the file we observed before invocation.
+	// Recheck even on cache hits because sidecar scanning also takes time.
+	current, err := os.Stat(fingerprint.Path)
+	if err != nil {
+		return Inventory{}, fmt.Errorf("recheck inventory media: %w", err)
+	}
+	if !current.Mode().IsRegular() || !os.SameFile(info, current) || current.Size() != fingerprint.Size || !current.ModTime().Equal(fingerprint.ModTime) {
+		return Inventory{}, store.ErrStaleInventory
+	}
+	if err := s.Repository.ReplaceTrackInventory(ctx, mediaID, stored.CatalogFingerprint, fingerprint, storedTracks); err != nil {
 		return Inventory{}, err
 	}
 	return Inventory{Fingerprint: fingerprint, Tracks: tracks}, nil

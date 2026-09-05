@@ -21,9 +21,9 @@ func (f *fakeRepository) GetTrackInventory(context.Context, int64) (store.Invent
 	return f.record, nil
 }
 
-func (f *fakeRepository) ReplaceTrackInventory(_ context.Context, _ int64, fingerprint domain.MediaFingerprint, tracks []store.TrackRecord) error {
+func (f *fakeRepository) ReplaceTrackInventory(_ context.Context, _ int64, expected, fingerprint domain.MediaFingerprint, tracks []store.TrackRecord) error {
 	f.replacements++
-	f.record = store.InventoryRecord{Fingerprint: fingerprint, Tracks: tracks}
+	f.record = store.InventoryRecord{CatalogFingerprint: fingerprint, ProbeFingerprint: &fingerprint, Tracks: tracks}
 	return nil
 }
 
@@ -41,7 +41,7 @@ func TestRefreshReusesEmbeddedTracksButRescansSidecars(t *testing.T) {
 		t.Fatal(err)
 	}
 	fingerprint := domain.MediaFingerprint{Path: path, FileID: 42, Size: info.Size(), ModTime: info.ModTime()}
-	repository := &fakeRepository{record: store.InventoryRecord{Fingerprint: fingerprint, Tracks: []store.TrackRecord{{Index: 1, Language: "en", Codec: "subrip", Embedded: true}}}, installations: map[domain.Language]store.Installation{}}
+	repository := &fakeRepository{record: store.InventoryRecord{CatalogFingerprint: fingerprint, ProbeFingerprint: &fingerprint, Tracks: []store.TrackRecord{{Index: 1, Language: "en", Codec: "subrip", Embedded: true}}}, installations: map[domain.Language]store.Installation{}}
 	probePayload, err := os.ReadFile(filepath.Join("testdata", "ffprobe_streams.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestRefreshProbesWhenFingerprintChangesOrForced(t *testing.T) {
 	writeTestFile(t, path, "video")
 	payload, _ := os.ReadFile(filepath.Join("testdata", "ffprobe_streams.json"))
 	runner := &fakeRunner{stdout: payload}
-	repository := &fakeRepository{record: store.InventoryRecord{Fingerprint: domain.MediaFingerprint{Path: path, FileID: 42, Size: 1, ModTime: time.Unix(0, 1)}}, installations: map[domain.Language]store.Installation{}}
+	repository := &fakeRepository{record: store.InventoryRecord{CatalogFingerprint: domain.MediaFingerprint{Path: path, FileID: 42, Size: 1, ModTime: time.Unix(0, 1)}}, installations: map[domain.Language]store.Installation{}}
 	service := Service{Repository: repository, Probe: Probe{Path: "ffprobe", Runner: runner}}
 	media := domain.Media{Ref: domain.MediaRef{FileID: 42}, Fingerprint: domain.MediaFingerprint{Path: path, FileID: 42}}
 	if _, err := service.Refresh(context.Background(), 1, media, false); err != nil {

@@ -497,7 +497,7 @@ func TestExplainShowsSearchPriority(t *testing.T) {
 	if err := application.Repository.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, store.SearchPriorityImport); err != nil {
 		t.Fatal(err)
 	}
-	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, nil); err != nil {
+	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, nil); err != nil {
 		t.Fatal(err)
 	}
 	output, err := application.Explain(context.Background(), "tv", "movie", 8, "en")
@@ -525,7 +525,7 @@ func TestExplainShowsUnsupportedReason(t *testing.T) {
 	if err := application.Repository.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, store.SearchPriorityImport); err != nil {
 		t.Fatal(err)
 	}
-	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, nil); err != nil {
+	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, nil); err != nil {
 		t.Fatal(err)
 	}
 	output, err := application.Explain(context.Background(), "tv", "episode", 9, "en")
@@ -558,7 +558,7 @@ func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, []store.TrackRecord{{Language: "en", Embedded: true}}); err != nil {
+	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, []store.TrackRecord{{Language: "en", Embedded: true}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "bad", CandidateSignature: "candidate", ReasonCode: "lapse_unsure", ToolSignature: "tool", MediaPath: mediaPath, MediaFileID: 7, MediaSize: info.Size(), MediaModTimeNS: info.ModTime().UnixNano(), RejectedAt: now, ExpiresAt: now.Add(24 * time.Hour)}); err != nil {

@@ -581,7 +581,7 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(&output, "inventory: tracks=%d fingerprint_size=%d fingerprint_mtime=%s\n", len(inventoryRecord.Tracks), inventoryRecord.Fingerprint.Size, inventoryRecord.Fingerprint.ModTime.Format(time.RFC3339Nano))
+	fmt.Fprintf(&output, "inventory: tracks=%d fingerprint_size=%d fingerprint_mtime=%s\n", len(inventoryRecord.Tracks), inventoryRecord.CatalogFingerprint.Size, inventoryRecord.CatalogFingerprint.ModTime.Format(time.RFC3339Nano))
 	for _, track := range inventoryRecord.Tracks {
 		fmt.Fprintf(&output, "  track: language=%s embedded=%t forced=%t sdh=%t protected=%t\n", track.Language, track.Embedded, track.Forced, track.SDH, track.Protected)
 	}

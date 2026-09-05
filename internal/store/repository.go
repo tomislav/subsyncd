@@ -33,10 +33,16 @@ type TrackRecord struct {
 	Checksum  string
 }
 
+// InventoryRecord keeps the catalog snapshot distinct from a completed probe.
+// A nil ProbeFingerprint means no successful probe has been persisted.
 type InventoryRecord struct {
-	Fingerprint domain.MediaFingerprint
-	Tracks      []TrackRecord
+	Deleted            bool
+	CatalogFingerprint domain.MediaFingerprint
+	ProbeFingerprint   *domain.MediaFingerprint
+	Tracks             []TrackRecord
 }
+
+var ErrStaleInventory = errors.New("media changed during inventory refresh")
 
 type SearchPriority int
 
@@ -299,7 +305,7 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 			return 0, false, fmt.Errorf("read media id: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET file_id=?, entity_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=? WHERE id=?`,
+		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=? WHERE id=?`,
 			media.Ref.FileID, media.EntityID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), now, id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media: %w", err)
@@ -520,19 +526,23 @@ func (r *Repository) PutMediaHash(ctx context.Context, media domain.Media, algor
 	return nil
 }
 
-func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, fingerprint domain.MediaFingerprint, tracks []TrackRecord) error {
+func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, expected, fingerprint domain.MediaFingerprint, tracks []TrackRecord) error {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin track replacement: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var existingFileID, existingSize, existingModTime int64
-	err = tx.QueryRowContext(ctx, `SELECT file_id, size, mod_time_ns FROM media WHERE id=?`, mediaID).Scan(&existingFileID, &existingSize, &existingModTime)
+	var existingPath string
+	err = tx.QueryRowContext(ctx, `SELECT path, file_id, size, mod_time_ns FROM media WHERE id=? AND deleted=0`, mediaID).Scan(&existingPath, &existingFileID, &existingSize, &existingModTime)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("media %d not found while replacing track inventory", mediaID)
+		return ErrStaleInventory
 	}
 	if err != nil {
 		return fmt.Errorf("read inventory fingerprint: %w", err)
+	}
+	if existingPath != expected.Path || existingFileID != expected.FileID || existingSize != expected.Size || existingModTime != expected.ModTime.UnixNano() || fingerprint.Path != expected.Path || fingerprint.FileID != expected.FileID {
+		return ErrStaleInventory
 	}
 	contentChanged := existingFileID != fingerprint.FileID || existingSize != fingerprint.Size || existingModTime != fingerprint.ModTime.UnixNano()
 	result, err := tx.ExecContext(ctx, `UPDATE media SET path=?, file_id=?, size=?, mod_time_ns=?, updated_at_ns=? WHERE id=?`, fingerprint.Path, fingerprint.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), time.Now().UTC().UnixNano(), mediaID)
@@ -544,7 +554,7 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, f
 		return fmt.Errorf("count inventory fingerprint update: %w", err)
 	}
 	if updated != 1 {
-		return fmt.Errorf("media %d not found while replacing track inventory", mediaID)
+		return ErrStaleInventory
 	}
 	if contentChanged {
 		if err := invalidateInstallationTx(ctx, tx, mediaID); err != nil {
@@ -560,6 +570,9 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, f
 			return fmt.Errorf("insert track: %w", err)
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO inventory_probes(media_id, path, file_id, size, mod_time_ns) VALUES (?, ?, ?, ?, ?) ON CONFLICT(media_id) DO UPDATE SET path=excluded.path, file_id=excluded.file_id, size=excluded.size, mod_time_ns=excluded.mod_time_ns`, mediaID, fingerprint.Path, fingerprint.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano()); err != nil {
+		return fmt.Errorf("record completed inventory probe: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit track replacement: %w", err)
 	}
@@ -567,13 +580,26 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, f
 }
 
 func (r *Repository) GetTrackInventory(ctx context.Context, mediaID int64) (InventoryRecord, error) {
+	tx, err := r.store.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return InventoryRecord{}, fmt.Errorf("begin inventory snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	var record InventoryRecord
 	var modTime int64
-	if err := r.store.db.QueryRowContext(ctx, `SELECT path, file_id, size, mod_time_ns FROM media WHERE id = ?`, mediaID).Scan(&record.Fingerprint.Path, &record.Fingerprint.FileID, &record.Fingerprint.Size, &modTime); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT deleted, path, file_id, size, mod_time_ns FROM media WHERE id = ?`, mediaID).Scan(&record.Deleted, &record.CatalogFingerprint.Path, &record.CatalogFingerprint.FileID, &record.CatalogFingerprint.Size, &modTime); err != nil {
 		return InventoryRecord{}, fmt.Errorf("read inventory fingerprint: %w", err)
 	}
-	record.Fingerprint.ModTime = time.Unix(0, modTime).UTC()
-	rows, err := r.store.db.QueryContext(ctx, `SELECT stream_index, path, language, codec, embedded, forced, is_default, sdh, protected, checksum FROM tracks WHERE media_id = ? ORDER BY id`, mediaID)
+	record.CatalogFingerprint.ModTime = time.Unix(0, modTime).UTC()
+	var probe domain.MediaFingerprint
+	err = tx.QueryRowContext(ctx, `SELECT path, file_id, size, mod_time_ns FROM inventory_probes WHERE media_id=?`, mediaID).Scan(&probe.Path, &probe.FileID, &probe.Size, &modTime)
+	if err == nil {
+		probe.ModTime = time.Unix(0, modTime).UTC()
+		record.ProbeFingerprint = &probe
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return InventoryRecord{}, fmt.Errorf("read completed inventory probe: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT stream_index, path, language, codec, embedded, forced, is_default, sdh, protected, checksum FROM tracks WHERE media_id = ? ORDER BY id`, mediaID)
 	if err != nil {
 		return InventoryRecord{}, fmt.Errorf("list tracks: %w", err)
 	}
@@ -587,6 +613,12 @@ func (r *Repository) GetTrackInventory(ctx context.Context, mediaID int64) (Inve
 	}
 	if err := rows.Err(); err != nil {
 		return InventoryRecord{}, fmt.Errorf("iterate tracks: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return InventoryRecord{}, fmt.Errorf("close inventory tracks: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return InventoryRecord{}, fmt.Errorf("commit inventory snapshot: %w", err)
 	}
 	return record, nil
 }
@@ -1170,7 +1202,7 @@ func (r *Repository) RecordInstallationWithNotifications(ctx context.Context, in
 	var unsupportedReason string
 	var mediaPath string
 	var mediaFileID, mediaSize, mediaModTimeNS int64
-	if err := tx.QueryRowContext(ctx, `SELECT unsupported_reason, path, file_id, size, mod_time_ns FROM media WHERE id=?`, installation.MediaID).Scan(&unsupportedReason, &mediaPath, &mediaFileID, &mediaSize, &mediaModTimeNS); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT unsupported_reason, path, file_id, size, mod_time_ns FROM media WHERE id=? AND deleted=0`, installation.MediaID).Scan(&unsupportedReason, &mediaPath, &mediaFileID, &mediaSize, &mediaModTimeNS); err != nil {
 		return nil, fmt.Errorf("read installation media support: %w", err)
 	}
 	if reason := domain.UnsupportedReason(unsupportedReason); !validUnsupportedReason(reason) {
@@ -1313,6 +1345,9 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			return false, fmt.Errorf("find deleted media: %w", err)
 		}
 		if err == nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted=1 WHERE id=?`, mediaID); err != nil {
+				return false, fmt.Errorf("mark deleted media: %w", err)
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL WHERE media_id=?`, mediaID); err != nil {
 				return false, fmt.Errorf("cancel deleted media searches: %w", err)
 			}
@@ -1390,7 +1425,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 			return 0, false, fmt.Errorf("read media ID for event: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET file_id=?, entity_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=? WHERE id=?`, media.Ref.FileID, media.EntityID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), at.UnixNano(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=? WHERE id=?`, media.Ref.FileID, media.EntityID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), at.UnixNano(), id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}

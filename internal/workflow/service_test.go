@@ -1684,3 +1684,40 @@ func workflowZIP(t *testing.T, entries map[string]string) []byte {
 	}
 	return payload.Bytes()
 }
+
+func TestServiceStaleInventoryIsTechnicalWithoutCandidateRejection(t *testing.T) {
+	ctx := context.Background()
+	request := serviceRequest(t)
+	request.Media.EntityID = 1
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo := database.Repository()
+	request.MediaID, _, err = repo.UpsertMedia(ctx, request.Media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := request.Media
+	replacement.Ref.FileID++
+	replacement.Fingerprint.FileID = replacement.Ref.FileID
+	if _, _, err := repo.UpsertMedia(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	searcher := &fakeSearcher{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, nil, nil)
+	service.Repository = repo
+	service.Inventory = inventory.Service{Repository: repo}
+	result, err := service.Run(ctx, request)
+	if !errors.Is(err, store.ErrStaleInventory) || result.Outcome != "" {
+		t.Fatalf("stale inventory outcome/error: %q %v", result.Outcome, err)
+	}
+	rejections, err := repo.ListCandidateRejections(ctx, request.MediaID, request.Language, time.Now())
+	if err != nil || len(rejections) != 0 {
+		t.Fatalf("technical failure rejected candidates: %#v %v", rejections, err)
+	}
+	if searcher.calls != 0 {
+		t.Fatal("stale inventory reached providers")
+	}
+}

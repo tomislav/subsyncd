@@ -642,3 +642,52 @@ func (r *installationRepository) RecordInstallation(_ context.Context, installat
 	r.found = true
 	return nil
 }
+
+func TestInstallerRollsBackAfterCatalogDeleteBeforeCommit(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo := database.Repository()
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+	request := installRequest(t, source, filepath.Join(root, "Movie.en.srt"))
+	request.Media.EntityID = 1
+	request.MediaID, _, err = repo.UpsertMedia(ctx, request.Media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := Installer{Repository: repo, MediaRoots: []string{root}}
+	previous, err := installer.Install(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.SourcePath = writeInstallFile(t, filepath.Join(t.TempDir(), "replacement.srt"), strings.Replace(installSRT, "Hello", "Replacement", 1))
+	installer.NotifierNames = []string{"silo"}
+	installer.Fault = func(stage InstallStage) error {
+		if stage != StageDatabase {
+			return nil
+		}
+		_, err := repo.ApplyMediaEvent(ctx, store.MediaEventMutation{EventID: "delete-at-publication", Type: "delete", Ref: request.Media.Ref, At: time.Now()})
+		return err
+	}
+	_, err = installer.Install(ctx, request)
+	var content *subtitleValidationError
+	if err == nil || errors.As(err, &content) {
+		t.Fatalf("deletion must fail technically: %v", err)
+	}
+	payload, err := os.ReadFile(request.DestinationPath)
+	if err != nil || string(payload) != installSRT {
+		t.Fatalf("rollback lost existing sidecar: %q %v", payload, err)
+	}
+	installed, found, err := repo.GetInstallation(ctx, request.MediaID, "en")
+	if err != nil || !found || installed.Checksum != previous.Checksum {
+		t.Fatalf("rollback lost provenance: %#v %v", installed, err)
+	}
+	notifications, err := repo.LeaseDueNotifications(ctx, time.Now().Add(time.Minute), 10, time.Minute)
+	if err != nil || len(notifications) != 0 {
+		t.Fatalf("deleted install notified: %#v %v", notifications, err)
+	}
+}

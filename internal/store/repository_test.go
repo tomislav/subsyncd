@@ -19,11 +19,11 @@ func TestOpenAppliesBaselineIdempotently(t *testing.T) {
 			t.Fatalf("Open() run %d error = %v", run, err)
 		}
 		var count int
-		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version IN ('001_baseline.sql', '002_scrub_provider_credentials.sql')`).Scan(&count); err != nil {
+		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version IN ('001_baseline.sql', '002_scrub_provider_credentials.sql', '003_inventory_probes.sql')`).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
-		if count != 2 {
-			t.Fatalf("current migration count = %d, want 2", count)
+		if count != 3 {
+			t.Fatalf("current migration count = %d, want 3", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
@@ -468,10 +468,10 @@ func TestReplaceTrackInventoryReplacesOnlyRequestedMedia(t *testing.T) {
 	media := testMedia()
 	mediaID, _, _ := repo.UpsertMedia(context.Background(), media)
 	tracks := []TrackRecord{{Index: 1, Language: "en", Embedded: true}, {Path: "/media/show.en.srt", Language: "en", Checksum: "one"}}
-	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, tracks); err != nil {
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, tracks); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, tracks[1:]); err != nil {
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, tracks[1:]); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.GetTrackInventory(context.Background(), mediaID)
@@ -481,8 +481,8 @@ func TestReplaceTrackInventoryReplacesOnlyRequestedMedia(t *testing.T) {
 	if len(got.Tracks) != 1 || got.Tracks[0].Path != tracks[1].Path {
 		t.Fatalf("tracks = %#v, want only external track", got.Tracks)
 	}
-	if got.Fingerprint != media.Fingerprint {
-		t.Fatalf("fingerprint = %#v, want %#v", got.Fingerprint, media.Fingerprint)
+	if got.CatalogFingerprint != media.Fingerprint {
+		t.Fatalf("fingerprint = %#v, want %#v", got.CatalogFingerprint, media.Fingerprint)
 	}
 }
 
@@ -923,7 +923,7 @@ func TestInventoryFingerprintChangeInvalidatesInstallationProvenance(t *testing.
 	}
 	changed := media.Fingerprint
 	changed.ModTime = changed.ModTime.Add(time.Second)
-	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, changed, nil); err != nil {
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, changed, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
@@ -941,7 +941,7 @@ func TestCatalogRefreshPreservesAuthoritativeInventoryFingerprintAndInstallation
 	}
 	authoritative := catalogMedia.Fingerprint
 	authoritative.ModTime = authoritative.ModTime.Add(2 * time.Hour)
-	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, authoritative, nil); err != nil {
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, catalogMedia.Fingerprint, authoritative, nil); err != nil {
 		t.Fatal(err)
 	}
 	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: authoritative.Path, MediaFileID: authoritative.FileID, MediaSize: authoritative.Size, MediaModTimeNS: authoritative.ModTime.UnixNano()}
@@ -974,7 +974,7 @@ func TestCatalogEventPreservesAuthoritativeInventoryFingerprintAndInstallation(t
 	}
 	authoritative := stored.Fingerprint
 	authoritative.ModTime = authoritative.ModTime.Add(2 * time.Hour)
-	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, authoritative, nil); err != nil {
+	if err := repo.ReplaceTrackInventory(context.Background(), mediaID, catalogMedia.Fingerprint, authoritative, nil); err != nil {
 		t.Fatal(err)
 	}
 	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: authoritative.Path, MediaFileID: authoritative.FileID, MediaSize: authoritative.Size, MediaModTimeNS: authoritative.ModTime.UnixNano()}
@@ -1689,5 +1689,138 @@ func TestHasAppliedMediaEventOnlyCommitted(t *testing.T) {
 	}
 	if yes, err := repo.HasAppliedMediaEvent(ctx, event.EventID); err != nil || !yes {
 		t.Fatalf("commit missing=%t %v", yes, err)
+	}
+}
+
+func TestInventoryCASRejectsChangedOrDeletedSnapshotWithoutRestoringInstallationEligibility(t *testing.T) {
+	for _, field := range []string{"path", "file_id", "size", "mod_time_ns", "deleted"} {
+		t.Run(field, func(t *testing.T) {
+			ctx := context.Background()
+			repo := openTestRepository(t)
+			media := testMedia()
+			id, _, err := repo.UpsertMedia(ctx, media)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.ReplaceTrackInventory(ctx, id, media.Fingerprint, media.Fingerprint, []TrackRecord{{Language: "en", Embedded: true}}); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := repo.GetTrackInventory(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if field == "deleted" {
+				_, err = repo.store.db.Exec(`DELETE FROM media WHERE id=?`, id)
+			} else {
+				var value any = int64(999)
+				if field == "path" {
+					value = "/media/renamed.mkv"
+				}
+				_, err = repo.store.db.Exec(`UPDATE media SET `+field+`=? WHERE id=?`, value, id)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = repo.ReplaceTrackInventory(ctx, id, snapshot.CatalogFingerprint, media.Fingerprint, []TrackRecord{{Language: "hr", Embedded: true}})
+			if err == nil {
+				t.Fatal("stale snapshot committed")
+			}
+			fp := media.Fingerprint
+			install := Installation{MediaID: id, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum", MediaPath: fp.Path, MediaFileID: fp.FileID, MediaSize: fp.Size, MediaModTimeNS: fp.ModTime.UnixNano()}
+			if err := repo.RecordInstallation(ctx, install); err == nil {
+				t.Fatal("inventory refresh restored stale installation eligibility")
+			}
+			var count int
+			if err := repo.store.db.QueryRow(`SELECT count(*) FROM tracks WHERE language='hr'`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("stale tracks persisted %d %v", count, err)
+			}
+		})
+	}
+}
+
+func TestInventoryProbeMigrationDoesNotAdoptExistingTracks(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository()
+	media := testMedia()
+	id, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceTrackInventory(ctx, id, media.Fingerprint, media.Fingerprint, []TrackRecord{{Language: "en", Embedded: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`DROP TRIGGER invalidate_inventory_probe; DROP TABLE inventory_probes; ALTER TABLE media DROP COLUMN deleted; DELETE FROM schema_migrations WHERE version='003_inventory_probes.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	record, err := db.Repository().GetTrackInventory(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ProbeFingerprint != nil || len(record.Tracks) != 1 {
+		t.Fatalf("migration adopted old tracks: %#v", record)
+	}
+}
+
+func TestCatalogDeleteRejectsInstallationAndInventoryUntilReimport(t *testing.T) {
+	for _, reimport := range []string{"upsert", "event"} {
+		t.Run(reimport, func(t *testing.T) {
+			ctx := context.Background()
+			repo := openTestRepository(t)
+			media := testMedia()
+			id, _, err := repo.UpsertMedia(ctx, media)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.ReplaceTrackInventory(ctx, id, media.Fingerprint, media.Fingerprint, []TrackRecord{{Language: "en", Embedded: true}}); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := repo.GetTrackInventory(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "catalog-delete", Type: "delete", Ref: media.Ref, At: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			fp := media.Fingerprint
+			install := Installation{MediaID: id, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum", MediaPath: fp.Path, MediaFileID: fp.FileID, MediaSize: fp.Size, MediaModTimeNS: fp.ModTime.UnixNano()}
+			intents := []NotificationRequest{{Notifier: "silo", DedupeKey: "deleted", PayloadJSON: []byte(`{}`), NextAttemptAt: time.Now()}}
+			if _, err := repo.RecordInstallationWithNotifications(ctx, install, intents); err == nil {
+				t.Error("deleted retained row accepted installation")
+			}
+			if err := repo.ReplaceTrackInventory(ctx, id, snapshot.CatalogFingerprint, fp, nil); err == nil {
+				t.Error("deleted retained row accepted inventory")
+			}
+			var count int
+			if err := repo.store.db.QueryRow(`SELECT count(*) FROM notifications`).Scan(&count); err != nil || count != 0 {
+				t.Errorf("deleted media notified: %d %v", count, err)
+			}
+			if reimport == "upsert" {
+				_, _, err = repo.UpsertMedia(ctx, media)
+			} else {
+				_, err = repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "reimport", Type: "import", Ref: media.Ref, EntityID: media.EntityID, Media: media, At: time.Now()})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.ReplaceTrackInventory(ctx, id, fp, fp, nil); err != nil {
+				t.Fatalf("reimport did not clear deletion: %v", err)
+			}
+			if err := repo.RecordInstallation(ctx, install); err != nil {
+				t.Fatalf("reimport cannot install: %v", err)
+			}
+		})
 	}
 }
