@@ -67,6 +67,32 @@ func TestLoadAcceptsEmptyTrailingYAMLSeparator(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsExplicitTaggedNullTrailingYAMLDocuments(t *testing.T) {
+	root := t.TempDir()
+	base := validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n")
+	for _, document := range []string{"!!null \"\"", "!!null", "&empty !!null \"\""} {
+		t.Run(document, func(t *testing.T) {
+			_, err := loadText(t, base+"\n---\n"+document+"\n")
+			assertErrorContains(t, err, "exactly one", "yaml", "document")
+		})
+	}
+}
+
+func TestLoadRejectsNonEmptyDocumentAfterMultipleEmptySeparators(t *testing.T) {
+	root := t.TempDir()
+	text := validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n") + "\n---\n\n---\nsecret: ${LATE_DOCUMENT_SECRET}\n"
+	_, err := loadTextWithLookup(t, text, func(name string) (string, bool) {
+		if name == "LATE_DOCUMENT_SECRET" {
+			return "must-not-appear", true
+		}
+		return "", false
+	})
+	assertErrorContains(t, err, "exactly one", "yaml", "document")
+	if strings.Contains(strings.ToLower(err.Error()), "must-not-appear") {
+		t.Fatalf("error leaked expanded trailing document: %v", err)
+	}
+}
+
 func TestExampleConfigurationLoads(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"), func(name string) (string, bool) {
 		if name == "SUBSYNCD_LOG_LEVEL" {

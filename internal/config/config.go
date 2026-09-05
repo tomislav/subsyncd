@@ -266,7 +266,8 @@ func emptyYAMLDocument(node yaml.Node) bool {
 		return true
 	}
 	return node.Kind == yaml.DocumentNode && len(node.Content) == 1 &&
-		node.Content[0].Kind == yaml.ScalarNode && node.Content[0].Tag == "!!null" && node.Content[0].Value == ""
+		node.Content[0].Kind == yaml.ScalarNode && node.Content[0].Tag == "!!null" && node.Content[0].Value == "" &&
+		node.Content[0].Style == 0 && node.Content[0].Anchor == ""
 }
 
 func expandEnv(node *yaml.Node, lookupEnv func(string) (string, bool)) error {
