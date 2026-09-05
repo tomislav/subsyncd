@@ -86,6 +86,10 @@ For one media/language job:
 9. Lazily download/analyze only the highest remaining tier. For a first-install candidate scoring at least 75, bypass LAPSE only when identity, release group, and (for TV) episode evidence are all present.
 10. For equal-score LAPSE candidates, analyze the complete tier and rank solid results by analysis confidence, provider priority, rating, provider/result identity. Synchronize only the winner; fall back within the analyzed tier, then to a lower score tier, only after failure.
 
+Candidate downloads, extraction, and synchronization scratch use the system temporary directory. Raw archives and discarded candidates are released promptly; viable equal-score candidates remain available through synchronization fallback. Final subtitle staging remains beside the media, while pack-cache publication stages inside the persistent cache root.
+
+Candidate-local installer validation failures also advance within the tournament, recording the original selected artifact's rejection evidence. Format-changing upgrades advance without quarantining the candidate. Media changes, publication failures, and rollback failures remain terminal technical errors; filesystem and transactional media-fingerprint checks prevent installation against stale media.
+
 Search-result cache entries live for six hours. Season packs default to 24 hours and a total 512 MiB LRU ceiling. Pack downloads are content-addressed and immutable; every cache hit reloads the manifest, verifies checksums, and reruns strict member selection for the current episode.
 
 Episode ranges are recognized only through complete hyphenated tokens: `S01E01-E03`, same-season `S01E01-S01E03`, or same-season `1x01-1x03`. Cross-season, reversed, chained, incomplete, and suffix-contaminated forms fail closed. Release suffixes such as `S01E01.1080p` remain single-episode evidence rather than becoming a range. Forced-only policy applies to every selected archive member, including a plain one-member movie payload.

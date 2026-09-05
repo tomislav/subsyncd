@@ -94,12 +94,18 @@ func (s *Service) tryExactCandidates(
 			if handleErr := s.handleCandidateFailure(ctx, request, candidate, path, err, candidateFailures); handleErr != nil {
 				return false, handleErr
 			}
+			if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {
+				return false, cleanupErr
+			}
 			continue
 		}
 		finalized, err := s.finalizeCandidate(ctx, request, analyzed, workspace, -index-1)
 		if err != nil {
 			if handleErr := s.handleCandidateFailure(ctx, request, candidate, path, err, candidateFailures); handleErr != nil {
 				return false, handleErr
+			}
+			if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {
+				return false, cleanupErr
 			}
 			continue
 		}
@@ -117,11 +123,17 @@ func (s *Service) tryExactCandidates(
 			if handleErr := s.handleCandidateFailure(ctx, request, candidate, finalized.path, err, candidateFailures); handleErr != nil {
 				return false, handleErr
 			}
+			if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {
+				return false, cleanupErr
+			}
 			result.Decisions = append(result.Decisions, candidateFailureDecision("installation", candidate, err))
 			continue
 		}
 		if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
 			return true, nil
+		}
+		if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {
+			return false, cleanupErr
 		}
 		result.Outcome = ""
 	}

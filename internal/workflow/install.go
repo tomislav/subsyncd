@@ -196,6 +196,9 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err := i.inject(StageRename); err != nil {
 		return restore(err)
 	}
+	if err := verifyMediaUnchanged(request.Media.Fingerprint, i.MediaRoots); err != nil {
+		return restore(err)
+	}
 	if err := os.Rename(stagedPath, destination); err != nil {
 		return restore(fmt.Errorf("publish subtitle: %w", err))
 	}
@@ -255,6 +258,21 @@ func (i Installer) inject(stage InstallStage) error {
 	}
 	if err := i.Fault(stage); err != nil {
 		return fmt.Errorf("%s installation stage: %w", stage, err)
+	}
+	return nil
+}
+
+func verifyMediaUnchanged(fingerprint domain.MediaFingerprint, roots []string) error {
+	resolved, err := filepath.EvalSymlinks(fingerprint.Path)
+	if err != nil {
+		return fmt.Errorf("media changed before subtitle publication")
+	}
+	if _, _, err := containedDestination(resolved, roots); err != nil {
+		return fmt.Errorf("media is outside configured roots before subtitle publication")
+	}
+	info, err := os.Stat(fingerprint.Path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != fingerprint.Size || !info.ModTime().Equal(fingerprint.ModTime) {
+		return fmt.Errorf("media changed before subtitle publication")
 	}
 	return nil
 }

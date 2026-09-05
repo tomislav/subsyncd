@@ -5,13 +5,29 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: all eleven provider review findings repaired, independently reviewed, and locally verified
-- Next safe action: publish the verified repair to GitHub as authorized; Hades deployment requires a separate request
-- Latest follow-up: final repository race tests, vet, tagged E2E, and scoped review pass after timeout classification and EOF-release corrections
+- Current task: temporary workspace and LAPSE downstream repairs completed and verified
+- Next safe action: push the user-authorized repairs, then review remaining catalog/webhook, worker, inventory, configuration/startup systems as requested
+- Latest follow-up: extended review through LAPSE analysis, candidate fallback, publication, rollback, and notification delivery; no production rollout performed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Temporary workspace and LAPSE downstream repairs — 2026-09-05
+
+- Commit: `fix: isolate subtitle scratch and guard LAPSE installation` (this commit, based on `9a35743`), authorized by the user's request to fix related issues and push, extended by the LAPSE downstream review request.
+- Workflow scratch now uses the system temporary directory (`TMPDIR`, `/tmp` in the container), including downloads, extraction, and synchronized outputs. Raw payloads and discarded artifacts are released promptly, while viable tied candidates and immutable cached pack members remain available. Final staging/rollback and pack-cache publication retain their same-filesystem atomic boundaries. Old production scratch directories are not swept.
+- Related review tightened temporary-root error redaction and removed raw LAPSE stderr, diagnostic fields, decoder values, and runner errors from outward errors. Typed verdict/no-speech/cancellation semantics remain intact; LAPSE version, scoring weights, bypass policy, and shortlist size do not change.
+- Downstream review found candidate-local installer rejection aborting fallback and missing current-media guards. Repairs advance on direct pre-publication content rejection or unsupported format-changing upgrade, retain original artifact rejection identity, and keep filesystem/database/rollback failures terminal. Current filesystem and transactional stored media fingerprints guard publication/provenance/outbox against stale processing.
+- Focused RED/GREEN tests cover scratch location and cleanup, exact fallback retention, full-manifest cache publication, reordered tied candidates, partial synchronized output cleanup, error privacy, broad/cache installation fallback, and media changes before publication/commit. Independent final review reported no actionable findings. Verification passed: repository-wide race tests with an affected workflow/store rerun after correcting a fixture directory-count expectation, `go vet ./...`, local tagged E2E race tests, gofmt, and `git diff --check`. HTTP tests used local fakes only.
+- Existing rollback restoration and asynchronous notification delivery needed no structural changes. No production lifecycle actions, live provider requests, media cleanup, configuration changes, or threshold adjustments were performed. Next action: publish the authorized commit, then perform the requested review of remaining systems. Production rollout remains separate.
+
+### Read-only verification of deployed provider repairs — 2026-09-05
+
+- Observed production build `sha-9a35743` running healthy with zero restarts/OOM after startup at 18:56 UTC. Startup/readiness and Radarr reconciliation succeeded; all 168 bounded log entries examined were info, with no warnings/errors.
+- OpenSubtitles and SubDL broad searches returned results; Titlovi searches and downloads succeeded. Two subtitle installations completed with LAPSE `solid`, and both Silo notifications were delivered. Nineteen jobs completed at the log snapshot: ten satisfied, two installed, four rejected, and three no-result. A subsequent read-only metadata check found one unexpired active lease and no persisted provider states.
+- A Croatian movie search returned nine candidates but none reached configured minimum score 35. Best scores were 34 (title/year15 + source15 + rating2 + popularity2); removed request-derived IMDb evidence correctly contributes zero. This is an eligibility-policy consequence worth assessing with corrected scores, not a provider outage. No threshold was changed.
+- Verification used bounded logs/status plus SQLite `mode=ro`/`query_only` and only an allowlisted numeric configuration value. No service lifecycle actions, database writes, provider searches, notification tests, or media mutations were performed. No tests needed for this diagnosis-only ledger entry; recorded with the temporary workspace repair commit, based on `9a35743`. Next action: assess minimum-score policy if requested; deployment itself is healthy in the observed window.
 
 ### Provider review repairs — 2026-09-05
 

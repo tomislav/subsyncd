@@ -695,6 +695,40 @@ func TestRedactRemovesConfiguredSecretsAndMediaRoots(t *testing.T) {
 	}
 }
 
+func TestRedactTemporaryPathsInErrorsAndLogs(t *testing.T) {
+	tempRoot := filepath.Join(t.TempDir(), "scratch storage")
+	t.Setenv("TMPDIR", tempRoot)
+	cfg := testConfig(t)
+	application := &App{Config: cfg}
+	failure := fmt.Errorf("prepare candidate: %w", &os.PathError{Op: "mkdir", Path: filepath.Join(tempRoot, ".subsyncd-work-123"), Err: os.ErrPermission})
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Redact: func(err error) string { return redactedError(err, cfg) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events.For("worker").Log(context.Background(), slog.LevelError, "job.failed", "job failed", events.ErrorAttrs("filesystem", failure)...)
+	decodeLogRecords(t, logs.String())
+	for _, message := range []string{application.Redact(failure).Error(), logs.String()} {
+		if strings.Contains(message, tempRoot) || !strings.Contains(message, "mkdir") || !strings.Contains(message, "permission denied") {
+			t.Fatalf("temporary error lost privacy or useful cause: %s", message)
+		}
+	}
+}
+
+func TestTemporaryRootRedactionBoundaries(t *testing.T) {
+	for _, test := range []struct{ root, input, want string }{
+		{"/tmp", "mkdir /tmp: permission denied", "mkdir [temp]: permission denied"},
+		{"/tmp/", "open /tmp/work: denied", "open [temp]/work: denied"},
+		{"/tmp", "open /tmp-other/work: denied", "open /tmp-other/work: denied"},
+		{"/tmp", "open /other/tmp/work: denied", "open /other/tmp/work: denied"},
+		{"/", "open /work: read/write denied", "open [temp]/work: read/write denied"},
+	} {
+		if got := redactTemporaryRoot(test.input, test.root); got != test.want {
+			t.Errorf("root %q: got %q, want %q", test.root, got, test.want)
+		}
+	}
+}
+
 func decodeLogRecords(t *testing.T, output string) []map[string]any {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(output), "\n")

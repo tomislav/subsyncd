@@ -740,7 +740,37 @@ func redactedError(err error, cfg config.Config) string {
 	for _, root := range cfg.MediaRoots {
 		value = strings.ReplaceAll(value, root, "[media]")
 	}
-	return value
+	return redactTemporaryRoot(value, os.TempDir())
+}
+
+func redactTemporaryRoot(value, root string) string {
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return value
+	}
+	var result strings.Builder
+	for offset := 0; offset < len(value); {
+		index := strings.Index(value[offset:], root)
+		if index < 0 {
+			result.WriteString(value[offset:])
+			break
+		}
+		index += offset
+		end := index + len(root)
+		left := index == 0 || strings.ContainsRune(" \t\r\n\"'(:=", rune(value[index-1]))
+		right := root == string(filepath.Separator) || end == len(value) || strings.ContainsRune("/ \t\r\n\"':),", rune(value[end]))
+		result.WriteString(value[offset:index])
+		if left && right {
+			result.WriteString("[temp]")
+			if root == string(filepath.Separator) {
+				result.WriteByte(filepath.Separator)
+			}
+		} else {
+			result.WriteString(root)
+		}
+		offset = end
+	}
+	return result.String()
 }
 
 func providerSecrets(nodes []*yaml.Node) []string {

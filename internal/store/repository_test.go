@@ -672,7 +672,7 @@ func TestRecordInstallationWithNotificationsPersistsAndDeduplicates(t *testing.T
 		t.Fatal(err)
 	}
 	now := time.Unix(100, 0).UTC()
-	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum"}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum", MediaPath: testMedia().Fingerprint.Path, MediaFileID: testMedia().Fingerprint.FileID, MediaSize: testMedia().Fingerprint.Size, MediaModTimeNS: testMedia().Fingerprint.ModTime.UnixNano()}
 	requests := []NotificationRequest{
 		{Notifier: "first", DedupeKey: "first:sum", PayloadJSON: []byte(`{"subtitle_path":"/media/movie.en.srt"}`), NextAttemptAt: now},
 		{Notifier: "silo", DedupeKey: "silo:sum", PayloadJSON: []byte(`{"subtitle_path":"/media/movie.en.srt"}`), NextAttemptAt: now},
@@ -703,6 +703,45 @@ func TestRecordInstallationWithNotificationsPersistsAndDeduplicates(t *testing.T
 	}
 }
 
+func TestRecordInstallationRejectsChangedMediaFingerprint(t *testing.T) {
+	for _, field := range []string{"path", "file_id", "size", "mod_time_ns", "deleted"} {
+		t.Run(field, func(t *testing.T) {
+			ctx := context.Background()
+			repo := openTestRepository(t)
+			media := testMedia()
+			mediaID, _, err := repo.UpsertMedia(ctx, media)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fp := media.Fingerprint
+			installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum", MediaPath: fp.Path, MediaFileID: fp.FileID, MediaSize: fp.Size, MediaModTimeNS: fp.ModTime.UnixNano()}
+			var changed any = int64(999)
+			if field == "path" {
+				changed = "/media/replacement.mkv"
+			}
+			if field == "deleted" {
+				_, err = repo.store.db.Exec(`DELETE FROM media WHERE id=?`, mediaID)
+			} else {
+				_, err = repo.store.db.Exec(`UPDATE media SET `+field+`=? WHERE id=?`, changed, mediaID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := []NotificationRequest{{Notifier: "silo", DedupeKey: "stale", PayloadJSON: []byte(`{}`), NextAttemptAt: time.Now()}}
+			results, err := repo.RecordInstallationWithNotifications(ctx, installation, requests)
+			if err == nil || results != nil {
+				t.Fatalf("stale commit results/error = %v/%v", results, err)
+			}
+			for _, table := range []string{"installations", "events", "notifications"} {
+				var count int
+				if err := repo.store.db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("%s count/error = %d/%v", table, count, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRecordInstallationWithNotificationsRollsBackEverything(t *testing.T) {
 	for _, failure := range []string{"second insert", "invalid request"} {
 		t.Run(failure, func(t *testing.T) {
@@ -724,7 +763,7 @@ func TestRecordInstallationWithNotificationsRollsBackEverything(t *testing.T) {
 			if failure == "invalid request" {
 				requests[1].PayloadJSON = []byte(`invalid`)
 			}
-			installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum"}
+			installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum", MediaPath: testMedia().Fingerprint.Path, MediaFileID: testMedia().Fingerprint.FileID, MediaSize: testMedia().Fingerprint.Size, MediaModTimeNS: testMedia().Fingerprint.ModTime.UnixNano()}
 			results, err := repo.RecordInstallationWithNotifications(ctx, installation, requests)
 			if err == nil || results != nil {
 				t.Fatalf("results/error = %#v/%v", results, err)

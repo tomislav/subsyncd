@@ -205,6 +205,58 @@ func TestFailuresRedactMediaPathsAndClassifyNoSpeech(t *testing.T) {
 	}
 }
 
+func TestLapseFailuresDoNotExposeRawProcessOutput(t *testing.T) {
+	const sentinel = "private-subtitle https://example.invalid/token /unrelated/private/file"
+	media, subtitle := testFiles(t)
+	report := func(field, value string) []byte {
+		var document map[string]any
+		if err := json.Unmarshal(fixture(t, "unsure.json"), &document); err != nil {
+			t.Fatal(err)
+		}
+		document[field] = value
+		payload, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	for _, test := range []struct {
+		name      string
+		execution Execution
+		runErr    error
+		verdict   string
+		noSpeech  bool
+	}{
+		{name: "stderr", execution: Execution{ExitCode: 1, Stderr: []byte(sentinel)}},
+		{name: "no speech", execution: Execution{ExitCode: 1, Stderr: []byte("no speech found: " + sentinel)}, noSpeech: true},
+		{name: "reason", execution: Execution{ExitCode: 2, Stdout: report("why", sentinel)}, verdict: "unsure"},
+		{name: "nothing", execution: Execution{ExitCode: 3, Stdout: fixture(t, "nothing.json")}, verdict: "nothing"},
+		{name: "mode", execution: Execution{Stdout: report("mode", sentinel)}},
+		{name: "unknown field", execution: Execution{Stdout: report(sentinel, "value")}},
+		{name: "runner", runErr: errors.New(sentinel)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) { return test.execution, test.runErr }), filepath.Dir(media))
+			for _, synchronize := range []bool{false, true} {
+				var err error
+				if synchronize {
+					_, err = lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+				} else {
+					_, err = lapse.Analyze(context.Background(), media, subtitle)
+				}
+				if err == nil || strings.Contains(err.Error(), "private-subtitle") {
+					t.Fatalf("unsafe or absent error: %v", err)
+				}
+				var noSpeech *NoSpeechError
+				var verdict *VerdictError
+				if errors.As(err, &noSpeech) != test.noSpeech || errors.As(err, &verdict) != (test.verdict != "") || verdict != nil && verdict.Verdict != test.verdict {
+					t.Fatalf("wrong failure classification: %T %v", err, err)
+				}
+			}
+		})
+	}
+}
+
 func newTestLapse(t *testing.T, runner Runner, mediaRoot string) *Lapse {
 	t.Helper()
 	lapse, err := New(Options{Path: "/usr/local/bin/lapse", CacheDir: filepath.Join(t.TempDir(), "speech-cache"), AnalyzeTimeout: time.Second, SynchronizeTimeout: time.Second, MediaRoots: []string{mediaRoot}, Runner: runner})

@@ -1168,13 +1168,18 @@ func (r *Repository) RecordInstallationWithNotifications(ctx context.Context, in
 	}
 	defer func() { _ = tx.Rollback() }()
 	var unsupportedReason string
-	if err := tx.QueryRowContext(ctx, `SELECT unsupported_reason FROM media WHERE id=?`, installation.MediaID).Scan(&unsupportedReason); err != nil {
+	var mediaPath string
+	var mediaFileID, mediaSize, mediaModTimeNS int64
+	if err := tx.QueryRowContext(ctx, `SELECT unsupported_reason, path, file_id, size, mod_time_ns FROM media WHERE id=?`, installation.MediaID).Scan(&unsupportedReason, &mediaPath, &mediaFileID, &mediaSize, &mediaModTimeNS); err != nil {
 		return nil, fmt.Errorf("read installation media support: %w", err)
 	}
 	if reason := domain.UnsupportedReason(unsupportedReason); !validUnsupportedReason(reason) {
 		return nil, fmt.Errorf("read installation media support: corrupt unsupported reason %q", unsupportedReason)
 	} else if reason != "" {
 		return nil, fmt.Errorf("record installation: media is unsupported: %s", reason)
+	}
+	if mediaPath != installation.MediaPath || mediaFileID != installation.MediaFileID || mediaSize != installation.MediaSize || mediaModTimeNS != installation.MediaModTimeNS {
+		return nil, fmt.Errorf("media changed before installation commit")
 	}
 	now := time.Now().UTC().UnixNano()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events(event_type, media_id, outcome, created_at_ns) VALUES ('subtitle_installed', ?, 'success', ?)`, installation.MediaID, now); err != nil {

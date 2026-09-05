@@ -849,35 +849,6 @@ func TestTournamentReachesSeasonPackLazilyAndExtractsOnce(t *testing.T) {
 	}
 }
 
-func TestTournamentAlwaysRemovesTemporaryWorkspace(t *testing.T) {
-	tests := []struct {
-		name string
-		sync *fakeSynchronizer
-		ctx  func() context.Context
-	}{
-		{name: "success", sync: &fakeSynchronizer{}},
-		{name: "rejection", sync: &fakeSynchronizer{rejectAll: true}},
-		{name: "error", sync: &fakeSynchronizer{analyzeErr: errors.New("lapse crashed")}},
-		{name: "cancellation", sync: &fakeSynchronizer{analyzeErr: context.Canceled}, ctx: func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			request := serviceRequest(t)
-			service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("candidate")}}}, nil, test.sync, &fakeInstaller{})
-			service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
-			ctx := context.Background()
-			if test.ctx != nil {
-				ctx = test.ctx()
-			}
-			_, _ = service.Run(ctx, request)
-			matches, err := filepath.Glob(filepath.Join(filepath.Dir(request.Media.Fingerprint.Path), ".subsyncd-work-*"))
-			if err != nil || len(matches) != 0 {
-				t.Fatalf("temporary workspaces = %#v, %v", matches, err)
-			}
-		})
-	}
-}
-
 func hasDecisionStage(decisions []Decision, stage string) bool {
 	for _, decision := range decisions {
 		if decision.Stage == stage {

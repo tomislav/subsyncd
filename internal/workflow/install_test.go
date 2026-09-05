@@ -22,6 +22,147 @@ import (
 
 const installSRT = "1\n00:00:01,000 --> 00:00:02,000\nHello\n"
 
+func TestInstallerRejectsMediaChangedBeforePublication(t *testing.T) {
+	for _, change := range []string{"size", "mtime", "deleted", "symlink"} {
+		t.Run(change, func(t *testing.T) {
+			root := t.TempDir()
+			source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+			request := installRequest(t, source, filepath.Join(root, "Movie.en.srt"))
+			writeInstallFile(t, request.Media.Fingerprint.Path, "original media")
+			info, err := os.Stat(request.Media.Fingerprint.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Media.Fingerprint.Size, request.Media.Fingerprint.ModTime = info.Size(), info.ModTime()
+			repository := &installationRepository{}
+			installer := Installer{Repository: repository, MediaRoots: []string{root}, NotifierNames: []string{"silo"}, Fault: func(stage InstallStage) error {
+				if stage != StageRename {
+					return nil
+				}
+				switch change {
+				case "size":
+					return os.WriteFile(request.Media.Fingerprint.Path, []byte("replacement media with different bytes"), 0o600)
+				case "mtime":
+					changed := info.ModTime().Add(time.Minute)
+					return os.Chtimes(request.Media.Fingerprint.Path, changed, changed)
+				case "deleted":
+					return os.Remove(request.Media.Fingerprint.Path)
+				case "symlink":
+					target := filepath.Join(t.TempDir(), "replacement.mkv")
+					if err := os.Rename(request.Media.Fingerprint.Path, target); err != nil {
+						return err
+					}
+					return os.Symlink(target, request.Media.Fingerprint.Path)
+				}
+				return nil
+			}}
+			_, err = installer.Install(context.Background(), request)
+			var content *subtitleValidationError
+			if err == nil || errors.As(err, &content) {
+				t.Fatalf("media change must fail technically: %v", err)
+			}
+			if repository.recordCalls != 0 || len(repository.requests) != 0 {
+				t.Fatal("stale installation reached provenance/outbox commit")
+			}
+			if _, err := os.Stat(request.DestinationPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stale subtitle remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestInstallerAcceptsUnchangedMediaSymlinkWithinRoot(t *testing.T) {
+	root := t.TempDir()
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+	request := installRequest(t, source, filepath.Join(root, "Movie.en.srt"))
+	target := filepath.Join(root, "target.mkv")
+	if err := os.Rename(request.Media.Fingerprint.Path, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, request.Media.Fingerprint.Path); err != nil {
+		t.Fatal(err)
+	}
+	repository := &installationRepository{}
+	installer := Installer{Repository: repository, MediaRoots: []string{root}}
+	if _, err := installer.Install(context.Background(), request); err != nil {
+		t.Fatalf("unchanged contained media symlink rejected: %v", err)
+	}
+	if repository.recordCalls != 1 {
+		t.Fatal("installation not recorded")
+	}
+}
+
+func TestInstallerRollsBackWhenMediaRowChangesBeforeCommit(t *testing.T) {
+	for _, replacing := range []bool{false, true} {
+		t.Run(fmt.Sprint(replacing), func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			dbPath := filepath.Join(t.TempDir(), "subsyncd.db")
+			database, err := store.Open(ctx, dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			audit, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer audit.Close()
+			source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+			request := installRequest(t, source, filepath.Join(root, "Movie.en.srt"))
+			request.Media.EntityID = 1
+			request.MediaID, _, err = database.Repository().UpsertMedia(ctx, request.Media)
+			if err != nil {
+				t.Fatal(err)
+			}
+			installer := Installer{Repository: database.Repository(), MediaRoots: []string{root}}
+			var previous store.Installation
+			if replacing {
+				previous, err = installer.Install(ctx, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.SourcePath = writeInstallFile(t, filepath.Join(t.TempDir(), "replacement.srt"), strings.Replace(installSRT, "Hello", "Replacement", 1))
+			}
+			installer.NotifierNames = []string{"silo"}
+			installer.Fault = func(stage InstallStage) error {
+				if stage != StageDatabase {
+					return nil
+				}
+				_, err := audit.Exec(`UPDATE media SET file_id=file_id+1 WHERE id=?`, request.MediaID)
+				return err
+			}
+			_, err = installer.Install(ctx, request)
+			var content *subtitleValidationError
+			if err == nil || errors.As(err, &content) || !strings.Contains(err.Error(), "media changed") {
+				t.Fatalf("stale media must fail technically: %v", err)
+			}
+			got, found, err := database.Repository().GetInstallation(ctx, request.MediaID, "en")
+			if err != nil || found != replacing {
+				t.Fatalf("installation found/error = %v/%v", found, err)
+			}
+			if replacing {
+				payload, err := os.ReadFile(request.DestinationPath)
+				if err != nil || string(payload) != installSRT || got.Checksum != previous.Checksum {
+					t.Fatalf("prior sidecar/provenance not restored: %q/%v/%+v", payload, err, got)
+				}
+			} else if _, err := os.Stat(request.DestinationPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stale sidecar remains: %v", err)
+			}
+			for _, table := range []string{"notifications", "candidate_rejections", "events"} {
+				var count int
+				want := 0
+				if table == "events" && replacing {
+					want = 1
+				}
+				if err := audit.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != want {
+					t.Fatalf("%s count/error = %d/%v", table, count, err)
+				}
+			}
+		})
+	}
+}
+
 func TestInstallSourceContentFailuresAreCandidateRejections(t *testing.T) {
 	for _, test := range []struct{ name, filename, payload string }{
 		{"empty", "source.srt", ""},
@@ -62,7 +203,7 @@ func TestInstallerRollsBackPublishedFileWhenNotificationIntentCommitFails(t *tes
 				t.Fatal(err)
 			}
 			installer := Installer{Repository: repository, MediaRoots: []string{root}, NotifierNames: []string{"silo"}, Now: func() time.Time { return time.Unix(100, 0).UTC() }, Events: events}
-			_, err = installer.Install(context.Background(), installRequest(source, destination))
+			_, err = installer.Install(context.Background(), installRequest(t, source, destination))
 			if err == nil || !strings.Contains(err.Error(), "outbox unavailable") {
 				t.Fatalf("Install() error = %v", err)
 			}
@@ -97,7 +238,7 @@ func TestInstallerCreatesDeterministicNotificationIntents(t *testing.T) {
 		t.Fatal(err)
 	}
 	installer := Installer{Repository: repository, MediaRoots: []string{root}, NotifierNames: names, Now: func() time.Time { return now }, Events: events}
-	request := installRequest(source, destination)
+	request := installRequest(t, source, destination)
 	installed, err := installer.Install(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +310,7 @@ func TestInstallerOutboxSQLFailureRollsBackFileAndProvenance(t *testing.T) {
 			}
 			defer audit.Close()
 			source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
-			request := installRequest(source, filepath.Join(root, "Movie.en.srt"))
+			request := installRequest(t, source, filepath.Join(root, "Movie.en.srt"))
 			request.Media.EntityID = 1
 			request.MediaID, _, err = database.Repository().UpsertMedia(ctx, request.Media)
 			if err != nil {
@@ -230,7 +371,7 @@ func TestInstallerCreatesAtomicRecordedSidecar(t *testing.T) {
 	destination := filepath.Join(root, "Movie.en.srt")
 	repository := &installationRepository{}
 	installer := Installer{Repository: repository, MediaRoots: []string{root}, Mode: 0o640}
-	request := installRequest(source, destination)
+	request := installRequest(t, source, destination)
 	installed, err := installer.Install(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +388,7 @@ func TestInstallerCreatesAtomicRecordedSidecar(t *testing.T) {
 		t.Fatalf("recorded installation = %#v", repository.recorded)
 	}
 	children, err := os.ReadDir(root)
-	if err != nil || len(children) != 1 || strings.HasPrefix(children[0].Name(), ".subsyncd-") {
+	if err != nil || len(children) != 2 || children[0].Name() != "Movie.en.srt" || children[1].Name() != "Movie.mkv" {
 		t.Fatalf("destination directory contains temporary files: %#v, %v", children, err)
 	}
 }
@@ -279,7 +420,7 @@ func TestInstallerProtectsUnmanagedSymlinkAndModifiedManagedFiles(t *testing.T) 
 			repository := &installationRepository{}
 			test.prepare(t, destination, repository)
 			installer := Installer{Repository: repository, MediaRoots: []string{root}}
-			_, err := installer.Install(context.Background(), installRequest(source, destination))
+			_, err := installer.Install(context.Background(), installRequest(t, source, destination))
 			if !errors.Is(err, ErrProtectedSubtitle) {
 				t.Fatalf("Install() error = %T %v", err, err)
 			}
@@ -309,7 +450,7 @@ func TestInstallerRestoresManagedSubtitleAcrossFaults(t *testing.T) {
 				}
 				return nil
 			}}
-			if _, err := installer.Install(context.Background(), installRequest(source, destination)); err == nil {
+			if _, err := installer.Install(context.Background(), installRequest(t, source, destination)); err == nil {
 				t.Fatal("Install() error = nil")
 			}
 			payload, err := os.ReadFile(destination)
@@ -353,7 +494,7 @@ func TestInstallReportsFirstInstallRemovalFailure(t *testing.T) {
 		}
 		return errors.New("database unavailable")
 	}}
-	_, err := installer.Install(context.Background(), installRequest(source, destination))
+	_, err := installer.Install(context.Background(), installRequest(t, source, destination))
 	if err == nil || !strings.Contains(err.Error(), "database unavailable") || !strings.Contains(err.Error(), "remove newly published subtitle") {
 		t.Fatalf("Install() error = %v", err)
 	}
@@ -383,7 +524,7 @@ func TestInstallPreservesRollbackWhenRestoreFails(t *testing.T) {
 		}
 		return errors.New("database unavailable")
 	}}
-	_, err := installer.Install(context.Background(), installRequest(source, destination))
+	_, err := installer.Install(context.Background(), installRequest(t, source, destination))
 	if err == nil || !strings.Contains(err.Error(), "database unavailable") || !strings.Contains(err.Error(), "restore previous subtitle") {
 		t.Fatalf("Install() error = %v", err)
 	}
@@ -419,7 +560,7 @@ func TestInstallerCleanupFailureDoesNotUndoCommittedReplacement(t *testing.T) {
 		}
 		return nil
 	}}
-	if _, err := installer.Install(context.Background(), installRequest(source, destination)); err != nil {
+	if _, err := installer.Install(context.Background(), installRequest(t, source, destination)); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := os.ReadFile(destination)
@@ -436,7 +577,7 @@ func TestInstallerRejectsOutsideRootAndCuePastMediaDuration(t *testing.T) {
 	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), "1\n00:20:00,000 --> 00:20:01,000\nLate\n")
 	repository := &installationRepository{}
 	installer := Installer{Repository: repository, MediaRoots: []string{root}}
-	request := installRequest(source, filepath.Join(t.TempDir(), "outside.srt"))
+	request := installRequest(t, source, filepath.Join(t.TempDir(), "outside.srt"))
 	if _, err := installer.Install(context.Background(), request); err == nil {
 		t.Fatal("outside-root Install() error = nil")
 	}
@@ -447,9 +588,14 @@ func TestInstallerRejectsOutsideRootAndCuePastMediaDuration(t *testing.T) {
 	}
 }
 
-func installRequest(source, destination string) InstallRequest {
-	mediaPath := filepath.Join(filepath.Dir(destination), "Movie.mkv")
-	return InstallRequest{MediaID: 1, Media: domain.Media{Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: 100, ModTime: time.Unix(10, 20)}, Duration: 90 * time.Minute}, Language: "en", SourcePath: source, DestinationPath: destination, Candidate: domain.Candidate{ProviderID: "provider", ResultID: "candidate"}, Score: domain.Score{Total: 70}, SyncResult: domain.SyncResult{Verdict: "solid"}}
+func installRequest(t *testing.T, source, destination string) InstallRequest {
+	t.Helper()
+	mediaPath := writeInstallFile(t, filepath.Join(filepath.Dir(destination), "Movie.mkv"), "media")
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return InstallRequest{MediaID: 1, Media: domain.Media{Ref: domain.MediaRef{FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: info.Size(), ModTime: info.ModTime()}, Duration: 90 * time.Minute}, Language: "en", SourcePath: source, DestinationPath: destination, Candidate: domain.Candidate{ProviderID: "provider", ResultID: "candidate"}, Score: domain.Score{Total: 70}, SyncResult: domain.SyncResult{Verdict: "solid"}}
 }
 
 func writeInstallFile(t *testing.T, path, content string) string {

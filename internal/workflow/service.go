@@ -241,7 +241,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		}
 	}
 
-	workspace, err := os.MkdirTemp(filepath.Dir(request.Media.Fingerprint.Path), ".subsyncd-work-")
+	workspace, err := os.MkdirTemp("", ".subsyncd-work-")
 	if err != nil {
 		return result, fmt.Errorf("create candidate workspace: %w", err)
 	}
@@ -278,17 +278,35 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 						var finalized finalizedCandidate
 						finalized, prepareErr = s.finalizeCandidate(ctx, request, analyzed, workspace, 0)
 						if prepareErr == nil {
-							return s.install(ctx, request, finalized, existing, activeInstallation, result)
+							result, prepareErr = s.install(ctx, request, finalized, existing, activeInstallation, result)
+							if prepareErr != nil {
+								if _, rejected := prepareErr.(*subtitleValidationError); !rejected {
+									return result, prepareErr
+								}
+								if ctxErr := ctx.Err(); ctxErr != nil {
+									return result, ctxErr
+								}
+							} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
+								return result, nil
+							}
+							// The cache owns the source. Only its private synchronized
+							// derivative is disposable when provider fallback is needed.
+							if cleanupErr := removeWorkflowArtifact(workspace, finalized.path); cleanupErr != nil {
+								return result, cleanupErr
+							}
+							result.Outcome = ""
 						}
 					}
-					recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
-					if recordErr != nil {
-						return result, recordErr
+					if prepareErr != nil {
+						recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
+						if recordErr != nil {
+							return result, recordErr
+						}
+						if !recorded && !isMediaValidationRejection(prepareErr) {
+							candidateFailures = append(candidateFailures, prepareErr)
+						}
+						result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: prepareErr.Error()})
 					}
-					if !recorded && !isMediaValidationRejection(prepareErr) {
-						candidateFailures = append(candidateFailures, prepareErr)
-					}
-					result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: prepareErr.Error()})
 				}
 			}
 		}
@@ -467,6 +485,9 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				if err := s.handleCandidateFailure(ctx, request, item.Candidate, path, syncErr, &candidateFailures); err != nil {
 					return result, err
 				}
+				if err := removeWorkflowArtifact(workspace, path); err != nil {
+					return result, err
+				}
 				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_analysis", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
 				continue
 			}
@@ -488,6 +509,9 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				if err := s.handleCandidateFailure(ctx, request, analyzed.candidate, analyzed.path, syncErr, &candidateFailures); err != nil {
 					return result, err
 				}
+				if err := removeWorkflowArtifact(workspace, analyzed.path); err != nil {
+					return result, err
+				}
 				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_finalize", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
 				if index+1 < len(analyzedTier) {
 					result.Decisions = append(result.Decisions, Decision{Stage: "fallback", Reason: "next candidate in tier"})
@@ -497,8 +521,33 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 			if !analyzed.bypass {
 				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_finalize", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: "solid"})
 			}
-			result.Decisions = append(result.Decisions, Decision{Stage: "early_stop", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: fmt.Sprintf("installed from score %d; lower tiers skipped", analyzed.score.Total)})
-			return s.install(ctx, request, ready, existing, activeInstallation, result)
+			result, err = s.install(ctx, request, ready, existing, activeInstallation, result)
+			if err != nil {
+				// Only the installer's direct pre-publication content rejection
+				// permits fallback. Wrapped infrastructure/rollback errors are terminal.
+				if _, rejected := err.(*subtitleValidationError); !rejected {
+					return result, err
+				}
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return result, ctxErr
+				}
+				// Rejection identity follows the selected source, not the LAPSE
+				// derivative, just as it does for analysis/finalization failures.
+				if handleErr := s.handleCandidateFailure(ctx, request, analyzed.candidate, analyzed.path, err, &candidateFailures); handleErr != nil {
+					return result, handleErr
+				}
+				result.Decisions = append(result.Decisions, candidateFailureDecision("installation", analyzed.candidate, err))
+			} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
+				result.Decisions = append(result.Decisions, Decision{Stage: "early_stop", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: fmt.Sprintf("installed from score %d; lower tiers skipped", analyzed.score.Total)})
+				return result, nil
+			}
+			if cleanupErr := errors.Join(removeWorkflowArtifact(workspace, analyzed.path), removeWorkflowArtifact(workspace, ready.path)); cleanupErr != nil {
+				return result, cleanupErr
+			}
+			result.Outcome = ""
+			if index+1 < len(analyzedTier) {
+				result.Decisions = append(result.Decisions, Decision{Stage: "fallback", Reason: "next candidate in tier"})
+			}
 		}
 		if tierEnd < len(eligible) {
 			if err := ctx.Err(); err != nil {
@@ -853,7 +902,7 @@ func (s *Service) validate(request Request) error {
 	return nil
 }
 
-func (s *Service) downloadAndSelect(ctx context.Context, request Request, candidate domain.Candidate, workspace string, index int) (string, []Decision, error) {
+func (s *Service) downloadAndSelect(ctx context.Context, request Request, candidate domain.Candidate, workspace string, index int) (selected string, decisions []Decision, retErr error) {
 	adapter := s.Providers[candidate.ProviderID]
 	if adapter == nil {
 		return "", nil, fmt.Errorf("provider %q is not available for download", candidate.ProviderID)
@@ -863,6 +912,15 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	if err != nil {
 		return "", nil, err
 	}
+	extractionPath := filepath.Join(workspace, fmt.Sprintf("extracted-%d", index))
+	defer func() {
+		if cleanupErr := errors.Join(os.RemoveAll(payloadPath), os.RemoveAll(extractionPath)); cleanupErr != nil {
+			// Cleanup failure is infrastructure failure, even when processing also
+			// rejected content. Do not persist it as a deterministic rejection.
+			selected = ""
+			retErr = fmt.Errorf("cleanup candidate scratch: %v; processing error: %v", cleanupErr, retErr)
+		}
+	}()
 	limits := pack.DefaultLimits()
 	bounded := &boundedDownloadWriter{writer: payload, remaining: limits.MaxCompressed, limit: limits.MaxCompressed}
 	metadata, downloadErr := adapter.Download(ctx, candidate, bounded)
@@ -885,12 +943,16 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	if err != nil {
 		return "", nil, err
 	}
-	defer reader.Close()
 	extractionCandidate := candidate
 	if metadata.Filename != "" {
 		extractionCandidate.DownloadRef = metadata.Filename
 	}
-	manifest, err := pack.Extract(ctx, extractionCandidate, reader, info.Size(), filepath.Join(workspace, fmt.Sprintf("extracted-%d", index)), pack.DefaultLimits())
+	manifest, err := pack.Extract(ctx, extractionCandidate, reader, info.Size(), extractionPath, pack.DefaultLimits())
+	closeErr = reader.Close()
+	removeErr := os.Remove(payloadPath)
+	if closeErr != nil || removeErr != nil {
+		return "", nil, fmt.Errorf("release downloaded payload: %v", errors.Join(closeErr, removeErr))
+	}
 	if err != nil {
 		return "", nil, err
 	}
@@ -913,13 +975,16 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	} else {
 		return "", nil, fmt.Errorf("movie candidate archive contains multiple subtitle files")
 	}
-	var decisions []Decision
 	if candidate.Pack != nil && s.PackCache != nil {
 		if err := s.PackCache.Put(ctx, manifest, s.Clock.Now().Add(s.packTTL())); err != nil {
 			decisions = append(decisions, Decision{Stage: "pack_cache", ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, Reason: fmt.Sprintf("cache normalized pack: %v", err)})
 		}
 	}
-	return member.NormalizedPath, decisions, nil
+	selected = filepath.Join(workspace, fmt.Sprintf("selected-%d%s", index, filepath.Ext(member.NormalizedPath)))
+	if err := os.Rename(member.NormalizedPath, selected); err != nil {
+		return "", decisions, err
+	}
+	return selected, decisions, nil
 }
 
 func (s *Service) analyzeCandidate(ctx context.Context, request Request, item downloadedCandidate, installed bool, existing store.Installation) (analyzedCandidate, error) {
@@ -958,12 +1023,19 @@ func (s *Service) analyzeCandidate(ctx context.Context, request Request, item do
 	return analyzedCandidate{downloadedCandidate: item, analysis: analysis}, nil
 }
 
-func (s *Service) finalizeCandidate(ctx context.Context, request Request, item analyzedCandidate, workspace string, index int) (finalizedCandidate, error) {
+func (s *Service) finalizeCandidate(ctx context.Context, request Request, item analyzedCandidate, workspace string, index int) (ready finalizedCandidate, retErr error) {
 	if item.bypass {
 		return finalizedCandidate{candidate: item.candidate, score: item.score, priority: item.priority, sync: item.analysis, path: item.path}, nil
 	}
 	extension := strings.ToLower(filepath.Ext(item.path))
 	output := filepath.Join(workspace, fmt.Sprintf("synchronized-%d%s", index, extension))
+	defer func() {
+		if retErr != nil {
+			if cleanupErr := removeWorkflowArtifact(workspace, output); cleanupErr != nil {
+				retErr = fmt.Errorf("cleanup synchronized scratch: %v; processing error: %v", cleanupErr, retErr)
+			}
+		}
+	}()
 	s.logLapseStarted(ctx, "sync", item.candidate)
 	startedAt := time.Now()
 	synchronized, err := s.Synchronizer.SynchronizeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path, output)
@@ -1279,4 +1351,20 @@ func classifyCandidateFailures(result Result, failures []error) (Result, error, 
 		return result, nil, true
 	}
 	return result, errors.Join(failures...), true
+}
+
+// removeWorkflowArtifact releases only a file directly owned by this private
+// workflow. Cached pack source paths are deliberately outside this namespace.
+func removeWorkflowArtifact(workspace, path string) error {
+	if filepath.Dir(path) != filepath.Clean(workspace) {
+		return nil
+	}
+	base := filepath.Base(path)
+	if !strings.HasPrefix(base, "selected-") && !strings.HasPrefix(base, "synchronized-") {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove candidate scratch: %w", err)
+	}
+	return nil
 }

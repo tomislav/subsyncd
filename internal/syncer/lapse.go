@@ -120,16 +120,16 @@ func (l *Lapse) Analyze(ctx context.Context, mediaPath, subtitlePath string) (do
 	}
 	defer os.RemoveAll(workspace)
 	arguments := []string{mediaPath, copiedSubtitle, "--dry-run", "--json", "--strict", "--no-sidecar"}
-	execution, err := l.execute(ctx, l.analyzeTimeout, Command{Path: l.path, Args: arguments, Dir: workspace, Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}}, mediaPath, subtitlePath, copiedSubtitle)
+	execution, err := l.execute(ctx, l.analyzeTimeout, Command{Path: l.path, Args: arguments, Dir: workspace, Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
-	result, report, err := l.interpret(execution, mediaPath, subtitlePath, copiedSubtitle)
+	result, report, err := l.interpret(execution)
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
 	if report.Verdict != "solid" {
-		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict, Reason: l.redact(report.Why, mediaPath, subtitlePath, copiedSubtitle)}
+		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict}
 	}
 	return result, nil
 }
@@ -149,16 +149,16 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 		}
 	}()
 	arguments := []string{mediaPath, subtitlePath, "--output", outputPath, "--no-backup", "--json", "--strict", "--no-sidecar"}
-	execution, err := l.execute(ctx, l.synchronizeTimeout, Command{Path: l.path, Args: arguments, Dir: filepath.Dir(outputPath), Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}}, mediaPath, subtitlePath, outputPath)
+	execution, err := l.execute(ctx, l.synchronizeTimeout, Command{Path: l.path, Args: arguments, Dir: filepath.Dir(outputPath), Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
-	result, report, err := l.interpret(execution, mediaPath, subtitlePath, outputPath)
+	result, report, err := l.interpret(execution)
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
 	if report.Verdict != "solid" {
-		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict, Reason: l.redact(report.Why, mediaPath, subtitlePath, outputPath)}
+		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict}
 	}
 	if !report.Written {
 		return domain.SyncResult{}, fmt.Errorf("LAPSE reported a solid result without writing output")
@@ -172,7 +172,7 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 	return result, nil
 }
 
-func (l *Lapse) execute(ctx context.Context, timeout time.Duration, command Command, sensitivePaths ...string) (Execution, error) {
+func (l *Lapse) execute(ctx context.Context, timeout time.Duration, command Command) (Execution, error) {
 	runContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	execution, err := l.runner.Run(runContext, command)
@@ -185,23 +185,24 @@ func (l *Lapse) execute(ctx context.Context, timeout time.Duration, command Comm
 	if errors.Is(err, context.Canceled) {
 		return execution, fmt.Errorf("LAPSE command canceled: %w", context.Canceled)
 	}
-	return execution, fmt.Errorf("LAPSE command failed: %s", l.redact(err.Error(), sensitivePaths...))
+	return execution, fmt.Errorf("LAPSE command could not start or complete")
 }
 
-func (l *Lapse) interpret(execution Execution, sensitivePaths ...string) (domain.SyncResult, lapseReport, error) {
+func (l *Lapse) interpret(execution Execution) (domain.SyncResult, lapseReport, error) {
 	if execution.StdoutTruncated {
 		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE JSON output exceeded the configured limit")
 	}
 	report, err := decodeReport(execution.Stdout)
 	if err != nil {
-		stderr := l.redact(string(execution.Stderr), sensitivePaths...)
-		if noSpeechMessage(stderr) {
-			return domain.SyncResult{}, lapseReport{}, &NoSpeechError{Detail: strings.TrimSpace(stderr)}
+		// Process output can contain subtitle text, paths, or URLs. Inspect it
+		// only for classification; never include it in outward-facing errors.
+		if noSpeechMessage(string(execution.Stderr)) {
+			return domain.SyncResult{}, lapseReport{}, &NoSpeechError{}
 		}
 		if execution.ExitCode != 0 {
-			return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE exited with code %d: %s", execution.ExitCode, strings.TrimSpace(stderr))
+			return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE exited with code %d", execution.ExitCode)
 		}
-		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("parse LAPSE JSON: %w", err)
+		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE returned invalid JSON protocol data")
 	}
 	if report.Verdict == "solid" && execution.ExitCode != 0 {
 		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE returned solid with exit code %d", execution.ExitCode)
@@ -210,17 +211,6 @@ func (l *Lapse) interpret(execution Execution, sensitivePaths ...string) (domain
 		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE returned %s with unexpected exit code %d", report.Verdict, execution.ExitCode)
 	}
 	return report.syncResult(), report, nil
-}
-
-func (l *Lapse) redact(value string, explicit ...string) string {
-	paths := append(append([]string(nil), explicit...), l.mediaRoots...)
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		value = strings.ReplaceAll(value, path, "[media]")
-	}
-	return value
 }
 
 type lapseReport struct {

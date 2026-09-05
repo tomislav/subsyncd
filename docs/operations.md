@@ -30,6 +30,16 @@ install:
   # gid: 1000
 ```
 
+## Temporary processing files
+
+Downloads, extracted subtitles, and LAPSE synchronization output use a private `.subsyncd-work-*` directory in the system temporary directory (`TMPDIR` when set, otherwise `/tmp` in the Linux container). LAPSE analysis uses its own private temporary copy there too. Normal workflow completion, rejection, errors, and cancellation remove the workflow directory. Rejected-candidate artifacts are released as processing advances so an uncapped exact search does not retain every attempted download.
+
+The final `.subsyncd-stage-*` file and managed-replacement `.subsyncd-rollback-*` copy stay beside the media for atomic publication and recovery. Pack-cache publication stages within the persistent pack-cache root; LAPSE speech profiles also remain in the persistent data directory. Moving scratch to a separate filesystem does not change either atomic publication path.
+
+Application errors redact the effective temporary root. LAPSE failures expose bounded verdict, exit-code, and protocol/operation categories; raw stderr, JSON diagnostic values, and command errors are not included. No-speech detection still classifies the failure internally without logging the diagnostic output.
+
+The Compose example supplies a 512 MiB `/tmp` tmpfs shared by active workflows. Increasing workflow concurrency may require increasing that temporary-storage allowance. Do not point `TMPDIR` at a media-library directory if temporary subtitles must remain invisible to library scans. Abrupt process/container termination can bypass deferred cleanup; container tmpfs is discarded when its mount is recreated. This change does not scan or remove legacy `.subsyncd-work-*` directories from media roots.
+
 ## Startup and health
 
 Startup is deliberately offline with respect to Arr, subtitle providers, and Silo. It fails only for invalid configuration, unsafe/missing local roots, SQLite migration/open errors, missing `ffprobe`, or an incompatible LAPSE executable. Configuration must contain exactly one non-empty YAML document: cardinality is checked on the original bytes before environment expansion, so a trailing document is rejected without expanding or exposing its values. Empty trailing separators are harmless. Run diagnostics after every configuration/image change:
@@ -216,6 +226,8 @@ When LAPSE is required, analysis runs against a private subtitle copy with `--dr
 The best three eligible non-hash candidates are a cap, not an eager batch. They are partitioned by release score and processed from highest score downward. A unique top scorer is downloaded and analyzed alone; if it is solid, it is synchronized once and lower tiers are never downloaded. Candidates tied at the same score are all downloaded and analyzed so LAPSE confidence can choose the best; only that winner is synchronized. A synchronization failure tries the next already analyzed tie, and only an exhausted tier opens the next lower score. Deterministic verdict/content failures retain their scoped quarantine behavior, while process, filesystem, provider, network, and cancellation errors remain retryable and never blacklist a candidate.
 
 An `unsure` or `nothing` verdict quarantines that provider result for 30 days, scoped to the language, exact media fingerprint, stable candidate/release metadata, selected artifact checksum when known, LAPSE compatibility version, and synchronization policy. Invalid or oversized subtitle payloads and ambiguous, missing, or explicitly conflicting episode-member selection are quarantined too. This is candidate-local and does not throttle the provider. Rejected candidates are removed before the three-candidate shortlist, so later-ranked results advance on the next job. A rejected cached pack member is skipped by checksum; the pack remains available to other episodes.
+
+A candidate-local subtitle validation rejection during installation advances to the next analyzed tie or score tier, with rejection evidence based on the original selected subtitle. A format-changing upgrade also advances without replacing the managed sidecar. Filesystem, stale-media, database, and rollback failures stop installation. The installer checks the media file immediately before publication, and the installation/outbox transaction checks the stored path, Arr file ID, size, and modification time; a media replacement during LAPSE cannot commit obsolete provenance or notification intents.
 
 At debug level, `candidate.rejected` reports bounded archive-selection fields: `reason_code`, `selection_rule`, `archive_type`, `subtitle_member_count`, and `matching_member_count`, together with provider and candidate ID. Archive filenames and absolute paths are deliberately omitted.
 
