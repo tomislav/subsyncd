@@ -110,7 +110,9 @@ func TestInstallerCreatesDeterministicNotificationIntents(t *testing.T) {
 		if err := json.Unmarshal(intent.PayloadJSON, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(payload, NotificationPayload{Media: request.Media, SubtitlePath: destination}) || !intent.NextAttemptAt.Equal(now) {
+		expectedPayload := NotificationPayload{Media: request.Media, SubtitlePath: destination}
+		expectedPayload.Media.Fingerprint.ModTime = expectedPayload.Media.Fingerprint.ModTime.UTC()
+		if !reflect.DeepEqual(payload, expectedPayload) || !intent.NextAttemptAt.Equal(now) {
 			t.Fatalf("payload/time = %#v/%v", payload, intent.NextAttemptAt)
 		}
 	}
