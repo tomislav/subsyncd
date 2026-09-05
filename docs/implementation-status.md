@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: temporary workspace and LAPSE downstream repairs completed and verified
-- Next safe action: push the user-authorized repairs, then review remaining catalog/webhook, worker, inventory, configuration/startup systems as requested
-- Latest follow-up: extended review through LAPSE analysis, candidate fallback, publication, rollback, and notification delivery; no production rollout performed
+- Current task: review of remaining systems completed at `9d292c4`; thirteen actionable findings recorded
+- Next safe action: implement the remaining-system review findings when requested, beginning with Arr redirect credential forwarding and stale inventory identity updates
+- Latest follow-up: scratch/LAPSE repair `9d292c4` is pushed; subsequent review changes documentation only, with no production rollout
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Remaining systems code review — 2026-09-05
+
+- Reviewed `9d292c4`, the pushed temporary workspace/LAPSE repair. Commit: `docs: record remaining systems review findings` (this documentation commit, based on `9d292c4`).
+- Recorded thirteen actionable findings in `docs/remaining-systems-review-2026-09-05.md`: Arr redirect credentials, stale inventory writes, missing completed-probe cache identity, writes before mutation locking, mixed webhook batches, root Arr mappings, detail-client error privacy, unbounded retained history, pre-dedup hydration, post-cancellation dispatch, obsolete language work, Compose shutdown budget, and duplicate unsanitized startup errors.
+- Two findings are P1 (redirect credential forwarding and stale inventory identity overwrite); eleven are P2. No runtime behavior was adopted or changed by this review. Existing hash-cache ownership, upgrade guards, migration lineage validation, publication parity, and previously reviewed rollback/outbox handling had no additional confirmed findings in this bounded pass.
+- Evidence uses sanitized temporary Go overlays, in-memory HTTP transports, and temporary SQLite/media fixtures. Eleven findings were exercised through focused reproductions; retained-history sizing and Compose shutdown timing were established statically. The repaired baseline passed race/vet/local tagged E2E; release Dockerfile parity and documentation diff checks also passed. No live Arr/provider/Silo requests or production operations occurred.
+- Next action: implement findings with permanent focused RED/GREEN tests when requested; repair redirect handling and stale inventory identity first. No new review finding has been silently implemented.
 
 ### Temporary workspace and LAPSE downstream repairs — 2026-09-05
 
@@ -20,7 +28,7 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Related review tightened temporary-root error redaction and removed raw LAPSE stderr, diagnostic fields, decoder values, and runner errors from outward errors. Typed verdict/no-speech/cancellation semantics remain intact; LAPSE version, scoring weights, bypass policy, and shortlist size do not change.
 - Downstream review found candidate-local installer rejection aborting fallback and missing current-media guards. Repairs advance on direct pre-publication content rejection or unsupported format-changing upgrade, retain original artifact rejection identity, and keep filesystem/database/rollback failures terminal. Current filesystem and transactional stored media fingerprints guard publication/provenance/outbox against stale processing.
 - Focused RED/GREEN tests cover scratch location and cleanup, exact fallback retention, full-manifest cache publication, reordered tied candidates, partial synchronized output cleanup, error privacy, broad/cache installation fallback, and media changes before publication/commit. Independent final review reported no actionable findings. Verification passed: repository-wide race tests with an affected workflow/store rerun after correcting a fixture directory-count expectation, `go vet ./...`, local tagged E2E race tests, gofmt, and `git diff --check`. HTTP tests used local fakes only.
-- Existing rollback restoration and asynchronous notification delivery needed no structural changes. No production lifecycle actions, live provider requests, media cleanup, configuration changes, or threshold adjustments were performed. Next action: publish the authorized commit, then perform the requested review of remaining systems. Production rollout remains separate.
+- Existing rollback restoration and asynchronous notification delivery needed no structural changes. No production lifecycle actions, live provider requests, media cleanup, configuration changes, or threshold adjustments were performed. Published as `9d292c4`; the subsequent remaining-system review is recorded above. Production rollout remains separate.
 
 ### Read-only verification of deployed provider repairs — 2026-09-05
 
