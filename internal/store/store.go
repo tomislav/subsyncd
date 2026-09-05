@@ -63,6 +63,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("list migrations: %w", err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	allowed := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			allowed[entry.Name()] = struct{}{}
+		}
+	}
+	if err := validateAppliedMigrations(ctx, s.db, allowed); err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
@@ -93,6 +102,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %s: %w", entry.Name(), err)
 		}
+	}
+	return nil
+}
+
+func validateAppliedMigrations(ctx context.Context, db *sql.DB, allowed map[string]struct{}) error {
+	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		return fmt.Errorf("list applied migrations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return fmt.Errorf("scan applied migration: %w", err)
+		}
+		if _, ok := allowed[version]; !ok {
+			return fmt.Errorf("unsupported database migration %q; rebuild from an empty data directory", version)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate applied migrations: %w", err)
 	}
 	return nil
 }

@@ -3,9 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
-	"io/fs"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -13,53 +11,115 @@ import (
 	"subsyncd/internal/domain"
 )
 
-func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
+func TestOpenAppliesBaselineIdempotently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "subsyncd.db")
 	for run := 0; run < 2; run++ {
 		store, err := Open(context.Background(), path)
 		if err != nil {
 			t.Fatalf("Open() run %d error = %v", run, err)
 		}
-		var count int
-		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
-			t.Fatalf("query migrations: %v", err)
+		var version string
+		if err := store.db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil {
+			t.Fatal(err)
 		}
-		if count != 10 {
-			t.Errorf("migration count = %d, want 10", count)
+		if version != "001_baseline.sql" {
+			t.Fatalf("migration version = %q, want 001_baseline.sql", version)
 		}
 		if err := store.Close(); err != nil {
-			t.Fatalf("Close(): %v", err)
+			t.Fatal(err)
 		}
 	}
 }
 
-func TestMediaEntityIDMigrationPreservesLegacyRows(t *testing.T) {
+func TestOpenRejectsUnknownMigrationLineage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "subsyncd.db")
-	db := openDatabaseThroughMigration(t, path, "009_media_unsupported_reason.sql")
-	if _, err := db.Exec(`INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, updated_at_ns) VALUES ('sonarr-main', 'episode', 42, '/media/show.mkv', 100, 1, 'Show', 1)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO events(event_id, event_type, instance, kind, file_id, outcome, created_at_ns) VALUES ('legacy-event', 'import', 'sonarr-main', 'episode', 42, 'applied', 1)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	database, err := Open(context.Background(), path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
-	var mediaEntityID, eventEntityID int64
-	if err := database.db.QueryRow(`SELECT entity_id FROM media WHERE file_id=42`).Scan(&mediaEntityID); err != nil {
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); INSERT INTO schema_migrations(version) VALUES ('001_initial.sql')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.db.QueryRow(`SELECT entity_id FROM events WHERE event_id='legacy-event'`).Scan(&eventEntityID); err != nil {
-		t.Fatal(err)
+	_ = db.Close()
+
+	_, err = Open(context.Background(), path)
+	if err == nil || !strings.Contains(err.Error(), `unsupported database migration "001_initial.sql"; rebuild from an empty data directory`) {
+		t.Fatalf("Open() error = %v", err)
 	}
-	if mediaEntityID != 0 || eventEntityID != 0 {
-		t.Fatalf("legacy entity IDs = media:%d event:%d, want 0/0", mediaEntityID, eventEntityID)
+}
+
+func TestBaselineRequiresPositiveMediaEntityID(t *testing.T) {
+	repo := openTestRepository(t)
+	_, err := repo.store.db.Exec(`INSERT INTO media(instance, kind, entity_id, file_id, path, size, mod_time_ns, title, updated_at_ns) VALUES ('sonarr-main', 'episode', 0, 42, '/media/show.mkv', 100, 1, 'Show', 1)`)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "constraint") {
+		t.Fatalf("zero entity insert error = %v", err)
+	}
+}
+
+func TestBaselineHasCompleteCurrentSurface(t *testing.T) {
+	repo := openTestRepository(t)
+	wantTables := []string{"instances", "media", "tracks", "search_states", "provider_states", "provider_cache", "pack_cache", "pack_members", "candidates", "installations", "notifications", "events", "media_hashes", "candidate_rejections"}
+	for _, name := range wantTables {
+		var count int
+		if err := repo.store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("table %s count/error = %d/%v", name, count, err)
+		}
+	}
+	wantColumns := map[string][]string{
+		"media":         {"entity_id", "episode_title", "unsupported_reason"},
+		"search_states": {"priority", "rerun_requested"},
+		"installations": {"media_path", "media_file_id", "media_size", "media_mod_time_ns"},
+		"notifications": {"dedupe_key", "lease_owner", "lease_until_ns"},
+		"events":        {"event_id", "instance", "kind", "file_id", "entity_id"},
+	}
+	for table, columns := range wantColumns {
+		rows, err := repo.store.db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, typ string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultValue, &pk); err != nil {
+				t.Fatal(err)
+			}
+			got[name] = true
+		}
+		_ = rows.Close()
+		for _, column := range columns {
+			if !got[column] {
+				t.Errorf("%s missing column %s", table, column)
+			}
+		}
+	}
+	wantIndexes := []string{"tracks_media_language_idx", "search_due_idx", "provider_cache_expiry_idx", "pack_lookup_idx", "pack_lru_idx", "notifications_dedupe_idx", "notifications_due_idx", "events_event_id_idx", "events_created_idx", "candidate_rejections_lookup_idx", "media_entity_identity_idx"}
+	for _, name := range wantIndexes {
+		var count int
+		if err := repo.store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("index %s count/error = %d/%v", name, count, err)
+		}
+	}
+	wantForeignKeys := map[string]string{"tracks": "media", "search_states": "media", "pack_members": "pack_cache", "candidates": "media", "installations": "media", "events": "media", "media_hashes": "media", "candidate_rejections": "media"}
+	for table, parent := range wantForeignKeys {
+		rows, err := repo.store.db.Query(`PRAGMA foreign_key_list(` + table + `)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for rows.Next() {
+			var id, seq int
+			var target, from, to, onUpdate, onDelete, match string
+			if err := rows.Scan(&id, &seq, &target, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+				t.Fatal(err)
+			}
+			found = found || target == parent
+		}
+		_ = rows.Close()
+		if !found {
+			t.Errorf("%s missing foreign key to %s", table, parent)
+		}
 	}
 }
 
@@ -153,32 +213,6 @@ func TestEntityUpgradeUpdatesOneRowAndPreservesLease(t *testing.T) {
 	}
 }
 
-func TestLegacyEntityAdoptionUpdatesExistingFileRow(t *testing.T) {
-	repo := openTestRepository(t)
-	media := testMedia()
-	media.EntityID = 101
-	result, err := repo.store.db.Exec(`INSERT INTO media(instance, kind, file_id, entity_id, path, size, mod_time_ns, title, updated_at_ns) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, time.Now().UnixNano())
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	gotID, _, err := repo.UpsertMedia(context.Background(), media)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotID != wantID {
-		t.Fatalf("adopted media ID = %d, want %d", gotID, wantID)
-	}
-	var count int
-	if err := repo.store.db.QueryRow(`SELECT count(*) FROM media WHERE instance=? AND kind=?`, media.Ref.Instance, media.Ref.Kind).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("media rows = %d/%v, want 1/nil", count, err)
-	}
-}
-
 func TestMediaEntityIDConflictFailsClosed(t *testing.T) {
 	repo := openTestRepository(t)
 	first := testMedia()
@@ -203,29 +237,6 @@ func TestMediaEntityIDConflictFailsClosed(t *testing.T) {
 	conflict.Fingerprint.FileID = 1002
 	if _, _, err := repo.UpsertMedia(context.Background(), conflict); err == nil || !strings.Contains(err.Error(), "conflicting media identities") {
 		t.Fatalf("identity conflict error = %v", err)
-	}
-}
-
-func TestMediaUnsupportedReasonMigration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "subsyncd.db")
-	db := openDatabaseThroughMigration(t, path, "008_search_priorities.sql")
-	if _, err := db.Exec(`INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, updated_at_ns) VALUES ('sonarr-main', 'episode', 42, '/media/show.mkv', 100, 1, 'Show', 1)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	database, err := Open(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	var reason string
-	if err := database.db.QueryRow(`SELECT unsupported_reason FROM media WHERE file_id=42`).Scan(&reason); err != nil {
-		t.Fatal(err)
-	}
-	if reason != "" {
-		t.Fatalf("unsupported reason = %q, want empty", reason)
 	}
 }
 
@@ -419,40 +430,6 @@ func TestLeaseDueSearchesOrdersByPriorityBeforeDueTime(t *testing.T) {
 	}
 	if leases[0].Priority != SearchPriorityImport || leases[1].Priority != SearchPriorityMissing || leases[2].Priority != SearchPriorityUpgrade {
 		t.Fatalf("lease priorities = %v, %v, %v", leases[0].Priority, leases[1].Priority, leases[2].Priority)
-	}
-}
-
-func TestSearchPriorityMigrationDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "subsyncd.db")
-	legacy := openDatabaseThroughMigration(t, path, "007_candidate_rejections.sql")
-	result, err := legacy.Exec(`INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, updated_at_ns) VALUES ('sonarr-main', 'episode', 42, '/media/show.mkv', 100, 1, 'Show', 1)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mediaID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	if _, err := legacy.Exec(`INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns) VALUES (?, 'en', 'pending', 0, 0, ?)`, mediaID, now.UnixNano()); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	upgraded, err := Open(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = upgraded.Close() })
-	var priority int
-	var rerunRequested bool
-	if err := upgraded.db.QueryRow(`SELECT priority, rerun_requested FROM search_states WHERE media_id=? AND language='en'`, mediaID).Scan(&priority, &rerunRequested); err != nil {
-		t.Fatal(err)
-	}
-	if priority != int(SearchPriorityMissing) || rerunRequested {
-		t.Fatalf("migrated priority/rerun = %d/%v, want %d/false", priority, rerunRequested, SearchPriorityMissing)
 	}
 }
 
@@ -1351,41 +1328,6 @@ func openTestRepository(t *testing.T) *Repository {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store.Repository()
-}
-
-func openDatabaseThroughMigration(t *testing.T, path, through string) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := fs.ReadDir(migrationFiles, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > through {
-			continue
-		}
-		contents, err := migrationFiles.ReadFile("migrations/" + entry.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(string(contents)); err != nil {
-			t.Fatalf("apply migration %s: %v", entry.Name(), err)
-		}
-		if _, err := db.Exec(`INSERT INTO schema_migrations(version) VALUES (?)`, entry.Name()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return db
 }
 
 func insertTestMedia(t *testing.T, repo *Repository, fileID int64, now time.Time) int64 {

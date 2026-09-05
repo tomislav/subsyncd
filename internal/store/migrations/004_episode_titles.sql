@@ -1,1 +1,0 @@
-ALTER TABLE media ADD COLUMN episode_title TEXT NOT NULL DEFAULT '';
