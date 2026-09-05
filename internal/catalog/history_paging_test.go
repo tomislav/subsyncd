@@ -41,15 +41,21 @@ func TestHistoryPagesBoundOverlapAndConcurrentDuplicates(t *testing.T) {
 		return arrapi.HistoryRecord{ID: id, MovieID: id, EventType: arrapi.EventFileDeleted, Date: at}
 	}
 	a := record(1, through.Add(time.Second))
-	b := record(2, since.Add(time.Minute))
-	c := record(3, since.Truncate(time.Second))
-	d := record(4, since.Add(-time.Second))
-	f := &pagedHistoryFake{pages: []arrapi.HistoryPage{{Records: []arrapi.HistoryRecord{a, b}, TotalRecords: 8}, {Records: []arrapi.HistoryRecord{b, c}, TotalRecords: 9}, {Records: []arrapi.HistoryRecord{c, d}, TotalRecords: 9}}}
+	b := record(100, since.Add(time.Minute))
+	c := record(101, since.Truncate(time.Second))
+	d := record(102, since.Add(-time.Second))
+	first := []arrapi.HistoryRecord{a}
+	for id := 2; id < 100; id++ {
+		first = append(first, arrapi.HistoryRecord{ID: id, Date: b.Date, EventType: arrapi.EventGrabbed})
+	}
+	first = append(first, b)
+	// One concurrent insertion moves b from offset 99 to offset 100.
+	f := &pagedHistoryFake{pages: []arrapi.HistoryPage{{Records: first, TotalRecords: 102}, {Records: []arrapi.HistoryRecord{b, c, d}, TotalRecords: 103}}}
 	records, err := readHistoryWindow(t.Context(), f, since, through)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 2 || records[0].ID != 2 || records[1].ID != 3 || len(f.calls) != 3 {
+	if len(records) != 2 || records[0].ID != 100 || records[1].ID != 101 || len(f.calls) != 2 {
 		t.Fatalf("records=%+v calls=%v", records, f.calls)
 	}
 	for i, o := range f.calls {
@@ -60,10 +66,10 @@ func TestHistoryPagesBoundOverlapAndConcurrentDuplicates(t *testing.T) {
 }
 func TestHistoryPagesZeroCursorAndFailure(t *testing.T) {
 	now := time.Now()
-	r := arrapi.HistoryRecord{ID: 1, MovieID: 1, EventType: arrapi.EventFileDeleted, Date: now}
-	f := &pagedHistoryFake{pages: []arrapi.HistoryPage{{Records: []arrapi.HistoryRecord{r}, TotalRecords: 2}, {Records: []arrapi.HistoryRecord{{ID: 2, MovieID: 2, EventType: arrapi.EventFileDeleted, Date: now.Add(-time.Hour)}}, TotalRecords: 2}}}
+	first := historyFullPage(now)
+	f := &pagedHistoryFake{pages: []arrapi.HistoryPage{{Records: first, TotalRecords: 101}, {Records: []arrapi.HistoryRecord{{ID: 101, MovieID: 101, EventType: arrapi.EventFileDeleted, Date: now.Add(-time.Hour)}}, TotalRecords: 101}}}
 	got, err := readHistoryWindow(t.Context(), f, time.Time{}, now)
-	if err != nil || len(got) != 2 {
+	if err != nil || len(got) != 101 {
 		t.Fatalf("records=%v err=%v", got, err)
 	}
 	f.calls = nil
@@ -94,13 +100,14 @@ func writeHistoryRecords(t *testing.T, w http.ResponseWriter, records []map[stri
 func TestHistoryPagesFailClosedOnInconsistentPages(t *testing.T) {
 	now := time.Now()
 	r := arrapi.HistoryRecord{ID: 1, Date: now, EventType: arrapi.EventFileDeleted, MovieID: 1}
+	first := historyFullPage(now)
 	for _, tc := range []struct {
 		name  string
 		pages []arrapi.HistoryPage
 	}{
-		{"shrinking total", []arrapi.HistoryPage{{Records: []arrapi.HistoryRecord{r}, TotalRecords: 3}, {Records: []arrapi.HistoryRecord{{ID: 2, Date: now.Add(-time.Second)}}, TotalRecords: 2}}},
-		{"changed duplicate", []arrapi.HistoryPage{{Records: []arrapi.HistoryRecord{r}, TotalRecords: 3}, {Records: []arrapi.HistoryRecord{{ID: 1, Date: now.Add(-time.Second)}, {ID: 2, Date: now.Add(-time.Second)}}, TotalRecords: 3}}},
-		{"no progress", []arrapi.HistoryPage{{Records: []arrapi.HistoryRecord{r}, TotalRecords: 3}, {Records: []arrapi.HistoryRecord{r}, TotalRecords: 3}}},
+		{"shrinking total", []arrapi.HistoryPage{{Records: first, TotalRecords: 102}, {Records: []arrapi.HistoryRecord{{ID: 101, Date: now.Add(-time.Second)}}, TotalRecords: 101}}},
+		{"changed duplicate", []arrapi.HistoryPage{{Records: first, TotalRecords: 101}, {Records: []arrapi.HistoryRecord{{ID: 100, Date: now.Add(-time.Second)}, {ID: 101, Date: now.Add(-time.Second)}}, TotalRecords: 102}}},
+		{"no progress", []arrapi.HistoryPage{{Records: first, TotalRecords: 101}, {Records: []arrapi.HistoryRecord{first[99]}, TotalRecords: 101}}},
 		{"unordered", []arrapi.HistoryPage{{Records: []arrapi.HistoryRecord{r, {ID: 2, Date: now.Add(time.Second)}}, TotalRecords: 2}}},
 		{"missing date", []arrapi.HistoryPage{{Records: []arrapi.HistoryRecord{{ID: 2}}, TotalRecords: 1}}},
 		{"empty early", []arrapi.HistoryPage{{TotalRecords: 1}}},
@@ -187,4 +194,42 @@ func TestHistoryPagesRejectMissingMetadata(t *testing.T) {
 			t.Fatalf("accepted page %+v", page)
 		}
 	}
+}
+
+type pagedRadarrFake struct{ pagedHistoryFake }
+
+func (f *pagedRadarrFake) MovieByID(_ context.Context, id int) (arrapi.Movie, error) {
+	return arrapi.Movie{ID: id, HasFile: false}, nil
+}
+func TestHistoryShortNonfinalPageCannotAdvanceCursor(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	since := now.Add(-100 * time.Second)
+	var first []arrapi.HistoryRecord
+	for i := 0; i < 99; i++ {
+		first = append(first, arrapi.HistoryRecord{ID: i + 1, MovieID: i + 1, EventType: arrapi.EventFileDeleted, Date: now.Add(-time.Duration(i) * time.Second)})
+	}
+	// Offset 100 on page two skips the omitted 100th record, whose timestamp
+	// would still be inside the requested window. The next record is below it.
+	client := &pagedRadarrFake{pagedHistoryFake{pages: []arrapi.HistoryPage{
+		{Records: first, TotalRecords: 101},
+		{Records: []arrapi.HistoryRecord{{ID: 101, MovieID: 101, EventType: arrapi.EventFileDeleted, Date: since.Add(-time.Second)}}, TotalRecords: 101},
+	}}}
+	backend := &fakeReconcileStore{cursor: since}
+	cat := &Radarr{client: &arrClient{instance: "main"}, entity: client}
+	r := Reconciler{Instance: "main", Catalog: cat, Store: backend, Now: func() time.Time { return now }}
+	err := r.Run(t.Context())
+	if err == nil || !backend.committed.IsZero() || len(backend.mutations) != 0 {
+		t.Fatalf("short page committed: err=%v cursor=%v mutations=%d", err, backend.committed, len(backend.mutations))
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("continued past incomplete page: calls=%d", len(client.calls))
+	}
+}
+
+func historyFullPage(at time.Time) []arrapi.HistoryRecord {
+	records := make([]arrapi.HistoryRecord, 100)
+	for i := range records {
+		records[i] = arrapi.HistoryRecord{ID: i + 1, MovieID: i + 1, EventType: arrapi.EventFileDeleted, Date: at}
+	}
+	return records
 }

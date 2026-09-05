@@ -93,6 +93,13 @@ func readHistoryWindow(ctx context.Context, client arrHistoryClient, since, thro
 		if page.Page != pageNumber || page.TotalRecords < previousTotal || page.PageSize != pageSize || len(page.Records) > pageSize || page.TotalRecords < len(page.Records) {
 			return nil, fmt.Errorf("invalid Arr history page")
 		}
+		// Offset pagination must return every record at this offset. A short
+		// nonfinal page would silently skip the missing tail on the next request.
+		remaining := page.TotalRecords - (pageNumber-1)*pageSize
+		expected := min(pageSize, max(0, remaining))
+		if len(page.Records) != expected {
+			return nil, fmt.Errorf("incomplete Arr history page")
+		}
 		previousTotal = page.TotalRecords
 		if len(page.Records) == 0 {
 			if received < page.TotalRecords {
