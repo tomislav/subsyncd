@@ -157,6 +157,9 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 		if event.Type != EventDelete {
 			media, err := h.Catalog.GetMedia(ctx, event.Ref)
 			if err != nil {
+				if IsOutsideScope(err) {
+					return result, ErrIgnoredEvent
+				}
 				return result, fmt.Errorf("hydrate %s event %s: %w", h.Instance, event.EventID, err)
 			}
 			mutation.Media = media

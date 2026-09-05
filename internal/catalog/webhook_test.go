@@ -99,12 +99,13 @@ func TestNormalizeWebhookDistinguishesLaterRenameOfSameFile(t *testing.T) {
 
 type fakeEventCatalog struct {
 	media domain.Media
+	err   error
 	calls int
 }
 
 func (f *fakeEventCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
 	f.calls++
-	return f.media, nil
+	return f.media, f.err
 }
 
 func (f *fakeEventCatalog) ListChanges(context.Context, time.Time, time.Time) ([]HistoryChange, error) {
@@ -127,6 +128,47 @@ func (f *fakeEventStore) ApplyMediaEvent(_ context.Context, mutation store.Media
 		return f.results[index], nil
 	}
 	return true, nil
+}
+
+func TestWebhookHandlerIgnoresOnlyTypedOutsideScopeHydration(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "radarr_download.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name        string
+		catalogErr  error
+		wantIgnored bool
+	}{
+		{name: "outside scope", catalogErr: errors.Join(ErrOutsideScope, errors.New("unmapped movie")), wantIgnored: true},
+		{name: "unsafe failure", catalogErr: errors.New("resolve mapped path: permission denied")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			catalog := &fakeEventCatalog{err: test.catalogErr}
+			eventStore := &fakeEventStore{}
+			wakes := 0
+			handler := WebhookHandler{
+				Instance:     "main",
+				InstanceType: "radarr",
+				Catalog:      catalog,
+				Store:        eventStore,
+				Languages:    []domain.Language{"en"},
+				Now:          func() time.Time { return time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC) },
+				OnApplied:    func() { wakes++ },
+			}
+
+			result, gotErr := handler.Handle(context.Background(), body)
+			if errors.Is(gotErr, ErrIgnoredEvent) != test.wantIgnored {
+				t.Fatalf("Handle() error = %v, ignored = %t, want %t", gotErr, errors.Is(gotErr, ErrIgnoredEvent), test.wantIgnored)
+			}
+			if !test.wantIgnored && !errors.Is(gotErr, test.catalogErr) {
+				t.Fatalf("Handle() error = %v, want wrapped hard failure %v", gotErr, test.catalogErr)
+			}
+			if result.EventCount != 1 || result.AppliedCount != 0 || catalog.calls != 1 || len(eventStore.mutations) != 0 || wakes != 0 {
+				t.Fatalf("outside-scope effects = result:%#v calls:%d mutations:%d wakes:%d", result, catalog.calls, len(eventStore.mutations), wakes)
+			}
+		})
+	}
 }
 
 func TestWebhookHandlerHydratesImportsAndAppliesDeletesWithoutHydration(t *testing.T) {
