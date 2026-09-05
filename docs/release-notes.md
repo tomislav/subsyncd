@@ -1,5 +1,13 @@
 # Release verification
 
+## Provider correctness and credential repair — 2026-09-05
+
+OpenSubtitles hashing is now implemented internally with the canonical first/last-64-KiB 64-bit algorithm, removing the former dependency's 9 GB file-size ceiling without reading the complete media file. Provider results collapse duplicate stable IDs before cache, scoring, persistence, and the three-candidate LAPSE tournament, while conservatively merging missing identity and quality evidence.
+
+Successful HTTP responses ignore non-authoritative `Retry-After` headers but continue to persist standard rate-limit windows. SubDL strips API-key query data from normalized candidate identities and reconstructs authentication only for outbound downloads. The `002_scrub_provider_credentials.sql` migration removes contaminated provider-derived rows from affected databases while retaining media, schedules, leases, reconciliation cursors, and unrelated rows; installed files whose contaminated provenance is removed remain protected on disk.
+
+Implementation commit `6f5dd3d` passed the complete race-enabled Go suite, `go vet ./...`, the tagged race-enabled end-to-end suite, the provider-contract suite, standalone Compose rendering, diff hygiene, and the repository credential-pattern scan. No image was published or deployed, and the stopped Hades service was not restarted.
+
 ## Initial implementation baseline — 2026-09-04
 
 The release candidate was verified as a native Linux arm64 image on an arm64 Docker host. The Dockerfile selects matching Linux amd64 or arm64 Go/LAPSE artifacts when BuildKit supplies `TARGETARCH`, and derives the native architecture for legacy Docker builds.

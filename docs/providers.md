@@ -39,7 +39,7 @@ titlovi-main:
 
 ### OpenSubtitles.com
 
-OpenSubtitles supports exact file-hash search followed by broad metadata search. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It is reused until any part of that fingerprint changes. Exact results score 100, stop all remaining provider searches, and bypass LAPSE. For movies, feature IMDb/TMDB IDs are comparable media identities. For episodes, OpenSubtitles feature IDs identify the episode while Sonarr supplies series IDs, so the adapter compares OpenSubtitles `parent_imdb_id`/`parent_tmdb_id` instead. Missing parent IDs remain neutral; episode feature IDs are never misrepresented as series IDs.
+OpenSubtitles supports exact file-hash search followed by broad metadata search. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It reads only the first and last 64 KiB plus the file size, supports normal 64-bit media sizes without an artificial 9 GB ceiling, and is reused until any part of that fingerprint changes. Exact results score 100, stop all remaining provider searches, and bypass LAPSE. For movies, feature IMDb/TMDB IDs are comparable media identities. For episodes, OpenSubtitles feature IDs identify the episode while Sonarr supplies series IDs, so the adapter compares OpenSubtitles `parent_imdb_id`/`parent_tmdb_id` instead. Missing parent IDs remain neutral; episode feature IDs are never misrepresented as series IDs.
 
 ```yaml
 opensubtitles-main:
@@ -55,7 +55,7 @@ opensubtitles-main:
 
 ### SubDL
 
-SubDL is broad-only. For episodes it searches standard season/episode, an available absolute episode, and the season-pack form, merging results by stable identity. It supports its published two-letter languages plus `pt-BR` and `zh-Hant`; configuration validation is the definitive capability check.
+SubDL is broad-only. For episodes it searches standard season/episode, an available absolute episode, and the season-pack form, merging results by stable identity. It supports its published two-letter languages plus `pt-BR` and `zh-Hant`; configuration validation is the definitive capability check. API keys returned in download URL queries are discarded during normalization. The configured key is reconstructed only on the outbound download request and must never become a candidate ID, cache value, provenance record, or log field.
 
 ```yaml
 subdl-main:
@@ -74,7 +74,7 @@ For one media/language job:
 2. Stop for a full matching embedded track or a matching protected/user-owned sidecar. Forced-only and unknown-language tracks do not satisfy a normal request.
 3. Try a reusable, checksummed season-pack member.
 4. Ask hash-capable providers sequentially in configured order. The first verified exact match is terminal.
-5. If no exact match exists, query every assigned provider broadly and merge results in configured order.
+5. If no exact match exists, query every assigned provider broadly and merge results in configured order. Duplicate `(provider_id, result_id)` rows collapse before caching, persistence, scoring, or shortlisting; missing identity evidence is filled from later duplicates while conflicting nonempty identity values retain the first stable value.
 6. Persist score and rejection evidence for every result, but never a signed download URL or provider token.
 7. Remove active deterministic rejections before shortlisting, allowing later-ranked candidates to advance.
 8. Cap the shortlist at the best three eligible non-hash candidates and partition it into equal release-score tiers.
@@ -113,7 +113,7 @@ Release score is primary and lower score tiers cannot outrank a solid higher tie
 
 Each provider instance has its own token bucket and active-request semaphore. Accounts sharing an origin also use the configured `provider_http.shared_origin_max_concurrent` gate, while quota/auth state remains isolated per account.
 
-`RateLimit`, `RateLimit-Policy`, `X-RateLimit-*`, numeric/date `Retry-After`, and provider JSON reset values are persisted. The most restrictive future reset wins. A worker never sleeps through a remote cooldown: it releases the lease and schedules at or after reset with up to 10% positive jitter. Provider cooldowns do not advance the missing-result or technical-failure counters.
+`RateLimit`, `RateLimit-Policy`, `X-RateLimit-*`, numeric/date `Retry-After`, and provider JSON reset values are persisted. `Retry-After` is honored only on non-success responses; some authentication endpoints include it on HTTP 2xx without indicating a throttle. Successful responses still retain standard `RateLimit` and `X-RateLimit-*` quota windows. The most restrictive applicable future reset wins. A worker never sleeps through a remote cooldown: it releases the lease and schedules at or after reset with up to 10% positive jitter. Provider cooldowns do not advance the missing-result or technical-failure counters.
 
 Network failures and HTTP 5xx responses open a persisted circuit for that provider instance and operation (`auth`, `search`, or `download`). The circuit is shared by every queued media item and survives restart, preventing a provider outage from producing one request per file. Consecutive failures retry after 1, 5, 15, then 60 minutes (capped at 60 minutes); an applicable provider `Retry-After` value takes precedence. Any non-5xx HTTP response proves connectivity and resets only the transient failure streak. It does not erase quota, rate-limit, or disabled-authentication state, and a search circuit does not block downloads.
 

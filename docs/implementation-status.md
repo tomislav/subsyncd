@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: newly configured language backfill is implemented and verified locally
-- Next safe action: push commit `2c64814` and deploy its immutable image only after explicit approval
-- Latest follow-up: Hades remains unchanged on `sha-4af206c`; the language-backfill change has not been published or deployed
+- Current task: provider correctness and credential repair is implemented and verified locally
+- Next safe action: rotate the affected SubDL key, push commits, publish an immutable image, run `doctor`, then start the service only after explicit approval
+- Latest follow-up: implementation commit `6f5dd3d` has not been published or deployed; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Provider correctness and credential repair
+
+- Commit `6f5dd3d` replaces the OpenSubtitles hash dependency with the canonical 64-bit first/last-64-KiB implementation. A sparse 14,836,065,099-byte regression proves hashing no longer fails at the former 9 GB limit and does not read the complete media file.
+- Fresh and legacy-cached provider results now collapse duplicate `(provider_id, result_id)` rows before persistence, scoring, rejection filtering, and LAPSE shortlisting. The merge unions release names, fills only missing identity fields, retains the first nonempty identity on conflicts, and keeps the strongest exact-hash, rating, popularity, and download-count evidence. This prevents duplicate API rows from downloading or analyzing the same subtitle more than once.
+- Successful HTTP responses discard `Retry-After` before common rate-limit parsing while retaining standard `RateLimit`/`X-RateLimit-*` windows. Error responses, including 429 and 5xx, keep existing `Retry-After`, fallback, and circuit behavior.
+- SubDL normalization drops returned download-query credentials, reconstructs the configured key only on outbound requests, and emits credential-free result IDs. Cache, workflow provenance, pack-member copies, and candidate log correlation independently strip download references or query/fragment data.
+- Migration `002_scrub_provider_credentials.sql` deletes only credential-bearing provider-derived cache/candidate/pack/installation/rejection rows. Regression fixtures prove that clean provider rows, media, active search leases, reconciliation cursors, and clean pack members survive, while members of deleted contaminated packs cascade. Existing subtitle files remain on disk if contaminated managed provenance is removed.
+- TDD regressions failed against the prior size cap, duplicate retention, successful-response cooldown, SubDL query persistence, log fallback, cache pack-member reference, and migration boundary before the corresponding fixes. Fresh verification passed `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, `go test ./test/providercontract -tags=provider_contract -count=1`, `docker compose -f compose.example.yml config --quiet`, `git diff --check`, and the credential-pattern scan.
+- No subsyncd container is currently running on Hades. No image was built, published, deployed, or started. Rotate the SubDL key that was exposed by the legacy persisted candidate identity before using the corrected build.
 
 ### Comparative reference documentation cleanup
 
