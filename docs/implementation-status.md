@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: single-run LAPSE implemented and verified; independent review and publication pending
-- Next safe action: complete independent review, then fast-forward main and push the verified single-run preparation change
-- Latest follow-up: single-run preparation is committed at `cfcb21c`; production rollout remains separate
+- Current task: single-run LAPSE preparation complete; independent reviews and verification passed
+- Next safe action: publish the reviewed commits to GitHub main; production rollout is a separate operator action
+- Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -894,3 +894,10 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Verified the official Linux arm64 LAPSE v2.0.5 archive SHA-256 `23226fea64f7141687b764e5d080b6ed4f9e2fbed476938363e993bd3705ee17` in an isolated local Debian 13.2 container with networking disabled, no configuration/media/data mounts, and synthetic subtitle references only. Dry/output decision metrics matched; solid output timings matched the reference with unchanged source/no backup; strict unsure returned exit 2 without output. This supplements the native macOS/source verification above, and is not a Hades performance benchmark or complete audio/split-format matrix.
 - Full `go test ./... -race -count=1` passed after the worker test-double correction documented above. `go vet ./...`, tagged E2E race, release Dockerfile parity, Compose configuration, gofmt and diff checks passed. All network tests used local fakes; no production action occurred.
 - Next action: finish independent task and whole-branch review, then publish to GitHub main as authorized. No configuration/scoring thresholds or production deployment changed.
+
+### Single-run LAPSE final review and publication handoff — 2026-09-06
+
+- Runtime `cfcb21c`, documentation `98a22cc`, and design `9cffb55` reviewed against baseline `3ad9aee`. Independent task and whole-branch reviews approved with no actionable, deferred or unresolved findings. No acceptance thresholds or configuration values changed.
+- Full repository race, affected package races, tagged E2E race, vet, Dockerfile parity, Compose, formatting and diff checks passed. The pinned Linux arm64 synthetic binary check confirmed identical dry/output decision metrics and strict refusal without output. Unique successful candidates now use one LAPSE process; three viable ties use three. Fixed timing/CPU savings are not claimed.
+- GitHub main was refreshed and remains at baseline; the original workspace patch exactly matches the preserved verification note already included in this branch. Final publication will remove only that duplicate local patch, fast-forward main to this verified tree and push as explicitly requested. No production deployment, live provider search or media mutation occurred.
+- Next task: operator rollout when requested; standalone `analyze-sync` remains read-only dry-run. This entry closes the implementation/review task and accompanies its final publication commit.
