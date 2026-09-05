@@ -35,13 +35,29 @@ func (r Reconciler) Run(ctx context.Context) error {
 	}
 	mutations := make([]store.MediaEventMutation, 0, len(changes))
 	for _, change := range changes {
-		ref := change.Media.Ref
-		if ref.Instance == "" {
-			ref = domain.MediaRef{Instance: r.Instance, Kind: change.Kind}
+		if change.HistoryID <= 0 || change.EntityID <= 0 || (change.Kind != domain.MediaMovie && change.Kind != domain.MediaEpisode) || change.OccurredAt.IsZero() {
+			return fmt.Errorf("%s reconciliation history identity is incomplete", r.Instance)
+		}
+		ref := domain.MediaRef{Instance: r.Instance, Kind: change.Kind}
+		mutationType := EventDelete
+		switch change.State {
+		case HistoryPresent:
+			if change.Type != EventImport && change.Type != EventRename {
+				return fmt.Errorf("%s present reconciliation history has invalid event type %q", r.Instance, change.Type)
+			}
+			if change.Media.EntityID != change.EntityID || change.Media.Ref.Instance != r.Instance || change.Media.Ref.Kind != change.Kind || change.Media.Ref.FileID <= 0 {
+				return fmt.Errorf("%s present reconciliation history does not match hydrated media", r.Instance)
+			}
+			ref = change.Media.Ref
+			mutationType = change.Type
+		case HistoryAbsent, HistoryOutsideScope:
+			mutationType = EventDelete
+		default:
+			return fmt.Errorf("%s reconciliation history has invalid state %q", r.Instance, change.State)
 		}
 		mutations = append(mutations, store.MediaEventMutation{
 			EventID:   fmt.Sprintf("reconcile:%s:%d", r.Instance, change.HistoryID),
-			Type:      string(change.Type),
+			Type:      string(mutationType),
 			EntityID:  change.EntityID,
 			Media:     change.Media,
 			Ref:       ref,

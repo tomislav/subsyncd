@@ -1190,9 +1190,6 @@ func (r *Repository) UpdateInstallationAssessment(ctx context.Context, installat
 }
 
 func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMutation) (bool, error) {
-	if mutation.EventID == "" || mutation.Ref.Instance == "" || mutation.Ref.FileID <= 0 {
-		return false, fmt.Errorf("media event identity is incomplete")
-	}
 	if mutation.At.IsZero() {
 		mutation.At = time.Now().UTC()
 	}
@@ -1221,11 +1218,11 @@ func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMut
 }
 
 func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMutation) (bool, error) {
-	if mutation.EventID == "" || mutation.Ref.Instance == "" || mutation.Ref.FileID <= 0 || mutation.At.IsZero() {
-		return false, fmt.Errorf("media event identity is incomplete")
-	}
 	if mutation.EntityID == 0 && (mutation.Type == "import" || mutation.Type == "rename") {
 		mutation.EntityID = mutation.Media.EntityID
+	}
+	if err := validateMediaMutation(mutation); err != nil {
+		return false, err
 	}
 	if !validSearchPriority(mutation.Priority) {
 		return false, fmt.Errorf("invalid search priority %d", mutation.Priority)
@@ -1268,8 +1265,13 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			return false, fmt.Errorf("link media event: %w", err)
 		}
 	case "delete":
-		var mediaID int64
-		err := tx.QueryRowContext(ctx, `SELECT id FROM media WHERE instance=? AND kind=? AND file_id=?`, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID).Scan(&mediaID)
+		var mediaID, fileID, entityID int64
+		var err error
+		if mutation.Ref.FileID > 0 {
+			err = tx.QueryRowContext(ctx, `SELECT id, file_id, entity_id FROM media WHERE instance=? AND kind=? AND file_id=?`, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID).Scan(&mediaID, &fileID, &entityID)
+		} else {
+			err = tx.QueryRowContext(ctx, `SELECT id, file_id, entity_id FROM media WHERE instance=? AND kind=? AND entity_id=?`, mutation.Ref.Instance, mutation.Ref.Kind, mutation.EntityID).Scan(&mediaID, &fileID, &entityID)
+		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("find deleted media: %w", err)
 		}
@@ -1277,7 +1279,7 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL WHERE media_id=?`, mediaID); err != nil {
 				return false, fmt.Errorf("cancel deleted media searches: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE events SET media_id=? WHERE event_id=?`, mediaID, mutation.EventID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE events SET media_id=?, file_id=?, entity_id=? WHERE event_id=?`, mediaID, fileID, entityID, mutation.EventID); err != nil {
 				return false, fmt.Errorf("link delete event: %w", err)
 			}
 		}
@@ -1285,6 +1287,25 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 		return false, fmt.Errorf("unsupported media event type %q", mutation.Type)
 	}
 	return true, nil
+}
+
+func validateMediaMutation(mutation MediaEventMutation) error {
+	if mutation.EventID == "" || mutation.Ref.Instance == "" || (mutation.Ref.Kind != domain.MediaMovie && mutation.Ref.Kind != domain.MediaEpisode) || mutation.At.IsZero() {
+		return fmt.Errorf("media event identity is incomplete")
+	}
+	switch mutation.Type {
+	case "import", "rename":
+		if mutation.EntityID <= 0 || mutation.Ref.FileID <= 0 || mutation.Media.EntityID != mutation.EntityID || mutation.Media.Ref != mutation.Ref {
+			return fmt.Errorf("media event identity is incomplete")
+		}
+	case "delete":
+		if mutation.Ref.FileID <= 0 && mutation.EntityID <= 0 {
+			return fmt.Errorf("media event identity is incomplete")
+		}
+	default:
+		return fmt.Errorf("unsupported media event type %q", mutation.Type)
+	}
+	return nil
 }
 
 func scheduleMediaSearchTx(ctx context.Context, tx *sql.Tx, mediaID int64, language domain.Language, at time.Time, priority SearchPriority, unsupported domain.UnsupportedReason) error {

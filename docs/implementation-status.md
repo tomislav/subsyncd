@@ -6,12 +6,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: arrapi stable-identity reconciliation implementation
-- Next task: resolve entity-addressed deletion and audit mutations atomically with the reconciliation cursor (Task 5)
-- Latest follow-up: Task 4 replaced fabricated file-based history with arrapi current-state reconciliation
+- Next task: add per-instance reconciliation failure backoff without advancing the durable cursor (Task 6)
+- Latest follow-up: Task 5 made entity-addressed deletes and audits transactional
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Arrapi stable-identity reconciliation Task 5 — atomic entity deletes
+
+- The reconciler now validates history identity, state, hydrated-media consistency, and present event type before committing. Present state becomes a file-addressed import/rename; absent and outside-scope state become positive-entity, zero-file deletes. Unknown states fail before any store call or wake callback.
+- Repository mutation validation distinguishes hydrated import/rename, file-addressed webhook delete, and entity-addressed reconciliation delete. A known entity delete resolves its current media/file inside the page transaction, completes searches as deleted, and enriches the audit with entity, file, and media linkage. An unknown entity remains an idempotent audit with entity ID, zero file ID, and no media link.
+- Page mutations, audit linkage, search completion, replay deduplication, and cursor advancement remain one SQLite transaction. A later instance mismatch rolls back an earlier entity delete, its audit, and the cursor.
+- The tagged Sonarr integration now uses live-shaped entity history with a file-less deletion, a normal import, a canonicalized combined file, and an outside-scope entity. It proves known deletion, unknown outside-scope audit, replay safety, support-state scheduling, and cursor advancement through the real arrapi-backed catalog and SQLite repository.
+- Verification passed with focused RED/GREEN entity tests, race-enabled catalog/store suites, the tagged `TestSonarrReconciliation` integration, and `git diff --check`.
+- Next task: replace success-only reconciliation timing with independent 5m/15m/1h/6h failure backoff per Arr instance.
 
 ### Arrapi stable-identity reconciliation Task 4 — entity history and current state
 

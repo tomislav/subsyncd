@@ -61,13 +61,14 @@ func TestReconcilerDoesNotAdvanceCursorWhenPageCommitFails(t *testing.T) {
 	}
 }
 
-func TestReconcilerConvertsHistoryChanges(t *testing.T) {
+func TestReconcilerConvertsEntityHistoryStates(t *testing.T) {
 	start := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 	pageEnd := start.Add(time.Hour)
 	media := domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 7}, Title: "Episode"}
 	changes := []HistoryChange{
 		{HistoryID: 41, EntityID: 101, Kind: domain.MediaEpisode, Type: EventImport, State: HistoryPresent, Media: media, OccurredAt: start.Add(10 * time.Minute)},
 		{HistoryID: 42, EntityID: 102, Kind: domain.MediaEpisode, Type: EventDelete, State: HistoryAbsent, OccurredAt: start.Add(20 * time.Minute)},
+		{HistoryID: 43, EntityID: 103, Kind: domain.MediaEpisode, Type: EventDelete, State: HistoryOutsideScope, OccurredAt: start.Add(30 * time.Minute)},
 	}
 	catalog := &fakeReconcileCatalog{changes: changes}
 	backend := &fakeReconcileStore{cursor: start}
@@ -78,7 +79,7 @@ func TestReconcilerConvertsHistoryChanges(t *testing.T) {
 	if !catalog.since.Equal(start) || !catalog.through.Equal(pageEnd) || !backend.committed.Equal(pageEnd) {
 		t.Fatalf("since/through/committed = %s/%s/%s", catalog.since, catalog.through, backend.committed)
 	}
-	if len(backend.mutations) != 2 {
+	if len(backend.mutations) != 3 {
 		t.Fatalf("mutations = %#v", backend.mutations)
 	}
 	first, second := backend.mutations[0], backend.mutations[1]
@@ -87,6 +88,24 @@ func TestReconcilerConvertsHistoryChanges(t *testing.T) {
 	}
 	if second.EventID != "reconcile:sonarr-main:42" || second.Type != "delete" || second.EntityID != 102 || second.Ref.Kind != domain.MediaEpisode || second.Ref.FileID != 0 || second.Media.Ref.FileID != 0 || !second.At.Equal(changes[1].OccurredAt) || second.Priority != store.SearchPriorityMissing {
 		t.Fatalf("second mutation = %#v", second)
+	}
+	third := backend.mutations[2]
+	if third.EventID != "reconcile:sonarr-main:43" || third.Type != "delete" || third.EntityID != 103 || third.Ref.FileID != 0 {
+		t.Fatalf("third mutation = %#v", third)
+	}
+}
+
+func TestReconcilerRejectsInvalidEntityHistoryStateBeforeCommit(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	catalog := &fakeReconcileCatalog{changes: []HistoryChange{{HistoryID: 44, EntityID: 104, Kind: domain.MediaEpisode, Type: EventDelete, State: HistoryState("uncertain"), OccurredAt: now}}}
+	backend := &fakeReconcileStore{}
+	wakes := 0
+	reconciler := Reconciler{Instance: "sonarr-main", Catalog: catalog, Store: backend, Now: func() time.Time { return now }, OnCommitted: func() { wakes++ }}
+	if err := reconciler.Run(context.Background()); err == nil {
+		t.Fatal("Reconciler.Run() error = nil")
+	}
+	if !backend.committed.IsZero() || len(backend.mutations) != 0 || wakes != 0 {
+		t.Fatalf("invalid state committed = %s/%#v, wakes=%d", backend.committed, backend.mutations, wakes)
 	}
 }
 

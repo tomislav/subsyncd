@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -278,6 +279,11 @@ func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *t
 	}
 	defer database.Close()
 	repository := database.Repository()
+	auditDB, err := sql.Open("sqlite", filepath.Join(root, "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditDB.Close()
 	if err := repository.EnsureInstance(context.Background(), "sonarr-main", "sonarr", "http://sonarr.invalid", now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -344,12 +350,30 @@ func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *t
 	if unsupportedStatus.State != "complete" || unsupportedStatus.LastOutcome != string(domain.UnsupportedMultiEpisode) {
 		t.Fatalf("unsupported search status = %#v", unsupportedStatus)
 	}
+	if _, _, found, err := repository.FindMediaByEntity(context.Background(), "sonarr-main", domain.MediaEpisode, 105); err != nil || found {
+		t.Fatalf("outside-scope entity lookup = %v/%v, want false/nil", found, err)
+	}
+	var outsideFileID int64
+	var outsideMediaID sql.NullInt64
+	if err := auditDB.QueryRow(`SELECT file_id, media_id FROM events WHERE event_id='reconcile:sonarr-main:104'`).Scan(&outsideFileID, &outsideMediaID); err != nil {
+		t.Fatal(err)
+	}
+	if outsideFileID != 0 || outsideMediaID.Valid {
+		t.Fatalf("outside-scope audit = file:%d media:%#v", outsideFileID, outsideMediaID)
+	}
 	cursor, err := repository.GetReconciliationCursor(context.Background(), "sonarr-main")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !cursor.Equal(now) {
 		t.Fatalf("reconciliation cursor = %s, want %s", cursor, now)
+	}
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var reconciliationAudits int
+	if err := auditDB.QueryRow(`SELECT count(*) FROM events WHERE event_id LIKE 'reconcile:sonarr-main:%'`).Scan(&reconciliationAudits); err != nil || reconciliationAudits != 4 {
+		t.Fatalf("replayed reconciliation audits = %d/%v, want 4/nil", reconciliationAudits, err)
 	}
 
 	leases, err := repository.LeaseDueSearches(context.Background(), now, 10, time.Minute)
@@ -382,10 +406,19 @@ func newReconciliationSonarrServer(t *testing.T, now time.Time) *httptest.Server
 		switch request.URL.Path {
 		case "/api/v3/history/since":
 			_ = json.NewEncoder(response).Encode([]map[string]any{
-				{"id": 101, "eventType": "downloadFolderImported", "date": now.Add(-30 * time.Minute), "episodeFileId": 1001},
-				{"id": 102, "eventType": "episodeFileDeleted", "date": now.Add(-20 * time.Minute), "episodeFileId": 1002},
-				{"id": 103, "eventType": "downloadFolderImported", "date": now.Add(-10 * time.Minute), "episodeFileId": 1003},
+				{"id": 101, "seriesId": 11, "episodeId": 101, "eventType": "downloadFolderImported", "date": now.Add(-30 * time.Minute), "data": map[string]string{"fileId": "1001"}},
+				{"id": 102, "seriesId": 12, "episodeId": 102, "eventType": "episodeFileDeleted", "date": now.Add(-20 * time.Minute), "data": map[string]string{}},
+				{"id": 103, "seriesId": 13, "episodeId": 103, "eventType": "downloadFolderImported", "date": now.Add(-10 * time.Minute), "data": map[string]string{"fileId": "1003"}},
+				{"id": 104, "seriesId": 15, "episodeId": 105, "eventType": "downloadFolderImported", "date": now.Add(-5 * time.Minute), "data": map[string]string{"fileId": "1005"}},
 			})
+		case "/api/v3/episode/101":
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 101, "seriesId": 11, "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 11, "path": "/remote/tv/Show.S01E01.mkv"}})
+		case "/api/v3/episode/102":
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 102, "seriesId": 12, "hasFile": false})
+		case "/api/v3/episode/103":
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 103, "seriesId": 13, "hasFile": true, "episodeFile": map[string]any{"id": 1003, "seriesId": 13, "path": "/remote/tv/Combined.S01E03E04.mkv"}})
+		case "/api/v3/episode/105":
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 105, "seriesId": 15, "hasFile": true, "episodeFile": map[string]any{"id": 1005, "seriesId": 15, "path": "/outside/Other.S01E01.mkv"}})
 		case "/api/v3/episodefile/1001":
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": 1001, "seriesId": 11, "path": "/remote/tv/Show.S01E01.mkv", "size": 100, "dateAdded": now.Add(-30 * time.Minute)})
 		case "/api/v3/episodefile/1003":
@@ -393,11 +426,11 @@ func newReconciliationSonarrServer(t *testing.T, now time.Time) *httptest.Server
 		case "/api/v3/episode":
 			switch request.URL.Query().Get("episodeFileId") {
 			case "1001":
-				_ = json.NewEncoder(response).Encode([]map[string]any{{"id": 1, "seriesId": 11, "seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 1, "title": "Pilot"}})
+				_ = json.NewEncoder(response).Encode([]map[string]any{{"id": 101, "seriesId": 11, "seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 1, "title": "Pilot"}})
 			case "1003":
 				_ = json.NewEncoder(response).Encode([]map[string]any{
-					{"id": 4, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 4, "absoluteEpisodeNumber": 4, "title": "Fourth"},
-					{"id": 3, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 3, "absoluteEpisodeNumber": 3, "title": "Third"},
+					{"id": 104, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 4, "absoluteEpisodeNumber": 4, "title": "Fourth"},
+					{"id": 103, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 3, "absoluteEpisodeNumber": 3, "title": "Third"},
 				})
 			default:
 				http.NotFound(response, request)
