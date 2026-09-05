@@ -56,6 +56,64 @@ func TestSiloPostsNativeTargetedScanWithMappedParentDirectory(t *testing.T) {
 	}
 }
 
+func TestRewritePathSupportsRootMappingsAndLongestPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		mappings []PathMapping
+		want     string
+	}{
+		{"remote root", "/media/Movies/A/file.mkv", []PathMapping{{From: "/media", To: "/"}}, "/Movies/A/file.mkv"},
+		{"local root", "/Movies/A/file.mkv", []PathMapping{{From: "/", To: "/mnt/media"}}, "/mnt/media/Movies/A/file.mkv"},
+		{"exact local root", "/", []PathMapping{{From: "/", To: "/mnt/media"}}, "/mnt/media"},
+		{"longest prefix", "/media/tv/Show/file.mkv", []PathMapping{{From: "/media", To: "/library"}, {From: "/media/tv", To: "/shows"}}, "/shows/Show/file.mkv"},
+		{"component boundary", "/media2/file.mkv", []PathMapping{{From: "/media", To: "/library"}}, "/media2/file.mkv"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := rewritePath(test.path, test.mappings)
+			if err != nil || got != test.want {
+				t.Fatalf("rewritePath() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestSiloRejectsUnsafeMapping(t *testing.T) {
+	for _, mapping := range []PathMapping{
+		{From: "media", To: "/library"},
+		{From: "/media", To: "library"},
+		{From: "/media/../escape", To: "/library"},
+		{From: "/media", To: "/library/../escape"},
+	} {
+		if _, err := NewSilo(SiloConfig{Enabled: true, BaseURL: "https://silo.example", APIKey: "sa_secret", PathMappings: []PathMapping{mapping}}); err == nil {
+			t.Fatalf("NewSilo() accepted unsafe mapping %#v", mapping)
+		}
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+	notifier, err := NewSilo(SiloConfig{
+		Enabled:      true,
+		BaseURL:      server.URL,
+		APIKey:       "sa_secret",
+		PathMappings: []PathMapping{{From: "/media", To: "/library"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = notifier.SubtitleChanged(context.Background(), domain.Media{Fingerprint: domain.MediaFingerprint{Path: "/media/../escape/movie.mkv"}}, "")
+	if err == nil {
+		t.Fatal("SubtitleChanged() accepted a traversal path")
+	}
+	if requests != 0 {
+		t.Fatalf("unsafe path made %d HTTP requests", requests)
+	}
+}
+
 func TestSiloClassifiesFailuresWithoutLeakingCredentialsOrBodies(t *testing.T) {
 	for _, test := range []struct {
 		status    int

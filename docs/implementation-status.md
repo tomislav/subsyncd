@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 6 (YAML document cardinality) is implemented locally; production remains out of scope
-- Next safe action: implement Task 7 (root-aware Silo path mappings) after this task commit
+- Current task: codebase correctness-repair Task 7 (root-aware Silo path mappings) is implemented locally; production remains out of scope
+- Next safe action: implement Task 8 (response-lifetime provider permits) after this task commit
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 7 — root-aware Silo path mappings
+
+- Silo mapping endpoints are normalized once at construction with slash semantics, retain `/` as a valid endpoint, and reject relative or traversal-bearing values before any request can be built. Runtime target paths receive the same pre-cleaning traversal check.
+- Rewrite selection remains deterministic: it chooses the longest matching source at a path-component boundary, so `/media` cannot capture `/media2`. Both `/media -> /` and `/ -> /mnt/media` preserve absolute namespace paths, including exact-root rewrites; non-matches return the clean original absolute path.
+- The notifier now uses slash-native path operations for both remapping and parent-directory scan payloads, independent of the host filesystem separator. An unsafe mapping or target returns a bounded delivery error before an HTTP request.
+- RED/GREEN coverage proves remote/local root mappings, exact-root behavior, longest-prefix selection, component boundaries, constructor rejection of relative/traversal endpoints, and no request for a traversal target. Verification: focused and complete `internal/notifier` race-enabled suites plus `git diff --check`. No external Silo, providers, Hades, image builds, or deployments were touched.
+- Commit: `fix: preserve root Silo path mappings`.
+- Next task: retain provider concurrency permits through response-body lifetime.
 
 ### Conventional repairs Task 6 — YAML document cardinality
 

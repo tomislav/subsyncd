@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path/filepath"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"time"
@@ -44,12 +44,17 @@ func NewSilo(config SiloConfig) (Notifier, error) {
 	if strings.TrimSpace(config.APIKey) == "" {
 		return nil, fmt.Errorf("Silo API key is required")
 	}
+	mappings := make([]PathMapping, 0, len(config.PathMappings))
 	for _, mapping := range config.PathMappings {
-		from := filepath.Clean(strings.ReplaceAll(mapping.From, `\`, `/`))
-		to := filepath.Clean(strings.ReplaceAll(mapping.To, `\`, `/`))
-		if !filepath.IsAbs(from) || !filepath.IsAbs(to) {
-			return nil, fmt.Errorf("Silo path mapping endpoints must be absolute")
+		from, err := normalizeMappingPath(mapping.From)
+		if err != nil {
+			return nil, fmt.Errorf("Silo path mapping from endpoint: %w", err)
 		}
+		to, err := normalizeMappingPath(mapping.To)
+		if err != nil {
+			return nil, fmt.Errorf("Silo path mapping to endpoint: %w", err)
+		}
+		mappings = append(mappings, PathMapping{From: from, To: to})
 	}
 	base, err := url.Parse(config.BaseURL)
 	if err != nil || base.Scheme == "" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.Scheme != "http" && base.Scheme != "https" {
@@ -66,7 +71,7 @@ func NewSilo(config SiloConfig) (Notifier, error) {
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return &Silo{endpoint: base, apiKey: config.APIKey, mappings: append([]PathMapping(nil), config.PathMappings...), client: &client}, nil
+	return &Silo{endpoint: base, apiKey: config.APIKey, mappings: mappings, client: &client}, nil
 }
 
 func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitlePath string) error {
@@ -83,7 +88,7 @@ func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitle
 	}
 	payload, err := json.Marshal(struct {
 		Path string `json:"path"`
-	}{Path: filepath.Dir(mapped)})
+	}{Path: pathpkg.Dir(mapped)})
 	if err != nil {
 		return &DeliveryError{Reason: "encode request"}
 	}
@@ -108,17 +113,22 @@ func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitle
 	return &DeliveryError{StatusCode: response.StatusCode, Retryable: retryable, Reason: strconv.Itoa(response.StatusCode)}
 }
 
-func rewritePath(path string, mappings []PathMapping) (string, error) {
-	normalized := filepath.ToSlash(filepath.Clean(strings.ReplaceAll(path, `\`, `/`)))
+func rewritePath(value string, mappings []PathMapping) (string, error) {
+	normalized, err := normalizeMappingPath(value)
+	if err != nil {
+		return "", err
+	}
 	best := -1
 	bestLength := -1
 	for index, mapping := range mappings {
-		from := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(strings.ReplaceAll(mapping.From, `\`, `/`))), "/")
-		to := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(strings.ReplaceAll(mapping.To, `\`, `/`))), "/")
-		if from == "." || to == "." || from == "" || to == "" || !strings.HasPrefix(normalized, from) {
-			continue
+		from, err := normalizeMappingPath(mapping.From)
+		if err != nil {
+			return "", err
 		}
-		if len(normalized) != len(from) && normalized[len(from)] != '/' {
+		if _, err := normalizeMappingPath(mapping.To); err != nil {
+			return "", err
+		}
+		if !pathHasPrefix(normalized, from) {
 			continue
 		}
 		if len(from) > bestLength {
@@ -130,12 +140,42 @@ func rewritePath(path string, mappings []PathMapping) (string, error) {
 		return normalized, nil
 	}
 	mapping := mappings[best]
-	from := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(strings.ReplaceAll(mapping.From, `\`, `/`))), "/")
-	to := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(strings.ReplaceAll(mapping.To, `\`, `/`))), "/")
-	rewritten := to + strings.TrimPrefix(normalized, from)
-	cleaned := filepath.ToSlash(filepath.Clean(rewritten))
-	if cleaned != rewritten {
-		return "", fmt.Errorf("rewritten path is not clean")
+	from, err := normalizeMappingPath(mapping.From)
+	if err != nil {
+		return "", err
 	}
-	return cleaned, nil
+	to, err := normalizeMappingPath(mapping.To)
+	if err != nil {
+		return "", err
+	}
+	suffix := strings.TrimPrefix(normalized, from)
+	rewritten := to
+	if suffix != "" {
+		rewritten = pathpkg.Join(to, strings.TrimPrefix(suffix, "/"))
+	}
+	if !strings.HasPrefix(rewritten, "/") {
+		return "", fmt.Errorf("rewritten path is not absolute")
+	}
+	return rewritten, nil
+}
+
+func normalizeMappingPath(value string) (string, error) {
+	raw := strings.ReplaceAll(value, `\`, "/")
+	for _, component := range strings.Split(raw, "/") {
+		if component == ".." {
+			return "", fmt.Errorf("mapping path contains traversal")
+		}
+	}
+	normalized := pathpkg.Clean(raw)
+	if normalized == "." || !strings.HasPrefix(normalized, "/") {
+		return "", fmt.Errorf("mapping endpoint must be absolute")
+	}
+	return normalized, nil
+}
+
+func pathHasPrefix(path, prefix string) bool {
+	if prefix == "/" {
+		return strings.HasPrefix(path, "/")
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
