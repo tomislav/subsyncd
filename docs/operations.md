@@ -32,7 +32,7 @@ install:
 
 ## Startup and health
 
-Startup is deliberately offline with respect to Arr, subtitle providers, and Silo. It fails only for invalid configuration, unsafe/missing local roots, SQLite migration/open errors, missing `ffprobe`, or an incompatible LAPSE executable. Run diagnostics after every configuration/image change:
+Startup is deliberately offline with respect to Arr, subtitle providers, and Silo. It fails only for invalid configuration, unsafe/missing local roots, SQLite migration/open errors, missing `ffprobe`, or an incompatible LAPSE executable. Configuration must contain exactly one non-empty YAML document: cardinality is checked on the original bytes before environment expansion, so a trailing document is rejected without expanding or exposing its values. Empty trailing separators are harmless. Run diagnostics after every configuration/image change:
 
 ```bash
 subsyncd doctor --config /config/config.yaml
@@ -201,6 +201,8 @@ FFprobe indexes all embedded subtitle streams, including text and image codecs. 
 
 A matching full embedded track prevents downloading. Forced-only or unknown-language (`und`) tracks do not. SDH/HI tracks are rejected by default and satisfy only when `allow_hearing_impaired: true` is explicitly configured. Existing sidecars are protected unless their path and checksum match `subsyncd` installation provenance, so user edits are never overwritten automatically.
 
+Stored provenance is historical evidence, not proof that a sidecar still exists. Each workflow refreshes live sidecars and treats a managed installation as active only when its recorded path and checksum are present. If that managed file was deleted, normal acquisition runs with first-install semantics and can reacquire the same exact candidate. If a sidecar is present but its checksum differs, it remains protected as user-owned content and is not replaced.
+
 Sonarr can associate more than one episode with a single media file. `subsyncd` records such a file using the earliest episode as its canonical stable entity and persists `unsupported_multi_episode`. Every configured language is terminally marked with that outcome; provider search, download, candidate processing, LAPSE, installation, and upgrade work are skipped. `subsyncd explain` shows the reason. A later single-episode import or rename clears the marker and schedules normal work.
 
 ## LAPSE policy
@@ -264,7 +266,7 @@ silo:
       to: /mnt/media
 ```
 
-After a committed install, a durable notification sends `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped parent directory of the media file. Silo resolves this to a subtree scan that discovers newly written sibling subtitle files. Notification failure never rolls back a subtitle. Timeout, 408, 429, and 5xx responses retry independently; other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
+The installation provenance and one checksum-deduplicated intent per configured notifier are written in the same SQLite transaction as the filesystem publication's logical commit. If that durable database operation fails, the new sidecar is removed or the prior managed copy is restored. Only after it commits does asynchronous delivery send `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped parent directory of the media file. A later Silo failure never rolls back the subtitle or installation; timeout, 408, 429, and 5xx responses retry independently, while other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
 
 This adapter targets Silo's current pre-1.0 native API. Silo plans to retire `/api/v1` at 1.0, and the v2 scan route is not yet published. Check the protocol ledger and upgrade `subsyncd` before moving Silo past its dual-API bridge release; `subsyncd` deliberately does not guess or fall back between mutating API versions.
 

@@ -39,7 +39,7 @@ titlovi-main:
 
 ### OpenSubtitles.com
 
-OpenSubtitles supports exact file-hash search followed by broad metadata search. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It reads only the first and last 64 KiB plus the file size, supports normal 64-bit media sizes without an artificial 9 GB ceiling, and is reused until any part of that fingerprint changes. Exact results score 100, stop all remaining provider searches, and bypass LAPSE. For movies, feature IMDb/TMDB IDs are comparable media identities. For episodes, OpenSubtitles feature IDs identify the episode while Sonarr supplies series IDs, so the adapter compares OpenSubtitles `parent_imdb_id`/`parent_tmdb_id` instead. Missing parent IDs remain neutral; episode feature IDs are never misrepresented as series IDs.
+OpenSubtitles supports exact file-hash search and broad metadata search as separate phases. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It reads only the first and last 64 KiB plus the file size, supports normal 64-bit media sizes without an artificial 9 GB ceiling, and is reused until any part of that fingerprint changes. Exact results score 100 and bypass LAPSE, but an unusable exact candidate advances to the next exact candidate and then broad fallback rather than ending the job. For movies, feature IMDb/TMDB IDs are comparable media identities. For episodes, OpenSubtitles feature IDs identify the episode while Sonarr supplies series IDs, so the adapter compares OpenSubtitles `parent_imdb_id`/`parent_tmdb_id` instead. Missing parent IDs remain neutral; episode feature IDs are never misrepresented as series IDs.
 
 ```yaml
 opensubtitles-main:
@@ -73,15 +73,17 @@ For one media/language job:
 1. Reuse embedded inventory only when path, Arr file ID, size, and mtime match; always rescan sibling sidecars.
 2. Stop for a full matching embedded track or a matching protected/user-owned sidecar. Forced-only and unknown-language tracks do not satisfy a normal request.
 3. Try a reusable, checksummed season-pack member.
-4. Ask hash-capable providers sequentially in configured order. The first verified exact match is terminal.
-5. If no exact match exists, query every assigned provider broadly and merge results in configured order. Duplicate `(provider_id, result_id)` rows collapse before caching, persistence, scoring, or shortlisting; missing identity evidence is filled from later duplicates while conflicting nonempty identity values retain the first stable value.
+4. Run the explicit exact-hash phase against hash-capable providers sequentially in configured order. Exact candidates are uncapped and downloaded one at a time; a forced, rejected, malformed, or wrong-member candidate advances locally to the next exact candidate. Stop at the first committed installation.
+5. After exact candidates are exhausted, run the explicit broad phase against every assigned provider and merge results in configured order. Duplicate `(provider_id, result_id)` rows collapse before caching, persistence, scoring, or shortlisting; missing identity evidence is filled from later duplicates while conflicting nonempty identity values retain the first stable value.
 6. Persist score and rejection evidence for every result, but never a signed download URL or provider token.
 7. Remove active deterministic rejections before shortlisting, allowing later-ranked candidates to advance.
-8. Cap the shortlist at the best three eligible non-hash candidates and partition it into equal release-score tiers.
+8. Cap only the broad, non-hash shortlist at the best three eligible candidates and partition it into equal release-score tiers.
 9. Lazily download/analyze only the highest remaining tier. For a first-install candidate scoring at least 75, bypass LAPSE only when identity, release group, and (for TV) episode evidence are all present.
 10. For equal-score LAPSE candidates, analyze the complete tier and rank solid results by analysis confidence, provider priority, rating, provider/result identity. Synchronize only the winner; fall back within the analyzed tier, then to a lower score tier, only after failure.
 
 Search-result cache entries live for six hours. Season packs default to 24 hours and a total 512 MiB LRU ceiling. Pack downloads are content-addressed and immutable; every cache hit reloads the manifest, verifies checksums, and reruns strict member selection for the current episode.
+
+Episode ranges are recognized only through complete hyphenated tokens: `S01E01-E03`, same-season `S01E01-S01E03`, or same-season `1x01-1x03`. Cross-season, reversed, chained, incomplete, and suffix-contaminated forms fail closed. Release suffixes such as `S01E01.1080p` remain single-episode evidence rather than becoming a range. Forced-only policy applies to every selected archive member, including a plain one-member movie payload.
 
 Candidate rejections are not provider blacklists. They are scoped to one media/language/provider result and expire after 30 days. Media fingerprint, stable release metadata, selected member checksum, LAPSE compatibility version, or synchronization-policy changes invalidate the applicable match. Volatile provider rating, popularity, download counts, and temporary download URLs deliberately do not change the rejection identity. A downloaded archive with no unique member for the requested episode is recorded as `pack_selection`; the workflow continues through its remaining shortlist without opening a provider cooldown.
 
@@ -111,7 +113,7 @@ Release score is primary and lower score tiers cannot outrank a solid higher tie
 
 ## Rate limits and cooldowns
 
-Each provider instance has its own token bucket and active-request semaphore. Accounts sharing an origin also use the configured `provider_http.shared_origin_max_concurrent` gate, while quota/auth state remains isolated per account.
+Each provider instance has its own token bucket and active-request semaphore. Accounts sharing an origin also use the configured `provider_http.shared_origin_max_concurrent` gate, while quota/auth state remains isolated per account. Both concurrency permits remain held until the response body reaches EOF or is closed early; transport/no-body failures release them immediately. Provider adapters must therefore consume or close every returned body.
 
 `RateLimit`, `RateLimit-Policy`, `X-RateLimit-*`, numeric/date `Retry-After`, and provider JSON reset values are persisted. `Retry-After` is honored only on non-success responses; some authentication endpoints include it on HTTP 2xx without indicating a throttle. Successful responses still retain standard `RateLimit` and `X-RateLimit-*` quota windows. The most restrictive applicable future reset wins. A worker never sleeps through a remote cooldown: it releases the lease and schedules at or after reset with up to 10% positive jitter. Provider cooldowns do not advance the missing-result or technical-failure counters.
 

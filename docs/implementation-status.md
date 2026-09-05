@@ -5,13 +5,24 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 8 (response-lifetime provider permits) is implemented locally; production remains out of scope
-- Next safe action: complete Task 9 documentation and repository verification after this task commit
-- Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
+- Current task: codebase correctness-repair Tasks 1–9 are implemented and locally verified; production remains out of scope
+- Next safe action: run the independent whole-branch review, then request separate approval before any push, image publication, or deployment
+- Latest follow-up: the complete local verification matrix passed without live Arr, provider, Silo, or production-host access
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 9 — repaired contracts and local verification
+
+- User, provider, operator, Silo, and contributor documentation now records the verified contracts: sequential uncapped exact candidates before the capped broad tournament; candidate-local fallback and first-install stop; conservative explicit episode ranges and universal forced-member policy; deleted managed-sidecar recovery; atomic installation/outbox persistence with independent asynchronous delivery; original-stream YAML cardinality; root-aware longest-prefix Silo mapping; and response-body-lifetime provider permits.
+- Implementation commits covered by this verification are `234b0f3` and `358ade2` (explicit provider modes and workflow bridge), `26bd5c8` and `29c0b5e` (exact-first workflow plus outcome precedence), `92303d4`, `fae0406`, `3d93d21`, and `23ccc58` (archive/member selection and fail-closed range fixes), `e87570b` (deleted-sidecar recovery), `1f11656` (atomic installation/outbox), `52e3e0b` and `d9af618` (YAML cardinality and explicit-empty-document handling), `c1d71fd` (root Silo mappings), and `8d52824` (response-lifetime provider permits).
+- Focused verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/provider/... ./internal/workflow ./internal/pack ./internal/store ./internal/worker ./internal/config ./internal/notifier ./internal/app -race -count=1` exited 0 for all eleven packages. Its first restricted-sandbox run failed only because local `httptest` listeners could not bind; the identical local-only command passed with loopback permission.
+- Full verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./... -race -count=1`, `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go vet ./...`, `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test/e2e -tags=e2e -race -count=1`, `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test/providercontract -tags=provider_contract -count=1`, `docker compose -f compose.example.yml config --quiet`, and `git diff --check` each exited 0.
+- The provider-contract suite was additionally run verbosely with all six provider credential variables explicitly unset; OpenSubtitles, SubDL, and Titlovi each skipped before constructing an adapter or making a request. All other tests used sanitized fixtures, temporary media, injected runners, and loopback fake servers. No live Arr, provider, Silo, LAPSE network service, production host, image build, publication, or deployment was used.
+- The credential-pattern scan found only documented placeholder webhook tokens, the intentional disabled Silo sentinel, and historical syntax/reference prose; manual review found no literal secret. The repository-wide prohibited-comparison scan returned no matches. Repository state contained only the seven intended Task 9 documentation files before commit.
+- Documentation commit: `docs: record correctness repair contracts`.
+- Next safe action: independent whole-branch review; push, image publication, and deployment require a separate explicit request.
 
 ### Conventional repairs Task 8 — response-lifetime provider permits
 
