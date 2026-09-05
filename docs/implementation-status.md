@@ -5,8 +5,8 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: the codebase correctness-repair design is approved and committed for review
-- Next safe action: after design review, write and commit the implementation plan; do not change production behavior before that plan is approved
+- Current task: the codebase correctness-repair design and implementation plan are approved and committed
+- Next safe action: choose subagent-driven or inline execution, then implement Task 1 with strict red-green-refactor TDD; production remains out of scope
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
@@ -19,8 +19,10 @@ This file is the resumable implementation ledger. The approved design and plan r
 - The design makes exact and broad provider searches explicit workflow phases, retains every exact candidate, filters and downloads them sequentially, falls back to broad search after exact exhaustion, and preserves distinct deterministic, technical, and throttled outcomes.
 - It defines conservative hyphenated episode ranges, universal forced-only member policy, one atomic installation/outbox SQLite transaction with filesystem rollback, first-install semantics for a missing managed sidecar, pre-expansion multi-document YAML rejection, root-aware Silo mappings, and response-body-owned provider concurrency permits.
 - No schema or configuration migration is planned. The existing notification outbox remains asynchronously delivered: inability to persist an intent fails and rolls back installation, while a remote Silo delivery failure after commit does not.
-- Documentation self-review found no placeholders, unresolved alternatives, or contradictory ownership boundaries. `git diff --check` passed. No production code, image, provider, Silo, or Hades state changed.
-- Next task: obtain review of the committed design, then use the planning workflow to write a test-driven implementation plan.
+- Commit `a54bdfb` adds the nine-task TDD implementation plan: explicit provider modes, exact-first workflow fallback, archive/member safety, deleted-sidecar recovery, atomic installation/outbox persistence, YAML cardinality, root Silo mappings, response-lifetime permits, and final documentation/verification.
+- Plan self-review mapped every design requirement to a task, checked the declared function/type names across task boundaries, and found no unfinished placeholders. It also clarified that filename/member selection supplies forced-only evidence while the existing candidate-level gate supplies hearing-impaired policy.
+- `git diff --check` passed. No production code, image, provider, Silo, or Hades state changed.
+- Next task: execute the plan with the selected execution workflow, beginning with Task 1's failing coordinator tests.
 
 ### Local production-access runbook convention
 
