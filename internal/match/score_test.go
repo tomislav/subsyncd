@@ -27,6 +27,69 @@ func TestEvaluateAwardsEveryDocumentedWeight(t *testing.T) {
 	}
 }
 
+func TestEvaluateMatchesAlternativeReleaseSources(t *testing.T) {
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Title: "Example Movie", Year: 2017, Source: "bluray", ExternalIDs: domain.ExternalIDs{IMDb: "tt123"}}
+	candidate := domain.Candidate{Language: "hr", Kind: domain.MediaMovie, Title: media.Title, Year: media.Year, ExternalIDs: media.ExternalIDs, Rating: .5, Popularity: 1}
+	for _, raw := range []string{
+		"1080p.WEB-DL-GROUPA / 720p.BluRay-GROUPB",
+		"720p.BluRay-GROUPB / 1080p.WEB-DL-GROUPA",
+		"1080p.WEB-DL-GROUPA\t/\t720p.BluRay-GROUPB",
+		"1080p.WEB-DL-GROUPA\u00a0/\u00a0720p.BluRay-GROUPB",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			candidate.ReleaseNames = []string{raw}
+			score := Evaluate(media, candidate, "hr")
+			if len(score.RejectedReasons) != 0 || score.Total != 54 {
+				t.Fatalf("alternative source score = %#v, want 54 (identity 35 + source 15 + quality 4)", score)
+			}
+		})
+	}
+}
+
+func TestEvaluateNormalizesTargetSourceAliases(t *testing.T) {
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Source: "webdl"}
+	candidate := domain.Candidate{Language: "en", ReleaseNames: []string{"Example.Movie.2020.1080p.WEB-DL-GROUP"}}
+	if score := Evaluate(media, candidate, "en"); score.Total != 15 {
+		t.Fatalf("webdl target versus WEB-DL release = %#v, want 15 source points", score)
+	}
+}
+
+func TestEvaluateAlternativeSourceBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name, source, release string
+		want                  int
+	}{
+		{"web alternative", "WEB-DL", "1080p.WEB-DL-A / 720p.BluRay-B", 15},
+		{"repeated sources count once", "bluray", "1080p.BluRay-A / 720p.BluRay-B / 480p.BDRip-C", 15},
+		{"unknown target", "", "1080p.WEB-DL-A / 720p.BluRay-B", 0},
+		{"unlisted target", "hdtv", "1080p.WEB-DL-A / 720p.BluRay-B", 0},
+		{"compact slash", "bluray", "1080p.WEB-DL-A/720p.BluRay-B", 0},
+		{"remux stays distinct", "bluray", "Example.Movie.2020.2160p.UHD.BluRay.REMUX-GROUP", 0},
+		{"compact title preserved", "bluray", "AC/DC.2020.1080p.BluRay-GROUP", 15},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Source: test.source}
+			candidate := domain.Candidate{Language: "en", ReleaseNames: []string{test.release}}
+			if score := Evaluate(media, candidate, "en"); len(score.RejectedReasons) != 0 || score.Total != test.want {
+				t.Fatalf("score = %#v, want %d", score, test.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateAlternativeReleaseEvidenceIsOrderIndependent(t *testing.T) {
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, ReleaseGroup: "GROUPB", Source: "bluray", Resolution: "2160p"}
+	for _, raw := range []string{
+		"Example.Movie.2020.720p.WEB-DL-GROUPA / Example.Movie.2020.2160p.BluRay-GROUPB",
+		"Example.Movie.2020.2160p.BluRay-GROUPB / Example.Movie.2020.720p.WEB-DL-GROUPA",
+	} {
+		candidate := domain.Candidate{Language: "en", ReleaseNames: []string{raw}}
+		if score := Evaluate(media, candidate, "en"); score.Total != 45 {
+			t.Fatalf("score for %q = %#v, want group 25 + source 15 + resolution 5", raw, score)
+		}
+	}
+}
+
 func TestEvaluateAwardsEpisodeOrContainingPackEvidence(t *testing.T) {
 	media := scoredMedia()
 	base := domain.Candidate{Language: "en", Kind: domain.MediaEpisode, Title: media.Title, Year: media.Year, Season: media.Season}

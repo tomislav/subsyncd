@@ -22,7 +22,7 @@ func TestRadarrGetMediaHydratesFileAndMovie(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v3/moviefile/2001":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 2001, "movieId": 20, "path": "/remote/movies/Example Movie/Example.Movie.2024.mkv", "size": 4321, "dateAdded": "2026-09-04T11:00:00Z", "sceneName": "Example.Movie.2024.2160p.WEB-DL-GROUP", "releaseGroup": "GROUP", "edition": "Extended", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-2160p", "resolution": 2160, "source": "webdl"}}, "mediaInfo": map[string]any{"runTime": "02:03:04"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 2001, "movieId": 20, "path": "/remote/movies/Example Movie/Example.Movie.2024.mkv", "size": 4321, "dateAdded": "2026-09-04T11:00:00Z", "sceneName": "Example.Movie.2024.2160p.AMZN.WEB-DL-GROUP", "releaseGroup": "GROUP", "edition": "Extended", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-2160p", "resolution": 2160, "source": "webdl"}}, "mediaInfo": map[string]any{"runTime": "02:03:04"}})
 		case "/api/v3/movie/20":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 20, "title": "Example Movie", "alternateTitles": []map[string]any{{"title": "Primjer filma"}}, "year": 2024, "imdbId": "tt7654321", "tmdbId": 2468})
 		default:
@@ -41,6 +41,9 @@ func TestRadarrGetMediaHydratesFileAndMovie(t *testing.T) {
 	}
 	if media.Title != "Example Movie" || media.Year != 2024 || media.ExternalIDs.TMDB != 2468 || media.ExternalIDs.IMDb != "tt7654321" {
 		t.Fatalf("movie identity = %#v", media)
+	}
+	if media.StreamingService != "amazon" {
+		t.Fatalf("streaming service = %q, want amazon", media.StreamingService)
 	}
 	if media.EntityID != 20 {
 		t.Fatalf("entity ID = %d, want 20", media.EntityID)

@@ -86,6 +86,7 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 		ReleaseName:      file.SceneName,
 		ReleaseGroup:     file.ReleaseGroup,
 		Source:           file.Quality.Quality.Source,
+		StreamingService: streamingServiceFromSceneName(file.SceneName),
 		Resolution:       resolutionName(file.Quality.Quality.Resolution),
 		Edition:          file.Edition,
 		Quality:          file.Quality.Quality.Name,

@@ -5,13 +5,33 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Tasks 1–9, the final review fix wave, and its authorized focused follow-up are implemented and locally verified; production remains out of scope
-- Next safe action: re-review the correction for marked numeric endpoints, then request separate approval before any push, image publication, or deployment
-- Latest follow-up: combining marks preserve decomposed release text without hiding numeric episode continuations; the complete local verification matrix passed without live services or production-host access
+- Current task: all four scoring-review findings and the related target-source alias mismatch are repaired and locally verified
+- Next safe action: push the verified scoring repair as authorized; production deployment still requires a separate explicit request
+- Latest follow-up: alternative release evidence, SubDL identity/deduplication, and conservative catalog streaming-service enrichment passed race tests, vet, tagged E2E, and independent code review
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Scoring review repairs — 2026-09-05
+
+- Commit: `fix: preserve scoring evidence and identity safeguards` (this commit, based on `0e19e88`), authorized by the user's request to fix all findings in `docs/scoring-review-2026-09-05.md`.
+- Whitespace-delimited slash alternatives now use one shared parser for scoring, episode evidence, and edition bypass checks. Source aliases normalize on both sides; source/group/resolution evidence is order-independent and bonuses remain single-award. Compact slashes, remux distinctions, explicit identity conflicts, and existing edition/episode safeguards remain intact.
+- SubDL no longer copies request title/year into candidate identity. Raw fallback responses reach normalized stable-identity merging before evidence is lost; incomplete episode rows remain available for missing-field merging but are filtered if still unresolved. Explicit wrong episode/season rows remain excluded, and existing direct-member/pack tests pass.
+- Normalized search-cache version advances to `candidate-v3`, preventing reuse of old inferred identity fields. No migrations, schedule resets, startup network activity, or installation takeover were added.
+- Sonarr/Radarr hydration now populates streaming-service evidence from explicit web-release scene metadata after an identity marker. Title-only `Max`, `Amazon`, and `Hulu` controls remain unknown. Existing media is enriched during normal hydration, without an automatic library scan.
+- RED/GREEN reproduced source loss (39 instead of 54), target `webdl` mismatch (0 instead of 15), inferred identity (80 instead of 65), discarded duplicate evidence, old-cache reuse, alternative order dependence, and missing catalog service metadata. An actual SubDL-to-workflow regression confirms missing identity cannot bypass LAPSE even at a lowered threshold, while genuine returned identity can. A temporary Go overlay also confirmed this regression fails against the original SubDL source.
+- Independent review found one additional duplicate-order edge case (unknown episode filtered before later completion), now covered and fixed; final review reported no material findings.
+- Verification passed: affected packages with `-race`, `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, Compose `config --quiet`, and formatting/diff checks. Fake HTTP suites used approved loopback permission after the restricted sandbox refused test listeners. No live Arr/provider calls or production mutations were made during implementation.
+- Publication: the user authorized pushing the completed repair to GitHub `main`; its existing CI verifies and publishes the container. No production rollout was authorized or performed. Scoring weights and shortlist policy remain unchanged; assess corrected evidence before tuning them. The earlier production diagnosis is retained below.
+
+### Read-only production health and movie-score diagnosis — 2026-09-05
+
+- Inspected the deployed `sha-0e19e88` service using operator-approved status/log commands and SQLite `mode=ro` with `query_only`; no application startup commands, provider searches, database writes, or media mutations were performed.
+- Observed healthy readiness, zero restarts, successful reconciliation, an active unexpired worker lease, and successful installation notification delivery. Verified the diagnosed sidecar against its recorded checksum.
+- Confirmed a Croatian movie installation scored 54: external identity 20, title/year 15, source 15, rating 2, popularity 2. Three candidates tied at 54; LAPSE selected the strongest confidence (0.798943, `solid`, embedded reference) and applied a -48688 ms shift. Missing release-group/resolution evidence explains the score; it is not a translation-quality percentage.
+- Identified an existing scoring limitation for follow-up: slash-separated alternative release descriptions are parsed as one release, allowing WEB-DL evidence to suppress a listed Blu-ray source match. No scoring behavior changed.
+- Verification: bounded production logs/status, read-only persisted candidate/installation/queue metadata, sidecar checksum, and deployed-source inspection. No tests run for this documentation-only diagnosis. Commit: uncommitted ledger entry based on `b9e5854`. Next task: consider a separately scoped release-evidence parsing repair; playback/translation quality remains unverified.
 
 ### Conventional repairs corrective round 2 — marked numeric endpoints
 

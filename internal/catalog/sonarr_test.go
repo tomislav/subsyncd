@@ -25,7 +25,7 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v3/episodefile/1001":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/Example Show/Example.Show.S01E02.mkv", "size": 1234, "dateAdded": "2026-09-04T10:00:00Z", "sceneName": "Example.Show.S01E02.1080p.WEB-DL-GROUP", "releaseGroup": "GROUP", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-1080p", "resolution": 1080, "source": "webdl"}}, "mediaInfo": map[string]any{"runTime": "00:42:30"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/Example Show/Example.Show.S01E02.mkv", "size": 1234, "dateAdded": "2026-09-04T10:00:00Z", "sceneName": "Example.Show.S01E02.1080p.NF.WEB-DL-GROUP", "releaseGroup": "GROUP", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-1080p", "resolution": 1080, "source": "webdl"}}, "mediaInfo": map[string]any{"runTime": "00:42:30"}})
 		case r.URL.Path == "/api/v3/episode" && r.URL.Query().Get("episodeFileId") == "1001":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "absoluteEpisodeNumber": 14, "title": "Second Episode"}})
 		case r.URL.Path == "/api/v3/series/10":
@@ -46,6 +46,9 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	}
 	if media.Title != "Example Show" || media.EpisodeTitle != "Second Episode" || media.Season != 1 || media.Episode != 2 || media.AbsoluteEpisode != 14 {
 		t.Fatalf("episode identity = %#v", media)
+	}
+	if media.StreamingService != "netflix" {
+		t.Fatalf("streaming service = %q, want netflix", media.StreamingService)
 	}
 	if media.EntityID != 101 {
 		t.Fatalf("entity ID = %d, want 101", media.EntityID)

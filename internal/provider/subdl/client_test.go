@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/match"
 	baseprovider "subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/testutil"
@@ -22,6 +24,54 @@ import (
 type testStateStore struct {
 	mu     sync.Mutex
 	states map[string]store.ProviderState
+}
+
+func TestNormalizeDoesNotInventIdentityEvidence(t *testing.T) {
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Title: "Example Show", Year: 2020, Season: 1, Episode: 2, Source: "WEB-DL", ReleaseGroup: "GROUP", Resolution: "1080p"}
+	for _, test := range []struct {
+		name     string
+		identity mediaResult
+		release  string
+		want     int
+	}{
+		{"unknown identity", mediaResult{}, "S01E02.1080p.WEB-DL-GROUP", 65},
+		{"unknown year", mediaResult{Name: "Example Show"}, "S01E02.1080p.WEB-DL-GROUP", 65},
+		{"returned title and year", mediaResult{Name: "Example Show", Year: 2020}, "S01E02.1080p.WEB-DL-GROUP", 80},
+		{"parsed title and year", mediaResult{}, "Example.Show.2020.S01E02.1080p.WEB-DL-GROUP", 80},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &Client{}
+			items := []searchItem{{URL: "/subtitle/example.zip", Language: "EN", Season: 1, Episode: 2, Identity: test.identity, Releases: []string{test.release}}}
+			got := client.normalize(baseprovider.SearchQuery{Media: media, Language: "en"}, items)
+			if len(got) != 1 {
+				t.Fatalf("candidates = %#v", got)
+			}
+			if score := match.Evaluate(media, got[0], "en"); score.Total != test.want {
+				t.Fatalf("score = %#v, want %d", score, test.want)
+			}
+			if got[0].Title != test.identity.Name || got[0].Year != test.identity.Year {
+				t.Fatalf("request identity leaked into candidate: %#v", got[0])
+			}
+		})
+	}
+}
+
+func TestNormalizeMergesMissingEpisodeBeforeFiltering(t *testing.T) {
+	client := &Client{id: "subdl-main"}
+	query := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en"}
+	first := searchItem{URL: "/subtitle/example.zip", Language: "EN", Releases: []string{"2160p.BluRay-GROUP"}, Rating: 1, DownloadCount: 10000}
+	second := searchItem{URL: first.URL, Language: "EN", Season: 1, Episode: 2, Releases: []string{"720p.WEB-DL-OTHER"}}
+	got := client.normalize(query, []searchItem{first, second})
+	if len(got) != 1 || got[0].Episode != 2 || got[0].Rating != 1 || got[0].DownloadCount != 10000 || !slices.Equal(got[0].ReleaseNames, []string{"2160p.BluRay-GROUP", "720p.WEB-DL-OTHER"}) {
+		t.Fatalf("missing-episode duplicate lost evidence: %#v", got)
+	}
+	if got := client.normalize(query, []searchItem{first}); len(got) != 0 {
+		t.Fatalf("unknown episode accepted: %#v", got)
+	}
+	second.Episode = 3
+	if got := client.normalize(query, []searchItem{first, second}); len(got) != 0 {
+		t.Fatalf("wrong episode accepted: %#v", got)
+	}
 }
 
 func (s *testStateStore) GetProviderState(_ context.Context, providerID, scope string) (store.ProviderState, error) {
@@ -69,6 +119,33 @@ func TestEpisodeSearchRunsFallbacksDeduplicatesAndPrefersDirectMember(t *testing
 	}
 	if len(candidates) != 1 || candidates[0].ResultID != "/subtitle/pack.zip:file-2" || candidates[0].DownloadRef != "/subtitle/pack/file-2" || candidates[0].Pack != nil || candidates[0].Episode != 2 || !candidates[0].HearingImpaired || len(candidates[0].ReleaseNames) != 3 {
 		t.Fatalf("direct candidate = %#v", candidates)
+	}
+}
+
+func TestEpisodeSearchMergesLaterDuplicateScoringEvidence(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			io.WriteString(w, `{"status":true,"subtitles":[{"url":"/subtitle/example.zip","language":"EN","season":1,"episode":2,"releases":["720p.WEB-DL-A"]}]}`)
+			return
+		}
+		io.WriteString(w, `{"status":true,"results":[{"name":"Example Show","year":2024,"imdb_id":"tt1234567"}],"subtitles":[{"url":"/subtitle/example.zip","language":"EN","season":1,"episode":2,"releases":["2160p.BluRay-B"],"rating":1,"download_count":10000}]}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	media := episodeMedia()
+	media.Source, media.Resolution, media.ReleaseGroup = "bluray", "2160p", "B"
+	got, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: media, Language: "en", Mode: baseprovider.SearchBroad})
+	if err != nil || len(got) != 1 || calls != 2 {
+		t.Fatalf("candidates/calls = %#v/%d, %v", got, calls, err)
+	}
+	candidate := got[0]
+	if !slices.Equal(candidate.ReleaseNames, []string{"720p.WEB-DL-A", "2160p.BluRay-B"}) || candidate.Rating != 1 || candidate.DownloadCount != 10000 || candidate.Title != media.Title || candidate.Year != media.Year || candidate.ExternalIDs.IMDb != media.ExternalIDs.IMDb {
+		t.Fatalf("duplicate evidence lost: %#v", candidate)
+	}
+	if score := match.Evaluate(media, candidate, "en"); score.Total != 100 {
+		t.Fatalf("merged score = %#v, want 100", score)
 	}
 }
 

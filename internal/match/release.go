@@ -1,6 +1,7 @@
 package match
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -21,6 +22,22 @@ type Release struct {
 	Service    string
 	Resolution string
 	Complete   bool
+}
+
+var releaseAlternativeSeparator = regexp.MustCompile(`[[:space:]\p{Z}]+/[[:space:]\p{Z}]+`)
+
+// parseReleases treats explicitly separated alternatives like separate provider
+// release names. Compact slashes inside a title or release remain intact.
+func parseReleases(names []string) []Release {
+	var releases []Release
+	for _, raw := range names {
+		for _, alternative := range releaseAlternativeSeparator.Split(raw, -1) {
+			if alternative = strings.TrimSpace(alternative); alternative != "" {
+				releases = append(releases, ParseRelease(alternative))
+			}
+		}
+	}
+	return releases
 }
 
 func ParseRelease(raw string) Release {

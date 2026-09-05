@@ -19,7 +19,7 @@ import (
 
 const (
 	searchCacheTTL                  = 6 * time.Hour
-	normalizedCandidateCacheVersion = "candidate-v2"
+	normalizedCandidateCacheVersion = "candidate-v3"
 )
 
 type SearchCache interface {
@@ -148,7 +148,7 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 		if found {
 			var candidates []domain.Candidate
 			if err := json.Unmarshal(entry.ResultsJSON, &candidates); err == nil {
-				candidates = deduplicateCandidates(candidates)
+				candidates = DeduplicateCandidates(candidates)
 				events.Log(ctx, slog.LevelDebug, "provider.cache_hit", "provider search cache hit", base...)
 				complete(candidates, "hit", nil)
 				return candidates, nil
@@ -161,7 +161,7 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 		complete(nil, "miss", err)
 		return nil, err
 	}
-	candidates = deduplicateCandidates(candidates)
+	candidates = DeduplicateCandidates(candidates)
 	if c.Cache != nil {
 		encoded, err := json.Marshal(cacheSafeCandidates(candidates))
 		if err != nil {
@@ -179,7 +179,8 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 	return candidates, nil
 }
 
-func deduplicateCandidates(candidates []domain.Candidate) []domain.Candidate {
+// DeduplicateCandidates merges stable result identities without losing later evidence.
+func DeduplicateCandidates(candidates []domain.Candidate) []domain.Candidate {
 	result := make([]domain.Candidate, 0, len(candidates))
 	indices := make(map[string]int, len(candidates))
 	for _, candidate := range candidates {

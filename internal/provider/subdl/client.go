@@ -96,13 +96,12 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 	}
 
 	items := make([]searchItem, 0)
-	seen := map[string]struct{}{}
 	for _, parameters := range searches {
 		found, err := c.searchOnce(ctx, parameters)
 		if err != nil {
 			return nil, err
 		}
-		appendUniqueItems(&items, seen, found)
+		items = append(items, found...)
 	}
 	if len(items) == 0 && query.Media.Ref.Kind == domain.MediaEpisode && query.Media.Title != "" {
 		titleOnly := cloneValues(base)
@@ -114,7 +113,7 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 		if err != nil {
 			return nil, err
 		}
-		appendUniqueItems(&items, seen, found)
+		items = append(items, found...)
 	}
 	return c.normalize(query, items), nil
 }
@@ -239,23 +238,6 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 	return decoded.Subtitles, nil
 }
 
-func appendUniqueItems(destination *[]searchItem, seen map[string]struct{}, items []searchItem) {
-	for _, item := range items {
-		key := item.URL
-		if key == "" {
-			key = item.Name
-		}
-		if key == "" {
-			continue
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		*destination = append(*destination, item)
-	}
-}
-
 func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) []domain.Candidate {
 	var candidates []domain.Candidate
 	for _, item := range items {
@@ -269,12 +251,6 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 		}
 		releases := uniqueStrings(append(append([]string{}, item.Releases...), item.ReleaseName))
 		title, year := item.Identity.Name, item.Identity.Year
-		if title == "" {
-			title = query.Media.Title
-		}
-		if year == 0 {
-			year = query.Media.Year
-		}
 		candidate := domain.Candidate{ProviderID: c.id, ResultID: downloadRef, DownloadRef: downloadRef, Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: year, ExternalIDs: domain.ExternalIDs{IMDb: item.Identity.IMDb, TMDB: item.Identity.TMDB}, Season: item.Season, Episode: item.Episode, ReleaseNames: releases, HearingImpaired: item.Hearing, Rating: min(max(item.Rating, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount}
 		if query.Media.Ref.Kind == domain.MediaEpisode {
 			from, to := item.EpisodeFrom, item.EpisodeEnd
@@ -305,15 +281,23 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 				}
 				candidate.Episode = 0
 				candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: item.Season}
-			} else if item.Episode == 0 {
-				continue
 			} else if item.Season != 0 && item.Season != query.Media.Season || item.Episode != 0 && item.Episode != query.Media.Episode && item.Episode != query.Media.AbsoluteEpisode {
 				continue
 			}
 		}
 		candidates = append(candidates, candidate)
 	}
-	return candidates
+	candidates = baseprovider.DeduplicateCandidates(candidates)
+	eligible := candidates[:0]
+	for _, candidate := range candidates {
+		// A later duplicate may supply absent episode coordinates. Apply the
+		// unknown-episode gate only after its evidence has been merged.
+		if query.Media.Ref.Kind == domain.MediaEpisode && candidate.Episode == 0 && candidate.Pack == nil {
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	return eligible
 }
 
 func matchingDirect(files []unpackFile, query baseprovider.SearchQuery) (unpackFile, bool) {

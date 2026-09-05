@@ -149,6 +149,7 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 		ReleaseName:      file.SceneName,
 		ReleaseGroup:     file.ReleaseGroup,
 		Source:           file.Quality.Quality.Source,
+		StreamingService: streamingServiceFromSceneName(file.SceneName),
 		Resolution:       resolutionName(file.Quality.Quality.Resolution),
 		Quality:          file.Quality.Quality.Name,
 		Duration:         parseRuntime(file.MediaInfo.RunTime),

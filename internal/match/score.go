@@ -16,10 +16,7 @@ type EvaluatedCandidate struct {
 }
 
 func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage domain.Language) domain.Score {
-	releases := make([]Release, 0, len(candidate.ReleaseNames))
-	for _, raw := range candidate.ReleaseNames {
-		releases = append(releases, ParseRelease(raw))
-	}
+	releases := parseReleases(candidate.ReleaseNames)
 	rejected := identityRejections(media, candidate, requestedLanguage, releases)
 	if len(rejected) != 0 {
 		return domain.Score{RejectedReasons: rejected}
@@ -45,7 +42,7 @@ func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 		contribution("title_year", boolPoints(titleMatch && yearMatch, 15), "normalized title and year"),
 		contribution("episode", boolPoints(episodeEvidenceMatches(media, candidate, releases), 20), "episode or containing pack"),
 		contribution("release_group", boolPoints(releaseGroupMatches(releases, media.ReleaseGroup), 25), "release group"),
-		contribution("source", boolPoints(releaseFieldMatches(releases, media.Source, func(r Release) string { return r.Source }), 15), "media source"),
+		contribution("source", boolPoints(releaseSourceMatches(releases, media.Source), 15), "media source"),
 		contribution("edition", boolPoints(editionMatches(releases, media.Edition), 10), "edition or cut"),
 		contribution("streaming_service", boolPoints(releaseFieldMatches(releases, media.StreamingService, func(r Release) string { return r.Service }), 5), "streaming service"),
 		contribution("resolution", boolPoints(releaseFieldMatches(releases, media.Resolution, func(r Release) string { return r.Resolution }), 5), "resolution"),
@@ -63,10 +60,7 @@ func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 }
 
 func HasEpisodeEvidence(media domain.Media, candidate domain.Candidate) bool {
-	releases := make([]Release, 0, len(candidate.ReleaseNames))
-	for _, raw := range candidate.ReleaseNames {
-		releases = append(releases, ParseRelease(raw))
-	}
+	releases := parseReleases(candidate.ReleaseNames)
 	return episodeEvidenceMatches(media, candidate, releases)
 }
 
@@ -168,10 +162,7 @@ func HasMatchingEdition(media domain.Media, candidate domain.Candidate) bool {
 	if strings.TrimSpace(media.Edition) == "" {
 		return true
 	}
-	releases := make([]Release, 0, len(candidate.ReleaseNames))
-	for _, raw := range candidate.ReleaseNames {
-		releases = append(releases, ParseRelease(raw))
-	}
+	releases := parseReleases(candidate.ReleaseNames)
 	return editionMatches(releases, media.Edition)
 }
 
@@ -244,6 +235,10 @@ func releaseFieldMatches(releases []Release, wanted string, field func(Release) 
 		}
 	}
 	return false
+}
+
+func releaseSourceMatches(releases []Release, wanted string) bool {
+	return releaseFieldMatches(releases, normalizeSource(wanted, ""), func(r Release) string { return r.Source })
 }
 
 func editionMatches(releases []Release, wanted string) bool {
