@@ -13,6 +13,14 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Follow-up — logging documentation CI contract, 2026-09-06
+
+- Commit: this test correction commit, based on `47c75da`.
+- Reproduced the CI failure in `TestLoggingDocumentationContract`: it still read the old combined README/operations layout and required the deliberately removed collector examples.
+- Updated the contract to verify navigation to the user logging guide, settings and troubleshooting fields in that guide, and event/privacy details in the developer reference. Removed obsolete collector-specific assertions. Runtime behavior is unchanged.
+- Verification passed: focused failing-then-passing documentation test, full `go test ./... -race -count=1`, `go vet ./...`, tagged race-enabled end-to-end tests, and `git diff --check`, using writable caches and local fake services.
+- Next task: push this correction and verify the replacement GitHub Actions run.
+
 ### Follow-up — README scoring feature, 2026-09-06
 
 - Commit: this documentation update commit, based on `ede363e`.

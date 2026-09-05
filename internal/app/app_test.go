@@ -318,25 +318,29 @@ func TestLoggingDocumentationContract(t *testing.T) {
 		}
 		return string(payload)
 	}
-	readme := read("../../README.md")
-	operations := read("../../docs/operations.md")
-	combined := readme + "\n" + operations
-	for _, required := range []string{
-		"SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
-		"service", "environment", "level", "component", "event",
-		"job_id", "media_id", "duration_ms", "loki.process", "loki.write",
+	for _, document := range []struct {
+		path     string
+		required []string
+	}{
+		{"../../README.md", []string{"docs/logging.md"}},
+		{"../../docs/operations.md", []string{"(logging.md)"}},
+		{"../../docs/logging.md", []string{
+			"docker compose logs", "SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
+			"job_id", "outcome", "reason", "development/logging.md",
+		}},
+		{"../../docs/development/logging.md", []string{
+			"service", "level", "component", "event", "job_id", "media_id", "duration_ms",
+			"Credentials", "absolute media/data/temp paths", "never intentional log fields",
+		}},
 	} {
-		if !strings.Contains(combined, required) {
-			t.Errorf("logging documentation is missing %q", required)
-		}
-	}
-	for _, highCardinalityLabel := range []string{"job_id", "media_id", "candidate_id", "file_id", "language", "provider"} {
-		if strings.Contains(operations, highCardinalityLabel+" = label_drop") || strings.Contains(operations, highCardinalityLabel+" = \"") {
-			t.Errorf("operations documentation promotes high-cardinality %s as a Loki label", highCardinalityLabel)
-		}
-	}
-	if !strings.Contains(operations, "Loki credentials belong only in Alloy") {
-		t.Error("operations documentation must keep Loki credentials out of subsyncd configuration")
+		t.Run(document.path, func(t *testing.T) {
+			content := read(document.path)
+			for _, required := range document.required {
+				if !strings.Contains(content, required) {
+					t.Errorf("%s is missing %q", document.path, required)
+				}
+			}
+		})
 	}
 }
 
