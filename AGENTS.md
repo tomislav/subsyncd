@@ -1,5 +1,7 @@
 # subsyncd contributor guide
 
+Before debugging, inspecting, deploying, or otherwise interacting with a production installation, read `.agents/production.local.md` completely when it exists. That ignored operator file contains host-specific access and safety boundaries; never commit it, require it in a clean clone, copy secrets from it, or guess production details when it is absent. Use `.agents/production.example.md` only as the tracked schema.
+
 Read these documents before changing behavior:
 
 1. `docs/implementation-status.md` for the behavior actually shipped and the resumable handoff ledger

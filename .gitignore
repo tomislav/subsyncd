@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+/.agents/production.local.md
 
 /subsyncd
 /coverage.out
