@@ -24,12 +24,185 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 			t.Fatalf("query migrations: %v", err)
 		}
-		if count != 9 {
-			t.Errorf("migration count = %d, want 9", count)
+		if count != 10 {
+			t.Errorf("migration count = %d, want 10", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close(): %v", err)
 		}
+	}
+}
+
+func TestMediaEntityIDMigrationPreservesLegacyRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	db := openDatabaseThroughMigration(t, path, "009_media_unsupported_reason.sql")
+	if _, err := db.Exec(`INSERT INTO media(instance, kind, file_id, path, size, mod_time_ns, title, updated_at_ns) VALUES ('sonarr-main', 'episode', 42, '/media/show.mkv', 100, 1, 'Show', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO events(event_id, event_type, instance, kind, file_id, outcome, created_at_ns) VALUES ('legacy-event', 'import', 'sonarr-main', 'episode', 42, 'applied', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var mediaEntityID, eventEntityID int64
+	if err := database.db.QueryRow(`SELECT entity_id FROM media WHERE file_id=42`).Scan(&mediaEntityID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.QueryRow(`SELECT entity_id FROM events WHERE event_id='legacy-event'`).Scan(&eventEntityID); err != nil {
+		t.Fatal(err)
+	}
+	if mediaEntityID != 0 || eventEntityID != 0 {
+		t.Fatalf("legacy entity IDs = media:%d event:%d, want 0/0", mediaEntityID, eventEntityID)
+	}
+}
+
+func TestMediaEntityIDRoundTrips(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	media.EntityID = 101
+	id, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetMedia(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EntityID != 101 {
+		t.Fatalf("entity ID = %d, want 101", got.EntityID)
+	}
+	foundID, _, found, err := repo.FindMediaByEntity(context.Background(), media.Ref.Instance, media.Ref.Kind, 101)
+	if err != nil || !found || foundID != id {
+		t.Fatalf("entity lookup = %d/%v/%v, want %d/true/nil", foundID, found, err, id)
+	}
+}
+
+func TestEntityUpgradeUpdatesOneRowAndPreservesLease(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	media := testMedia()
+	media.EntityID = 101
+	media.Ref.FileID = 1001
+	media.Fingerprint.FileID = 1001
+	media.Fingerprint.Path = "/media/show-old.mkv"
+	first := MediaEventMutation{EventID: "import-1001", Type: "import", EntityID: 101, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
+	if applied, err := repo.ApplyMediaEvent(ctx, first); err != nil || !applied {
+		t.Fatalf("first import = %v/%v", applied, err)
+	}
+	mediaID, _, err := repo.FindMedia(ctx, media.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordCandidates(ctx, mediaID, "hr", []CandidateRecord{{ProviderID: "titlovi", ResultID: "1", MetadataJSON: []byte(`{}`), ScoreJSON: []byte(`{"total":50}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordInstallation(ctx, Installation{MediaID: mediaID, Language: "hr", Path: "/media/show-old.hr.srt", Checksum: "checksum", ProviderID: "titlovi", CandidateID: "1", ScoreJSON: []byte(`{"total":50}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: media.Fingerprint.Path, MediaFileID: 1001, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Hour)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("leases = %#v/%v", leases, err)
+	}
+
+	oldRef := media.Ref
+	media.Ref.FileID = 1002
+	media.Fingerprint.FileID = 1002
+	media.Fingerprint.Path = "/media/show-new.mkv"
+	second := MediaEventMutation{EventID: "import-1002", Type: "import", EntityID: 101, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute)}
+	if applied, err := repo.ApplyMediaEvent(ctx, second); err != nil || !applied {
+		t.Fatalf("replacement import = %v/%v", applied, err)
+	}
+
+	var rows int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM media WHERE instance='sonarr-main' AND kind='episode' AND entity_id=101`).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("entity rows = %d/%v, want 1/nil", rows, err)
+	}
+	var eventEntityID int64
+	if err := repo.store.db.QueryRow(`SELECT entity_id FROM events WHERE event_id='import-1002'`).Scan(&eventEntityID); err != nil || eventEntityID != 101 {
+		t.Fatalf("event entity ID = %d/%v, want 101/nil", eventEntityID, err)
+	}
+	if _, _, err := repo.FindMedia(ctx, oldRef); err == nil {
+		t.Fatal("old file identity still resolves")
+	}
+	newID, got, err := repo.FindMedia(ctx, media.Ref)
+	if err != nil || newID != mediaID || got.EntityID != 101 {
+		t.Fatalf("replacement lookup = %d/%#v/%v, want original row and entity", newID, got, err)
+	}
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM candidates WHERE media_id=?`, mediaID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("candidate rows = %d/%v, want 0/nil", rows, err)
+	}
+	installation, found, err := repo.GetInstallation(ctx, mediaID, "hr")
+	if err != nil || !found || string(installation.ScoreJSON) != "{}" || string(installation.SyncResultJSON) != "{}" || installation.MediaFileID != 0 {
+		t.Fatalf("invalidated installation = %#v/%v/%v", installation, found, err)
+	}
+	var owner string
+	var rerun bool
+	if err := repo.store.db.QueryRow(`SELECT lease_owner, rerun_requested FROM search_states WHERE media_id=? AND language='hr'`, mediaID).Scan(&owner, &rerun); err != nil {
+		t.Fatal(err)
+	}
+	if owner != leases[0].JobID || !rerun {
+		t.Fatalf("lease owner/rerun = %q/%v, want %q/true", owner, rerun, leases[0].JobID)
+	}
+}
+
+func TestLegacyEntityAdoptionUpdatesExistingFileRow(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	media.EntityID = 101
+	result, err := repo.store.db.Exec(`INSERT INTO media(instance, kind, file_id, entity_id, path, size, mod_time_ns, title, updated_at_ns) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gotID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotID != wantID {
+		t.Fatalf("adopted media ID = %d, want %d", gotID, wantID)
+	}
+	var count int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM media WHERE instance=? AND kind=?`, media.Ref.Instance, media.Ref.Kind).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("media rows = %d/%v, want 1/nil", count, err)
+	}
+}
+
+func TestMediaEntityIDConflictFailsClosed(t *testing.T) {
+	repo := openTestRepository(t)
+	first := testMedia()
+	first.EntityID = 101
+	first.Ref.FileID = 1001
+	first.Fingerprint.FileID = 1001
+	first.Fingerprint.Path = "/media/first.mkv"
+	if _, _, err := repo.UpsertMedia(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := testMedia()
+	second.EntityID = 202
+	second.Ref.FileID = 1002
+	second.Fingerprint.FileID = 1002
+	second.Fingerprint.Path = "/media/second.mkv"
+	if _, _, err := repo.UpsertMedia(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	conflict := first
+	conflict.Ref.FileID = 1002
+	conflict.Fingerprint.FileID = 1002
+	if _, _, err := repo.UpsertMedia(context.Background(), conflict); err == nil || !strings.Contains(err.Error(), "conflicting media identities") {
+		t.Fatalf("identity conflict error = %v", err)
 	}
 }
 
@@ -1037,6 +1210,7 @@ func TestCommitReconciliationAppliesDeletesAndCursorAtomically(t *testing.T) {
 	}
 
 	newMedia := media
+	newMedia.EntityID = 77
 	newMedia.Ref.FileID = 77
 	newMedia.Fingerprint.FileID = 77
 	newMedia.Fingerprint.Path = "/media/new.mkv"
@@ -1126,6 +1300,7 @@ func openDatabaseThroughMigration(t *testing.T, path, through string) *sql.DB {
 func insertTestMedia(t *testing.T, repo *Repository, fileID int64, now time.Time) int64 {
 	t.Helper()
 	media := testMedia()
+	media.EntityID = fileID
 	media.Ref.FileID = fileID
 	media.Fingerprint.FileID = fileID
 	media.Fingerprint.Path = filepath.Join("/media", "show-"+time.Unix(fileID, 0).UTC().Format("150405")+".mkv")
@@ -1146,6 +1321,7 @@ func requireSearchState(t *testing.T, repo *Repository, mediaID int64, language 
 
 func testMedia() domain.Media {
 	return domain.Media{
+		EntityID:    101,
 		Ref:         domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 42},
 		Fingerprint: domain.MediaFingerprint{Path: "/media/show.mkv", FileID: 42, Size: 100, ModTime: time.Date(2026, 9, 4, 11, 0, 0, 123, time.UTC)},
 		Title:       "Show", Season: 1, Episode: 2, ExternalIDs: domain.ExternalIDs{TVDB: 1},

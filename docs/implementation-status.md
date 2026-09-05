@@ -6,12 +6,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: arrapi stable-identity reconciliation implementation
-- Next task: persist stable Arr entity identity and upgrade rows in place (Task 2)
-- Latest follow-up: Task 1 established the pinned arrapi client and privacy boundary
+- Next task: assign stable entity identity during detailed hydration and classify safe outside-scope media (Task 3)
+- Latest follow-up: Task 2 added stable entity persistence and upgrade-in-place behavior
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Arrapi stable-identity reconciliation Task 2 — stable entity persistence
+
+- Migration `010_media_entity_ids.sql` adds zero-defaulted `entity_id` columns to media and audit events plus a positive-only unique `(instance, kind, entity_id)` index. Legacy rows survive migration with zero identity and adopt a positive entity ID lazily on successful hydration.
+- `domain.Media` and media event mutations now carry stable entity identity separately from replaceable Arr file identity. Media reads round-trip it, events persist it, and `FindMediaByEntity` provides an explicit found/not-found lookup.
+- Direct and transactional upserts resolve positive entity identity first, fall back only to a matching legacy zero-ID file row, and fail closed when entity and file identities point to different rows. A file replacement updates the original row and file lookup, invalidates candidate/installation provenance, and retains an active lease while scheduling one rerun.
+- TDD evidence: focused tests first failed on the absent columns, fields, lookup, and file-only upsert. Race-enabled verification passed for `internal/store`, `internal/catalog`, and `internal/app`; the restricted run's local-server bind failures were environmental and the permitted local-only rerun passed. `git diff --check` passed.
+- Next task: return entity identity from Radarr/Sonarr detail hydration and distinguish safe out-of-scope paths from hard mapping/filesystem failures.
 
 ### Arrapi stable-identity reconciliation Task 1 — bounded client boundary
 

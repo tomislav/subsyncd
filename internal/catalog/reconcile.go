@@ -38,6 +38,7 @@ func (r Reconciler) Run(ctx context.Context) error {
 		mutations = append(mutations, store.MediaEventMutation{
 			EventID:   fmt.Sprintf("reconcile:%s:%d", r.Instance, change.HistoryID),
 			Type:      string(change.Type),
+			EntityID:  change.Media.EntityID,
 			Media:     change.Media,
 			Ref:       change.Ref,
 			Languages: r.Languages,

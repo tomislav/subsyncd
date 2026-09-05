@@ -160,6 +160,7 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 				return result, fmt.Errorf("hydrate %s event %s: %w", h.Instance, event.EventID, err)
 			}
 			mutation.Media = media
+			mutation.EntityID = media.EntityID
 		}
 		applied, err := h.Store.ApplyMediaEvent(ctx, mutation)
 		if err != nil {

@@ -33,6 +33,7 @@ type MediaFingerprint struct {
 }
 
 type Media struct {
+	EntityID          int64             `json:"entity_id"`
 	Ref               MediaRef          `json:"ref"`
 	Fingerprint       MediaFingerprint  `json:"fingerprint"`
 	Title             string            `json:"title"`

@@ -131,7 +131,7 @@ func (f *fakeEventStore) ApplyMediaEvent(_ context.Context, mutation store.Media
 
 func TestWebhookHandlerHydratesImportsAndAppliesDeletesWithoutHydration(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	catalog := &fakeEventCatalog{media: domain.Media{Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
+	catalog := &fakeEventCatalog{media: domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
 	store := &fakeEventStore{}
 	handler := WebhookHandler{Instance: "main", InstanceType: "sonarr", Catalog: catalog, Store: store, Languages: []domain.Language{"hr", "en"}, Now: func() time.Time { return now }}
 
@@ -167,7 +167,7 @@ func TestWebhookHandlerHydratesImportsAndAppliesDeletesWithoutHydration(t *testi
 
 func TestWebhookHandlerOnAppliedTracksCommittedWork(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	catalog := &fakeEventCatalog{media: domain.Media{Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
+	catalog := &fakeEventCatalog{media: domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
 	eventStore := &fakeEventStore{results: []bool{true, false}}
 	wakes := 0
 	handler := WebhookHandler{Instance: "main", InstanceType: "sonarr", Catalog: catalog, Store: eventStore, Languages: []domain.Language{"hr"}, Now: func() time.Time { return now }, OnApplied: func() { wakes++ }}
@@ -206,7 +206,7 @@ func TestWebhookHandlerOnAppliedTracksCommittedWork(t *testing.T) {
 
 func TestWebhookHandlerOnAppliedSurvivesLaterFileFailure(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	catalog := &fakeEventCatalog{media: domain.Media{Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
+	catalog := &fakeEventCatalog{media: domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
 	eventStore := &fakeEventStore{results: []bool{true}, errors: []error{nil, errors.New("disk full")}}
 	wakes := 0
 	handler := WebhookHandler{Instance: "main", InstanceType: "sonarr", Catalog: catalog, Store: eventStore, Languages: []domain.Language{"hr"}, Now: func() time.Time { return now }, OnApplied: func() { wakes++ }}

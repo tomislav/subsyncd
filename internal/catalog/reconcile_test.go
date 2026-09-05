@@ -62,7 +62,7 @@ func TestReconcilerDoesNotAdvanceCursorWhenPageCommitFails(t *testing.T) {
 func TestReconcilerConvertsHistoryChanges(t *testing.T) {
 	start := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 	pageEnd := start.Add(time.Hour)
-	media := domain.Media{Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 7}, Title: "Episode"}
+	media := domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 7}, Title: "Episode"}
 	changes := []HistoryChange{
 		{HistoryID: 41, Type: EventImport, Ref: media.Ref, Media: media, OccurredAt: start.Add(10 * time.Minute)},
 		{HistoryID: 42, Type: EventDelete, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 8}, OccurredAt: start.Add(20 * time.Minute)},

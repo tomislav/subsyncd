@@ -75,7 +75,7 @@ func (c fixedE2EClock) Now() time.Time { return c.now }
 type wakeCatalog struct{ now time.Time }
 
 func (c wakeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Media, error) {
-	return domain.Media{Ref: ref, Fingerprint: domain.MediaFingerprint{Path: fmt.Sprintf("/media/%d.mkv", ref.FileID), FileID: ref.FileID, Size: 100, ModTime: c.now}, Title: "Movie"}, nil
+	return domain.Media{EntityID: ref.FileID, Ref: ref, Fingerprint: domain.MediaFingerprint{Path: fmt.Sprintf("/media/%d.mkv", ref.FileID), FileID: ref.FileID, Size: 100, ModTime: c.now}, Title: "Movie"}, nil
 }
 
 func (wakeCatalog) ListChangesSince(context.Context, time.Time) ([]catalog.HistoryChange, error) {
@@ -284,6 +284,7 @@ func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *t
 
 	deletedRef := domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1002}
 	deletedMedia := domain.Media{
+		EntityID:    102,
 		Ref:         deletedRef,
 		Fingerprint: domain.MediaFingerprint{Path: filepath.Join(root, "Deleted.S01E02.mkv"), FileID: 1002, Size: 100, ModTime: now.Add(-2 * time.Hour)},
 		Title:       "Deleted",

@@ -302,7 +302,7 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 	}
 	defer application.Close()
 	now := application.Clock.Now()
-	media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Movie.mkv"), FileID: 7, Size: 100, ModTime: now}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Movie.mkv"), FileID: 7, Size: 100, ModTime: now}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
 	mediaID, _, err := application.Repository.UpsertMedia(context.Background(), media)
 	if err != nil {
 		t.Fatal(err)
@@ -325,7 +325,7 @@ func TestExplainShowsSearchPriority(t *testing.T) {
 	}
 	defer application.Close()
 	now := application.Clock.Now()
-	media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 8}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Priority.mkv"), FileID: 8, Size: 100, ModTime: now}, Title: "Priority"}
+	media := domain.Media{EntityID: 8, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 8}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Priority.mkv"), FileID: 8, Size: 100, ModTime: now}, Title: "Priority"}
 	mediaID, _, err := application.Repository.UpsertMedia(context.Background(), media)
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +353,7 @@ func TestExplainShowsUnsupportedReason(t *testing.T) {
 	}
 	defer application.Close()
 	now := application.Clock.Now()
-	media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaEpisode, FileID: 9}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Combined.mkv"), FileID: 9, Size: 100, ModTime: now}, Title: "Combined", UnsupportedReason: domain.UnsupportedMultiEpisode}
+	media := domain.Media{EntityID: 9, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaEpisode, FileID: 9}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Combined.mkv"), FileID: 9, Size: 100, ModTime: now}, Title: "Combined", UnsupportedReason: domain.UnsupportedMultiEpisode}
 	mediaID, _, err := application.Repository.UpsertMedia(context.Background(), media)
 	if err != nil {
 		t.Fatal(err)
@@ -384,7 +384,7 @@ func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	media := domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: info.Size(), ModTime: info.ModTime()}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: info.Size(), ModTime: info.ModTime()}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
 	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: media}}, Worker: &waitingWorker{}})
 	if err != nil {
 		t.Fatal(err)
