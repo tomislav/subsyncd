@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,13 +26,40 @@ type Client struct {
 	ProviderType string
 }
 
+// permitBody owns the request permits until streaming completes or the caller
+// closes the response. EOF does not replace the caller's obligation to Close.
+type permitBody struct {
+	body    io.ReadCloser
+	release func()
+	once    sync.Once
+}
+
+func (b *permitBody) Read(payload []byte) (int, error) {
+	n, err := b.body.Read(payload)
+	if err == io.EOF {
+		b.once.Do(b.release)
+	}
+	return n, err
+}
+
+func (b *permitBody) Close() error {
+	err := b.body.Close()
+	b.once.Do(b.release)
+	return err
+}
+
 func (c Client) Do(ctx context.Context, operation Operation, request *http.Request) (*http.Response, error) {
 	origin := request.URL.Scheme + "://" + request.URL.Host
 	release, err := c.Gate.Acquire(ctx, c.ProviderID, origin, operation)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
+	releaseNow := true
+	defer func() {
+		if releaseNow {
+			release()
+		}
+	}()
 	response, err := c.HTTP.Do(request.WithContext(ctx))
 	if err != nil {
 		if ctx.Err() != nil {
@@ -41,6 +70,10 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 			return nil, persistErr
 		}
 		return nil, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}
+	}
+	if response.Body != nil {
+		response.Body = &permitBody{body: response.Body, release: release}
+		releaseNow = false
 	}
 	now := c.Clock.Now()
 	rateHeaders := response.Header

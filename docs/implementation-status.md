@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 7 (root-aware Silo path mappings) is implemented locally; production remains out of scope
-- Next safe action: implement Task 8 (response-lifetime provider permits) after this task commit
+- Current task: codebase correctness-repair Task 8 (response-lifetime provider permits) is implemented locally; production remains out of scope
+- Next safe action: complete Task 9 documentation and repository verification after this task commit
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 8 — response-lifetime provider permits
+
+- Provider HTTP responses now own both the configured-instance and shared-origin concurrency permits until a read reaches EOF or the caller closes the body. The private body wrapper releases once, including EOF followed by repeated/concurrent cleanup, while preserving body data and original read/close errors.
+- Transport failures and invalid responses release immediately. Responses returned with authentication, cooldown, or state-persistence errors retain body ownership so cleanup cannot exceed configured concurrency. Adapters remain responsible for closing every returned body, including partial/error payloads; inspection confirmed all three adapters close before refresh, pagination, or subsequent download requests.
+- RED/GREEN coverage reproduced and fixed early acquisition for both limit types, EOF and early Close, and HTTP 200/401/429/503. Tests also prove stale-body cleanup cannot release a later request's permit, EOF works without prior Close, read/close errors remain intact, and network/cancellation/invalid-body failures leak no permit.
+- Verification passed focused transport race tests and `go test ./internal/provider/... ./internal/app -race -count=1`, plus `git diff --check`. Restricted adapter tests could not bind local fake servers; the same local-only suites passed with loopback permission. No live providers, Hades, image builds, or deployments were used.
+- Commit: `fix: retain provider permits through response bodies`.
+- Next task: final documentation and complete verification.
 
 ### Conventional repairs Task 7 — root-aware Silo path mappings
 
