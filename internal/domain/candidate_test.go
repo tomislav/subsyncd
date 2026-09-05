@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestCandidateJSONPreservesLegacyShapeUnlessForced(t *testing.T) {
+func TestCandidateJSONOmitsFalseForcedFlag(t *testing.T) {
 	normal, err := json.Marshal(Candidate{ProviderID: "provider", ResultID: "normal"})
 	if err != nil {
 		t.Fatal(err)

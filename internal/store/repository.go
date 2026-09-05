@@ -585,10 +585,6 @@ func (r *Repository) GetTrackInventory(ctx context.Context, mediaID int64) (Inve
 	return record, nil
 }
 
-func (r *Repository) UpsertSearchState(ctx context.Context, mediaID int64, language domain.Language, next time.Time) error {
-	return r.UpsertSearchStateWithPriority(ctx, mediaID, language, next, SearchPriorityMissing)
-}
-
 func (r *Repository) UpsertSearchStateWithPriority(ctx context.Context, mediaID int64, language domain.Language, next time.Time, priority SearchPriority) error {
 	if !validSearchPriority(priority) {
 		return fmt.Errorf("invalid search priority %d", priority)

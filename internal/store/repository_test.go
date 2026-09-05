@@ -406,10 +406,10 @@ func TestUpsertSearchStateKeepsOneRowPerMediaLanguage(t *testing.T) {
 	repo := openTestRepository(t)
 	mediaID, _, _ := repo.UpsertMedia(context.Background(), testMedia())
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	if err := repo.UpsertSearchState(context.Background(), mediaID, "en", now); err != nil {
+	if err := repo.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, SearchPriorityMissing); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.UpsertSearchState(context.Background(), mediaID, "en", now.Add(time.Hour)); err != nil {
+	if err := repo.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now.Add(time.Hour), SearchPriorityMissing); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -525,7 +525,7 @@ func TestExpiredLeaseCanBeRecovered(t *testing.T) {
 	repo := openTestRepository(t)
 	mediaID, _, _ := repo.UpsertMedia(context.Background(), testMedia())
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	if err := repo.UpsertSearchState(context.Background(), mediaID, "en", now); err != nil {
+	if err := repo.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, SearchPriorityMissing); err != nil {
 		t.Fatal(err)
 	}
 	first, err := repo.LeaseDueSearches(context.Background(), now, 1, time.Minute)
@@ -546,7 +546,7 @@ func TestSearchLeaseRenewalAndAttemptAccountingAreCompareAndSwap(t *testing.T) {
 	repo := openTestRepository(t)
 	mediaID, _, _ := repo.UpsertMedia(context.Background(), testMedia())
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	if err := repo.UpsertSearchState(context.Background(), mediaID, "en", now); err != nil {
+	if err := repo.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, SearchPriorityMissing); err != nil {
 		t.Fatal(err)
 	}
 	leases, err := repo.LeaseDueSearches(context.Background(), now, 1, 5*time.Minute)

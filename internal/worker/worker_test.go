@@ -142,7 +142,7 @@ func TestTwoWorkersCannotProcessTheSameSQLiteLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.UpsertSearchState(context.Background(), mediaID, "en", now); err != nil {
+	if err := repository.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, store.SearchPriorityMissing); err != nil {
 		t.Fatal(err)
 	}
 	service := &workerWorkflow{delay: 20 * time.Millisecond, outcome: workflow.Result{Outcome: workflow.OutcomeSatisfied}}
