@@ -62,6 +62,7 @@ func TestEpisodeRangeRequiresExplicitHyphenatedEndpoint(t *testing.T) {
 		"Show.S01E01-S02E03.srt",
 		"Show.S01E01-E03p.srt",
 		"Show.S01E01-E03é.srt",
+		"Show.1x01-1x03extra.srt",
 		"Show.S01E01-E03-S01E05.srt",
 		"Show.S01E01-E03.S02E01-E03.srt",
 		"Show.S01E01-S02E03.S03E01-E03.srt",
@@ -93,6 +94,27 @@ func TestSelectRejectsInvalidOrAmbiguousRangeEvidenceWithoutTokenFallback(t *tes
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			selected, err := Select(Manifest{Members: []Member{{SafeName: test.member}}}, domain.Candidate{}, test.media, false)
+			var selection *SelectionError
+			if !errors.As(err, &selection) {
+				t.Fatalf("Select() = %#v, %v", selected, err)
+			}
+			if selected.SelectionRule == "episode_token" {
+				t.Fatalf("Select() unexpectedly used episode-token fallback: %#v", selected)
+			}
+		})
+	}
+}
+
+func TestSelectRejectsMalformedHyphenatedRangeWithoutTokenFallback(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		member string
+	}{
+		{"standard endpoint suffix", "Show.S01E01-E03p.srt"},
+		{"x endpoint suffix", "Show.1x01-1x03extra.srt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selected, err := Select(Manifest{Members: []Member{{SafeName: test.member}}}, domain.Candidate{}, domain.Media{Season: 1, Episode: 1}, false)
 			var selection *SelectionError
 			if !errors.As(err, &selection) {
 				t.Fatalf("Select() = %#v, %v", selected, err)

@@ -244,11 +244,29 @@ func rangeLikeEpisodeMatches(name string) []episodeRangeMatch {
 }
 
 func hasInvalidOrAmbiguousRangeEvidence(name string) bool {
+	if hasMalformedHyphenatedRangeEvidence(name) {
+		return true
+	}
 	if len(rangeLikeEpisodeMatches(name)) == 0 {
 		return false
 	}
 	_, _, _, _, accepted := acceptedEpisodeRangeMatch(name)
 	return !accepted
+}
+
+func hasMalformedHyphenatedRangeEvidence(name string) bool {
+	for _, pattern := range episodeRangePatterns {
+		for _, match := range pattern.FindAllStringSubmatchIndex(name, -1) {
+			if !hasRangeStartBoundary(name, match[0]) || match[1] == len(name) {
+				continue
+			}
+			next, _ := utf8.DecodeRuneInString(name[match[1]:])
+			if isAlphaNumeric(next) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func acceptedEpisodeRange(name string, match []int, patternIndex int) (int, int, int, bool) {
@@ -279,11 +297,8 @@ func parseRangeMatch(name string, match []int, patternIndex int) (season, from, 
 }
 
 func completeRangeToken(name string, start, end int) bool {
-	if start > 0 {
-		previous, _ := utf8.DecodeLastRuneInString(name[:start])
-		if isAlphaNumeric(previous) {
-			return false
-		}
+	if !hasRangeStartBoundary(name, start) {
+		return false
 	}
 	if end < len(name) {
 		next, _ := utf8.DecodeRuneInString(name[end:])
@@ -292,6 +307,14 @@ func completeRangeToken(name string, start, end int) bool {
 		}
 	}
 	return true
+}
+
+func hasRangeStartBoundary(name string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	previous, _ := utf8.DecodeLastRuneInString(name[:start])
+	return !isAlphaNumeric(previous)
 }
 
 func rangeIsChained(name string, start, end int) bool {
