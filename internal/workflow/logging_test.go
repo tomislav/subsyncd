@@ -68,7 +68,10 @@ func TestWorkflowLogsExactSelectionAndCommittedInstallWithoutLapse(t *testing.T)
 	candidate := exactCandidate("exact-secret")
 	candidate.ReleaseNames = []string{"Secret.Release.Name.2024"}
 	providerFake := &fakeProvider{id: "provider"}
-	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{candidate}},
+		provider.SearchBroad:     {},
+	}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
 	service.Events = events
 
@@ -98,7 +101,10 @@ func TestWorkflowLogsDebugScoringAndTypedLapsePhases(t *testing.T) {
 	candidate := broadCandidate("broad")
 	candidate.ReleaseNames = []string{"Movie.2024.WEB-DL-GROUP"}
 	providerFake := &fakeProvider{id: "provider"}
-	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{candidate}},
+	}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
 	service.Events = events
 
@@ -119,6 +125,21 @@ func TestWorkflowLogsDebugScoringAndTypedLapsePhases(t *testing.T) {
 	}
 	if len(workflowEvents(records, "candidate.tier_started")) != 1 || len(workflowEvents(records, "candidate.early_stopped")) != 1 {
 		t.Fatalf("tournament events missing: %s", logs.String())
+	}
+	phases := workflowEvents(records, "search.phase_completed")
+	if len(phases) != 2 || phases[0]["search_mode"] != "exact_hash" || phases[1]["search_mode"] != "broad" {
+		t.Fatalf("search phases = %#v", phases)
+	}
+	for _, phase := range phases {
+		if _, ok := phase["candidate_count"].(float64); !ok {
+			t.Fatalf("phase candidate count is not numeric: %#v", phase)
+		}
+		if _, ok := phase["provider_error_count"].(float64); !ok {
+			t.Fatalf("phase provider error count is not numeric: %#v", phase)
+		}
+	}
+	if strings.Contains(logs.String(), candidate.DownloadRef) || strings.Contains(logs.String(), request.Media.Fingerprint.Path) {
+		t.Fatalf("phase logs leaked sensitive detail: %s", logs.String())
 	}
 }
 

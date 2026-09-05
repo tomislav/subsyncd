@@ -203,6 +203,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	}
 	result = Result{ProviderErrors: map[string]error{}}
 	var candidateFailures []error
+	var exactRecords []store.CandidateRecord
 	sameCandidateAssessed := false
 	current, err := s.Inventory.Refresh(ctx, request.MediaID, request.Media, request.ForceProbe)
 	if err != nil {
@@ -292,15 +293,27 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		}
 	}
 
+	exact := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchExactHash})
+	s.logSearchPhase(ctx, provider.SearchExactHash, exact)
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	terminal, err := s.tryExactCandidates(ctx, request, workspace, existing, installed, exact, &result, &candidateFailures, &exactRecords)
+	candidateCount = len(exactRecords)
+	if err != nil || terminal {
+		return result, err
+	}
+
 	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchBroad})
-	candidateCount = len(search.Candidates)
+	s.logSearchPhase(ctx, provider.SearchBroad, search)
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
 	result.ProviderErrors = search.Errors
 	if len(search.Candidates) == 0 {
-		if len(s.ProviderOrder) == 0 || len(search.Errors) < len(s.ProviderOrder) {
-			if err := s.Repository.RecordCandidates(ctx, request.MediaID, request.Language, nil); err != nil {
+		candidateCount = len(exactRecords)
+		if len(exactRecords) != 0 || len(s.ProviderOrder) == 0 || len(search.Errors) < len(s.ProviderOrder) {
+			if err := s.Repository.RecordCandidates(ctx, request.MediaID, request.Language, exactRecords); err != nil {
 				return result, err
 			}
 		}
@@ -319,6 +332,10 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		}
 		if len(candidateFailures) != 0 {
 			return result, errors.Join(candidateFailures...)
+		}
+		if len(exactRecords) != 0 {
+			result.Outcome = OutcomeRejected
+			return result, nil
 		}
 		result.Outcome = OutcomeNoResult
 		return result, nil
@@ -341,6 +358,8 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		}
 		records = append(records, record)
 	}
+	records = mergeCandidateRecords(exactRecords, records)
+	candidateCount = len(records)
 	if err := s.Repository.RecordCandidates(ctx, request.MediaID, request.Language, records); err != nil {
 		return result, err
 	}
@@ -582,6 +601,14 @@ func (s *Service) logCandidateEvaluation(ctx context.Context, request Request, c
 		attrs = append(attrs, slog.String("relative_path", relative))
 	}
 	s.workflowEvents().Log(ctx, slog.LevelDebug, "candidate.evaluated", "subtitle candidate evaluated", attrs...)
+}
+
+func (s *Service) logSearchPhase(ctx context.Context, mode provider.SearchMode, search provider.SearchResult) {
+	s.workflowEvents().Log(ctx, slog.LevelDebug, "search.phase_completed", "subtitle search phase completed",
+		slog.String("search_mode", string(mode)),
+		slog.Int("candidate_count", len(search.Candidates)),
+		slog.Int("provider_error_count", len(search.Errors)),
+	)
 }
 
 func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {

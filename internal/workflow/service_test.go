@@ -57,11 +57,11 @@ func TestServiceUsesRefreshedFilesystemFingerprintForProviderSearch(t *testing.T
 	if _, err := service.Run(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	if searcher.query.Media.Fingerprint != refreshed {
-		t.Fatalf("provider fingerprint = %#v, want refreshed %#v", searcher.query.Media.Fingerprint, refreshed)
+	if len(searcher.queries) != 1 || searcher.queries[0].Media.Fingerprint != refreshed {
+		t.Fatalf("provider queries = %#v, want refreshed fingerprint %#v", searcher.queries, refreshed)
 	}
-	if searcher.query.Mode != provider.SearchBroad {
-		t.Fatalf("provider search mode = %q, want %q", searcher.query.Mode, provider.SearchBroad)
+	if searcher.queries[0].Mode != provider.SearchExactHash {
+		t.Fatalf("provider search mode = %q, want %q", searcher.queries[0].Mode, provider.SearchExactHash)
 	}
 }
 
@@ -213,6 +213,252 @@ func TestServiceExactHashSkipsLapseAndBroadCandidatesAreLimitedToThree(t *testin
 		result, err := service.Run(context.Background(), serviceRequest(t))
 		if err != nil || result.Candidate.ResultID != "four" || sync.analyzeCalls != 3 || sync.synchronizeCalls != 1 || !slices.Equal(providerFake.downloaded, []string{"five", "four", "one"}) {
 			t.Fatalf("Run() = %#v, %v, analyzed/synced=%d/%d downloads=%#v", result, err, sync.analyzeCalls, sync.synchronizeCalls, providerFake.downloaded)
+		}
+	})
+}
+
+func TestServiceExactCandidatesSkipIneligibleRejectedAndDeterministicFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		prepare    func(*testing.T, Request, *Service, *workflowRepository, *fakeProvider, *domain.Candidate)
+		want       []string
+		wantReason string
+	}{
+		{
+			name: "forced",
+			prepare: func(_ *testing.T, _ Request, _ *Service, _ *workflowRepository, _ *fakeProvider, candidate *domain.Candidate) {
+				candidate.Forced = true
+			},
+			want: []string{"good"},
+		},
+		{
+			name: "already rejected",
+			prepare: func(t *testing.T, request Request, service *Service, repository *workflowRepository, _ *fakeProvider, candidate *domain.Candidate) {
+				signature, err := candidateSignature(*candidate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := service.Clock.Now()
+				fingerprint := request.Media.Fingerprint
+				repository.rejections = append(repository.rejections, store.CandidateRejection{
+					MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
+					CandidateSignature: signature, ReasonCode: "invalid_subtitle", ToolSignature: service.rejectionToolSignature(),
+					MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(time.Hour),
+				})
+			},
+			want: []string{"good"},
+		},
+		{
+			name: "malformed",
+			prepare: func(_ *testing.T, _ Request, _ *Service, _ *workflowRepository, adapter *fakeProvider, candidate *domain.Candidate) {
+				adapter.payloads[candidate.ResultID] = []byte("not subtitles")
+			},
+			want:       []string{"first", "good"},
+			wantReason: "invalid_subtitle",
+		},
+		{
+			name: "wrong episode member",
+			prepare: func(t *testing.T, request Request, _ *Service, _ *workflowRepository, adapter *fakeProvider, candidate *domain.Candidate) {
+				candidate.Kind = domain.MediaEpisode
+				candidate.Title = request.Media.Title
+				candidate.Season, candidate.Episode = request.Media.Season, request.Media.Episode
+				adapter.payloads[candidate.ResultID] = workflowZIP(t, map[string]string{"Show.S01E03.srt": installSRT})
+				adapter.filenames[candidate.ResultID] = "episode.zip"
+			},
+			want:       []string{"first", "good"},
+			wantReason: "pack_selection",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := serviceRequest(t)
+			request.Media.Ref.Kind = domain.MediaEpisode
+			request.Media.Title = "Show"
+			request.Media.Season, request.Media.Episode = 1, 2
+			first := exactCandidate("first")
+			first.Kind = domain.MediaEpisode
+			first.Title = "Show"
+			first.Season, first.Episode = 1, 2
+			good := exactCandidate("good")
+			good.Kind = domain.MediaEpisode
+			good.Title = "Show"
+			good.Season, good.Episode = 1, 2
+			searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+				provider.SearchExactHash: {Candidates: []domain.Candidate{first, good}},
+				provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+			}}
+			adapter := &fakeProvider{id: "provider", payloads: map[string][]byte{}, filenames: map[string]string{}}
+			repository := &workflowRepository{}
+			service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+			service.Repository = repository
+			service.Providers = map[string]provider.Provider{"provider": adapter}
+			test.prepare(t, request, service, repository, adapter, &first)
+			searcher.results[provider.SearchExactHash] = provider.SearchResult{Candidates: []domain.Candidate{first, good}}
+
+			result, err := service.Run(context.Background(), request)
+			if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "good" {
+				t.Fatalf("Run() = %#v, %v", result, err)
+			}
+			if !slices.Equal(adapter.downloaded, test.want) {
+				t.Fatalf("downloads = %#v", adapter.downloaded)
+			}
+			if len(searcher.queries) != 1 || searcher.queries[0].Mode != provider.SearchExactHash {
+				t.Fatalf("queries = %#v", searcher.queries)
+			}
+			if test.wantReason != "" && (len(repository.rejections) != 1 || repository.rejections[0].ReasonCode != test.wantReason) {
+				t.Fatalf("rejections = %#v", repository.rejections)
+			}
+		})
+	}
+}
+
+func TestServiceExactCandidatesAreNotCappedAtThree(t *testing.T) {
+	candidates := []domain.Candidate{
+		exactCandidate("ineligible-one"),
+		exactCandidate("ineligible-two"),
+		exactCandidate("ineligible-three"),
+		exactCandidate("fourth"),
+	}
+	for index := 0; index < 3; index++ {
+		candidates[index].Forced = true
+	}
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: candidates},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+	}}
+	adapter := &fakeProvider{id: "provider"}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "fourth" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(adapter.downloaded, []string{"fourth"}) || len(searcher.queries) != 1 {
+		t.Fatalf("downloads/queries = %#v/%#v", adapter.downloaded, searcher.queries)
+	}
+}
+
+func TestServiceTriesExactCandidatesSequentiallyAndSkipsBroadAfterSuccess(t *testing.T) {
+	bad := exactCandidate("bad")
+	bad.Forced = true
+	good := exactCandidate("good")
+	unused := exactCandidate("unused")
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{bad, good, unused}},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+	}}
+	adapter := &fakeProvider{id: "provider"}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "good" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(adapter.downloaded, []string{"good"}) {
+		t.Fatalf("downloads = %#v", adapter.downloaded)
+	}
+	if len(searcher.queries) != 1 || searcher.queries[0].Mode != provider.SearchExactHash {
+		t.Fatalf("queries = %#v", searcher.queries)
+	}
+}
+
+func TestServiceFallsBackToBroadAfterExactCandidateFailure(t *testing.T) {
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("broken")}},
+		provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+	}}
+	adapter := &fakeProvider{id: "provider", payloads: map[string][]byte{"broken": []byte("not subtitles")}}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": adapter}
+
+	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "broad" {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if len(searcher.queries) != 2 {
+		t.Fatalf("queries = %#v", searcher.queries)
+	}
+	if got := []provider.SearchMode{searcher.queries[0].Mode, searcher.queries[1].Mode}; !slices.Equal(got, []provider.SearchMode{provider.SearchExactHash, provider.SearchBroad}) {
+		t.Fatalf("search modes = %#v", got)
+	}
+}
+
+func TestServiceExactPhaseErrorsAndRecordsRemainPhaseCorrect(t *testing.T) {
+	t.Run("successful broad phase clears exact provider error and preserves evidence", func(t *testing.T) {
+		exact := exactCandidate("exact-bad")
+		exact.Forced = true
+		searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+			provider.SearchExactHash: {Candidates: []domain.Candidate{exact}, Errors: map[string]error{"provider": errors.New("exact unavailable")}},
+			provider.SearchBroad:     {Candidates: []domain.Candidate{exact, broadCandidate("broad")}},
+		}}
+		adapter := &fakeProvider{id: "provider"}
+		repository := &workflowRepository{}
+		service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+		service.Repository = repository
+		service.Providers = map[string]provider.Provider{"provider": adapter}
+
+		result, err := service.Run(context.Background(), serviceRequest(t))
+		if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "broad" || len(result.ProviderErrors) != 0 {
+			t.Fatalf("Run() = %#v, %v", result, err)
+		}
+		if len(repository.candidates) != 2 {
+			t.Fatalf("persisted candidates = %#v", repository.candidates)
+		}
+		if repository.candidates[0].ResultID != "exact-bad" || repository.candidates[1].ResultID != "broad" {
+			t.Fatalf("persisted identities = %#v", repository.candidates)
+		}
+	})
+
+	t.Run("technical exact candidate failure is not rejected", func(t *testing.T) {
+		searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+			provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("technical")}},
+			provider.SearchBroad:     {Candidates: []domain.Candidate{broadCandidate("broad")}},
+		}}
+		adapter := &fakeProvider{id: "provider", downloadErrors: map[string]error{"technical": errors.New("temporary download failure")}}
+		repository := &workflowRepository{}
+		service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+		service.Repository = repository
+		service.Providers = map[string]provider.Provider{"provider": adapter}
+
+		result, err := service.Run(context.Background(), serviceRequest(t))
+		if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "broad" || len(repository.rejections) != 0 {
+			t.Fatalf("Run() = %#v/%v rejections=%#v", result, err, repository.rejections)
+		}
+	})
+
+	t.Run("broad throttle retains precedence over exact technical failure", func(t *testing.T) {
+		reset := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+		searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+			provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("technical")}},
+			provider.SearchBroad:     {Errors: map[string]error{"provider": &provider.CooldownError{ProviderID: "provider", Scope: provider.OperationSearch, ResetAt: reset}}},
+		}}
+		adapter := &fakeProvider{id: "provider", downloadErrors: map[string]error{"technical": errors.New("temporary download failure")}}
+		service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+		service.Providers = map[string]provider.Provider{"provider": adapter}
+
+		result, err := service.Run(context.Background(), serviceRequest(t))
+		if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) {
+			t.Fatalf("Run() = %#v, %v", result, err)
+		}
+	})
+
+	t.Run("broad technical outage retains precedence over exact deterministic failure", func(t *testing.T) {
+		searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+			provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("malformed")}},
+			provider.SearchBroad:     {Errors: map[string]error{"provider": errors.New("broad network failure")}},
+		}}
+		adapter := &fakeProvider{id: "provider", payloads: map[string][]byte{"malformed": []byte("not subtitles")}}
+		repository := &workflowRepository{}
+		service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+		service.Repository = repository
+		service.Providers = map[string]provider.Provider{"provider": adapter}
+
+		result, err := service.Run(context.Background(), serviceRequest(t))
+		if err == nil || result.Outcome != "" || !strings.Contains(err.Error(), "all 1 assigned subtitle providers failed") || len(repository.rejections) != 1 {
+			t.Fatalf("Run() = %#v/%v rejections=%#v", result, err, repository.rejections)
 		}
 	})
 }
@@ -662,8 +908,11 @@ func TestServiceRefreshesCachedPackAssessmentWithoutTreatingItAsFailure(t *testi
 
 	result, err := service.Run(context.Background(), request)
 	updatedScore, _, scoreErr := installedScore(repository.installation)
-	if err != nil || scoreErr != nil || result.Outcome != OutcomeSatisfied || result.NextUpgrade.IsZero() || updatedScore.Total != 55 || searcher.calls != 1 || synchronizer.analyzeCalls != 0 {
+	if err != nil || scoreErr != nil || result.Outcome != OutcomeSatisfied || result.NextUpgrade.IsZero() || updatedScore.Total != 55 || searcher.calls != 2 || synchronizer.analyzeCalls != 0 {
 		t.Fatalf("Run() = %#v/%v score=%#v/%v search=%d analyzes=%d", result, err, updatedScore, scoreErr, searcher.calls, synchronizer.analyzeCalls)
+	}
+	if got := []provider.SearchMode{searcher.queries[0].Mode, searcher.queries[1].Mode}; !slices.Equal(got, []provider.SearchMode{provider.SearchExactHash, provider.SearchBroad}) {
+		t.Fatalf("search modes = %#v", got)
 	}
 }
 
@@ -1053,18 +1302,23 @@ func (f *fakeInventory) Refresh(context.Context, int64, domain.Media, bool) (inv
 }
 
 type fakeSearcher struct {
-	result provider.SearchResult
-	calls  int
-	query  provider.SearchQuery
+	result  provider.SearchResult
+	results map[provider.SearchMode]provider.SearchResult
+	calls   int
+	queries []provider.SearchQuery
 }
 
 func (f *fakeSearcher) Search(_ context.Context, query provider.SearchQuery) provider.SearchResult {
 	f.calls++
-	f.query = query
-	if f.result.Errors == nil {
-		f.result.Errors = map[string]error{}
+	f.queries = append(f.queries, query)
+	result, found := f.results[query.Mode]
+	if !found {
+		result = f.result
 	}
-	return f.result
+	if result.Errors == nil {
+		result.Errors = map[string]error{}
+	}
+	return result
 }
 
 type fakePackCache struct {
@@ -1089,6 +1343,7 @@ type fakeProvider struct {
 	downloads        int
 	downloaded       []string
 	downloadErr      error
+	downloadErrors   map[string]error
 	payloads         map[string][]byte
 	filenames        map[string]string
 	streamBytes      int64
@@ -1104,6 +1359,9 @@ func (f *fakeProvider) Search(context.Context, provider.SearchQuery) ([]domain.C
 func (f *fakeProvider) Download(_ context.Context, candidate domain.Candidate, writer io.Writer) (provider.DownloadMetadata, error) {
 	f.downloads++
 	f.downloaded = append(f.downloaded, candidate.ResultID)
+	if err := f.downloadErrors[candidate.ResultID]; err != nil {
+		return provider.DownloadMetadata{}, err
+	}
 	if f.downloadErr != nil {
 		return provider.DownloadMetadata{}, f.downloadErr
 	}

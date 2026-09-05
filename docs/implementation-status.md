@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 1 (explicit provider search modes) is implemented and committed
-- Next safe action: implement Task 2 (exact-first workflow fallback); production remains out of scope
+- Current task: codebase correctness-repair Task 2 (exact-first workflow fallback) is implemented and committed
+- Next safe action: implement Task 3 (archive and forced-member safety); production remains out of scope
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 2 — exact-first workflow fallback
+
+- The workflow now performs one explicit exact-hash search before broad search, scores and persists every exact candidate, and tries eligible exact candidates lazily in provider order until one installs. Ineligible, previously rejected, malformed, and wrong-episode exact candidates no longer hide later exact candidates, and broad search starts only after exact candidates are exhausted.
+- Exact and broad candidate records are merged by stable provider/result identity before the repository's replace-style broad write, so exact evidence survives fallback without duplicate persistence. The terminal candidate count uses the unique union.
+- Broad fallback retains the existing top-three score-tier/LAPSE tournament and same-installed-candidate reassessment. Broad provider errors replace exact-phase errors, while exact candidate failures remain available for deterministic, technical, and throttled outcome classification; a fully unavailable broad phase retains its prior precedence.
+- Debug workflow logs now record bounded `search.phase_completed` events with `search_mode`, candidate count, and provider-error count. Info logs remain free of release names, download references, and absolute paths.
+- Focused RED/GREEN command: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/workflow -race -count=1 -run 'TestService(TriesExactCandidatesSequentiallyAndSkipsBroadAfterSuccess|FallsBackToBroadAfterExactCandidateFailure|Exact)'`.
+- Affected verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/workflow ./internal/app -race -count=1` and `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test/e2e -tags=e2e -race -count=1`.
+- Next task: conservative archive ranges and universal forced-only member selection.
 
 ### Conventional repairs Task 1 — explicit provider search modes
 
