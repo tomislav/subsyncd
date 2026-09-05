@@ -6,12 +6,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: codebase correctness-repair Tasks 1–9, the final review fix wave, and its authorized focused follow-up are implemented and locally verified; production remains out of scope
-- Next safe action: re-review the decomposed-Unicode correction, then request separate approval before any push, image publication, or deployment
-- Latest follow-up: decomposed Unicode release suffixes retain their single-episode/range evidence; the complete local verification matrix passed without live services or production-host access
+- Next safe action: re-review the correction for marked numeric endpoints, then request separate approval before any push, image publication, or deployment
+- Latest follow-up: combining marks preserve decomposed release text without hiding numeric episode continuations; the complete local verification matrix passed without live services or production-host access
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs corrective round 2 — marked numeric endpoints
+
+- The combining-mark exception now applies only when the matched continuation prefix ends in bare `E` or `e`. Marks after complete numeric endpoints remain explicit episode evidence, preventing ambiguous separated expressions from falling through to a single token or retaining an initial range.
+- RED reproduced all 36 nonspacing/enclosing-mark combinations across tabs, nonbreaking spaces, em spaces, separated endpoints, and all three range forms. GREEN checks `episodeRange`, `Select`, and `SelectSingleEpisode`, while composed/decomposed `Édition`/`Épisode` and all earlier ambiguity controls remain green.
+- Fresh verification passed focused pack/workflow controls, complete pack/workflow and repository race suites, vet, tagged E2E, credential-unset provider contracts (all three skipped), Compose, formatting/diff checks, and privacy/reference scans. Full/E2E used approved loopback fake servers; no external services, production hosts, image builds, push, or deployment were used.
+- Commit: `fix: retain marked numeric episode continuation evidence` (corrective round 2 based on `2cbca93`). Next safe action: independent re-review.
 
 ### Conventional repairs corrective review — decomposed Unicode suffixes
 
