@@ -13,6 +13,7 @@ Read these documents before changing behavior:
 7. `docs/superpowers/specs/2026-09-04-lapse-score-tier-tournament-design.md` and its matching plan before changing shortlist preparation, LAPSE evaluation, early stopping, or synchronization fallback
 8. `docs/superpowers/specs/2026-09-04-structured-loki-logging-design.md` and its matching plan before changing logging levels, event ownership, fields, privacy, or Alloy/Loki guidance
 9. `docs/superpowers/specs/2026-09-05-arrapi-stable-identity-reconciliation-design.md` and its matching plan before changing Sonarr/Radarr clients, catalog identities, history reconciliation, or reconciliation cursor behavior
+10. `docs/superpowers/specs/2026-09-05-codebase-correctness-repairs-design.md` and its matching plan before changing exact/broad acquisition phases, archive range parsing, installation notification atomicity, deleted-sidecar recovery, YAML document validation, root Silo mappings, or provider response-lifetime permits
 
 `AGENTS.md` and `docs/implementation-status.md` are the authoritative entry points for current behavior. Historical design material that lived outside the original `subsyncd/` subtree is not required by the standalone repository.
 

@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: the local production-access runbook convention is installed and verified
-- Next safe action: push the tracked runbook convention when requested; production deployment still requires separate approval and rotation of the affected SubDL key
+- Current task: the codebase correctness-repair design is approved and committed for review
+- Next safe action: after design review, write and commit the implementation plan; do not change production behavior before that plan is approved
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Codebase correctness-repair design
+
+- Commit `bdda491` records the approved architecture for the eight remaining findings from the 2026-09-05 conventional review. The two already-repaired findings—stable Arr history identity and OpenSubtitles parent-series identity—are explicitly outside its implementation scope.
+- The design makes exact and broad provider searches explicit workflow phases, retains every exact candidate, filters and downloads them sequentially, falls back to broad search after exact exhaustion, and preserves distinct deterministic, technical, and throttled outcomes.
+- It defines conservative hyphenated episode ranges, universal forced-only member policy, one atomic installation/outbox SQLite transaction with filesystem rollback, first-install semantics for a missing managed sidecar, pre-expansion multi-document YAML rejection, root-aware Silo mappings, and response-body-owned provider concurrency permits.
+- No schema or configuration migration is planned. The existing notification outbox remains asynchronously delivered: inability to persist an intent fails and rolls back installation, while a remote Silo delivery failure after commit does not.
+- Documentation self-review found no placeholders, unresolved alternatives, or contradictory ownership boundaries. `git diff --check` passed. No production code, image, provider, Silo, or Hades state changed.
+- Next task: obtain review of the committed design, then use the planning workflow to write a test-driven implementation plan.
 
 ### Local production-access runbook convention
 
