@@ -5,9 +5,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: single-run LAPSE feasibility verified against v2.0.5; implementation proposal pending approval
-- Next safe action: review the proposed single-run candidate evaluation design before changing the tournament workflow
-- Latest follow-up: remaining-system repairs are pushed at `3ad9aee`; current feasibility work changes documentation only, with no runtime or production modification
+- Current task: single-run LAPSE implemented and verified; independent review and publication pending
+- Next safe action: complete independent review, then fast-forward main and push the verified single-run preparation change
+- Latest follow-up: single-run preparation is committed at `cfcb21c`; production rollout remains separate
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
@@ -880,10 +880,17 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ### Implementation — single-run LAPSE preparation (2026-09-06)
 
-- Commit: this task's `perf: prepare LAPSE candidates in a single run` commit; exact SHA and RED/GREEN evidence are recorded in `.superpowers/sdd/2026-09-05-single-run-lapse/task-1-report.md`.
+- Commit: `cfcb21c` (`perf: prepare LAPSE candidates in a single run`); focused RED/GREEN evidence is summarized below.
 - Adopted one validated `SynchronizeCandidate` call per LAPSE-required acquisition candidate. Preparation retains the original selected source separately from its output and actual `SyncResult`; tied tiers rank that result's confidence and installation consumes the retained artifact without another process. Workflow no longer requires diagnostic analysis. Exact/score bypass, same-candidate reassessment, upgrades, lazy tiers/top-three cap, original-source rejection identity, strict syncer validation, atomic installation/outbox, and rollback guards remain intact.
 - Cached members stay immutable. Cached, exact, and broad preparation use distinct output indexes, retained outputs survive tie reordering/fallback, and failed/discarded private artifacts are removed promptly. Tightened cancellation after cached preparation so it starts no provider search. Acquisition emits only the sync lifecycle plus `lapse_prepare` decisions; standalone diagnostic analysis remains unchanged.
 - Focused RED reproduced extra unique-leader analysis, three analyses plus winner-only synchronization for three viable ties, and a provider search after cached cancellation. GREEN covers real installer/SQLite output bytes, checksum and full synchronization provenance; retained-output installation fallback; original-source rejection checksums; cached/provider output uniqueness; immutable cached members; failed-output cleanup; cancellation; technical failure classification; and existing bypass/diagnostic boundaries.
 - Verification passed with `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache`: `go test ./internal/workflow ./internal/syncer ./internal/app ./internal/worker -race -count=1`, tagged `go test ./test/e2e -tags=e2e -race -count=1`, focused regressions, gofmt, and `git diff --check`. Fake-server suites required loopback permission; no real Arr/provider/Silo or production operation occurred.
 - Next task: controller task review, final repository-wide verification and independent branch review, then the user-authorized GitHub integration/push. No push or production deployment performed by this implementation task.
 - Controller full-suite follow-up: repaired a pre-existing worker test fake exposed by concurrent completion/renewal. Its global completion flag incorrectly rejected renewals for unrelated jobs; tracking completing job IDs matches the repository contract while preserving the same-job guard. The existing concurrency test now deliberately overlaps completion with other jobs, reproducing RED before the fixture-only change. No worker runtime behavior changed. The full worker package passed `go test ./internal/worker -race -count=20` (13.521s) with the writable caches above.
+
+### Single-run preparation verification and documentation — 2026-09-06
+
+- Runtime commit `cfcb21c`; documentation commit follows it. Updated contributor invariants, provider/operations/architecture guidance and historical design status to describe one acquisition output-producing invocation per required candidate, retained-output ranking/fallback, original-source rejection identity and sync lifecycle ordering. Standalone diagnostic analysis remains dry-run.
+- Verified the official Linux arm64 LAPSE v2.0.5 archive SHA-256 `23226fea64f7141687b764e5d080b6ed4f9e2fbed476938363e993bd3705ee17` in an isolated local Debian 13.2 container with networking disabled, no configuration/media/data mounts, and synthetic subtitle references only. Dry/output decision metrics matched; solid output timings matched the reference with unchanged source/no backup; strict unsure returned exit 2 without output. This supplements the native macOS/source verification above, and is not a Hades performance benchmark or complete audio/split-format matrix.
+- Full `go test ./... -race -count=1` passed after the worker test-double correction documented above. `go vet ./...`, tagged E2E race, release Dockerfile parity, Compose configuration, gofmt and diff checks passed. All network tests used local fakes; no production action occurred.
+- Next action: finish independent task and whole-branch review, then publish to GitHub main as authorized. No configuration/scoring thresholds or production deployment changed.

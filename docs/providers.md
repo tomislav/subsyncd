@@ -83,10 +83,10 @@ For one media/language job:
 6. Persist score and rejection evidence for every result, but never a signed download URL or provider token.
 7. Remove active deterministic rejections before shortlisting, allowing later-ranked candidates to advance.
 8. Cap only the broad, non-hash shortlist at the best three eligible candidates and partition it into equal release-score tiers.
-9. Lazily download/analyze only the highest remaining tier. For a first-install candidate scoring at least 75, bypass LAPSE only when identity, release group, and (for TV) episode evidence are all present.
-10. For equal-score LAPSE candidates, analyze the complete tier and rank solid results by analysis confidence, provider priority, rating, provider/result identity. Synchronize only the winner; fall back within the analyzed tier, then to a lower score tier, only after failure.
+9. Lazily download/prepare only the highest remaining tier. For a first-install candidate scoring at least 75, bypass LAPSE only when identity, release group, and (for TV) episode evidence are all present.
+10. For equal-score LAPSE candidates, prepare the complete tier with one strict output-producing invocation per candidate and rank solid results by the resulting confidence, provider priority, rating, provider/result identity. Install the winner's retained output directly; on candidate-local installation failure, try another prepared tie before a lower score tier.
 
-Candidate downloads, extraction, and synchronization scratch use the system temporary directory. Raw archives and discarded candidates are released promptly; viable equal-score candidates remain available through synchronization fallback. Final subtitle staging remains beside the media, while pack-cache publication stages inside the persistent cache root.
+Candidate downloads, extraction, and synchronization scratch use the system temporary directory. Raw archives and discarded candidates are released promptly; viable equal-score candidates remain available through installation fallback. Final subtitle staging remains beside the media, while pack-cache publication stages inside the persistent cache root.
 
 Candidate-local installer validation failures also advance within the tournament, recording the original selected artifact's rejection evidence. Format-changing upgrades advance without quarantining the candidate. Media changes, publication failures, and rollback failures remain terminal technical errors; filesystem and transactional media-fingerprint checks prevent installation against stale media.
 
@@ -122,7 +122,7 @@ Sonarr/Radarr hydration derives streaming-service evidence from explicit web-rel
 
 Edition comparison normalizes punctuation and recognizes Director's Cut, Extended, Remastered, Unrated, Theatrical, Final Cut, Special Edition, Ultimate Cut, Redux, and Anniversary Edition labels. Edition markers are read from the release descriptor after a movie year when present, so a title containing edition-like words is not mistaken for an edition. An explicit matching edition contributes 10 points; an explicit mismatch is rejected.
 
-Release score is primary and lower score tiers cannot outrank a solid higher tier. Within one equal-score tier, analysis confidence is followed by configured provider priority, provider rating, provider ID, then result ID. Popularity already contributes up to two points to the primary score. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default.
+Release score is primary and lower score tiers cannot outrank a solid higher tier. Within one equal-score tier, LAPSE confidence is followed by configured provider priority, provider rating, provider ID, then result ID. Popularity already contributes up to two points to the primary score. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default.
 
 ## Rate limits and cooldowns
 

@@ -26,7 +26,7 @@ A Sonarr media file associated with multiple episodes is currently outside the s
 
 ## Acquisition and publication
 
-Each canonical language owns an ordered provider chain. Candidates pass identity gates and deterministic release scoring before any download. Exact hashes can install directly; policy-qualified strong first installs may use an auditable score bypass; other candidates enter the lazy score-tier LAPSE tournament. Deterministic candidate failures are scoped and quarantined, while operational failures remain retryable.
+Each canonical language owns an ordered provider chain. Candidates pass identity gates and deterministic release scoring before any download. Exact hashes can install directly; policy-qualified strong first installs may use an auditable score bypass; other candidates enter the lazy score-tier LAPSE tournament. Each required candidate is prepared with one strict output-producing LAPSE invocation. Equal-score candidates rank by the resulting confidence, and the retained winning artifact installs without repeating LAPSE. Deterministic candidate failures are scoped and quarantined, while operational failures remain retryable.
 
 Installation validates and stages a sidecar beside its destination, applies permissions, fsyncs, atomically renames, fsyncs the directory, and commits checksum-bound provenance. Managed replacement uses a retained rollback copy. If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
 

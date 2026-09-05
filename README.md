@@ -12,7 +12,7 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 - **Your languages, your providers:** choose a different provider order for each language. Adding a language schedules searches for already-indexed media after a restart.
 - **Checks what you already have:** detects embedded subtitles and separate subtitle files before searching.
 - **Release-aware matching:** compares file hashes and release details to find suitable subtitles.
-- **Automatic synchronization:** uses bundled LAPSE to check and adjust timing when a match needs verification.
+- **Automatic synchronization:** uses bundled LAPSE to check and adjust timing in one run when a candidate needs verification.
 - **Season-pack support:** extracts the matching episode from ZIP and RAR downloads, skipping ambiguous matches.
 - **Ongoing searches and upgrades:** retries missing subtitles and looks for better matches for subtitles it manages.
 - **Respects your files:** protects existing subtitles and user edits from automatic replacement.

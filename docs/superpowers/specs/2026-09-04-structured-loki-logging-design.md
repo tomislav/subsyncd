@@ -1,5 +1,8 @@
 # Structured Loki Logging Design
 
+> Current contract: [single-run LAPSE preparation](../specs/2026-09-05-single-run-lapse-design.md) supersedes the acquisition dry-run/second synchronization sequence described below. Score-tier ordering remains; acquisition emits one synchronization event pair per required candidate.
+
+
 **Status:** Approved for implementation
 
 ## Purpose

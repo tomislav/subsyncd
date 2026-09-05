@@ -1,5 +1,8 @@
 # Structured Loki Logging Implementation Plan
 
+> Current contract: [single-run LAPSE preparation](../specs/2026-09-05-single-run-lapse-design.md) supersedes the acquisition dry-run/second synchronization sequence described below. Score-tier ordering remains; acquisition emits one synchronization event pair per required candidate.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Emit comprehensive, privacy-safe newline-delimited JSON events that Grafana Alloy can collect and query in Loki without changing subtitle behavior.
