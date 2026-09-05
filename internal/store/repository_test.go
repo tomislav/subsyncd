@@ -991,6 +991,95 @@ func TestApplyMediaEventIsIdempotentAndResetsConfiguredLanguages(t *testing.T) {
 	}
 }
 
+func TestEnsureConfiguredLanguageSearchesBackfillsOnlyMissingRows(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+
+	supported := testMedia()
+	supportedID, _, err := repo.UpsertMedia(ctx, supported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.db.Exec(`INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, lease_owner, lease_until_ns, priority, rerun_requested) VALUES (?, 'en', 'pending', 4, 2, ?, 'installed', 'active-job', ?, ?, 1)`, supportedID, now.Add(30*24*time.Hour).UnixNano(), now.Add(5*time.Minute).UnixNano(), SearchPriorityUpgrade); err != nil {
+		t.Fatal(err)
+	}
+
+	unsupported := testMedia()
+	unsupported.EntityID++
+	unsupported.Ref.FileID++
+	unsupported.Fingerprint.FileID++
+	unsupported.Fingerprint.Path = "/media/combined.mkv"
+	unsupported.UnsupportedReason = domain.UnsupportedMultiEpisode
+	unsupportedID, _, err := repo.UpsertMedia(ctx, unsupported)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outside := testMedia()
+	outside.EntityID += 2
+	outside.Ref.Instance = "removed-instance"
+	outside.Ref.FileID += 2
+	outside.Fingerprint.FileID += 2
+	outside.Fingerprint.Path = "/media/outside.mkv"
+	outsideID, _, err := repo.UpsertMedia(ctx, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inserted, err := repo.EnsureConfiguredLanguageSearches(ctx, []string{supported.Ref.Instance}, []domain.Language{"en", "hr"}, now)
+	if err != nil || inserted != 3 {
+		t.Fatalf("EnsureConfiguredLanguageSearches() = %d/%v, want 3/nil", inserted, err)
+	}
+
+	var state, outcome, owner string
+	var attempt, failureAttempt, priority int
+	var nextAttempt, leaseUntil int64
+	var rerun bool
+	if err := repo.store.db.QueryRow(`SELECT state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, lease_owner, lease_until_ns, priority, rerun_requested FROM search_states WHERE media_id=? AND language='en'`, supportedID).Scan(&state, &attempt, &failureAttempt, &nextAttempt, &outcome, &owner, &leaseUntil, &priority, &rerun); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || attempt != 4 || failureAttempt != 2 || nextAttempt != now.Add(30*24*time.Hour).UnixNano() || outcome != "installed" || owner != "active-job" || leaseUntil != now.Add(5*time.Minute).UnixNano() || priority != int(SearchPriorityUpgrade) || !rerun {
+		t.Fatalf("existing English schedule was changed: state=%s attempts=%d/%d next=%d outcome=%s owner=%s lease=%d priority=%d rerun=%t", state, attempt, failureAttempt, nextAttempt, outcome, owner, leaseUntil, priority, rerun)
+	}
+
+	if err := repo.store.db.QueryRow(`SELECT state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, priority FROM search_states WHERE media_id=? AND language='hr'`, supportedID).Scan(&state, &attempt, &failureAttempt, &nextAttempt, &outcome, &priority); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || attempt != 0 || failureAttempt != 0 || nextAttempt != now.UnixNano() || outcome != "" || priority != int(SearchPriorityMissing) {
+		t.Fatalf("Croatian backfill = state=%s attempts=%d/%d next=%d outcome=%q priority=%d", state, attempt, failureAttempt, nextAttempt, outcome, priority)
+	}
+
+	if err := repo.store.db.QueryRow(`SELECT state, next_attempt_at_ns, last_outcome, priority FROM search_states WHERE media_id=? AND language='hr'`, unsupportedID).Scan(&state, &nextAttempt, &outcome, &priority); err != nil {
+		t.Fatal(err)
+	}
+	if state != "complete" || nextAttempt != 0 || outcome != string(domain.UnsupportedMultiEpisode) || priority != int(SearchPriorityMissing) {
+		t.Fatalf("unsupported Croatian backfill = state=%s next=%d outcome=%q priority=%d", state, nextAttempt, outcome, priority)
+	}
+
+	var outsideRows int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM search_states WHERE media_id=?`, outsideID).Scan(&outsideRows); err != nil {
+		t.Fatal(err)
+	}
+	if outsideRows != 0 {
+		t.Fatalf("removed instance received %d search rows", outsideRows)
+	}
+
+	if _, err := repo.store.db.Exec(`UPDATE search_states SET attempt=9, next_attempt_at_ns=?, priority=? WHERE media_id=? AND language='hr'`, now.Add(7*24*time.Hour).UnixNano(), SearchPriorityUpgrade, supportedID); err != nil {
+		t.Fatal(err)
+	}
+	inserted, err = repo.EnsureConfiguredLanguageSearches(ctx, []string{supported.Ref.Instance}, []domain.Language{"en", "hr"}, now.Add(time.Hour))
+	if err != nil || inserted != 0 {
+		t.Fatalf("second EnsureConfiguredLanguageSearches() = %d/%v, want 0/nil", inserted, err)
+	}
+	if err := repo.store.db.QueryRow(`SELECT attempt, next_attempt_at_ns, priority FROM search_states WHERE media_id=? AND language='hr'`, supportedID).Scan(&attempt, &nextAttempt, &priority); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 9 || nextAttempt != now.Add(7*24*time.Hour).UnixNano() || priority != int(SearchPriorityUpgrade) {
+		t.Fatalf("existing Croatian schedule was reset: attempt=%d next=%d priority=%d", attempt, nextAttempt, priority)
+	}
+}
+
 func TestApplyMediaEventDuringLeaseRequestsOneRerun(t *testing.T) {
 	repo := openTestRepository(t)
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)

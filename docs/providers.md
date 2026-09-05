@@ -16,6 +16,8 @@ languages:
 
 Provider instances are independently credentialed and throttled. Startup rejects unknown providers and language/provider combinations the adapter cannot represent. There is no hard-coded English/Croatian coupling in the workflow.
 
+Language and provider routing is loaded at startup. When a newly configured language has no search row for an already-indexed media item belonging to a currently configured Arr instance, startup creates one immediately due missing-priority row using only SQLite. Existing rows—including attempts, future upgrade times, leases, and rerun state—are never reset. Unsupported multi-episode files receive the same terminal unsupported outcome used during import. Adding a provider to an existing language changes that language's future searches after restart without rewriting its schedule.
+
 Hearing-impaired/SDH tracks and candidates are disallowed by default. Set `allow_hearing_impaired: true` at the configuration root to opt in; when enabled, an existing matching SDH track may satisfy the language and an HI provider result remains eligible.
 
 ## Built-in providers

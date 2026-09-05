@@ -294,6 +294,61 @@ func TestNewAssemblesLanguageWorkflowWithoutContactingRemoteServices(t *testing.
 	}
 }
 
+func TestNewBackfillsNewConfiguredLanguageForIndexedMedia(t *testing.T) {
+	cfg := testConfig(t)
+	ctx := context.Background()
+	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(ctx, filepath.Join(cfg.DataDir, "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := domain.Media{
+		EntityID: 7,
+		Ref:      domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7},
+		Fingerprint: domain.MediaFingerprint{
+			Path: filepath.Join(cfg.MediaRoots[0], "Movie.mkv"), FileID: 7, Size: 100, ModTime: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+		},
+		Title: "Movie", Year: 2024,
+	}
+	mediaID, _, err := database.Repository().UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	englishDue := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	if err := database.Repository().UpsertSearchStateWithPriority(ctx, mediaID, "en", englishDue, store.SearchPriorityUpgrade); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Languages["hr"] = config.LanguageConfig{Providers: []string{"english"}}
+	before := time.Now()
+	application, err := New(ctx, cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	after := time.Now()
+
+	english, err := application.Repository.GetSearchStatus(ctx, mediaID, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if english.Priority != store.SearchPriorityUpgrade || !english.NextAttemptAt.Equal(englishDue) {
+		t.Fatalf("existing English schedule changed: %#v", english)
+	}
+	croatian, err := application.Repository.GetSearchStatus(ctx, mediaID, "hr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if croatian.State != "pending" || croatian.Priority != store.SearchPriorityMissing || croatian.NextAttemptAt.Before(before) || croatian.NextAttemptAt.After(after) {
+		t.Fatalf("Croatian startup backfill = %#v, want immediately pending missing search", croatian)
+	}
+}
+
 func TestExplainListsActiveCandidateRejections(t *testing.T) {
 	cfg := testConfig(t)
 	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})

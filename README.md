@@ -8,6 +8,7 @@ It intentionally has no browser UI and no management API. The HTTP surface is li
 
 - Any canonical BCP 47 language can be configured independently.
 - Each language has an explicit ordered provider list. The example routes Croatian only to Titlovi and English to OpenSubtitles followed by SubDL.
+- Adding a language later backfills an immediately due, low-priority search for every media item already indexed under a configured Arr instance. Existing schedules and installations are preserved.
 - Embedded tracks are fingerprint-cached in SQLite; sidecars are rescanned before every search.
 - OpenSubtitles file hashes are calculated lazily once per exact file fingerprint and persisted.
 - Exact-hash matches skip LAPSE. A first install with a score of at least 75 plus identity, release-group, episode, and any required movie-edition evidence can also skip it; uncertain matches, packs, edition-unknown movies, and upgrades require LAPSE's strict `solid` verdict by default.
@@ -91,7 +92,7 @@ http://subsyncd:8097/webhooks/radarr-main?token=THE_RADARR_WEBHOOK_TOKEN
 
 Enable download/import, upgrade, rename, and file-delete events. Connections are configured manually; `subsyncd` does not create or modify Arr settings. Arr test events and imports/renames that are deliberately outside configured path scope return an ignored success and create no work. Unsafe path/filesystem failures still fail the request. Exact redeliveries are transactionally idempotent.
 
-Reconciliation uses `github.com/cplieger/arrapi/v2` v2.0.5 for bounded history and current movie/episode requests. It runs immediately after startup without blocking startup itself, normally repeats every six hours, and backs failures off after 5 minutes, 15 minutes, 1 hour, then 6 hours. Second-resolution history requests deliberately overlap the fractional persisted cursor; stable Arr history event IDs make that replay harmless. Every persisted media row has a positive stable Arr entity ID, while physical file ID remains separate and replaceable. Startup performs no Arr request, identity backfill, or full-library scan.
+Reconciliation uses `github.com/cplieger/arrapi/v2` v2.0.5 for bounded history and current movie/episode requests. It runs immediately after startup without blocking startup itself, normally repeats every six hours, and backs failures off after 5 minutes, 15 minutes, 1 hour, then 6 hours. Second-resolution history requests deliberately overlap the fractional persisted cursor; stable Arr history event IDs make that replay harmless. Every persisted media row has a positive stable Arr entity ID, while physical file ID remains separate and replaceable. Startup performs no Arr request, identity backfill, or full-library scan. It does reconcile configured languages locally in SQLite: a newly added language gets one missing-priority search for each already-indexed media item, while every existing search row remains unchanged. Configuration changes require a restart.
 
 subsyncd currently supports only databases created from `001_baseline.sql`. A database containing migration names from the pre-release `001_initial.sql`–`010_media_entity_ids.sql` lineage is rejected explicitly. Stop the service, preserve the old data directory if rollback matters, and start with an empty data directory. The migration runner remains in place for migrations added after the baseline.
 

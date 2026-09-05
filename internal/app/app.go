@@ -189,6 +189,14 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	if err := provider.ValidateLanguageRoutes(routes, providers); err != nil {
 		return nil, err
 	}
+	languages := sortedLanguages(cfg)
+	instanceNames := make([]string, 0, len(cfg.Instances))
+	for _, instance := range cfg.Instances {
+		instanceNames = append(instanceNames, instance.Name)
+	}
+	if _, err := repository.EnsureConfiguredLanguageSearches(ctx, instanceNames, languages, clock.Now()); err != nil {
+		return nil, err
+	}
 
 	packCache, err := pack.NewCache(filepath.Join(cfg.DataDir, "pack-cache"), repository, clock, cfg.PackCache.MaxBytes)
 	if err != nil {
@@ -215,7 +223,6 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		}
 	}
 
-	languages := sortedLanguages(cfg)
 	wake := make(chan struct{}, 1)
 	notify := func() {
 		select {

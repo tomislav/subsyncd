@@ -1485,6 +1485,36 @@ func (r *Repository) EnsureInstance(ctx context.Context, name, instanceType, bas
 	return nil
 }
 
+func (r *Repository) EnsureConfiguredLanguageSearches(ctx context.Context, instances []string, languages []domain.Language, now time.Time) (int64, error) {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin configured language search backfill: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var inserted int64
+	for _, instance := range instances {
+		for _, language := range languages {
+			result, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, next_attempt_at_ns, last_outcome, priority)
+				SELECT id, ?, CASE WHEN unsupported_reason='' THEN 'pending' ELSE 'complete' END, CASE WHEN unsupported_reason='' THEN ? ELSE 0 END, unsupported_reason, ?
+				FROM media WHERE instance=?
+				ON CONFLICT(media_id, language) DO NOTHING`, language.String(), now.UnixNano(), SearchPriorityMissing, instance)
+			if err != nil {
+				return 0, fmt.Errorf("backfill configured language %s for instance %s: %w", language, instance, err)
+			}
+			count, err := result.RowsAffected()
+			if err != nil {
+				return 0, fmt.Errorf("count configured language search backfill: %w", err)
+			}
+			inserted += count
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit configured language search backfill: %w", err)
+	}
+	return inserted, nil
+}
+
 func (r *Repository) GetReconciliationCursor(ctx context.Context, instance string) (time.Time, error) {
 	var raw string
 	if err := r.store.db.QueryRowContext(ctx, `SELECT reconciliation_cursor FROM instances WHERE name=?`, instance).Scan(&raw); err != nil {
