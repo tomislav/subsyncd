@@ -223,7 +223,7 @@ func TestWorkflowLogsCommittedProvenanceRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service := testService(t, managedSidecarInventory(repository.installation), &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
 	service.Repository = repository
 	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
 	service.Events = events

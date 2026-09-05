@@ -217,7 +217,8 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	if err != nil {
 		return result, err
 	}
-	inventorySatisfied := inventoryStopsSearch(current, request.Language, s.AllowHearingImpaired, installed, existing)
+	activeInstallation := installed && managedInstallationPresent(current, existing)
+	inventorySatisfied := inventoryStopsSearch(current, request.Language, s.AllowHearingImpaired, activeInstallation, existing)
 	embeddedCount, sidecarCount := inventoryTrackCounts(current)
 	events.Log(ctx, slog.LevelInfo, "inventory.refresh_completed", "subtitle inventory refreshed",
 		slog.Int("track_count", len(current.Tracks)),
@@ -229,7 +230,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		result.Outcome = OutcomeSatisfied
 		return result, nil
 	}
-	if installed && InstallationMatchesMedia(existing, request.Media) {
+	if activeInstallation && InstallationMatchesMedia(existing, request.Media) {
 		_, exact, scoreErr := installedScore(existing)
 		if scoreErr != nil {
 			return result, scoreErr
@@ -262,7 +263,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				s.logCandidateEvaluation(ctx, request, cached.Candidate, score)
 				if !match.Eligible(score, s.minimumScore()) {
 					result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "cached candidate score is below threshold or identity was rejected"})
-				} else if installed && sameInstalledCandidate(existing, request.Media, cached.Candidate) {
+				} else if activeInstallation && sameInstalledCandidate(existing, request.Media, cached.Candidate) {
 					existing, err = s.updateInstallationAssessment(ctx, existing, cached.Candidate, score)
 					if err != nil {
 						return result, err
@@ -272,12 +273,12 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 					result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 				} else {
 					downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, path: cached.Path}
-					analyzed, prepareErr := s.analyzeCandidate(ctx, request, downloaded, installed, existing)
+					analyzed, prepareErr := s.analyzeCandidate(ctx, request, downloaded, activeInstallation, existing)
 					if prepareErr == nil {
 						var finalized finalizedCandidate
 						finalized, prepareErr = s.finalizeCandidate(ctx, request, analyzed, workspace, 0)
 						if prepareErr == nil {
-							return s.install(ctx, request, finalized, existing, installed, result)
+							return s.install(ctx, request, finalized, existing, activeInstallation, result)
 						}
 					}
 					recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
@@ -298,7 +299,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	terminal, err := s.tryExactCandidates(ctx, request, workspace, existing, installed, exact, &result, &candidateFailures, &exactRecords)
+	terminal, err := s.tryExactCandidates(ctx, request, workspace, existing, activeInstallation, exact, &result, &candidateFailures, &exactRecords)
 	candidateCount = len(exactRecords)
 	if err != nil || terminal {
 		return result, err
@@ -364,7 +365,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		return result, err
 	}
 	match.Rank(evaluated)
-	if installed && InstallationMatchesMedia(existing, request.Media) {
+	if activeInstallation && InstallationMatchesMedia(existing, request.Media) {
 		for _, item := range evaluated {
 			if !match.Eligible(item.Score, s.minimumScore()) || !sameInstalledCandidate(existing, request.Media, item.Candidate) {
 				continue
@@ -384,7 +385,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		if !match.Eligible(item.Score, s.minimumScore()) {
 			continue
 		}
-		if installed {
+		if activeInstallation {
 			if sameInstalledCandidate(existing, request.Media, item.Candidate) {
 				result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "provider candidate is already installed"})
 				continue
@@ -458,7 +459,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				continue
 			}
 			downloaded := downloadedCandidate{candidate: item.Candidate, score: item.Score, priority: item.ProviderPriority, path: path}
-			analyzed, syncErr := s.analyzeCandidate(ctx, request, downloaded, installed, existing)
+			analyzed, syncErr := s.analyzeCandidate(ctx, request, downloaded, activeInstallation, existing)
 			if syncErr != nil {
 				if err := ctx.Err(); err != nil {
 					return result, err
@@ -497,7 +498,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_finalize", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: "solid"})
 			}
 			result.Decisions = append(result.Decisions, Decision{Stage: "early_stop", ProviderID: analyzed.candidate.ProviderID, ResultID: analyzed.candidate.ResultID, Reason: fmt.Sprintf("installed from score %d; lower tiers skipped", analyzed.score.Total)})
-			return s.install(ctx, request, ready, existing, installed, result)
+			return s.install(ctx, request, ready, existing, activeInstallation, result)
 		}
 		if tierEnd < len(eligible) {
 			if err := ctx.Err(); err != nil {
@@ -1086,6 +1087,18 @@ func inventoryStopsSearch(current inventory.Inventory, language domain.Language,
 			continue
 		}
 		if track.Embedded || track.Protected || !installed || filepath.Clean(track.Path) != filepath.Clean(installation.Path) || track.Checksum != installation.Checksum {
+			return true
+		}
+	}
+	return false
+}
+
+func managedInstallationPresent(current inventory.Inventory, installation store.Installation) bool {
+	for _, track := range current.Tracks {
+		if track.Embedded || track.Path == "" {
+			continue
+		}
+		if filepath.Clean(track.Path) == filepath.Clean(installation.Path) && track.Checksum == installation.Checksum {
 			return true
 		}
 	}

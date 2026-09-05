@@ -36,6 +36,48 @@ func TestServiceStopsForEmbeddedOrProtectedSubtitle(t *testing.T) {
 	}
 }
 
+func TestServiceReacquiresDeletedManagedExactSubtitle(t *testing.T) {
+	request := serviceRequest(t)
+	candidate := exactCandidate("same")
+	existing := matchingInstallation(request, candidate, []byte(`{"total":100,"contributions":[{"signal":"exact_hash","points":100}]}`))
+	existing.Checksum = "old-checksum"
+	repository := &workflowRepository{installation: existing, found: true}
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{candidate}},
+	}}
+	installer := &fakeInstaller{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, installer)
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || installer.calls != 1 {
+		t.Fatalf("Run() = %#v, %v; installs=%d", result, err, installer.calls)
+	}
+}
+
+func TestServiceProtectsModifiedPresentSidecar(t *testing.T) {
+	request := serviceRequest(t)
+	candidate := exactCandidate("same")
+	existing := matchingInstallation(request, candidate, []byte(`{"total":100,"contributions":[{"signal":"exact_hash","points":100}]}`))
+	existing.Checksum = "old-checksum"
+	repository := &workflowRepository{installation: existing, found: true}
+	searcher := &fakeSearcher{}
+	installer := &fakeInstaller{}
+	service := testService(t, inventory.Inventory{Tracks: []inventory.Track{{
+		Language:  request.Language,
+		Path:      existing.Path,
+		Checksum:  "modified-checksum",
+		Protected: true,
+	}}}, searcher, nil, &fakeSynchronizer{}, installer)
+	service.Repository = repository
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeSatisfied || searcher.calls != 0 || installer.calls != 0 {
+		t.Fatalf("Run() = %#v, %v; searches=%d installs=%d", result, err, searcher.calls, installer.calls)
+	}
+}
+
 func TestCandidateRecordStripsCredentialBearingIdentity(t *testing.T) {
 	record, err := candidateRecord(domain.Candidate{ProviderID: "subdl-main", ResultID: "/subtitle/movie.srt?api_key=secret", DownloadRef: "/subtitle/movie.srt?api_key=secret"}, domain.Score{Total: 50}, true)
 	if err != nil {
@@ -506,7 +548,7 @@ func TestServiceExactFormatChangingUpgradeContinuesToCompatibleCandidate(t *test
 		filenames: map[string]string{"different-format": "different-format.vtt"},
 	}
 	installer := &fakeInstaller{}
-	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, installer)
+	service := testService(t, managedSidecarInventory(repository.installation), searcher, nil, &fakeSynchronizer{}, installer)
 	service.Repository = repository
 	service.Providers = map[string]provider.Provider{"provider": adapter}
 
@@ -1000,7 +1042,7 @@ func TestServiceDoesNotReprocessInstalledProviderCandidateAfterRescore(t *testin
 			MediaModTimeNS: request.Media.Fingerprint.ModTime.UnixNano(),
 		},
 	}
-	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, installer)
+	service := testService(t, managedSidecarInventory(repository.installation), searcher, nil, synchronizer, installer)
 	service.Repository = repository
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
 
@@ -1024,7 +1066,7 @@ func TestServiceRefreshesCachedPackAssessmentWithoutTreatingItAsFailure(t *testi
 	searcher := &fakeSearcher{}
 	synchronizer := &fakeSynchronizer{}
 	repository := &workflowRepository{found: true, installation: matchingInstallation(request, candidate, []byte(`{"total":20}`))}
-	service := testService(t, inventory.Inventory{}, searcher, cache, synchronizer, &fakeInstaller{})
+	service := testService(t, managedSidecarInventory(repository.installation), searcher, cache, synchronizer, &fakeInstaller{})
 	service.Repository = repository
 
 	result, err := service.Run(context.Background(), request)
@@ -1043,7 +1085,7 @@ func TestServicePromotesSameCandidateToExactHashWithoutDownload(t *testing.T) {
 	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}
 	providerFake := &fakeProvider{id: "provider"}
 	repository := &workflowRepository{found: true, installation: matchingInstallation(request, candidate, []byte(`{"total":35}`))}
-	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service := testService(t, managedSidecarInventory(repository.installation), searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
 	service.Repository = repository
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
 
@@ -1410,6 +1452,14 @@ func matchingInstallation(request Request, candidate domain.Candidate, scoreJSON
 		ProviderID: candidate.ProviderID, CandidateID: candidate.ResultID, ScoreJSON: scoreJSON,
 		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(),
 	}
+}
+
+func managedSidecarInventory(installation store.Installation) inventory.Inventory {
+	return inventory.Inventory{Tracks: []inventory.Track{{
+		Language: domain.Language(installation.Language),
+		Path:     installation.Path,
+		Checksum: installation.Checksum,
+	}}}
 }
 
 type fakeInventory struct {

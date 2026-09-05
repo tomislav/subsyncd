@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 3 (archive and forced-member safety) is implemented locally; production remains out of scope
-- Next safe action: implement Task 4 (deleted managed-sidecar recovery) after this task commit
+- Current task: codebase correctness-repair Task 4 (deleted managed-sidecar recovery) is implemented locally; production remains out of scope
+- Next safe action: implement Task 5 (atomic installation and notification outbox) after this task commit
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 4 — deleted managed-sidecar recovery
+
+- Workflow provenance is now active only when the refreshed live inventory contains a non-embedded sidecar at the recorded path with the recorded checksum. A deleted managed sidecar therefore cannot satisfy a request, short-circuit an exact candidate, trigger same-candidate reassessment, constrain upgrade analysis, or select replacement-install semantics.
+- The historical installation row is retained until a successful first-install replacement overwrites it. A present sidecar with a different checksum remains protected and satisfies the request under the existing user-owned-sidecar policy.
+- RED/GREEN coverage proves a missing exact-hash sidecar is reacquired and a modified present sidecar causes neither provider search nor installation. Existing reassessment/logging fixtures now explicitly model their live managed sidecars.
+- Verification: focused workflow race test, complete `internal/workflow` race suite, tagged end-to-end race suite, and `git diff --check`. The restricted tagged run could not bind its local `httptest` listener; the same local-only command passed with loopback permission. No providers, Silo, Hades, images, or deployments were touched.
+- Commit: `fix: reacquire deleted managed subtitles`.
+- Next task: atomic installation and notification outbox.
 
 ### Conventional repairs Task 3 — conservative archive evidence and universal forced-member policy
 
