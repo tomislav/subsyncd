@@ -41,10 +41,11 @@ titlovi-main:
 
 OpenSubtitles supports exact file-hash search and broad metadata search as separate phases. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It reads only the first and last 64 KiB plus the file size, supports normal 64-bit media sizes without an artificial 9 GB ceiling, and is reused until any part of that fingerprint changes. Exact results score 100 and bypass LAPSE, but an unusable exact candidate advances to the next exact candidate and then broad fallback rather than ending the job. For movies, feature IMDb/TMDB IDs are comparable media identities. For episodes, OpenSubtitles feature IDs identify the episode while Sonarr supplies series IDs, so the adapter compares OpenSubtitles `parent_imdb_id`/`parent_tmdb_id` instead. Missing parent IDs remain neutral; episode feature IDs are never misrepresented as series IDs.
 
+The published subsyncd container includes the application's OpenSubtitles API key. Configure only the account username and password. Source builds and private wrappers may set `api_key` explicitly to override the built-in value; a build without an embedded key requires that override.
+
 ```yaml
 opensubtitles-main:
   type: opensubtitles
-  api_key: ${OPENSUBTITLES_API_KEY}
   username: ${OPENSUBTITLES_USERNAME}
   password: ${OPENSUBTITLES_PASSWORD}
   user_agent: subsyncd

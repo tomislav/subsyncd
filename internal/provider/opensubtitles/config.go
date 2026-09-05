@@ -13,6 +13,10 @@ const (
 	defaultMaxDownloadBytes = 32 << 20
 )
 
+// builtInAPIKey is populated at link time for official release builds. Keeping
+// the zero value lets source and wrapper builds supply their own api_key.
+var builtInAPIKey string
+
 type Config struct {
 	Type              string  `yaml:"type"`
 	APIKey            string  `yaml:"api_key"`
@@ -41,6 +45,9 @@ func DecodeConfig(payload []byte) (Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.APIKey == "" {
+		c.APIKey = builtInAPIKey
+	}
 	if c.BaseURL == "" {
 		c.BaseURL = defaultBaseURL
 	}

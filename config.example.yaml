@@ -41,7 +41,6 @@ providers:
     max_pages: 5
   opensubtitles-main:
     type: opensubtitles
-    api_key: ${OPENSUBTITLES_API_KEY}
     username: ${OPENSUBTITLES_USERNAME}
     password: ${OPENSUBTITLES_PASSWORD}
     user_agent: subsyncd

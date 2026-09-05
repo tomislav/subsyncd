@@ -58,10 +58,11 @@ The container job starts only after verification succeeds. It:
 2. Configures QEMU and Docker Buildx.
 3. Authenticates to GHCR using the ephemeral `GITHUB_TOKEN`.
 4. Generates OCI labels and tags from the repository/ref.
-5. Builds the existing root `Dockerfile` for `linux/amd64` and `linux/arm64`.
-6. Pushes a manifest list plus per-platform images to GHCR.
-7. Uses the GitHub Actions cache for reusable BuildKit layers.
-8. Publishes provenance and an SBOM with the image.
+5. Verifies that BuildKit-only `Dockerfile.release` differs from the legacy-compatible root `Dockerfile` solely by the approved OpenSubtitles application-key secret mount and linker setting.
+6. Builds `Dockerfile.release` for `linux/amd64` and `linux/arm64`.
+7. Pushes a manifest list plus per-platform images to GHCR.
+8. Uses the GitHub Actions cache for reusable BuildKit layers except the key-bearing Go stage, which is rebuilt so key rotation cannot reuse stale output.
+9. Publishes provenance and an SBOM with the image.
 
 Workflow permissions are minimal: `contents: read`, `packages: write`, and `attestations: write`/`id-token: write` only where required for provenance. No personal access token or registry password is stored as a repository secret.
 

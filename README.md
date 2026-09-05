@@ -84,6 +84,8 @@ docker build --build-arg VERSION=dev -t subsyncd:local .
 
 The configuration requires absolute `data_dir`, `media_roots`, mapping destinations, and `sync.lapse_path` values.
 
+Published containers include the subsyncd application key for OpenSubtitles. Native Go builds and images built from the legacy-compatible `Dockerfile` do not; their private configuration must set `api_key` on each OpenSubtitles provider. `Dockerfile.release` is reserved for the BuildKit-based publication workflow and requires its application key as a build secret.
+
 ## Arr webhooks
 
 Configure a webhook/connection in each Arr instance using its configured instance name and secret:
