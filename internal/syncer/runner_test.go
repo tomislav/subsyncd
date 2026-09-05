@@ -50,13 +50,22 @@ func TestOSRunnerCancellationKillsProcessGroup(t *testing.T) {
 		done <- err
 	}()
 	deadline := time.Now().Add(2 * time.Second)
+	var pid int
 	for {
-		if _, err := os.Stat(pidFile); err == nil {
-			break
+		payload, readErr := os.ReadFile(pidFile)
+		if readErr == nil {
+			parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(payload)))
+			if parseErr == nil && parsed > 0 {
+				pid = parsed
+				break
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			cancel()
+			t.Fatal(readErr)
 		}
 		if time.Now().After(deadline) {
 			cancel()
-			t.Fatal("helper did not publish child PID")
+			t.Fatal("helper did not publish a valid child PID")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -68,14 +77,6 @@ func TestOSRunnerCancellationKillsProcessGroup(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("runner did not return after cancellation")
-	}
-	payload, readErr := os.ReadFile(pidFile)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(payload)))
-	if parseErr != nil {
-		t.Fatal(parseErr)
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
