@@ -5,13 +5,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: observe the isolated Hades Stage 1 daemon canary after the stable-identity deployment
-- Next safe action: leave the two-movie canary running, inspect its next scheduled reconciliation, then separately authorize GitHub publication or broader scope only if desired
-- Latest follow-up: stable-identity Stage 1 reconciliation passed on Hades
+- Current task: observe the isolated Hades daemon canary after the stable-identity Stage 2 hydration test
+- Next safe action: leave the two-movie canary running, then explicitly choose between a real Arr webhook trial, one exact additional media mapping, or GitHub publication
+- Latest follow-up: Stage 2 adopted stable IDs for both mapped movies without provider traffic
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — stable-identity Hades Stage 2 hydration
+
+- The daemon stopped cleanly and its complete post-Stage-1 state was retained at `/opt/subsyncd-daemon-canary/data.before-stage2-f04b3c9`. Stage 2 did not broaden the exact two-file mapping boundary.
+- Sequential live Radarr searches for 1917 English and Arrival English completed as embedded `satisfied` outcomes in 8 ms and 5 ms, with zero candidates and provider errors. The existing rows adopted stable Radarr movie IDs `529` and `338` while retaining physical file IDs `1440` and `1168`; media remained exactly two rows.
+- Candidates, installations, provider cache/state, hashes, and notifications remained zero. The daemon restarted healthy and ready, and its immediate reconciliation completed successfully in 6 ms. It remains running on `subsyncd:hades-arrapi-f04b3c9` with the manual canary, sidecars, mappings, credentials, and other Hades services unchanged.
 
 ### Follow-up — stable-identity Hades Stage 1 retest
 
