@@ -2,7 +2,7 @@ name: subsyncd-daemon-canary
 
 services:
   subsyncd-daemon-canary:
-    image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-sha-b3a2d45}
+    image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-sha-4ddbcaf}
     command: ["serve", "--config", "/config/config.yaml"]
     restart: "no"
     init: true
@@ -14,8 +14,12 @@ services:
       - no-new-privileges:true
     environment:
       TZ: ${TZ:-Europe/Zagreb}
+      SONARR_CANARY_API_KEY: ${SONARR_CANARY_API_KEY:?set SONARR_CANARY_API_KEY in .env}
+      SONARR_CANARY_WEBHOOK_TOKEN: ${SONARR_CANARY_WEBHOOK_TOKEN:?set SONARR_CANARY_WEBHOOK_TOKEN in .env}
       RADARR_CANARY_API_KEY: ${RADARR_CANARY_API_KEY:?set RADARR_CANARY_API_KEY in .env}
       RADARR_CANARY_WEBHOOK_TOKEN: ${RADARR_CANARY_WEBHOOK_TOKEN:?set RADARR_CANARY_WEBHOOK_TOKEN in .env}
+      TITLOVI_USERNAME: ${TITLOVI_USERNAME:?set TITLOVI_USERNAME in .env}
+      TITLOVI_PASSWORD: ${TITLOVI_PASSWORD:?set TITLOVI_PASSWORD in .env}
       OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:?set OPENSUBTITLES_API_KEY in .env}
       OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:?set OPENSUBTITLES_USERNAME in .env}
       OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:?set OPENSUBTITLES_PASSWORD in .env}
@@ -34,6 +38,9 @@ services:
       - type: bind
         source: /srv/media/movies/Arrival (2016) [tmdbid-329865]
         target: /media/canary/movies/arrival
+      - type: bind
+        source: /srv/media/tv/1883 (2021) [tvdbid-396390]/Season 01
+        target: /media/canary/tv/1883-s01
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=512m,uid=${PUID:-1000},gid=${PGID:-1000}
     ports:

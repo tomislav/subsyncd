@@ -1,10 +1,16 @@
 # Hades daemon canary
 
-This isolated deployment tests daemon lifecycle, health, reconciliation, webhook deduplication, persisted queue dispatch, restart recovery, and structured logs against only two Radarr movies with full embedded English subtitles. It uses a fresh database, one worker, English only, OpenSubtitles only, no Silo, no automatic restart, and an immutable image tag.
+This isolated deployment now covers two exact Radarr movies plus one exact Sonarr episode. English routes only to OpenSubtitles and Croatian only to Titlovi. It uses one worker, confidence-gated LAPSE, no Silo, no automatic restart, and an immutable image tag. Radarr connection ID `8` is active; Sonarr delivery remains manual until its scoped webhook behavior has been observed separately.
 
-The two exact path mappings are the safety boundary. Before the first daemon start, run `doctor` once to create the database, stop all containers using it, and initialize `radarr-daemon-canary`'s reconciliation cursor to the current UTC time. This deliberately skips historical production Radarr events. Reconciliation consumes later unrelated entities as outside-scope audits without indexing or reading their media files; unsafe mappings and filesystem failures still fail the complete page atomically.
+The application-level safety boundary is the three exact file mappings. The Sonarr episode shares a directory with the rest of its season, so Docker must mount that directory writable to support atomic sidecar creation; subsyncd maps, indexes, and schedules only episode-file `10545`. The database must remain at exactly three media rows unless the canary is deliberately broadened.
 
-The HTTP listener is published only at Hades loopback port `18097`. Do not configure an automatic Radarr connection during this phase. Post the two sanitized fixtures manually, using the secret from the root-owned `.env` file without printing it.
+## Initial two-file acceptance plan (completed)
+
+The deployment began by testing daemon lifecycle, health, reconciliation, webhook deduplication, persisted queue dispatch, restart recovery, and structured logs against two Radarr movies with full embedded English subtitles.
+
+The original two exact path mappings were the initial safety boundary. Before the first daemon start, `doctor` created the database and `radarr-daemon-canary`'s reconciliation cursor was initialized to current UTC. This deliberately skipped historical production Radarr events. Reconciliation consumes later unrelated entities as outside-scope audits without indexing or reading their media files; unsafe mappings and filesystem failures still fail the complete page atomically.
+
+The HTTP listener is published only at Hades loopback port `18097`. The two sanitized movie fixtures were posted manually during this initial phase, using the secret from the root-owned `.env` file without printing it.
 
 Expected results:
 
@@ -66,3 +72,13 @@ Commit `4ddbcaf` includes the tested rule that a typed outside-scope import/rena
 Radarr connection ID `8`, named `subsyncd daemon canary`, targets the canary service over the shared `apps` network. It enables download/import, upgrade, rename, movie-file deletion, and upgrade-file deletion only. Radarr's connection test returned 200; its `Test` webhook was ignored by subsyncd with 204.
 
 A controlled real-shaped rename for mapped file `1440` returned 204, committed one event, woke one import-priority job, and completed as embedded `satisfied` in 6 ms. Exact redelivery returned 204 as `duplicate` and started no second job. A payload built in memory from an actual current but unmapped Radarr movie returned 204 as `ignored` with `event_count=1` and `applied_count=0`; its path was not printed or persisted. Media remained exactly two rows, events increased only for the mapped rename, and candidates, installations, provider cache, and media hashes remained zero. The container was left healthy and ready on the Stage 3 image. Observe one natural six-hour reconciliation before broadening scope.
+
+## Sonarr/Titlovi/LAPSE Stage 4 — 2026-09-05
+
+Stage 4 added only `1883` S01E06, Sonarr episode entity `3913` and episode-file `10545`. Before deployment, the exact file had no external subtitle and one embedded English SubRip stream. The Season 01 directory is mounted writable because a file-only bind cannot support atomic creation/rename of the sibling `.hr.srt`; the path mapping still admits only file `10545`. The two Radarr mappings were unchanged.
+
+The daemon was stopped and recoverable copies were created at `compose.yml.before-stage4-4ddbcaf`, `config.before-stage4-4ddbcaf`, `.env.before-stage4-4ddbcaf`, and `data.before-stage4-4ddbcaf`. Four existing Sonarr/Titlovi variables were copied from `/opt/subsyncd-canary/.env` without printing their values. `doctor` passed with two instances, two providers, two languages, four roots, LAPSE compatibility, and FFprobe availability. Only the new Sonarr cursor was initialized to current UTC before startup; the Radarr cursor was not modified. Initial reconciliations for both instances completed successfully in 6 ms.
+
+The sanitized `webhook-1883-s01e06.json` fixture returned HTTP 204 and applied once. English completed as `satisfied` from the embedded stream. Croatian searched Titlovi and received two candidates in 4.062 seconds. Candidate `342548` scored 59, below the confidence bypass, so it was the only candidate downloaded (13,021 bytes) and sent to LAPSE. LAPSE analysis took 56.345 seconds and returned `solid`, confidence `0.859118`, agreement and coverage `1`, ratio `1`, offset `-1 ms`; sync took 8.009 seconds. The candidate was selected in `lapse` mode and installed in 2.610 seconds. Total Croatian workflow time was 75.059 seconds, with the next upgrade check scheduled for `2026-09-12T07:39:31.284641855Z`.
+
+Final state: exactly three media rows; four completed search outcomes (the Croatian row is scheduled/pending for its upgrade date with last outcome `installed`); two candidate metadata rows; one provider download; one LAPSE analysis; one installation from `titlovi-main` candidate `342548`, score 59, verdict `solid`; no provider errors. The sidecar is `0644`, owned `1000:1000`, 29,034 bytes, SHA-256 `85299991788b0e8803a43d43a7b34a7a99a075b3c3a0c197e75ad4e29185244d`. `/healthz` and `/readyz` both passed and the daemon was left running. No global Sonarr connection was created in this stage.

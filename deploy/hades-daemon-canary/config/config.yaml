@@ -2,6 +2,7 @@ data_dir: /data
 media_roots:
   - /media/canary/movies/1917
   - /media/canary/movies/arrival
+  - /media/canary/tv/1883-s01
   # Read-only and required only to resolve Hades's absolute AltMount symlinks.
   - /mnt
 
@@ -15,6 +16,14 @@ logging:
   level: info
 
 instances:
+  - name: sonarr-daemon-canary
+    type: sonarr
+    url: http://sonarr:8989
+    api_key: ${SONARR_CANARY_API_KEY}
+    webhook_token: ${SONARR_CANARY_WEBHOOK_TOKEN}
+    path_mappings:
+      - remote: /media/tv/1883 (2021) [tvdbid-396390]/Season 01/1883.2021.S01E06.2160p.PMTP.WEB-DL.H265.SDR.DDP.5.1.English-HONE.mkv
+        local: /media/canary/tv/1883-s01/1883.2021.S01E06.2160p.PMTP.WEB-DL.H265.SDR.DDP.5.1.English-HONE.mkv
   - name: radarr-daemon-canary
     type: radarr
     url: http://radarr:7878
@@ -27,6 +36,14 @@ instances:
         local: /media/canary/movies/arrival/Arrival.2016.UHD.BluRay.2160p.DDP.7.1.DV.HDR.x265-hallowed.mkv
 
 providers:
+  titlovi-main:
+    type: titlovi
+    username: ${TITLOVI_USERNAME}
+    password: ${TITLOVI_PASSWORD}
+    requests_per_second: 0.25
+    burst: 1
+    max_concurrent: 1
+    max_pages: 3
   opensubtitles-main:
     type: opensubtitles
     api_key: ${OPENSUBTITLES_API_KEY}
@@ -41,6 +58,9 @@ provider_http:
   shared_origin_max_concurrent: 1
 
 languages:
+  hr:
+    providers:
+      - titlovi-main
   en:
     providers:
       - opensubtitles-main
