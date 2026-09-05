@@ -576,13 +576,23 @@ func TestServiceExactFormatChangingRejectionDoesNotMaskLaterInstallFailure(t *te
 		payloads:  map[string][]byte{"different-format": []byte("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nFirst\n")},
 		filenames: map[string]string{"different-format": "different-format.vtt"},
 	}
-	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{err: errors.New("database unavailable")})
+	installer := &fakeInstaller{err: errors.New("database unavailable")}
+	service := testService(t, managedSidecarInventory(repository.installation), searcher, nil, &fakeSynchronizer{}, installer)
 	service.Repository = repository
 	service.Providers = map[string]provider.Provider{"provider": adapter}
 
 	result, err := service.Run(context.Background(), request)
 	if err == nil || result.Outcome != "" || !strings.Contains(err.Error(), "database unavailable") {
 		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if !slices.Equal(adapter.downloaded, []string{"different-format", "compatible"}) || installer.calls != 1 || installer.request.Candidate.ResultID != "compatible" {
+		t.Fatalf("downloads/install = %#v/%d %#v", adapter.downloaded, installer.calls, installer.request.Candidate)
+	}
+	if len(result.Decisions) != 1 || result.Decisions[0].Stage != "installation" || result.Decisions[0].ResultID != "different-format" || result.Decisions[0].Reason != "format-changing upgrades are not supported" {
+		t.Fatalf("format-changing rejection = %#v", result.Decisions)
+	}
+	if len(searcher.queries) != 1 || searcher.queries[0].Mode != provider.SearchExactHash {
+		t.Fatalf("queries = %#v", searcher.queries)
 	}
 }
 

@@ -754,13 +754,14 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	var verdict *syncer.VerdictError
 	var selection *pack.SelectionError
 	var content *pack.ContentError
+	_, installContent := failure.(*subtitleValidationError)
 	reasonCode := ""
 	switch {
 	case errors.As(failure, &verdict) && (verdict.Verdict == "unsure" || verdict.Verdict == "nothing"):
 		reasonCode = "lapse_" + verdict.Verdict
 	case errors.As(failure, &selection):
 		reasonCode = "pack_selection"
-	case errors.As(failure, &content):
+	case errors.As(failure, &content) || installContent:
 		reasonCode = "invalid_subtitle"
 	default:
 		return false, nil

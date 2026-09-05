@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Tasks 1–9 are implemented and locally verified; production remains out of scope
-- Next safe action: run the independent whole-branch review, then request separate approval before any push, image publication, or deployment
+- Current task: codebase correctness-repair Tasks 1–9 and the final review fix wave are implemented and locally verified; production remains out of scope
+- Next safe action: re-review the final fix wave, then request separate approval before any push, image publication, or deployment
 - Latest follow-up: the complete local verification matrix passed without live Arr, provider, Silo, or production-host access
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs final review — archive ambiguity and content-validation fallback
+
+- Episode-shaped continuations are detected independently of complete range recognition. Separated forms such as `S01E01 E03` and `S01E01_E03`, incomplete endpoints such as `S01E01-E`, and extra endpoints after valid ranges fail closed in both archive selectors. Complete supported ranges and ordinary release suffixes retain their existing selection rules; punctuation alone is not range evidence.
+- The installer returns a private typed error only for deterministic source-content validation before staging. The exact phase records these failures as `invalid_subtitle` with the artifact checksum and continues lazily through later exact candidates or broad fallback. Filesystem, SQLite installation/outbox/rejection persistence, cancellation, and wrapped/joined rollback errors remain terminal. No schema or configuration change was needed.
+- The format-changing rejection regression now supplies matching live managed-sidecar inventory and verifies the first candidate's rejection decision, both downloads in order, and the later compatible candidate as the only installer invocation before its technical failure.
+- RED/GREEN regressions covered both archive selectors and range parsing, real-installer/SQLite duration rejection with exact and broad fallback, deterministic exhaustion, source-content classification, and the previously misleading format-changing fixture. Additional controls verify terminal staging, installation, outbox, rejection-persistence, and joined rollback failures without quarantining the later valid candidate.
+- Verification passed the focused regressions, `go test ./internal/pack ./internal/workflow -race -count=1`, `go test ./... -race -count=1`, `go vet ./...`, tagged E2E with `-race -count=1`, provider-contract with credentials explicitly unset, Compose validation, and `git diff --check`. Full/E2E tests required approved loopback permission for local fake servers. Credential scanning found only existing placeholders/syntax; the prohibited-reference scan had no matches.
+- Commit: `fix: close final archive and exact fallback gaps` (single wave based on `032f526`). No live services, production hosts, image builds, pushes, publication, or deployments were used. Next safe action: independent re-review of this wave.
 
 ### Conventional repairs Task 9 — repaired contracts and local verification
 

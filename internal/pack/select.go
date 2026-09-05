@@ -31,6 +31,7 @@ var (
 	}
 	rangeEndpointBeforePattern = regexp.MustCompile(`(?i)(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})$`)
 	rangeEndpointAfterPattern  = regexp.MustCompile(`(?i)^(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})(?:$|[^[:alnum:]])`)
+	episodeContinuationPattern = regexp.MustCompile(`(?i)^[ ._-]*(?:s\d{1,3}e\d{0,4}|\d{1,3}x\d{0,4}|e\d{0,4})`)
 	absolutePattern            = regexp.MustCompile(`(?i)(?:\bEP|\bABS(?:OLUTE)?[ ._-]*)(\d{2,5})\b`)
 	forcedPattern              = regexp.MustCompile(`(?i)(?:^|[ ._-])forced(?:[ ._-]|$)`)
 )
@@ -247,11 +248,31 @@ func hasInvalidOrAmbiguousRangeEvidence(name string) bool {
 	if hasMalformedHyphenatedRangeEvidence(name) {
 		return true
 	}
-	if len(rangeLikeEpisodeMatches(name)) == 0 {
+	ranged, _, _, _, accepted := acceptedEpisodeRangeMatch(name)
+	// Detect episode-shaped continuations independently of complete ranges.
+	// Missing endpoints and ordinary separators must not expose a single-token
+	// fallback, while punctuation followed only by release text stays harmless.
+	for _, token := range episodeTokenPattern.FindAllStringIndex(name, -1) {
+		if completeRangeToken(name, token[0], token[1]) && episodeContinuation(name, token[1]) {
+			if !accepted || token[0] != ranged.indices[0] {
+				return true
+			}
+		}
+	}
+	return len(rangeLikeEpisodeMatches(name)) != 0 && !accepted
+}
+
+func episodeContinuation(name string, offset int) bool {
+	match := episodeContinuationPattern.FindStringIndex(name[offset:])
+	if match == nil {
 		return false
 	}
-	_, _, _, _, accepted := acceptedEpisodeRangeMatch(name)
-	return !accepted
+	end := offset + match[1]
+	if end == len(name) {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(name[end:])
+	return !isAlphaNumeric(next)
 }
 
 func hasMalformedHyphenatedRangeEvidence(name string) bool {
@@ -270,7 +291,7 @@ func hasMalformedHyphenatedRangeEvidence(name string) bool {
 }
 
 func acceptedEpisodeRange(name string, match []int, patternIndex int) (int, int, int, bool) {
-	if !completeRangeToken(name, match[0], match[1]) || rangeIsChained(name, match[0], match[1]) {
+	if !completeRangeToken(name, match[0], match[1]) || rangeIsChained(name, match[0], match[1]) || episodeContinuation(name, match[1]) {
 		return 0, 0, 0, false
 	}
 	season, from, to, endSeason := parseRangeMatch(name, match, patternIndex)

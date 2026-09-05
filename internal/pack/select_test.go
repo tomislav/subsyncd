@@ -126,6 +126,54 @@ func TestSelectRejectsMalformedHyphenatedRangeWithoutTokenFallback(t *testing.T)
 	}
 }
 
+func TestEpisodeRangeAndSelectionRejectSeparatedOrIncompleteExpressions(t *testing.T) {
+	for _, name := range []string{
+		"Show.S01E01 E03.srt",
+		"Show.S01E01_E03.srt",
+		"Show.S01E01.E03.srt",
+		"Show.S01E01-E.srt",
+		"Show.S01E01-S01E.srt",
+		"Show.1x01-1x.srt",
+		"Show.S01E01-E03 E05.srt",
+		"Show.S01E01-E03-E.srt",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, _, found := episodeRange(name); found {
+				t.Errorf("episodeRange(%q) unexpectedly matched", name)
+			}
+			manifest := Manifest{Members: []Member{{SafeName: name}}}
+			media := domain.Media{Season: 1, Episode: 1}
+			for label, selector := range map[string]func(Manifest, domain.Candidate, domain.Media, bool) (Member, error){
+				"Select": Select, "SelectSingleEpisode": SelectSingleEpisode,
+			} {
+				selected, err := selector(manifest, domain.Candidate{}, media, false)
+				var selection *SelectionError
+				if !errors.As(err, &selection) {
+					t.Errorf("%s() = %#v, %v; want rejection", label, selected, err)
+				}
+			}
+		})
+	}
+}
+
+func TestEpisodeSelectionPreservesExplicitRangesAndReleaseSuffixes(t *testing.T) {
+	for name, rule := range map[string]string{
+		"Show.S01E01-E03.srt":      "episode_range",
+		"Show.S01E01-S01E03.srt":   "episode_range",
+		"Show.1x01-1x03.srt":       "episode_range",
+		"Show.S01E01.1080p.srt":    "episode_token",
+		"Show.S01E01-Extended.srt": "episode_token",
+		"Show.S01E01_-1080p.srt":   "episode_token",
+	} {
+		for _, selector := range []func(Manifest, domain.Candidate, domain.Media, bool) (Member, error){Select, SelectSingleEpisode} {
+			selected, err := selector(Manifest{Members: []Member{{SafeName: name}}}, domain.Candidate{}, domain.Media{Season: 1, Episode: 1}, false)
+			if err != nil || selected.SelectionRule != rule {
+				t.Errorf("selection(%q) = %#v, %v; want %s", name, selected, err, rule)
+			}
+		}
+	}
+}
+
 func TestSelectSingleMovieEnforcesForcedPolicy(t *testing.T) {
 	manifest := Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.forced.srt", Forced: true}}}
 	_, err := SelectSingleMovie(manifest, domain.Candidate{Forced: true}, false)

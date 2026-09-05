@@ -15,11 +15,34 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/inventory"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
 const installSRT = "1\n00:00:01,000 --> 00:00:02,000\nHello\n"
+
+func TestInstallSourceContentFailuresAreCandidateRejections(t *testing.T) {
+	for _, test := range []struct{ name, filename, payload string }{
+		{"empty", "source.srt", ""},
+		{"binary", "source.srt", "\x00" + installSRT},
+		{"syntax", "source.srt", "not subtitles"},
+		{"timestamps", "source.srt", "1\n00:00:02,000 --> 00:00:01,000\nHello\n"},
+		{"duration", "source.srt", "1\n00:00:01,000 --> 01:36:00,000\nHello\n"},
+		{"extension", "source.txt", installSRT},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := serviceRequest(t)
+			path := writeInstallFile(t, filepath.Join(t.TempDir(), test.filename), test.payload)
+			_, failure := validatedSubtitle(path, request.Media.Duration)
+			service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
+			recorded, err := service.recordCandidateRejection(context.Background(), request, exactCandidate("invalid"), "", failure)
+			if failure == nil || err != nil || !recorded {
+				t.Fatalf("content failure/rejection/error = %v/%v/%v", failure, recorded, err)
+			}
+		})
+	}
+}
 
 func TestInstallerRollsBackPublishedFileWhenNotificationIntentCommitFails(t *testing.T) {
 	for _, replacing := range []bool{false, true} {

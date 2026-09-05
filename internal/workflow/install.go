@@ -27,6 +27,13 @@ const maximumInstallBytes int64 = 100 << 20
 
 var ErrProtectedSubtitle = errors.New("subtitle is protected from replacement")
 
+// subtitleValidationError identifies deterministic source-content failures.
+// Only validation before staging may return this error; filesystem and commit
+// failures must retain their technical error identities.
+type subtitleValidationError struct{ reason string }
+
+func (e *subtitleValidationError) Error() string { return e.reason }
+
 type InstallStage string
 
 const (
@@ -338,14 +345,14 @@ func validatedSubtitle(path string, mediaDuration time.Duration) ([]byte, error)
 		return nil, fmt.Errorf("installation source is not a regular file")
 	}
 	if info.Size() <= 0 || info.Size() > maximumInstallBytes {
-		return nil, fmt.Errorf("installation source size is invalid")
+		return nil, &subtitleValidationError{reason: "installation source size is invalid"}
 	}
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read installation source: %w", err)
 	}
 	if !utf8.Valid(payload) || bytes.IndexByte(payload, 0) >= 0 {
-		return nil, fmt.Errorf("installation source is not UTF-8 text")
+		return nil, &subtitleValidationError{reason: "installation source is not UTF-8 text"}
 	}
 	var subtitles *astisub.Subtitles
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -356,16 +363,16 @@ func validatedSubtitle(path string, mediaDuration time.Duration) ([]byte, error)
 	case ".vtt":
 		subtitles, err = astisub.ReadFromWebVTT(bytes.NewReader(payload))
 	default:
-		return nil, fmt.Errorf("installation source has unsupported extension")
+		return nil, &subtitleValidationError{reason: "installation source has unsupported extension"}
 	}
 	if err != nil || subtitles == nil || len(subtitles.Items) == 0 || len(subtitles.Items) > 100_000 {
-		return nil, fmt.Errorf("installation source subtitle syntax is invalid")
+		return nil, &subtitleValidationError{reason: "installation source subtitle syntax is invalid"}
 	}
 	previous := subtitles.Items[0].StartAt
 	var last time.Duration
 	for _, item := range subtitles.Items {
 		if item.StartAt < 0 || item.EndAt < item.StartAt || item.StartAt < previous {
-			return nil, fmt.Errorf("installation source timestamps are invalid")
+			return nil, &subtitleValidationError{reason: "installation source timestamps are invalid"}
 		}
 		previous = item.StartAt
 		if item.EndAt > last {
@@ -373,7 +380,7 @@ func validatedSubtitle(path string, mediaDuration time.Duration) ([]byte, error)
 		}
 	}
 	if mediaDuration > 0 && last > mediaDuration+5*time.Minute {
-		return nil, fmt.Errorf("installation source extends more than five minutes past media duration")
+		return nil, &subtitleValidationError{reason: "installation source extends more than five minutes past media duration"}
 	}
 	return payload, nil
 }

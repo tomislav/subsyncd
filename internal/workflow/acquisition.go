@@ -105,7 +105,20 @@ func (s *Service) tryExactCandidates(
 		}
 		*result, err = s.install(ctx, request, finalized, existing, installed, *result)
 		if err != nil {
-			return false, err
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return false, ctxErr
+			}
+			// Accept only the installer's direct pre-publication validation
+			// error. Wrapped/joined infrastructure or rollback errors remain
+			// terminal, even if they contain a content-validation cause.
+			if _, rejected := err.(*subtitleValidationError); !rejected {
+				return false, err
+			}
+			if handleErr := s.handleCandidateFailure(ctx, request, candidate, finalized.path, err, candidateFailures); handleErr != nil {
+				return false, handleErr
+			}
+			result.Decisions = append(result.Decisions, candidateFailureDecision("installation", candidate, err))
+			continue
 		}
 		if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
 			return true, nil
