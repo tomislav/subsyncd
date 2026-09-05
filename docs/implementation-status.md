@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: provider correctness and credential repair is implemented and verified locally
-- Next safe action: rotate the affected SubDL key, push commits, publish an immutable image, run `doctor`, then start the service only after explicit approval
-- Latest follow-up: implementation commit `6f5dd3d` has not been published or deployed; no subsyncd container is running on Hades
+- Current task: human-readable media identity in structured logs is implemented and verified locally
+- Next safe action after GitHub publication: rotate the affected SubDL key, then deploy the immutable image only after separate approval
+- Latest follow-up: implementation commit `5f03cf4` has not been deployed; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Human-readable media identity in structured logs
+
+- Commit `5f03cf4` adds the sanitized `media_title` field after durable media resolution. Movie identities render as `Movie (Year)` and episode identities as `Show - S01E02 - Episode Title`; control characters collapse to spaces and output is bounded to 2,048 Unicode code points.
+- Worker lifecycle records and the workflow context carry the title through provider, candidate, LAPSE, installation, and terminal events. A failed media lookup retains the existing ID-only records because no trusted title is available.
+- The title remains ordinary JSON data and is explicitly excluded from the Alloy/Loki label set. Existing path privacy remains unchanged: absolute paths are still forbidden and root-relative paths remain debug-only.
+- Focused tests first failed on the absent formatter and absent worker/workflow fields, then passed under the race detector. Fresh verification passed `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, `go test ./test/providercontract -tags=provider_contract -count=1`, `docker compose -f compose.example.yml config --quiet`, `git diff --check`, and the credential-pattern scan.
+- No image was built or deployed, and Hades remains without a running subsyncd container.
 
 ### Provider correctness and credential repair
 

@@ -64,7 +64,7 @@ logging:
   level: info # debug, info, warn, or error
 ```
 
-`SUBSYNCD_LOG_LEVEL` overrides the YAML value when set. Logging configuration is read at startup, so changing either value requires a restart. `debug` adds candidate scoring, bounded release diagnostics, cache decisions, and root-relative media paths; it should be enabled only for a short investigation. Logs never intentionally include credentials, provider URLs/bodies, absolute media paths, command arguments, or raw LAPSE output. Collection, labels, retention, and Loki credentials belong to Alloy rather than this service; see [Structured logging and Grafana Loki](docs/operations.md#structured-logging-and-grafana-loki).
+`SUBSYNCD_LOG_LEVEL` overrides the YAML value when set. Logging configuration is read at startup, so changing either value requires a restart. Job and workflow events include a sanitized `media_title` (`Movie (Year)` or `Show - S01E02 - Episode Title`) as a searchable JSON field, not a Loki label. `debug` adds candidate scoring, bounded release diagnostics, cache decisions, and root-relative media paths; it should be enabled only for a short investigation. Logs never intentionally include credentials, provider URLs/bodies, absolute media paths, command arguments, or raw LAPSE output. Collection, labels, retention, and Loki credentials belong to Alloy rather than this service; see [Structured logging and Grafana Loki](docs/operations.md#structured-logging-and-grafana-loki).
 
 ## Native build
 

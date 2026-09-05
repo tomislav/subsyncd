@@ -63,7 +63,7 @@ SUBSYNCD_LOG_LEVEL=debug
 
 Valid levels are `debug`, `info`, `warn`, and `error`; omitted configuration defaults to `info`. The environment value takes precedence. Values are read only at startup, so a change requires a service restart. Use `info` continuously. Enable `debug` only for a bounded diagnostic run, then remove the override and restart at `info`.
 
-Every record has `time`, `service`, `version`, `level`, `component`, `event`, and `msg`. Operational records add typed fields such as `job_id`, `media_id`, `media_kind`, `file_id`, `language`, `provider`, `candidate_id`, `outcome`, `reason`, `attempt`, `duration_ms`, `retry_at`, or `next_upgrade_at`. Follow one operation by parsing JSON and filtering on `job_id`; media, provider, and candidate IDs remain fields in the JSON body rather than Loki labels.
+Every record has `time`, `service`, `version`, `level`, `component`, `event`, and `msg`. Operational records add typed fields such as `job_id`, `media_id`, `media_title`, `media_kind`, `file_id`, `language`, `provider`, `candidate_id`, `outcome`, `reason`, `attempt`, `duration_ms`, `retry_at`, or `next_upgrade_at`. Once media is resolved, `media_title` follows the processing context through worker, workflow, provider, candidate, LAPSE, and completion events. Movies use `Movie (Year)` and episodes use `Show - S01E02 - Episode Title`; the value is normalized to one line and bounded to 2,048 Unicode code points. Follow one operation by parsing JSON and filtering on `job_id`; titles and IDs remain fields in the JSON body rather than Loki labels.
 
 The level behavior is:
 
@@ -140,7 +140,7 @@ loki.write "grafana_cloud_loki" {
 }
 ```
 
-The referenced `loki.write` name can instead be the existing Hades component. Loki credentials belong only in Alloy and its service environment, never in `subsyncd` YAML or Compose environment. Do not add `job_id`, `media_id`, `candidate_id`, `file_id`, `language`, or `provider` to `stage.labels`; their cardinality is unbounded.
+The referenced `loki.write` name can instead be the existing Hades component. Loki credentials belong only in Alloy and its service environment, never in `subsyncd` YAML or Compose environment. Do not add `job_id`, `media_id`, `media_title`, `candidate_id`, `file_id`, `language`, or `provider` to `stage.labels`; their cardinality is unbounded.
 
 Grafana Cloud uses managed Loki, so Hades has no local Loki version to pin. These LogQL queries use its current JSON parser, duration numeric filter, and escaped literal-dot regex syntax:
 

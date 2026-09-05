@@ -1,5 +1,11 @@
 # Release verification
 
+## Human-readable media identity in logs — 2026-09-05
+
+Structured processing events now include a sanitized `media_title` after the media row resolves. Movies render as `Movie (Year)` and episodes as `Show - S01E02 - Episode Title`; values are normalized to one line and bounded to 2,048 Unicode code points. The field follows worker, workflow, provider, candidate, LAPSE, and completion events as JSON data and is deliberately excluded from the recommended Loki label set.
+
+Implementation commit `5f03cf4` passed the complete race-enabled Go suite, `go vet ./...`, the tagged race-enabled end-to-end suite, the provider-contract suite, standalone Compose rendering, diff hygiene, and the repository credential-pattern scan. No image was built or deployed to Hades.
+
 ## Provider correctness and credential repair — 2026-09-05
 
 OpenSubtitles hashing is now implemented internally with the canonical first/last-64-KiB 64-bit algorithm, removing the former dependency's 9 GB file-size ceiling without reading the complete media file. Provider results collapse duplicate stable IDs before cache, scoring, persistence, and the three-candidate LAPSE tournament, while conservatively merging missing identity and quality evidence.
