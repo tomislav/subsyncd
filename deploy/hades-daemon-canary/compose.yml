@@ -2,7 +2,7 @@ name: subsyncd-daemon-canary
 
 services:
   subsyncd-daemon-canary:
-    image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-sha-4ddbcaf}
+    image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-sha-4af206c}
     command: ["serve", "--config", "/config/config.yaml"]
     restart: "no"
     init: true

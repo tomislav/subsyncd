@@ -5,20 +5,35 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: execute the approved clean SQLite baseline reset and isolated Hades cutover
-- Next safe action: complete full race/vet/e2e/container verification before touching the Hades database or exact S01E06 sidecar
-- Latest follow-up: schema Tasks 1–3 are implemented locally; Hades still runs the verified Stage 5 three-file canary unchanged
+- Current task: observe the clean-baseline three-file Hades canary after the Silo subtree-notification correction
+- Next safe action: revoke the exposed temporary Silo key; use a replacement permanent key before enabling Silo in production
+- Latest follow-up: Hades runs healthy on `sha-4af206c`; Silo is disabled, the temporary key and synthetic notification are absent, and the tested path mappings remain configured
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
 
-### Clean schema baseline Tasks 1–4 — implementation pending full verification
+### Silo parent-directory notification correction and Hades test
+
+- Live Hades evidence showed that authenticated `POST /api/v1/scan` uses Silo's native container listener on port 8080. A media-file target returned 202 but completed without walking sibling files; the exact Season 01 directory target performed a subtree scan and processed all 10 media files.
+- The notifier now applies the boundary-aware path mapping first and sends the mapped media file's parent directory. Unit and tagged end-to-end assertions require that exact payload. Container examples and Hades mappings use `http://silo:8080`.
+- Commit `4af206c` passed the full race suite, vet, tagged end-to-end tests, Compose rendering, and diff hygiene. Its local arm64 image is `sha256:20bbdf3fd59dc07418609336a0d0c8ddaca76040e54565db4ae6ca09acf0ef31`, version `sha-4af206c`, user `1000:1000`.
+- A single synthetic SQLite notification exercised the real durable worker. subsyncd delivered it once in 14 ms; Silo returned 202 in 8 ms and completed a 10-file subtree scan. Silo's database retained exactly one external subtitle matching the S01E06 Croatian sidecar.
+- The synthetic notification was deleted after verification. The temporary API key was removed from `.env`, Silo was returned to `enabled: false`, and doctor plus readiness passed. Hades remains healthy on `sha-4af206c` with zero notification rows.
+
+### Clean schema baseline and Hades Stage 6 cutover
+
+- The clean arm64 `sha-791916b` image was verified as user `1000:1000` and image ID `sha256:30549ef2bf6154dff57d4ce077cd2a7ba9eb85c1ab5b352156cb7c4c898fd69d`. The old database was moved to `data.before-schema-baseline-791916b`; configuration and the exact Croatian sidecar were backed up before the authorized reset.
+- Doctor created a fresh database with exactly `001_baseline.sql`. Both instance cursors were seeded to the captured cutover time before startup, and immediate Radarr/Sonarr reconciliation completed successfully.
+- Replaying the exact two movie fixtures and S01E06 produced three media rows with entity/file identities `338/1168`, `529/1440`, and `3913/10545`. Titlovi candidate `342548` scored 59, was the only download, received LAPSE `solid` confidence `0.859118`, and recreated the expected 29,034-byte Croatian sidecar.
+- Sonarr connection 10's native test was ignored without mutation; the mapped rename added one event without a provider download or checksum change; an actual unmapped Download was ignored without mutation or worker wake. Final baseline counts were `3 media / 5 events / 6 search states / 2 candidates / 1 installation`, with zero leases, warnings, or errors.
+
+### Clean schema baseline Tasks 1–4
 
 - Replaced the ten pre-release migrations with one complete `001_baseline.sql` while retaining the ordered embedded migration runner. Startup now rejects applied migration names outside the embedded lineage with an explicit rebuild-from-empty error.
 - The baseline enforces positive `media.entity_id` in SQLite and retains separate replaceable `file_id`, current event-local zero identities, fingerprints, queues, rejections, notifications, and all final indexes/foreign keys.
 - Removed zero-entity adoption, import/rename entity fallback, the unused default-priority search wrapper, and obsolete old-cache compatibility tests. Current file-replacement conflict checks, candidate serialization, provider cache safety, and entity-addressed deletions remain covered.
-- Focused red/green store, catalog, worker, provider, and domain suites pass under the race detector. Full verification, clean image construction, GitHub publication, and the authorized recoverable Hades database/sidecar cutover remain pending.
+- Focused red/green store, catalog, worker, provider, and domain suites passed under the race detector. Full race, vet, tagged end-to-end, image, and live Hades verification completed before the Stage 6 cutover was accepted.
 
 ### Hades Stage 3 Task 2 — direct image and real Radarr webhook
 
