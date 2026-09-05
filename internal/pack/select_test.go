@@ -63,6 +63,8 @@ func TestEpisodeRangeRequiresExplicitHyphenatedEndpoint(t *testing.T) {
 		"Show.S01E01-E03p.srt",
 		"Show.S01E01-E03é.srt",
 		"Show.S01E01-E03-S01E05.srt",
+		"Show.S01E01-E03.S02E01-E03.srt",
+		"Show.S01E01-S02E03.S03E01-E03.srt",
 	} {
 		if _, _, _, found := episodeRange(name); found {
 			t.Errorf("episodeRange(%q) unexpectedly matched", name)

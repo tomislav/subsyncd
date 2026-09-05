@@ -203,14 +203,38 @@ func episodeToken(name string) (int, int, bool) {
 }
 
 func episodeRange(name string) (int, int, int, bool) {
+	_, season, from, to, found := acceptedEpisodeRangeMatch(name)
+	return season, from, to, found
+}
+
+type episodeRangeMatch struct {
+	indices      []int
+	patternIndex int
+}
+
+func acceptedEpisodeRangeMatch(name string) (episodeRangeMatch, int, int, int, bool) {
+	matches := rangeLikeEpisodeMatches(name)
+	if len(matches) != 1 {
+		return episodeRangeMatch{}, 0, 0, 0, false
+	}
+	match := matches[0]
+	season, from, to, found := acceptedEpisodeRange(name, match.indices, match.patternIndex)
+	if !found {
+		return episodeRangeMatch{}, 0, 0, 0, false
+	}
+	return match, season, from, to, true
+}
+
+func rangeLikeEpisodeMatches(name string) []episodeRangeMatch {
+	var matches []episodeRangeMatch
 	for patternIndex, pattern := range episodeRangePatterns {
 		for _, match := range pattern.FindAllStringSubmatchIndex(name, -1) {
-			if season, from, to, found := acceptedEpisodeRange(name, match, patternIndex); found {
-				return season, from, to, true
+			if completeRangeToken(name, match[0], match[1]) {
+				matches = append(matches, episodeRangeMatch{indices: match, patternIndex: patternIndex})
 			}
 		}
 	}
-	return 0, 0, 0, false
+	return matches
 }
 
 func acceptedEpisodeRange(name string, match []int, patternIndex int) (int, int, int, bool) {
@@ -303,17 +327,11 @@ func filenameTitle(name, seriesTitle string) string {
 }
 
 func removeAcceptedEpisodeRanges(name string) string {
-	for patternIndex, pattern := range episodeRangePatterns {
-		matches := pattern.FindAllStringSubmatchIndex(name, -1)
-		for index := len(matches) - 1; index >= 0; index-- {
-			match := matches[index]
-			if _, _, _, found := acceptedEpisodeRange(name, match, patternIndex); !found {
-				continue
-			}
-			name = name[:match[0]] + " " + name[match[1]:]
-		}
+	match, _, _, _, found := acceptedEpisodeRangeMatch(name)
+	if !found {
+		return name
 	}
-	return name
+	return name[:match.indices[0]] + " " + name[match.indices[1]:]
 }
 
 func normalizeTitle(value string) string {
