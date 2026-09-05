@@ -260,17 +260,19 @@ func TestPollDelayUsesTenPercentJitter(t *testing.T) {
 	}
 }
 
-func TestRunOncePersistsAndDeliversNotificationAfterInstallation(t *testing.T) {
+func TestRunOnceDeliversPersistedNotificationWithoutEnqueueAfterInstallation(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
+	repository.notifications = []store.NotificationLease{{ID: 1, Notifier: "silo", PayloadJSON: notificationJSON(t, repository.media[1], "/media/movie.en.srt"), JobID: "persisted-before-workflow-completion"}}
 	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeInstalled, Installation: store.Installation{MediaID: 1, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum"}}}
 	delivery := &workerNotifier{}
 	worker := testWorker(repository, service, testutil.NewClock(now))
 	worker.Notifiers = map[string]notifier.Notifier{"silo": delivery}
+	worker.MaxWorkflows = 1
 	if err := worker.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(repository.enqueued) != 1 || delivery.calls != 1 || len(repository.notificationCompletions) != 1 || repository.notificationCompletions[0].Result != "success" {
+	if len(repository.enqueued) != 0 || delivery.calls != 1 || len(repository.notificationCompletions) != 1 || repository.notificationCompletions[0].Result != "success" {
 		t.Fatalf("notifications = enqueued %#v calls %d completions %#v", repository.enqueued, delivery.calls, repository.notificationCompletions)
 	}
 }
@@ -933,7 +935,7 @@ func (r *sequenceReconciler) Run(context.Context) error {
 
 func notificationJSON(t *testing.T, media domain.Media, subtitlePath string) []byte {
 	t.Helper()
-	payload, err := json.Marshal(notificationPayload{Media: media, SubtitlePath: subtitlePath})
+	payload, err := json.Marshal(workflow.NotificationPayload{Media: media, SubtitlePath: subtitlePath})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/asticode/go-astisub"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -40,7 +42,7 @@ const (
 
 type InstallationStore interface {
 	GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error)
-	RecordInstallation(context.Context, store.Installation) error
+	RecordInstallationWithNotifications(context.Context, store.Installation, []store.NotificationRequest) ([]store.NotificationEnqueueResult, error)
 }
 
 type InstallRequest struct {
@@ -55,12 +57,15 @@ type InstallRequest struct {
 }
 
 type Installer struct {
-	Repository InstallationStore
-	MediaRoots []string
-	Mode       os.FileMode
-	UID        *int
-	GID        *int
-	Fault      func(InstallStage) error
+	Repository    InstallationStore
+	MediaRoots    []string
+	Mode          os.FileMode
+	UID           *int
+	GID           *int
+	Fault         func(InstallStage) error
+	NotifierNames []string
+	Now           func() time.Time
+	Events        *observability.Emitter
 }
 
 func (i Installer) Install(ctx context.Context, request InstallRequest) (store.Installation, error) {
@@ -204,11 +209,30 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	fingerprint := request.Media.Fingerprint
 	installation := store.Installation{MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: checksumBytes(payload), ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
+	now := time.Now().UTC()
+	if i.Now != nil {
+		now = i.Now()
+	}
+	requests, err := notificationRequests(request.Media, installation, i.NotifierNames, now)
+	if err != nil {
+		return restore(err)
+	}
 	if err := i.inject(StageDatabase); err != nil {
 		return restore(err)
 	}
-	if err := i.Repository.RecordInstallation(ctx, installation); err != nil {
+	enqueued, err := i.Repository.RecordInstallationWithNotifications(ctx, installation, requests)
+	if err != nil {
 		return restore(fmt.Errorf("record installed subtitle: %w", err))
+	}
+	for _, result := range enqueued {
+		if result.Inserted {
+			key := result.DedupeKey
+			if len(key) > 12 {
+				key = key[:12]
+			}
+			i.Events.For("workflow").Log(ctx, slog.LevelInfo, "notification.queued", "subtitle notification queued",
+				slog.String("notifier", result.Notifier), slog.String("notification_key", key))
+		}
 	}
 	if found && existing.RollbackPath != "" && filepath.Clean(existing.RollbackPath) != filepath.Clean(rollbackPath) {
 		if err := i.inject(StageCleanup); err == nil {

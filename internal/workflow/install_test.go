@@ -1,19 +1,199 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
 const installSRT = "1\n00:00:01,000 --> 00:00:02,000\nHello\n"
+
+func TestInstallerRollsBackPublishedFileWhenNotificationIntentCommitFails(t *testing.T) {
+	for _, replacing := range []bool{false, true} {
+		t.Run(fmt.Sprint(replacing), func(t *testing.T) {
+			root := t.TempDir()
+			destination := filepath.Join(root, "Movie.en.srt")
+			repository := &installationRepository{recordErr: errors.New("outbox unavailable")}
+			if replacing {
+				writeInstallFile(t, destination, installSRT)
+				repository.found = true
+				repository.installation = store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(installSRT))}
+			}
+			source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), strings.Replace(installSRT, "Hello", "Replacement", 1))
+			var logs bytes.Buffer
+			events, err := observability.New(&logs, observability.Options{Level: "info"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installer := Installer{Repository: repository, MediaRoots: []string{root}, NotifierNames: []string{"silo"}, Now: func() time.Time { return time.Unix(100, 0).UTC() }, Events: events}
+			_, err = installer.Install(context.Background(), installRequest(source, destination))
+			if err == nil || !strings.Contains(err.Error(), "outbox unavailable") {
+				t.Fatalf("Install() error = %v", err)
+			}
+			if len(repository.requests) != 1 {
+				t.Fatalf("atomic requests = %#v", repository.requests)
+			}
+			if replacing {
+				payload, err := os.ReadFile(destination)
+				if err != nil || string(payload) != installSRT {
+					t.Fatalf("restored file = %q, %v", payload, err)
+				}
+			} else if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("destination stat = %v", err)
+			}
+			if strings.Contains(logs.String(), "notification.queued") {
+				t.Fatalf("uncommitted notification logged: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestInstallerCreatesDeterministicNotificationIntents(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "Movie.en.srt")
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+	repository := &installationRepository{dedupedNotifiers: map[string]bool{"archive": true}}
+	now := time.Unix(100, 0).UTC()
+	names := []string{"silo", "archive"}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, NotifierNames: names, Now: func() time.Time { return now }, Events: events}
+	request := installRequest(source, destination)
+	installed, err := installer.Install(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.requests) != 2 || repository.requests[0].Notifier != "archive" || repository.requests[1].Notifier != "silo" || names[0] != "silo" {
+		t.Fatalf("requests = %#v, input names = %#v", repository.requests, names)
+	}
+	for _, intent := range repository.requests {
+		var payload NotificationPayload
+		if err := json.Unmarshal(intent.PayloadJSON, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(payload, NotificationPayload{Media: request.Media, SubtitlePath: destination}) || !intent.NextAttemptAt.Equal(now) {
+			t.Fatalf("payload/time = %#v/%v", payload, intent.NextAttemptAt)
+		}
+	}
+	queued := workflowEvents(workflowLogRecords(t, logs.String()), "notification.queued")
+	if len(queued) != 1 || queued[0]["notifier"] != "silo" {
+		t.Fatalf("queue logs = %s", logs.String())
+	}
+	if strings.Contains(logs.String(), root) || strings.Contains(logs.String(), "subtitle_path") {
+		t.Fatalf("payload leaked: %s", logs.String())
+	}
+	first := repository.requests
+	// Time and destination changes must not defeat checksum deduplication.
+	installed.Path = filepath.Join(root, "Renamed.en.srt")
+	again, err := notificationRequests(request.Media, installed, names, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range first {
+		if first[index].DedupeKey != again[index].DedupeKey {
+			t.Fatal("unchanged content changed dedupe key")
+		}
+	}
+	for _, mutate := range []func(*store.Installation){func(i *store.Installation) { i.Checksum = "changed" }, func(i *store.Installation) { i.MediaID++ }, func(i *store.Installation) { i.Language = "hr" }} {
+		changed := installed
+		mutate(&changed)
+		intents, err := notificationRequests(request.Media, changed, names, now)
+		if err != nil || intents[0].DedupeKey == first[0].DedupeKey {
+			t.Fatalf("changed identity intents/error = %#v/%v", intents, err)
+		}
+	}
+	if first[0].DedupeKey == first[1].DedupeKey {
+		t.Fatal("notifiers share a dedupe key")
+	}
+}
+
+func TestInstallerOutboxSQLFailureRollsBackFileAndProvenance(t *testing.T) {
+	for _, replacing := range []bool{false, true} {
+		t.Run(fmt.Sprint(replacing), func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			dbPath := filepath.Join(t.TempDir(), "subsyncd.db")
+			database, err := store.Open(ctx, dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			audit, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer audit.Close()
+			source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+			request := installRequest(source, filepath.Join(root, "Movie.en.srt"))
+			request.Media.EntityID = 1
+			request.MediaID, _, err = database.Repository().UpsertMedia(ctx, request.Media)
+			if err != nil {
+				t.Fatal(err)
+			}
+			installer := Installer{Repository: database.Repository(), MediaRoots: []string{root}}
+			var previous store.Installation
+			if replacing {
+				previous, err = installer.Install(ctx, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.SourcePath = writeInstallFile(t, filepath.Join(t.TempDir(), "replacement.srt"), strings.Replace(installSRT, "Hello", "Replacement", 1))
+			}
+			if _, err := audit.Exec(`CREATE TRIGGER fail_notification BEFORE INSERT ON notifications WHEN NEW.notifier='silo' BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			// The first intent is inserted before the trigger rejects the second.
+			installer.NotifierNames = []string{"archive", "silo"}
+			if _, err := installer.Install(ctx, request); err == nil || !strings.Contains(err.Error(), "injected outbox failure") {
+				t.Fatalf("install error = %v", err)
+			}
+			got, found, err := database.Repository().GetInstallation(ctx, request.MediaID, "en")
+			if err != nil || found != replacing {
+				t.Fatalf("provenance found/error = %v/%v", found, err)
+			}
+			if replacing {
+				if got.Checksum != previous.Checksum {
+					t.Fatalf("replaced original provenance: %#v", got)
+				}
+				if payload, err := os.ReadFile(request.DestinationPath); err != nil || string(payload) != installSRT {
+					t.Fatalf("restored file = %q/%v", payload, err)
+				}
+			} else if _, err := os.Stat(request.DestinationPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("first-install file remains: %v", err)
+			}
+			var intents, events int
+			if err := audit.QueryRow(`SELECT count(*) FROM notifications`).Scan(&intents); err != nil {
+				t.Fatal(err)
+			}
+			if err := audit.QueryRow(`SELECT count(*) FROM events WHERE event_type='subtitle_installed'`).Scan(&events); err != nil {
+				t.Fatal(err)
+			}
+			wantEvents := 0
+			if replacing {
+				wantEvents = 1
+			}
+			if intents != 0 || events != wantEvents {
+				t.Fatalf("intents/events = %d/%d", intents, events)
+			}
+		})
+	}
+}
 
 func TestInstallerCreatesAtomicRecordedSidecar(t *testing.T) {
 	root := t.TempDir()
@@ -252,11 +432,25 @@ func writeInstallFile(t *testing.T, path, content string) string {
 }
 
 type installationRepository struct {
-	installation store.Installation
-	found        bool
-	recorded     store.Installation
-	recordCalls  int
-	recordErr    error
+	installation     store.Installation
+	found            bool
+	recorded         store.Installation
+	recordCalls      int
+	recordErr        error
+	requests         []store.NotificationRequest
+	dedupedNotifiers map[string]bool
+}
+
+func (r *installationRepository) RecordInstallationWithNotifications(ctx context.Context, installation store.Installation, requests []store.NotificationRequest) ([]store.NotificationEnqueueResult, error) {
+	r.requests = append([]store.NotificationRequest(nil), requests...)
+	if err := r.RecordInstallation(ctx, installation); err != nil {
+		return nil, err
+	}
+	results := make([]store.NotificationEnqueueResult, len(requests))
+	for index, request := range requests {
+		results[index] = store.NotificationEnqueueResult{Notifier: request.Notifier, DedupeKey: request.DedupeKey, Inserted: !r.dedupedNotifiers[request.Notifier]}
+	}
+	return results, nil
 }
 
 func (r *installationRepository) GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error) {

@@ -2,8 +2,6 @@ package worker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,7 +57,6 @@ type Repository interface {
 	RenewSearchLease(context.Context, string, time.Time, time.Duration) error
 	CompleteSearch(context.Context, store.SearchCompletion) (store.SearchCompletionResult, error)
 	GetMedia(context.Context, int64) (domain.Media, error)
-	EnqueueNotification(context.Context, store.NotificationRequest) (bool, error)
 	LeaseDueNotifications(context.Context, time.Time, int, time.Duration) ([]store.NotificationLease, error)
 	RenewNotificationLease(context.Context, string, time.Time, time.Duration) error
 	CompleteNotification(context.Context, store.NotificationCompletion) error
@@ -292,9 +289,9 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow", completion.NextAttemptAt, started, err)
 		return err
 	}
-	completion, err := w.workflowCompletion(jobCtx, lease, media, result)
+	completion, err := w.workflowCompletion(lease, result)
 	if err != nil {
-		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "notification_enqueue", time.Time{}, started, err)
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow_outcome", time.Time{}, started, err)
 		return err
 	}
 	completionResult, err := w.Repository.CompleteSearch(jobCtx, completion)
@@ -307,7 +304,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 	return nil
 }
 
-func (w *Worker) workflowCompletion(ctx context.Context, lease store.SearchLease, media domain.Media, result workflow.Result) (store.SearchCompletion, error) {
+func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Result) (store.SearchCompletion, error) {
 	completion := store.SearchCompletion{JobID: lease.JobID, Outcome: string(result.Outcome)}
 	switch result.Outcome {
 	case workflow.OutcomeSatisfied:
@@ -318,9 +315,6 @@ func (w *Worker) workflowCompletion(ctx context.Context, lease store.SearchLease
 		completion.ResetMissingAttempt = true
 		completion.ResetFailureAttempt = true
 	case workflow.OutcomeInstalled:
-		if err := w.enqueueNotifications(ctx, media, result.Installation); err != nil {
-			return store.SearchCompletion{}, err
-		}
 		completion.NextAttemptAt = result.NextUpgrade
 		if !result.NextUpgrade.IsZero() {
 			completion.Priority = store.SearchPriorityUpgrade
@@ -337,39 +331,6 @@ func (w *Worker) workflowCompletion(ctx context.Context, lease store.SearchLease
 		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
 	}
 	return completion, nil
-}
-
-func (w *Worker) enqueueNotifications(ctx context.Context, media domain.Media, installation store.Installation) error {
-	if len(w.Notifiers) == 0 {
-		return nil
-	}
-	payload, err := json.Marshal(notificationPayload{Media: media, SubtitlePath: installation.Path})
-	if err != nil {
-		return fmt.Errorf("encode notification payload: %w", err)
-	}
-	names := make([]string, 0, len(w.Notifiers))
-	for name := range w.Notifiers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		rawKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s", name, installation.MediaID, installation.Language, installation.Checksum)
-		sum := sha256.Sum256([]byte(rawKey))
-		request := store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: w.Clock.Now()}
-		inserted, err := w.Repository.EnqueueNotification(ctx, request)
-		if err != nil {
-			return err
-		}
-		if inserted {
-			key := request.DedupeKey
-			if len(key) > 12 {
-				key = key[:12]
-			}
-			w.Events.For("worker").Log(ctx, slog.LevelInfo, "notification.queued", "subtitle notification queued",
-				slog.String("notifier", name), slog.String("notification_key", key))
-		}
-	}
-	return nil
 }
 
 func (w *Worker) processNotifications(ctx context.Context, leases []store.NotificationLease) error {
@@ -402,7 +363,7 @@ func (w *Worker) processNotificationLease(ctx context.Context, lease store.Notif
 	case <-jobCtx.Done():
 		return errors.Join(renewal.finish(), jobCtx.Err())
 	}
-	var payload notificationPayload
+	var payload workflow.NotificationPayload
 	err := json.Unmarshal(lease.PayloadJSON, &payload)
 	destination := w.Notifiers[lease.Notifier]
 	if err == nil && destination == nil {
@@ -735,11 +696,6 @@ func (w *Worker) report(err error) {
 	if err != nil && w.OnError != nil {
 		w.OnError(err)
 	}
-}
-
-type notificationPayload struct {
-	Media        domain.Media `json:"media"`
-	SubtitlePath string       `json:"subtitle_path"`
 }
 
 type leaseRenewal struct {

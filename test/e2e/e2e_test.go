@@ -203,6 +203,134 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	}
 }
 
+func TestManualAndDaemonInstallationsKeepDurableNotificationAcrossFailureAndRestart(t *testing.T) {
+	for _, mode := range []string{"manual", "daemon"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			mediaPath := filepath.Join(root, "Movie.2024.mkv")
+			if err := os.WriteFile(mediaPath, make([]byte, 196608), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			arr := newArrServer(t, mediaPath)
+			defer arr.Close()
+			providerServer, providerCounts := newOpenSubtitlesServer(t, true)
+			defer providerServer.Close()
+			var siloCalls atomic.Int64
+			var siloHealthy atomic.Bool
+			silo := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				siloCalls.Add(1)
+				if siloHealthy.Load() {
+					response.WriteHeader(http.StatusAccepted)
+				} else {
+					response.WriteHeader(http.StatusServiceUnavailable)
+				}
+			}))
+			defer silo.Close()
+			cfg := e2eConfig(t, root, arr.URL, providerServer.URL, silo.URL)
+			arrCatalog, err := catalog.NewRadarr("radarr-main", arr.URL, "arr-key", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+			build := func() *app.App {
+				application, err := app.New(ctx, cfg, app.Options{Clock: fixedE2EClock{now: now}, LapseRunner: &countingLapseRunner{}, ProbeRunner: probeRunner{}, HTTPClient: providerServer.Client(), Catalogs: map[string]catalog.Catalog{"radarr-main": arrCatalog}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return application
+			}
+			first := build()
+			defer first.Close()
+			audit, err := sql.Open("sqlite", filepath.Join(cfg.DataDir, "subsyncd.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer audit.Close()
+			if mode == "manual" {
+				if _, err := first.Search(ctx, "radarr-main", "movie", 42, "en", false); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				postWebhook(t, first.Handler, `{"eventType":"Download","movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608,"sceneName":"Movie.2024.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}}`)
+				if err := first.Worker.(*worker.Worker).RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertOutbox := func() {
+				t.Helper()
+				var installations, intents int
+				if err := audit.QueryRow(`SELECT count(*) FROM installations`).Scan(&installations); err != nil {
+					t.Fatal(err)
+				}
+				if err := audit.QueryRow(`SELECT count(*) FROM notifications WHERE notifier='silo' AND dedupe_key <> ''`).Scan(&intents); err != nil {
+					t.Fatal(err)
+				}
+				if installations != 1 || intents != 1 {
+					t.Fatalf("installation/intent counts = %d/%d", installations, intents)
+				}
+			}
+			assertOutbox()
+			sidecar := filepath.Join(root, "Movie.2024.en.srt")
+			original, err := os.ReadFile(sidecar)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "manual" {
+				if siloCalls.Load() != 0 {
+					t.Fatal("manual installation attempted synchronous delivery")
+				}
+				if err := first.Worker.(*worker.Worker).RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if siloCalls.Load() != 1 {
+				t.Fatalf("failed delivery calls = %d", siloCalls.Load())
+			}
+			var result string
+			var retryAt int64
+			if err := audit.QueryRow(`SELECT result, next_attempt_at_ns FROM notifications`).Scan(&result, &retryAt); err != nil || result != "retryable_error" || retryAt <= now.UnixNano() {
+				t.Fatalf("delivery retry = %s/%d/%v", result, retryAt, err)
+			}
+			if payload, err := os.ReadFile(sidecar); err != nil || string(payload) != string(original) {
+				t.Fatalf("delivery failure altered subtitle: %q/%v", payload, err)
+			}
+			assertOutbox()
+			// A true same-checksum reinstall must preserve the existing retry row.
+			if err := os.Remove(sidecar); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := first.Search(ctx, "radarr-main", "movie", 42, "en", false); err != nil {
+				t.Fatal(err)
+			}
+			assertOutbox()
+			if providerCounts.download.Load() != 2 {
+				t.Fatalf("reacquisition downloads = %d", providerCounts.download.Load())
+			}
+			if err := first.Close(); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Hour)
+			siloHealthy.Store(true)
+			second := build()
+			defer second.Close()
+			if err := second.Worker.(*worker.Worker).RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := second.Worker.(*worker.Worker).RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			assertOutbox()
+			if siloCalls.Load() != 2 || providerCounts.download.Load() != 2 {
+				t.Fatalf("restart silo/download calls = %d/%d", siloCalls.Load(), providerCounts.download.Load())
+			}
+			if err := audit.QueryRow(`SELECT result, next_attempt_at_ns FROM notifications`).Scan(&result, &retryAt); err != nil || result != "success" || retryAt != 0 {
+				t.Fatalf("delivered outbox = %s/%d/%v", result, retryAt, err)
+			}
+		})
+	}
+}
+
 func TestEmbeddedSubtitlePreventsProviderAccess(t *testing.T) {
 	root := t.TempDir()
 	mediaPath := filepath.Join(root, "Movie.2024.mkv")

@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 4 (deleted managed-sidecar recovery) is implemented locally; production remains out of scope
-- Next safe action: implement Task 5 (atomic installation and notification outbox) after this task commit
+- Current task: codebase correctness-repair Task 5 (atomic installation and notification outbox) is implemented locally; production remains out of scope
+- Next safe action: implement Task 6 (YAML document cardinality) after this task commit
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 5 — atomic installation and notification outbox
+
+- `RecordInstallationWithNotifications` validates all intents before mutation, then commits the current-media support check, installation audit, provenance upsert, and checksum-deduplicated outbox inserts in one SQLite transaction. It reports inserted/deduplicated results only after commit. `RecordInstallation` remains an installation-only compatibility wrapper, and standalone enqueue shares the same validation/SQL semantics.
+- The installer constructs sorted notifier requests from the final checksum and the injected clock. Every manual, daemon, webhook, and retry path receives configured notifier names through the assembled language workflow. Failure to persist any intent invokes the existing file rollback, preserving prior managed provenance and content or removing a failed first install. Existing retained rollback-copy behavior is unchanged.
+- Workers now only deliver durable intents; an installed search outcome never creates a notification. Remote Silo failure retries independently without changing the subtitle or installation row. The shared payload and existing notifier/media/language/checksum dedupe formula preserve durable-row compatibility across restart. `notification.queued` is emitted by the workflow installer only after a newly inserted intent commits, with the same bounded key prefix and no payload paths.
+- RED/GREEN coverage observed missing repository/installer interfaces, the old worker enqueue, absent app intents in both English/Croatian manual and daemon paths, and tagged installation/intent counts of `1/0` before wiring. Real SQLite trigger tests fail the second outbox insert and prove audit/provenance/first-intent rollback; real installer/SQLite tests additionally prove first-file removal and managed-file restoration. Tagged acceptance covers both entry points, same-checksum reinstall dedupe, Silo 503 retry isolation, and successful delivery after restart without duplicate work.
+- Verification passed `go test ./internal/store ./internal/workflow ./internal/worker ./internal/app -race -count=1`, `go test ./test/e2e -tags=e2e -race -count=1`, focused installer dedupe/SQLite checks, and `git diff --check`. The restricted app/E2E runs could not bind local test listeners; the same local-only commands passed with loopback permission. No external providers, Silo, Hades, image builds, or deployments were touched.
+- Commit: `fix: commit subtitle notifications atomically`.
+- Next task: reject trailing YAML documents before expansion.
 
 ### Conventional repairs Task 4 — deleted managed-sidecar recovery
 

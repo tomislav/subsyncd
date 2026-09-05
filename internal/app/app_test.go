@@ -23,11 +23,14 @@ import (
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
+	"subsyncd/internal/notifier"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
+	"subsyncd/internal/testutil"
 	"subsyncd/internal/worker"
+	"subsyncd/internal/workflow"
 )
 
 type fakeProvider struct{ id string }
@@ -110,6 +113,112 @@ func TestNewWiresConfiguredWorkflowConcurrency(t *testing.T) {
 	if background.MaxWorkflows != 4 {
 		t.Fatalf("worker max workflows = %d, want 4", background.MaxWorkflows)
 	}
+}
+
+func TestNewQueuesSiloIntentForManualAndDaemonInstallations(t *testing.T) {
+	for _, mode := range []string{"manual", "daemon"} {
+		for _, language := range []domain.Language{"en", "hr"} {
+			t.Run(mode+"/"+language.String(), func(t *testing.T) {
+				ctx := context.Background()
+				cfg := testConfig(t)
+				cfg.Languages["hr"] = config.LanguageConfig{Providers: []string{"english"}}
+				cfg.Silo = config.SiloConfig{Enabled: true, URL: "http://silo.invalid", APIKey: "test-key"}
+				root := cfg.MediaRoots[0]
+				mediaPath := filepath.Join(root, "Movie.mkv")
+				if err := os.WriteFile(mediaPath, []byte("media"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat(mediaPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+				media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Title: "Movie", Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: info.Size(), ModTime: info.ModTime()}}
+				application, err := New(ctx, cfg, Options{Clock: testutil.NewClock(now), LapseRunner: capabilityRunner{}, ProbeRunner: notificationProbe{}, Providers: map[string]provider.Provider{"english": notificationProvider{}}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: media}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer application.Close()
+				var delivered notificationDelivery
+				background := application.Worker.(*worker.Worker)
+				background.Notifiers = map[string]notifier.Notifier{"silo": &delivered}
+				var mediaID int64
+				if mode == "manual" {
+					output, err := application.Search(ctx, "tv", "movie", 7, language.String(), false)
+					if err != nil || !strings.Contains(output, "installed") {
+						t.Fatalf("manual output/error = %q/%v", output, err)
+					}
+				} else {
+					mediaID, _, err = application.Repository.UpsertMedia(ctx, media)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := application.Repository.UpsertSearchStateWithPriority(ctx, mediaID, language, now, store.SearchPriorityImport); err != nil {
+						t.Fatal(err)
+					}
+					if err := background.RunOnce(ctx); err != nil {
+						t.Fatal(err)
+					}
+					if delivered.calls != 1 || delivered.path != filepath.Join(root, "Movie."+language.String()+".srt") {
+						t.Fatalf("delivery = %#v", delivered)
+					}
+				}
+				mediaID, _, err = application.Repository.FindMedia(ctx, media.Ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				installation, found, err := application.Repository.GetInstallation(ctx, mediaID, language)
+				if err != nil || !found || installation.Checksum == "" {
+					t.Fatalf("installation = %#v/%v/%v", installation, found, err)
+				}
+				if mode == "manual" {
+					leases, err := application.Repository.LeaseDueNotifications(ctx, now, 10, time.Minute)
+					if err != nil || len(leases) != 1 || leases[0].Notifier != "silo" {
+						t.Fatalf("intents = %#v/%v", leases, err)
+					}
+					var payload workflow.NotificationPayload
+					if err := json.Unmarshal(leases[0].PayloadJSON, &payload); err != nil || payload.SubtitlePath != installation.Path || payload.Media.Ref != media.Ref {
+						t.Fatalf("payload = %#v/%v", payload, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+type notificationProvider struct{}
+
+func (notificationProvider) ID() string { return "english" }
+func (notificationProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{ExactFileHash: true}
+}
+func (notificationProvider) SupportsLanguage(domain.Language) bool { return true }
+func (notificationProvider) Search(_ context.Context, query provider.SearchQuery) ([]domain.Candidate, error) {
+	return []domain.Candidate{{ProviderID: "english", ResultID: "one", Language: query.Language, Kind: domain.MediaMovie, Title: "Movie", ExactHash: true}}, nil
+}
+func (notificationProvider) Download(_ context.Context, _ domain.Candidate, out io.Writer) (provider.DownloadMetadata, error) {
+	_, err := io.WriteString(out, "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+	return provider.DownloadMetadata{Filename: "Movie.srt"}, err
+}
+
+type notificationProbe struct{}
+
+func (notificationProbe) Run(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	if len(args) == 1 && args[0] == "-version" {
+		return []byte("ffprobe version 1"), nil, nil
+	}
+	return []byte(`{"streams":[],"format":{"duration":"100"}}`), nil, nil
+}
+
+type notificationDelivery struct {
+	calls int
+	path  string
+}
+
+func (n *notificationDelivery) SubtitleChanged(_ context.Context, _ domain.Media, path string) error {
+	n.calls++
+	n.path = path
+	return nil
 }
 
 func TestNewWiresProviderObservabilityIntoSuppliedProvidersAndSearchers(t *testing.T) {

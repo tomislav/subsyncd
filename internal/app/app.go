@@ -206,8 +206,25 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	if err != nil {
 		return nil, err
 	}
+	notifiers := map[string]notifier.Notifier{}
+	if cfg.Silo.Enabled {
+		mappings := make([]notifier.PathMapping, 0, len(cfg.Silo.PathMappings))
+		for _, mapping := range cfg.Silo.PathMappings {
+			mappings = append(mappings, notifier.PathMapping{From: mapping.From, To: mapping.To})
+		}
+		silo, err := notifier.NewSilo(notifier.SiloConfig{Enabled: true, BaseURL: cfg.Silo.URL, APIKey: cfg.Silo.APIKey, PathMappings: mappings})
+		if err != nil {
+			return nil, err
+		}
+		notifiers["silo"] = silo
+	}
+	notifierNames := make([]string, 0, len(notifiers))
+	for name := range notifiers {
+		notifierNames = append(notifierNames, name)
+	}
+	sort.Strings(notifierNames)
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner}}
-	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID}
+	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events}
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
 	for language, providerIDs := range routes {
 		ordered := make([]provider.Provider, 0, len(providerIDs))
@@ -239,18 +256,6 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		webhookInstances[instance.Name] = httpapi.Instance{Token: instance.WebhookToken, Handler: catalog.WebhookHandler{Instance: instance.Name, InstanceType: instance.Type, Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnApplied: notify}}
 	}
 
-	notifiers := map[string]notifier.Notifier{}
-	if cfg.Silo.Enabled {
-		mappings := make([]notifier.PathMapping, 0, len(cfg.Silo.PathMappings))
-		for _, mapping := range cfg.Silo.PathMappings {
-			mappings = append(mappings, notifier.PathMapping{From: mapping.From, To: mapping.To})
-		}
-		silo, err := notifier.NewSilo(notifier.SiloConfig{Enabled: true, BaseURL: cfg.Silo.URL, APIKey: cfg.Silo.APIKey, PathMappings: mappings})
-		if err != nil {
-			return nil, err
-		}
-		notifiers["silo"] = silo
-	}
 	reconcilerInterfaces := make(map[string]worker.Reconciler, len(reconcilers))
 	for name, reconciler := range reconcilers {
 		reconcilerInterfaces[name] = reconciler

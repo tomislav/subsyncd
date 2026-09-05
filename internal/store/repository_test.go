@@ -664,6 +664,84 @@ func TestSearchLeaseRenewalAndAttemptAccountingAreCompareAndSwap(t *testing.T) {
 	}
 }
 
+func TestRecordInstallationWithNotificationsPersistsAndDeduplicates(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0).UTC()
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum"}
+	requests := []NotificationRequest{
+		{Notifier: "first", DedupeKey: "first:sum", PayloadJSON: []byte(`{"subtitle_path":"/media/movie.en.srt"}`), NextAttemptAt: now},
+		{Notifier: "silo", DedupeKey: "silo:sum", PayloadJSON: []byte(`{"subtitle_path":"/media/movie.en.srt"}`), NextAttemptAt: now},
+	}
+	for run := 0; run < 2; run++ {
+		results, err := repo.RecordInstallationWithNotifications(ctx, installation, requests)
+		if err != nil || len(results) != 2 {
+			t.Fatalf("results = %#v, %v", results, err)
+		}
+		for index, result := range results {
+			if result.Notifier != requests[index].Notifier || result.DedupeKey != requests[index].DedupeKey || result.Inserted != (run == 0) {
+				t.Fatalf("result = %#v", result)
+			}
+		}
+	}
+	got, found, err := repo.GetInstallation(ctx, mediaID, "en")
+	if err != nil || !found || got.Checksum != "sum" || string(got.ScoreJSON) != "{}" || string(got.SyncResultJSON) != "{}" {
+		t.Fatalf("installation = %#v, %v, %v", got, found, err)
+	}
+	leases, err := repo.LeaseDueNotifications(ctx, now, 10, time.Minute)
+	if err != nil || len(leases) != 2 {
+		t.Fatalf("leases = %#v, %v", leases, err)
+	}
+	for index, lease := range leases {
+		if lease.Notifier != requests[index].Notifier || string(lease.PayloadJSON) != string(requests[index].PayloadJSON) {
+			t.Fatalf("lease = %#v", lease)
+		}
+	}
+}
+
+func TestRecordInstallationWithNotificationsRollsBackEverything(t *testing.T) {
+	for _, failure := range []string{"second insert", "invalid request"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			repo := openTestRepository(t)
+			mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Fail the second insertion so this also detects a partially committed outbox.
+			if _, err := repo.store.db.Exec(`CREATE TRIGGER fail_notification BEFORE INSERT ON notifications WHEN NEW.notifier = 'fail' BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Unix(100, 0).UTC()
+			requests := []NotificationRequest{
+				{Notifier: "silo", DedupeKey: "valid", PayloadJSON: []byte(`{}`), NextAttemptAt: now},
+				{Notifier: "fail", DedupeKey: "second", PayloadJSON: []byte(`{}`), NextAttemptAt: now},
+			}
+			if failure == "invalid request" {
+				requests[1].PayloadJSON = []byte(`invalid`)
+			}
+			installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/movie.en.srt", Checksum: "sum"}
+			results, err := repo.RecordInstallationWithNotifications(ctx, installation, requests)
+			if err == nil || results != nil {
+				t.Fatalf("results/error = %#v/%v", results, err)
+			}
+			if _, found, err := repo.GetInstallation(ctx, mediaID, "en"); err != nil || found {
+				t.Fatalf("installation found/error = %v/%v", found, err)
+			}
+			for _, table := range []string{"notifications", "events"} {
+				var count int
+				if err := repo.store.db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("%s count/error = %d/%v", table, count, err)
+				}
+			}
+		})
+	}
+}
+
 func TestNotificationLeaseRetryCompletionAndDedupeLifecycle(t *testing.T) {
 	repo := openTestRepository(t)
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)

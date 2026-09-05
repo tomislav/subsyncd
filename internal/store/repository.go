@@ -91,6 +91,12 @@ type NotificationRequest struct {
 	NextAttemptAt time.Time
 }
 
+type NotificationEnqueueResult struct {
+	Notifier  string
+	DedupeKey string
+	Inserted  bool
+}
+
 type NotificationLease struct {
 	ID          int64
 	Notifier    string
@@ -728,10 +734,23 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 }
 
 func (r *Repository) EnqueueNotification(ctx context.Context, request NotificationRequest) (bool, error) {
-	if request.Notifier == "" || request.DedupeKey == "" || !json.Valid(request.PayloadJSON) || request.NextAttemptAt.IsZero() {
-		return false, fmt.Errorf("notification notifier, dedupe key, valid payload, and due time are required")
+	if err := validateNotificationRequest(request); err != nil {
+		return false, err
 	}
-	result, err := r.store.db.ExecContext(ctx, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES (?, ?, 0, ?, '', ?) ON CONFLICT DO NOTHING`, request.Notifier, request.PayloadJSON, request.NextAttemptAt.UnixNano(), request.DedupeKey)
+	return enqueueNotification(ctx, r.store.db, request)
+}
+
+func validateNotificationRequest(request NotificationRequest) error {
+	if request.Notifier == "" || request.DedupeKey == "" || !json.Valid(request.PayloadJSON) || request.NextAttemptAt.IsZero() {
+		return fmt.Errorf("notification notifier, dedupe key, valid payload, and due time are required")
+	}
+	return nil
+}
+
+func enqueueNotification(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, request NotificationRequest) (bool, error) {
+	result, err := executor.ExecContext(ctx, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES (?, ?, 0, ?, '', ?) ON CONFLICT DO NOTHING`, request.Notifier, request.PayloadJSON, request.NextAttemptAt.UnixNano(), request.DedupeKey)
 	if err != nil {
 		return false, fmt.Errorf("enqueue notification: %w", err)
 	}
@@ -1131,23 +1150,35 @@ func (r *Repository) GetInstallation(ctx context.Context, mediaID int64, languag
 }
 
 func (r *Repository) RecordInstallation(ctx context.Context, installation Installation) error {
+	_, err := r.RecordInstallationWithNotifications(ctx, installation, nil)
+	return err
+}
+
+// RecordInstallationWithNotifications commits provenance, audit, and delivery
+// intents together. Enqueue results are visible only after the transaction commits.
+func (r *Repository) RecordInstallationWithNotifications(ctx context.Context, installation Installation, requests []NotificationRequest) ([]NotificationEnqueueResult, error) {
+	for _, request := range requests {
+		if err := validateNotificationRequest(request); err != nil {
+			return nil, err
+		}
+	}
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin installation record: %w", err)
+		return nil, fmt.Errorf("begin installation record: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var unsupportedReason string
 	if err := tx.QueryRowContext(ctx, `SELECT unsupported_reason FROM media WHERE id=?`, installation.MediaID).Scan(&unsupportedReason); err != nil {
-		return fmt.Errorf("read installation media support: %w", err)
+		return nil, fmt.Errorf("read installation media support: %w", err)
 	}
 	if reason := domain.UnsupportedReason(unsupportedReason); !validUnsupportedReason(reason) {
-		return fmt.Errorf("read installation media support: corrupt unsupported reason %q", unsupportedReason)
+		return nil, fmt.Errorf("read installation media support: corrupt unsupported reason %q", unsupportedReason)
 	} else if reason != "" {
-		return fmt.Errorf("record installation: media is unsupported: %s", reason)
+		return nil, fmt.Errorf("record installation: media is unsupported: %s", reason)
 	}
 	now := time.Now().UTC().UnixNano()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events(event_type, media_id, outcome, created_at_ns) VALUES ('subtitle_installed', ?, 'success', ?)`, installation.MediaID, now); err != nil {
-		return fmt.Errorf("record installation audit: %w", err)
+		return nil, fmt.Errorf("record installation audit: %w", err)
 	}
 	if len(installation.ScoreJSON) == 0 {
 		installation.ScoreJSON = []byte(`{}`)
@@ -1157,12 +1188,20 @@ func (r *Repository) RecordInstallation(ctx context.Context, installation Instal
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, installed_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET path=excluded.path, checksum=excluded.checksum, provider_id=excluded.provider_id, candidate_id=excluded.candidate_id, score_json=excluded.score_json, sync_result_json=excluded.sync_result_json, rollback_path=excluded.rollback_path, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, installed_at_ns=excluded.installed_at_ns`, installation.MediaID, installation.Language, installation.Path, installation.Checksum, installation.ProviderID, installation.CandidateID, installation.ScoreJSON, installation.SyncResultJSON, installation.RollbackPath, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS, now)
 	if err != nil {
-		return fmt.Errorf("record installation: %w", err)
+		return nil, fmt.Errorf("record installation: %w", err)
+	}
+	results := make([]NotificationEnqueueResult, 0, len(requests))
+	for _, request := range requests {
+		inserted, err := enqueueNotification(ctx, tx, request)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, NotificationEnqueueResult{Notifier: request.Notifier, DedupeKey: request.DedupeKey, Inserted: inserted})
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit installation: %w", err)
+		return nil, fmt.Errorf("commit installation: %w", err)
 	}
-	return nil
+	return results, nil
 }
 
 // UpdateInstallationAssessment refreshes scoring or exact-hash provenance
