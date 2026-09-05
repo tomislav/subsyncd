@@ -232,16 +232,21 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		slog.Int("failure_attempt", lease.FailureAttempt),
 	)
 	events := w.Events.For("worker")
-	events.Log(jobCtx, slog.LevelInfo, "job.started", "subtitle job started")
-	renewal := w.renewSearchLease(jobCtx, cancelJob, lease.JobID)
 	media, err := w.Repository.GetMedia(jobCtx, lease.MediaID)
-	var result workflow.Result
+	workflowCtx := jobCtx
 	if err == nil {
 		jobCtx = observability.WithAttrs(jobCtx,
 			slog.String("instance", media.Ref.Instance),
 			slog.String("media_kind", string(media.Ref.Kind)),
 			slog.Int64("file_id", media.Ref.FileID),
 		)
+		workflowCtx = jobCtx
+		jobCtx = observability.WithAttrs(jobCtx, slog.String("media_title", observability.MediaTitle(media)))
+	}
+	events.Log(jobCtx, slog.LevelInfo, "job.started", "subtitle job started")
+	renewal := w.renewSearchLease(jobCtx, cancelJob, lease.JobID)
+	var result workflow.Result
+	if err == nil {
 		if media.UnsupportedReason != "" {
 			if renewErr := renewal.finish(); renewErr != nil {
 				events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
@@ -261,7 +266,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			w.logJobCompleted(jobCtx, slog.LevelInfo, string(media.UnsupportedReason), string(media.UnsupportedReason), time.Time{}, started, nil)
 			return nil
 		}
-		result, err = w.Workflow.Run(jobCtx, workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)})
+		result, err = w.Workflow.Run(workflowCtx, workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)})
 	}
 	if renewErr := renewal.finish(); renewErr != nil {
 		events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)

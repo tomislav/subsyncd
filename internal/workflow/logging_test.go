@@ -17,6 +17,12 @@ import (
 
 func TestWorkflowLogsSatisfiedInventoryWithoutPaths(t *testing.T) {
 	request := serviceRequest(t)
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Title = "Show\nName"
+	request.Media.Year = 0
+	request.Media.Season = 1
+	request.Media.Episode = 2
+	request.Media.EpisodeTitle = "Pilot\tPart"
 	var logs bytes.Buffer
 	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
 	if err != nil {
@@ -40,6 +46,12 @@ func TestWorkflowLogsSatisfiedInventoryWithoutPaths(t *testing.T) {
 	completed := workflowEvents(records, "search.completed")[0]
 	if completed["outcome"] != "satisfied" || completed["reason"] != "existing_subtitle" {
 		t.Fatalf("completion = %#v", completed)
+	}
+	for _, event := range []string{"search.started", "search.completed"} {
+		matches := workflowEvents(records, event)
+		if len(matches) != 1 || matches[0]["media_title"] != "Show Name - S01E02 - Pilot Part" {
+			t.Fatalf("%s media title = %#v", event, matches)
+		}
 	}
 	if strings.Contains(logs.String(), request.Media.Fingerprint.Path) {
 		t.Fatalf("info logs leaked media path: %s", logs.String())

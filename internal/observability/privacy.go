@@ -1,11 +1,14 @@
 package observability
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"subsyncd/internal/domain"
 )
 
 const maximumTextRunes = 2048
@@ -28,6 +31,26 @@ func SafeText(value string) string {
 	}
 	runes := []rune(value)
 	return string(runes[:maximumTextRunes])
+}
+
+// MediaTitle returns a bounded, single-line identity suitable for structured
+// log fields. It intentionally contains no filesystem or provider data.
+func MediaTitle(media domain.Media) string {
+	title := strings.TrimSpace(media.Title)
+	switch media.Ref.Kind {
+	case domain.MediaMovie:
+		if title != "" && media.Year > 0 {
+			title = fmt.Sprintf("%s (%d)", title, media.Year)
+		}
+	case domain.MediaEpisode:
+		if media.Season > 0 || media.Episode > 0 {
+			title = fmt.Sprintf("%s - S%02dE%02d", title, media.Season, media.Episode)
+		}
+		if episodeTitle := strings.TrimSpace(media.EpisodeTitle); episodeTitle != "" {
+			title += " - " + episodeTitle
+		}
+	}
+	return SafeText(title)
 }
 
 func resolveRoot(root string) (resolvedRoot, bool) {

@@ -163,6 +163,7 @@ type finalizedCandidate struct {
 
 func (s *Service) Run(ctx context.Context, request Request) (result Result, runErr error) {
 	events := s.workflowEvents()
+	ctx = observability.WithAttrs(ctx, slog.String("media_title", observability.MediaTitle(request.Media)))
 	startedAt := time.Now()
 	candidateCount := 0
 	events.Log(ctx, slog.LevelInfo, "search.started", "subtitle workflow started",

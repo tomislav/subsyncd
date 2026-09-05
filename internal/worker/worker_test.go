@@ -63,6 +63,10 @@ func TestRunOnceLogsCorrelatedSearchJobLifecycle(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
 	repository.searches[0].Priority = store.SearchPriorityImport
+	media := repository.media[1]
+	media.Title = "Blade\nRunner"
+	media.Year = 1982
+	repository.media[1] = media
 	var logs synchronizedBuffer
 	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
 	if err != nil {
@@ -83,6 +87,11 @@ func TestRunOnceLogsCorrelatedSearchJobLifecycle(t *testing.T) {
 	completed := findWorkerEvent(t, records, "job.completed")
 	if completed["outcome"] != "satisfied" || completed["instance"] != "sonarr" || completed["media_kind"] != "movie" || completed["file_id"] != float64(1) {
 		t.Fatalf("completion fields = %#v", completed)
+	}
+	for _, event := range []string{"job.started", "job.completed"} {
+		if record := findWorkerEvent(t, records, event); record["media_title"] != "Blade Runner (1982)" {
+			t.Fatalf("%s media title = %#v", event, record)
+		}
 	}
 	if _, ok := completed["duration_ms"].(float64); !ok {
 		t.Fatalf("duration_ms = %#v", completed["duration_ms"])

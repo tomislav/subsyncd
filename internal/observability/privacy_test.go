@@ -10,7 +10,33 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"subsyncd/internal/domain"
 )
+
+func TestMediaTitleFormatsAndSanitizesHumanIdentity(t *testing.T) {
+	tests := []struct {
+		name  string
+		media domain.Media
+		want  string
+	}{
+		{name: "movie", media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Title: "Blade\nRunner", Year: 1982}, want: "Blade Runner (1982)"},
+		{name: "episode", media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Title: "Show\tName", Season: 1, Episode: 2, EpisodeTitle: "Pilot\nPart"}, want: "Show Name - S01E02 - Pilot Part"},
+		{name: "episode without title", media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Title: "Show", Season: 3, Episode: 7}, want: "Show - S03E07"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := MediaTitle(test.media); got != test.want {
+				t.Fatalf("MediaTitle() = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	long := MediaTitle(domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Title: strings.Repeat("x", maximumTextRunes+100)})
+	if len([]rune(long)) != maximumTextRunes {
+		t.Fatalf("bounded title length = %d, want %d", len([]rune(long)), maximumTextRunes)
+	}
+}
 
 func TestErrorAttrsRedactsBoundsAndFlattens(t *testing.T) {
 	const secret = "credential-sentinel"
