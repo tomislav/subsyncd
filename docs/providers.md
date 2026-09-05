@@ -75,7 +75,7 @@ subdl-main:
 
 For one media/language job:
 
-1. Reuse embedded inventory only when path, Arr file ID, size, and mtime match; always rescan sibling sidecars.
+1. Reuse embedded inventory only when an actual completed probe has matching path, Arr file ID, size, and mtime; empty completed probes are valid, fresh catalog rows are not. Always rescan sibling sidecars. A stale or deleted catalog identity aborts inventory refresh technically before acquisition.
 2. Stop for a full matching embedded track or a matching protected/user-owned sidecar. Forced-only and unknown-language tracks do not satisfy a normal request.
 3. Try a reusable, checksummed season-pack member.
 4. Run the explicit exact-hash phase against hash-capable providers sequentially in configured order. Exact candidates are uncapped and downloaded one at a time; a forced, rejected, malformed, or wrong-member candidate advances locally to the next exact candidate. Stop at the first committed installation.

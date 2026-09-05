@@ -1,6 +1,15 @@
 # Remaining systems code review — 2026-09-05
 
-Reviewed `9d292c4` after the temporary workspace and LAPSE downstream repairs were verified and pushed. This is a review report, not an implementation of the findings below.
+Reviewed `9d292c4` after the temporary workspace and LAPSE downstream repairs were verified and pushed. The findings below describe that historical baseline; the repair ledger records subsequent implementation.
+
+## Repair ledger
+
+| Findings | Repair commits | Result |
+| --- | --- | --- |
+| R1, R5, R6, R7, R8, R9 | `bcdd2cc`, `9451f3c` | Redirect rejection, bounded owned errors, root mappings, mixed-batch scope handling, retained-event dedup before hydration, and strict paged history. Review also tightened incomplete-page rejection. |
+| R2, R3 | `03c3cb9`, `6265b03` | Completed-probe migration, inventory snapshot/CAS and live-file checks, deleted-media commit guards. Review also repaired delete/reimport lease preservation and terminal completion. |
+| R4, R13 | `08d6985` | Lock before mutable assembly; existing-schema read-only diagnostics and temporary analysis cache; sanitized startup errors with one output owner. |
+| R10, R11, R12 | `0a9b2ab` | Parent-aware cancellation admission, copied active-route SQL claim scope, and a 75-second container shutdown allowance. |
 
 Scope: catalog reconciliation and Arr detail clients, webhook batches and identity, worker dispatch/leases/shutdown, inventory caching and ownership, application initialization/CLI locking and errors, configuration, migrations, and container publication. Provider adapters, scoring, archive extraction, LAPSE analysis/finalization, installer rollback, and notification delivery had already received separate reviews; this pass examined their integration where relevant.
 
@@ -114,4 +123,6 @@ Return a sanitized startup error and establish one error-output owner once struc
 
 The reviewed repair baseline passed race-enabled tests, vet, tagged local E2E, formatting/diff checks, and the release-Dockerfile parity script. Additional review reproductions used temporary Go overlays, real temporary SQLite databases, sanitized media fixtures, and in-memory transports; they did not edit repository code or contact production, Arr, providers, or Silo. The probes intentionally exposed missing expectations in the current code. R8 and R12 are static findings rather than runtime reproductions.
 
-No additional confirmed findings were identified in the bounded review of hash-cache ownership, upgrade guards, migration lineage checks, or Dockerfile parity/publication wiring. Passing existing tests does not resolve the findings above. Implement R1 and R2 first, then inventory cache validity and initialization locking before the remaining scheduling/webhook/privacy repairs. Each repair should receive a permanent focused regression test and affected-package race verification.
+No additional confirmed findings were identified in the bounded review of hash-cache ownership, upgrade guards, migration lineage checks, or Dockerfile parity/publication wiring.
+
+All R1–R13 now have permanent regression coverage and the repairs listed above. On `0a9b2ab`, the complete race suite, vet, tagged local E2E, release-Dockerfile parity, parsed Compose configuration validation, formatting, and diff checks passed. Validation used local fixtures and fake servers; production was neither inspected nor redeployed during these repairs. Migration 003 applies during the next mutating startup; diagnostics now require an existing current-schema database.

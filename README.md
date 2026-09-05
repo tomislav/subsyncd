@@ -178,9 +178,10 @@ To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.0.5. Set absolute
 
 ```bash
 go build -trimpath -o subsyncd ./cmd/subsyncd
-./subsyncd doctor --config ./config/config.yaml
 ./subsyncd serve --config ./config/config.yaml
 ```
+
+After the first startup initializes the database, run `./subsyncd doctor --config ./config/config.yaml` from another terminal. Diagnostics open the existing database read-only; they do not initialize or migrate it.
 
 To build a local Docker image:
 
