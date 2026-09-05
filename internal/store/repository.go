@@ -1218,9 +1218,6 @@ func (r *Repository) ApplyMediaEvent(ctx context.Context, mutation MediaEventMut
 }
 
 func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMutation) (bool, error) {
-	if mutation.EntityID == 0 && (mutation.Type == "import" || mutation.Type == "rename") {
-		mutation.EntityID = mutation.Media.EntityID
-	}
 	if err := validateMediaMutation(mutation); err != nil {
 		return false, err
 	}
@@ -1404,17 +1401,13 @@ func findMediaIdentityTx(ctx context.Context, tx *sql.Tx, media domain.Media) (i
 	if entityFound && fileFound && entityRow.id != fileRow.id {
 		return 0, "", 0, 0, 0, false, fmt.Errorf("conflicting media identities")
 	}
-	selected := entityRow
-	switch {
-	case entityFound:
-	case fileFound && fileRow.entityID == 0:
-		selected = fileRow
-	case fileFound:
-		return 0, "", 0, 0, 0, false, fmt.Errorf("conflicting media identities")
-	default:
-		return 0, "", 0, 0, 0, false, nil
+	if entityFound {
+		return entityRow.id, entityRow.path, entityRow.fileID, entityRow.size, entityRow.modTime, true, nil
 	}
-	return selected.id, selected.path, selected.fileID, selected.size, selected.modTime, true, nil
+	if fileFound {
+		return 0, "", 0, 0, 0, false, fmt.Errorf("conflicting media identities")
+	}
+	return 0, "", 0, 0, 0, false, nil
 }
 
 func preserveAuthoritativeModTime(media *domain.Media, existingFileID, existingSize, existingModTime int64) {

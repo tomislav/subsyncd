@@ -240,6 +240,23 @@ func TestMediaEntityIDConflictFailsClosed(t *testing.T) {
 	}
 }
 
+func TestImportMutationRequiresExplicitEntityID(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	media.EntityID = 101
+	_, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{
+		EventID:   "missing-explicit-entity",
+		Type:      "import",
+		Ref:       media.Ref,
+		Media:     media,
+		Languages: []domain.Language{"hr"},
+		At:        time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC),
+	})
+	if err == nil || !strings.Contains(err.Error(), "media event identity is incomplete") {
+		t.Fatalf("missing entity error = %v", err)
+	}
+}
+
 func TestMediaUnsupportedReasonRoundTrips(t *testing.T) {
 	repo := openTestRepository(t)
 	media := testMedia()
@@ -262,7 +279,7 @@ func TestUnsupportedMediaEventCompletesSearchWithoutLease(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	media := testMedia()
 	media.UnsupportedReason = domain.UnsupportedMultiEpisode
-	mutation := MediaEventMutation{EventID: "unsupported-import", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
+	mutation := MediaEventMutation{EventID: "unsupported-import", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
 	if applied, err := repo.ApplyMediaEvent(context.Background(), mutation); err != nil || !applied {
 		t.Fatalf("ApplyMediaEvent() = %v, %v", applied, err)
 	}
@@ -286,7 +303,7 @@ func TestUnsupportedMediaEventDuringLeasePreservesOneTerminalRerun(t *testing.T)
 	repo := openTestRepository(t)
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	media := testMedia()
-	first := MediaEventMutation{EventID: "searchable-import", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
+	first := MediaEventMutation{EventID: "searchable-import", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
 	if applied, err := repo.ApplyMediaEvent(context.Background(), first); err != nil || !applied {
 		t.Fatalf("first ApplyMediaEvent() = %v, %v", applied, err)
 	}
@@ -295,7 +312,7 @@ func TestUnsupportedMediaEventDuringLeasePreservesOneTerminalRerun(t *testing.T)
 		t.Fatalf("initial leases = %#v, %v", leases, err)
 	}
 	media.UnsupportedReason = domain.UnsupportedMultiEpisode
-	second := MediaEventMutation{EventID: "unsupported-import", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute)}
+	second := MediaEventMutation{EventID: "unsupported-import", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute)}
 	if applied, err := repo.ApplyMediaEvent(context.Background(), second); err != nil || !applied {
 		t.Fatalf("second ApplyMediaEvent() = %v, %v", applied, err)
 	}
@@ -747,7 +764,7 @@ func TestCatalogEventPreservesAuthoritativeInventoryFingerprintAndInstallation(t
 	repo := openTestRepository(t)
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	catalogMedia := testMedia()
-	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "initial-import", Type: "import", Media: catalogMedia, Ref: catalogMedia.Ref, Languages: []domain.Language{"en"}, At: now}); err != nil {
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "initial-import", Type: "import", EntityID: catalogMedia.EntityID, Media: catalogMedia, Ref: catalogMedia.Ref, Languages: []domain.Language{"en"}, At: now}); err != nil {
 		t.Fatal(err)
 	}
 	mediaID, stored, err := repo.FindMedia(context.Background(), catalogMedia.Ref)
@@ -763,7 +780,7 @@ func TestCatalogEventPreservesAuthoritativeInventoryFingerprintAndInstallation(t
 	if err := repo.RecordInstallation(context.Background(), installation); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "repeat-import", Type: "import", Media: catalogMedia, Ref: catalogMedia.Ref, Languages: []domain.Language{"en"}, At: now.Add(time.Minute)}); err != nil {
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "repeat-import", Type: "import", EntityID: catalogMedia.EntityID, Media: catalogMedia, Ref: catalogMedia.Ref, Languages: []domain.Language{"en"}, At: now.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	gotMedia, err := repo.GetMedia(context.Background(), mediaID)
@@ -819,7 +836,7 @@ func TestRenameEventRetainsInstallationProvenance(t *testing.T) {
 	media := testMedia()
 	media.Fingerprint.Path = "/media/Old.Name.mkv"
 	media.Fingerprint.ModTime = now
-	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-before-rename", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now}); err != nil {
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-before-rename", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now}); err != nil {
 		t.Fatal(err)
 	}
 	var mediaID int64
@@ -831,7 +848,7 @@ func TestRenameEventRetainsInstallationProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	media.Fingerprint.Path = "/media/New.Name.mkv"
-	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "rename-1", Type: "rename", Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now.Add(time.Minute)}); err != nil {
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "rename-1", Type: "rename", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
@@ -951,7 +968,7 @@ func TestApplyMediaEventIsIdempotentAndResetsConfiguredLanguages(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	media := testMedia()
 	media.Fingerprint = domain.MediaFingerprint{Path: "/media/episode.mkv", FileID: media.Ref.FileID, Size: 100, ModTime: now}
-	mutation := MediaEventMutation{EventID: "event-1", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr", "en"}, At: now}
+	mutation := MediaEventMutation{EventID: "event-1", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr", "en"}, At: now}
 
 	applied, err := repo.ApplyMediaEvent(context.Background(), mutation)
 	if err != nil || !applied {
@@ -979,7 +996,7 @@ func TestApplyMediaEventDuringLeaseRequestsOneRerun(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	media := testMedia()
 	media.Fingerprint = domain.MediaFingerprint{Path: "/media/episode.mkv", FileID: media.Ref.FileID, Size: 100, ModTime: now}
-	firstEvent := MediaEventMutation{EventID: "import-1", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
+	firstEvent := MediaEventMutation{EventID: "import-1", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}
 	if applied, err := repo.ApplyMediaEvent(context.Background(), firstEvent); err != nil || !applied {
 		t.Fatalf("first event = %v, %v", applied, err)
 	}
@@ -1037,7 +1054,7 @@ func TestChangedImportInvalidatesCandidatesAndDeleteCancelsSearches(t *testing.T
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	media := testMedia()
 	media.Fingerprint = domain.MediaFingerprint{Path: "/media/episode.mkv", FileID: media.Ref.FileID, Size: 100, ModTime: now}
-	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-1", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}); err != nil {
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-1", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now}); err != nil {
 		t.Fatal(err)
 	}
 	var mediaID int64
@@ -1049,7 +1066,7 @@ func TestChangedImportInvalidatesCandidatesAndDeleteCancelsSearches(t *testing.T
 	}
 
 	media.Fingerprint.Size++
-	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-2", Type: "import", Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute)}); err != nil {
+	if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import-2", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	var candidates int
@@ -1099,7 +1116,7 @@ func TestCommitReconciliationSchedulesMissingPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	media := testMedia()
-	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:1", Type: "import", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now, Priority: SearchPriorityMissing}
+	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:1", Type: "import", EntityID: media.EntityID, Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now, Priority: SearchPriorityMissing}
 	if err := repo.CommitReconciliation(ctx, "sonarr-main", now, []MediaEventMutation{mutation}); err != nil {
 		t.Fatal(err)
 	}
@@ -1120,7 +1137,7 @@ func TestCommitReconciliationPreservesActiveLeaseAndRequestsOneRerun(t *testing.
 		t.Fatal(err)
 	}
 	media := testMedia()
-	initial := MediaEventMutation{EventID: "webhook-import", Type: "import", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now}
+	initial := MediaEventMutation{EventID: "webhook-import", Type: "import", EntityID: media.EntityID, Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now}
 	if _, err := repo.ApplyMediaEvent(ctx, initial); err != nil {
 		t.Fatal(err)
 	}
@@ -1128,7 +1145,7 @@ func TestCommitReconciliationPreservesActiveLeaseAndRequestsOneRerun(t *testing.
 	if err != nil || len(leases) != 1 {
 		t.Fatalf("initial lease = %#v, %v", leases, err)
 	}
-	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:51", Type: "rename", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute), Priority: SearchPriorityMissing}
+	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:51", Type: "rename", EntityID: media.EntityID, Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute), Priority: SearchPriorityMissing}
 	if err := repo.CommitReconciliation(ctx, "sonarr-main", now.Add(2*time.Minute), []MediaEventMutation{mutation}); err != nil {
 		t.Fatal(err)
 	}
@@ -1159,7 +1176,7 @@ func TestCommitReconciliationAppliesDeletesAndCursorAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	media := testMedia()
-	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "initial", Type: "import", Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now}); err != nil {
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "initial", Type: "import", EntityID: media.EntityID, Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now}); err != nil {
 		t.Fatal(err)
 	}
 	pageEnd := now.Add(time.Hour)
@@ -1191,7 +1208,7 @@ func TestCommitReconciliationAppliesDeletesAndCursorAtomically(t *testing.T) {
 	newMedia.Ref.FileID = 77
 	newMedia.Fingerprint.FileID = 77
 	newMedia.Fingerprint.Path = "/media/new.mkv"
-	valid := MediaEventMutation{EventID: "reconcile:sonarr-main:63", Type: "import", Ref: newMedia.Ref, Media: newMedia, Languages: []domain.Language{"hr"}, At: pageEnd, Priority: SearchPriorityMissing}
+	valid := MediaEventMutation{EventID: "reconcile:sonarr-main:63", Type: "import", EntityID: newMedia.EntityID, Ref: newMedia.Ref, Media: newMedia, Languages: []domain.Language{"hr"}, At: pageEnd, Priority: SearchPriorityMissing}
 	bad := MediaEventMutation{EventID: "reconcile:other:64", Type: "delete", Ref: domain.MediaRef{Instance: "other", Kind: domain.MediaEpisode, FileID: 5}, At: pageEnd.Add(time.Minute), Priority: SearchPriorityMissing}
 	if err := repo.CommitReconciliation(ctx, "sonarr-main", pageEnd.Add(time.Hour), []MediaEventMutation{valid, bad}); err == nil {
 		t.Fatal("mismatched instance reconciliation error = nil")
