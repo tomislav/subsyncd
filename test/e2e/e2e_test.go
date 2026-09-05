@@ -146,7 +146,7 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 		var payload struct {
 			Path string `json:"path"`
 		}
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || payload.Path != mediaPath {
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || payload.Path != filepath.Dir(mediaPath) {
 			t.Errorf("unexpected Silo payload: %#v, %v", payload, err)
 		}
 		siloCalls.Add(1)

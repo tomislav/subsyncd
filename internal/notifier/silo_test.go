@@ -22,7 +22,7 @@ func TestDisabledSiloNotifierIsNoop(t *testing.T) {
 	}
 }
 
-func TestSiloPostsNativeTargetedScanWithMappedMediaPath(t *testing.T) {
+func TestSiloPostsNativeTargetedScanWithMappedParentDirectory(t *testing.T) {
 	var gotPath, gotToken string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/scan" {
@@ -51,7 +51,7 @@ func TestSiloPostsNativeTargetedScanWithMappedMediaPath(t *testing.T) {
 	if err := notifier.SubtitleChanged(context.Background(), media, "/local/media/shows/Show/episode.en.srt"); err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != "/mnt/library/shows/Show/episode.mkv" || gotToken != "Bearer sa_secret" {
+	if gotPath != "/mnt/library/shows/Show" || gotToken != "Bearer sa_secret" {
 		t.Fatalf("scan = path %q token %q", gotPath, gotToken)
 	}
 }

@@ -96,7 +96,7 @@ install:
 silo:
   enabled: false
   # Silo's native API listener.
-  url: http://silo:8090
+  url: http://silo:8080
   # Replace with ${SILO_API_KEY} when enabled.
   api_key: disabled
   path_mappings:

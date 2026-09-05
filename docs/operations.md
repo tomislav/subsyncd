@@ -253,14 +253,14 @@ Enable Silo only after setting its native API URL and admin API key:
 ```yaml
 silo:
   enabled: true
-  url: http://silo:8090
+  url: http://silo:8080
   api_key: ${SILO_API_KEY}
   path_mappings:
     - from: /media
       to: /mnt/media
 ```
 
-After a committed install, a durable notification sends `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped media-file path. Silo resolves this to a targeted file scan, which refreshes its external-subtitle inventory. Notification failure never rolls back a subtitle. Timeout, 408, 429, and 5xx responses retry independently; other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
+After a committed install, a durable notification sends `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped parent directory of the media file. Silo resolves this to a subtree scan that discovers newly written sibling subtitle files. Notification failure never rolls back a subtitle. Timeout, 408, 429, and 5xx responses retry independently; other 4xx responses are terminal. See [the Silo protocol ledger](references/silo.md).
 
 This adapter targets Silo's current pre-1.0 native API. Silo plans to retire `/api/v1` at 1.0, and the v2 scan route is not yet published. Check the protocol ledger and upgrade `subsyncd` before moving Silo past its dual-API bridge release; `subsyncd` deliberately does not guess or fall back between mutating API versions.
 

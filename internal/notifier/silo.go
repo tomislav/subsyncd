@@ -83,7 +83,7 @@ func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitle
 	}
 	payload, err := json.Marshal(struct {
 		Path string `json:"path"`
-	}{Path: mapped})
+	}{Path: filepath.Dir(mapped)})
 	if err != nil {
 		return &DeliveryError{Reason: "encode request"}
 	}

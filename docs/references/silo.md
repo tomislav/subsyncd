@@ -1,6 +1,6 @@
 # Silo native scan API reference
 
-Checked: 2026-09-04
+Checked: 2026-09-05
 
 Primary references:
 
@@ -17,17 +17,17 @@ As checked on 2026-09-04, the phase-1 migration ledger marks `POST /api/v1/scan`
 
 ## Contract used by subsyncd
 
-Silo's native API accepts `POST /api/v1/scan` on its main API listener (normally port `8090`). The route requires an admin JWT or admin API key in the `Authorization: Bearer …` header. A valid targeted scan returns `202 Accepted`.
+Silo's native API accepts `POST /api/v1/scan` on its main API listener. The Hades container exposes that listener internally on port `8080`; deployments using Silo's published Compose may expose it differently on the host. The route requires an admin JWT or admin API key in the `Authorization: Bearer …` header. A valid targeted scan returns `202 Accepted`.
 
 The request body is:
 
 ```json
 {
-  "path": "/mnt/media/movies/Movie/Movie.mkv"
+  "path": "/mnt/media/movies/Movie"
 }
 ```
 
-`subsyncd` sends the media-file path rather than the subtitle sidecar path. Silo resolves a media-file path to a targeted file scan, and its scanner refreshes the associated external-subtitle inventory. Optional longest-prefix rewrites translate the path visible to `subsyncd` into the path visible inside Silo.
+`subsyncd` maps the media-file path into Silo's namespace and sends its parent directory rather than either individual file. Silo resolves that directory to a subtree scan, which discovers the newly written sibling subtitle. Optional longest-prefix rewrites translate the path visible to `subsyncd` into the path visible inside Silo before the parent directory is selected.
 
 The endpoint is available when Silo runs in `integrated` or `api` mode. It is not registered in `proxy` or `transcode` mode. The path must exist from Silo's filesystem view, use a supported media extension, and belong to an enabled Silo library.
 
@@ -36,9 +36,9 @@ The endpoint is available when Silo runs in `integrated` or `api` mode. It is no
 | Observed behavior | Decision | Proof |
 |---|---|---|
 | Silo documents native, authenticated targeted scans through `POST /api/v1/scan`. | Use the native route instead of the legacy Jellyfin-compatible Autoscan route. | `internal/notifier/silo_test.go` validates method, route, bearer header, body, and accepted response. |
-| A media-file target performs a file scan and refreshes external subtitle inventory. | Send the mapped media-file path, never the newly written subtitle path. | `TestSiloPostsNativeTargetedScanWithMappedMediaPath` and the tagged end-to-end install test. |
-| The native API commonly uses port `8090`. | Point example configuration to `http://silo:8090`. | `config.example.yaml` is loaded by `TestExampleConfigurationLoads`. |
-| Silo and `subsyncd` may see different mount paths. | Retain deterministic, boundary-aware longest-prefix mapping. | `TestSiloPostsNativeTargetedScanWithMappedMediaPath`. |
+| A media-file target can complete without walking the sibling subtitle, while a directory target performs a subtree scan. | Send the mapped media file's parent directory, never the individual media or subtitle file. | `TestSiloPostsNativeTargetedScanWithMappedParentDirectory` plus the 2026-09-05 Hades file-versus-subtree test. |
+| The native API listener is port `8080` inside the current Hades Silo container. | Point container-network examples to `http://silo:8080`; do not assume the host-published port. | Live Hades reachability and accepted-scan test. |
+| Silo and `subsyncd` may see different mount paths. | Retain deterministic, boundary-aware longest-prefix mapping before selecting the parent directory. | `TestSiloPostsNativeTargetedScanWithMappedParentDirectory`. |
 | Admin API keys are credentials and Silo is still pre-release. | Never persist the key or include response bodies/transport URLs in errors; reject redirects and keep the notifier optional. | Failure, timeout, redirect, and secret-redaction notifier tests. |
 | Notification transport can be unavailable after a subtitle was safely committed. | Persist a deduplicated notification job and retry it independently; never roll back acquisition. | Worker and repository notification lifecycle tests. |
 | Silo plans to retire `/api/v1` at 1.0, while the v2 scan route is not yet assigned in the migration ledger. | Support the documented current route only; do not speculate or retry a mutating notification across API versions. Add v2 after its contract is published. | API-v2 epic #135, cutover issue #886, and migration-ledger PR #902. |

@@ -384,8 +384,8 @@ languages:
 func TestValidateRejectsUnsafeSiloURLAndRelativePathMapping(t *testing.T) {
 	root := t.TempDir()
 	for _, silo := range []string{
-		`silo: {enabled: true, url: "http://user:pass@silo:8090", api_key: key}`,
-		`silo: {enabled: true, url: "http://silo:8090", api_key: key, path_mappings: [{from: relative, to: /mnt/media}]}`,
+		`silo: {enabled: true, url: "http://user:pass@silo:8080", api_key: key}`,
+		`silo: {enabled: true, url: "http://silo:8080", api_key: key, path_mappings: [{from: relative, to: /mnt/media}]}`,
 	} {
 		block := "\n" + silo + "\nlanguages:\n  en: {providers: [subdl-main]}\n"
 		_, err := loadText(t, validConfig(root, block))

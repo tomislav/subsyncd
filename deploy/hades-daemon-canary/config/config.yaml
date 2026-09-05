@@ -88,3 +88,12 @@ install:
 
 silo:
   enabled: false
+  url: http://silo:8080
+  api_key: ${SILO_API_KEY}
+  path_mappings:
+    - from: /media/canary/movies/1917
+      to: /media/movies/1917 (2019) [tmdbid-530915]
+    - from: /media/canary/movies/arrival
+      to: /media/movies/Arrival (2016) [tmdbid-329865]
+    - from: /media/canary/tv/1883-s01
+      to: /media/tv/1883 (2021) [tvdbid-396390]/Season 01
