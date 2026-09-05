@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: observe the clean-baseline three-file Hades canary after the Silo subtree-notification correction
-- Next safe action: revoke the exposed temporary Silo key; use a replacement permanent key before enabling Silo in production
-- Latest follow-up: Hades runs healthy on `sha-4af206c`; Silo is disabled, the temporary key and synthetic notification are absent, and the tested path mappings remain configured
+- Current task: newly configured language backfill is implemented and verified locally
+- Next safe action: push commit `2c64814` and deploy its immutable image only after explicit approval
+- Latest follow-up: Hades remains unchanged on `sha-4af206c`; the language-backfill change has not been published or deployed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Newly configured language backfill
+
+- Commit `2c64814` adds an offline startup reconciliation that inserts only absent search rows for every configured language and already-indexed media item belonging to a currently configured Arr instance. Supported media is immediately due at missing priority; unsupported multi-episode media receives its existing terminal outcome.
+- The insert is transactional and conflict-ignoring. Existing attempts, technical-failure counters, due times, priorities, outcomes, leases, rerun state, installations, and other-language rows remain unchanged. Media retained for an instance no longer present in configuration is not backfilled.
+- Adding a provider to an existing language changes its workflow route after restart without rewriting schedules. Adding a new Arr instance continues to use an empty reconciliation cursor plus retained Arr history; this change does not add a full-library Arr enumeration or startup network request.
+- TDD evidence first failed on the absent repository method and then on the absent startup wiring. Focused repository and application tests passed under the race detector. Fresh full verification passed `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, Compose rendering, and `git diff --check`.
 
 ### Silo parent-directory notification correction and Hades test
 
