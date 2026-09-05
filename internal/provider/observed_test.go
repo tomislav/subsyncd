@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
+	"subsyncd/internal/store"
+	"subsyncd/internal/testutil"
 )
 
 type downloadProvider struct {
@@ -142,5 +145,64 @@ func TestObservedProviderClassifiesOtherDownloadFailuresOnce(t *testing.T) {
 				t.Fatalf("failure log leaked source error: %s", logs.String())
 			}
 		})
+	}
+}
+
+type transportDownloadProvider struct {
+	downloadProvider
+	client Client
+}
+
+func (p transportDownloadProvider) Download(ctx context.Context, _ domain.Candidate, writer io.Writer) (DownloadMetadata, error) {
+	request, _ := http.NewRequest(http.MethodGet, "https://example.test/subtitle", nil)
+	response, err := p.client.Do(ctx, OperationDownload, request)
+	if err != nil {
+		if response != nil {
+			response.Body.Close()
+		}
+		return DownloadMetadata{}, err
+	}
+	defer response.Body.Close()
+	_, err = io.Copy(writer, response.Body)
+	return DownloadMetadata{}, err
+}
+
+func TestObservedBodyTimeoutIsThrottledRatherThanCanceled(t *testing.T) {
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := testutil.NewClock(time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	gate := NewGate(&memoryStateStore{states: map[string]store.ProviderState{}}, clock, 1)
+	gate.Configure("download-test", 1000, 10, 1)
+	client := Client{Gate: gate, Clock: clock, ProviderID: "download-test", ProviderType: "subdl", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: responseReadFailure{responseTimeout{}}}, nil
+	})}}
+	item := Observe(transportDownloadProvider{client: client}, events)
+	_, err = item.Download(context.Background(), domain.Candidate{ResultID: "candidate"}, io.Discard)
+	var cooldown *CooldownError
+	if !errors.As(err, &cooldown) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("body timeout lost its classification/cause: %v", err)
+	}
+	if got := providerOutcome(err, 0); got != "throttled" {
+		t.Errorf("provider outcome = %q", got)
+	}
+	records := providerEvents(providerLogRecords(t, logs.String()), "provider.download_completed")
+	if len(records) != 1 || records[0]["outcome"] != "throttled" || records[0]["error_kind"] != "throttled" || records[0]["level"] != "warn" {
+		t.Fatalf("body timeout completion = %+v", records)
+	}
+	if strings.Contains(logs.String(), "private-host") {
+		t.Fatal("transport cause leaked")
+	}
+}
+
+func TestProviderOutcomePrefersTypedQuotaOverWrappedDeadline(t *testing.T) {
+	err := errors.Join(context.DeadlineExceeded, &QuotaError{Scope: OperationDownload})
+	if got := providerOutcome(err, 0); got != "throttled" {
+		t.Fatalf("quota outcome=%q", got)
+	}
+	if got := providerOutcome(context.DeadlineExceeded, 0); got != "canceled" {
+		t.Fatalf("caller deadline outcome=%q", got)
 	}
 }

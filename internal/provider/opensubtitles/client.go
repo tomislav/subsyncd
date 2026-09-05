@@ -20,15 +20,16 @@ import (
 )
 
 type Client struct {
-	id        string
-	config    Config
-	transport baseprovider.Client
-	hasher    Hasher
-	hashCache HashCache
-	clock     baseprovider.Clock
-	mu        sync.Mutex
-	token     string
-	expiresAt time.Time
+	id         string
+	config     Config
+	transport  baseprovider.Client
+	hasher     Hasher
+	hashCache  HashCache
+	clock      baseprovider.Clock
+	mu         sync.Mutex
+	apiBaseURL string
+	token      string
+	expiresAt  time.Time
 }
 
 type HashCache interface {
@@ -199,6 +200,7 @@ func fromOpenSubtitlesLanguage(raw string) (domain.Language, error) {
 }
 
 type loginResponse struct {
+	BaseURL   string `json:"base_url"`
 	Token     string `json:"token"`
 	ExpiresIn int64  `json:"expires_in"`
 }
@@ -216,6 +218,14 @@ func (c *Client) login(ctx context.Context, force bool) error {
 	}
 	response, err := c.transport.Do(ctx, baseprovider.OperationAuth, request)
 	if err != nil {
+		if _, rejected := err.(*baseprovider.AuthenticationError); rejected {
+			if persistErr := c.transport.DisableAuthentication(ctx, "login credentials rejected"); persistErr != nil {
+				if response != nil {
+					response.Body.Close()
+				}
+				return persistErr
+			}
+		}
 		if response != nil {
 			response.Body.Close()
 		}
@@ -226,13 +236,21 @@ func (c *Client) login(ctx context.Context, force bool) error {
 		return fmt.Errorf("OpenSubtitles login returned HTTP %d", response.StatusCode)
 	}
 	var decoded loginResponse
-	if err := decodeLimitedJSON(response.Body, &decoded); err != nil || decoded.Token == "" {
+	if err := decodeLimitedJSON(response.Body, &decoded); err != nil {
+		return err
+	}
+	if decoded.Token == "" {
 		return &baseprovider.InvalidPayloadError{Message: "login response has no token"}
 	}
 	expires := time.Duration(decoded.ExpiresIn) * time.Second
 	if expires <= 0 {
 		expires = 12 * time.Hour
 	}
+	base, err := c.returnedAPIBase(decoded.BaseURL)
+	if err != nil {
+		return err
+	}
+	c.apiBaseURL = base
 	c.token = decoded.Token
 	c.expiresAt = c.clock.Now().Add(expires)
 	return nil
@@ -273,13 +291,23 @@ func (c *Client) getJSON(ctx context.Context, path string, destination any, allo
 		return fmt.Errorf("OpenSubtitles search returned HTTP %d", response.StatusCode)
 	}
 	if err := decodeLimitedJSON(response.Body, destination); err != nil {
-		return &baseprovider.InvalidPayloadError{Message: "search response is not valid JSON"}
+		return err
 	}
 	return nil
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader, authenticated bool) (*http.Request, error) {
-	endpoint := strings.TrimRight(c.config.BaseURL, "/") + path
+	base := c.config.BaseURL
+	token := ""
+	if authenticated {
+		c.mu.Lock()
+		if c.apiBaseURL != "" {
+			base = c.apiBaseURL
+		}
+		token = c.token
+		c.mu.Unlock()
+	}
+	endpoint := strings.TrimRight(base, "/") + path
 	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, fmt.Errorf("create OpenSubtitles request: %w", err)
@@ -289,9 +317,6 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
 	if authenticated {
-		c.mu.Lock()
-		token := c.token
-		c.mu.Unlock()
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	return request, nil
@@ -385,14 +410,14 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 		return baseprovider.DownloadMetadata{}, err
 	}
 	link, err := url.Parse(decoded.Link)
-	if err != nil || (link.Scheme != "https" && !(link.Scheme == "http" && sameOrigin(c.config.BaseURL, decoded.Link))) {
+	if err != nil || link.User != nil || link.Host == "" || (link.Scheme != "https" && !(link.Scheme == "http" && sameOrigin(c.config.BaseURL, decoded.Link))) {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("OpenSubtitles returned an unsafe download link")
 	}
 	downloadRequest, err := c.newAbsoluteRequest(ctx, http.MethodGet, decoded.Link)
 	if err != nil {
 		return baseprovider.DownloadMetadata{}, err
 	}
-	download, err := c.transport.Do(ctx, baseprovider.OperationDownload, downloadRequest)
+	download, err := c.transport.Do(ctx, baseprovider.OperationDownloadTransfer, downloadRequest)
 	if err != nil {
 		if download != nil {
 			download.Body.Close()
@@ -453,7 +478,10 @@ func (c *Client) requestDownloadLink(ctx context.Context, fileID int64, allowRef
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return downloadResponse{}, fmt.Errorf("OpenSubtitles download request returned HTTP %d", response.StatusCode)
 	}
-	if err := decodeLimitedJSON(response.Body, &decoded); err != nil || decoded.Link == "" {
+	if err := decodeLimitedJSON(response.Body, &decoded); err != nil {
+		return downloadResponse{}, err
+	}
+	if decoded.Link == "" {
 		return downloadResponse{}, &baseprovider.InvalidPayloadError{Message: "download response has no valid link"}
 	}
 	return decoded, nil
@@ -464,7 +492,6 @@ func (c *Client) newAbsoluteRequest(ctx context.Context, method, endpoint string
 	if err != nil {
 		return nil, fmt.Errorf("create OpenSubtitles download request: %w", err)
 	}
-	request.Header.Set("Api-Key", c.config.APIKey)
 	request.Header.Set("User-Agent", c.config.UserAgent)
 	return request, nil
 }
@@ -476,6 +503,41 @@ func sameOrigin(first, second string) bool {
 }
 
 func decodeLimitedJSON(reader io.Reader, destination any) error {
-	decoder := json.NewDecoder(io.LimitReader(reader, 4<<20))
-	return decoder.Decode(destination)
+	return baseprovider.DecodeJSON(reader, destination, 4<<20, "OpenSubtitles response is not valid JSON")
+}
+
+// returnedAPIBase accepts only the documented public API hosts. An explicitly
+// configured private endpoint stays private and may only return its own origin.
+func (c *Client) returnedAPIBase(raw string) (string, error) {
+	if raw == "" {
+		return c.config.BaseURL, nil
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	invalid := func() (string, error) {
+		return "", &baseprovider.InvalidPayloadError{Message: "login returned an unsafe API host"}
+	}
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return invalid()
+	}
+	configured, _ := url.Parse(c.config.BaseURL)
+	trusted := func(host string) bool { return host == "api.opensubtitles.com" || host == "vip-api.opensubtitles.com" }
+	if trusted(strings.ToLower(configured.Host)) {
+		if u.Scheme != "https" || !trusted(strings.ToLower(u.Host)) || (u.Path != "" && u.Path != "/" && u.Path != "/api/v1" && u.Path != "/api/v1/") {
+			return invalid()
+		}
+		return "https://" + strings.ToLower(u.Host) + "/api/v1", nil
+	}
+	if u.Scheme == "https" && trusted(strings.ToLower(u.Host)) && (u.Path == "" || u.Path == "/" || u.Path == "/api/v1" || u.Path == "/api/v1/") {
+		return c.config.BaseURL, nil
+	}
+	if !sameOrigin(c.config.BaseURL, raw) {
+		return invalid()
+	}
+	if u.Path != "" && u.Path != "/" && strings.TrimRight(u.Path, "/") != strings.TrimRight(configured.Path, "/") {
+		return invalid()
+	}
+	return c.config.BaseURL, nil
 }

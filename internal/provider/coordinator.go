@@ -19,7 +19,7 @@ import (
 
 const (
 	searchCacheTTL                  = 6 * time.Hour
-	normalizedCandidateCacheVersion = "candidate-v4"
+	normalizedCandidateCacheVersion = "candidate-v5"
 )
 
 type SearchCache interface {
@@ -274,10 +274,10 @@ func providerOutcome(err error, candidateCount int) string {
 	var disabled *DisabledError
 	var authentication *AuthenticationError
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return "canceled"
 	case errors.As(err, &cooldown), errors.As(err, &quota):
 		return "throttled"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "canceled"
 	case errors.As(err, &disabled):
 		return "disabled"
 	case errors.As(err, &authentication):

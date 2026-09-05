@@ -98,6 +98,11 @@ func (g *Gate) Acquire(ctx context.Context, providerID, origin string, operation
 		<-instance.semaphore
 		return nil, ctx.Err()
 	}
+	if err := g.checkState(ctx, providerID, operation); err != nil {
+		<-shared
+		<-instance.semaphore
+		return nil, err
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -137,6 +142,7 @@ func (g *Gate) Persist(ctx context.Context, throttle Throttle) error {
 	if err != nil {
 		return err
 	}
+	state.FailureAttempt = previous.FailureAttempt
 	if err := g.store.PutProviderState(ctx, state); err != nil {
 		return err
 	}
@@ -159,7 +165,7 @@ func (g *Gate) RecordTransientFailure(ctx context.Context, providerID string, op
 
 	attempt := 1
 	existing, err := g.store.GetProviderState(ctx, providerID, string(operation))
-	if err == nil && existing.FailureAttempt > 0 && strings.HasPrefix(existing.Reason, "transient_") {
+	if err == nil && existing.FailureAttempt > 0 {
 		attempt = existing.FailureAttempt + 1
 	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return store.ProviderState{}, fmt.Errorf("read provider %s transient failure state: %w", providerID, err)
@@ -183,6 +189,12 @@ func (g *Gate) RecordTransientFailure(ctx context.Context, providerID string, op
 		Remaining:      0,
 		ResetAt:        resetAt,
 		FailureAttempt: attempt,
+	}
+	if existing.Remaining <= 0 && existing.ResetAt.After(g.clock.Now()) && !strings.HasPrefix(existing.Reason, "transient_") {
+		state.Reason, state.Limit, state.Remaining, state.Disabled = existing.Reason, existing.Limit, existing.Remaining, existing.Disabled
+		if existing.ResetAt.After(state.ResetAt) {
+			state.ResetAt = existing.ResetAt
+		}
 	}
 	if err := g.store.PutProviderState(ctx, state); err != nil {
 		return store.ProviderState{}, fmt.Errorf("persist provider %s transient failure: %w", providerID, err)

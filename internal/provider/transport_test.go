@@ -437,6 +437,9 @@ func TestTransportPersistsEscalatingTransientCircuitAndResetsAfterSuccess(t *tes
 	if err != nil {
 		t.Fatalf("recovery request: %v", err)
 	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatal(err)
+	}
 	response.Body.Close()
 	state, _ = states.GetProviderState(context.Background(), "subdl-main", string(OperationSearch))
 	if state.FailureAttempt != 0 || state.Reason != "" || !state.ResetAt.IsZero() {
@@ -496,6 +499,9 @@ func TestTransportRecoveryPreservesNonTransientProviderState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatal(err)
+	}
 	response.Body.Close()
 	state, err := states.GetProviderState(context.Background(), "subdl-main", string(OperationDownload))
 	if err != nil || state.FailureAttempt != 0 || state.Reason != "download_quota" || !state.ResetAt.Equal(wantReset) {
@@ -527,4 +533,254 @@ func TestTransientCircuitEscalatesAndIsOperationScoped(t *testing.T) {
 		t.Fatalf("download operation was blocked by search circuit: %v", err)
 	}
 	release()
+}
+
+type reviewObservedStore struct {
+	*memoryStateStore
+	checked chan struct{}
+}
+
+func (s *reviewObservedStore) GetProviderState(ctx context.Context, id, scope string) (store.ProviderState, error) {
+	state, err := s.memoryStateStore.GetProviderState(ctx, id, scope)
+	if scope == "search" && s.checked != nil {
+		s.checked <- struct{}{}
+	}
+	return state, err
+}
+func TestQueuedRequestHonorsNewCooldown(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	state := &reviewObservedStore{memoryStateStore: &memoryStateStore{states: map[string]store.ProviderState{}}}
+	gate := NewGate(state, testutil.NewClock(now), 1)
+	gate.Configure("p", 1000, 10, 1)
+	release, err := gate.Acquire(ctx, "p", "https://example.test", OperationSearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.checked = make(chan struct{}, 10)
+	done := make(chan error, 1)
+	go func() {
+		r, e := gate.Acquire(ctx, "p", "https://example.test", OperationSearch)
+		if r != nil {
+			r()
+		}
+		done <- e
+	}()
+	<-state.checked
+	if err := gate.Persist(ctx, Throttle{ProviderID: "p", Scope: OperationSearch, Remaining: 0, Reason: "rate_limit", ResetAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := <-done; !errors.As(err, new(*CooldownError)) {
+		t.Fatalf("queued request bypassed newly persisted cooldown: %v", err)
+	}
+}
+
+type reviewBrokenBody struct{}
+
+func (reviewBrokenBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (reviewBrokenBody) Close() error             { return nil }
+func TestBodyNetworkFailureOpensCircuit(t *testing.T) {
+	ctx := context.Background()
+	clock := testutil.NewClock(time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	state := &memoryStateStore{states: map[string]store.ProviderState{}}
+	gate := NewGate(state, clock, 1)
+	gate.Configure("p", 1000, 10, 1)
+	client := Client{Gate: gate, Clock: clock, ProviderID: "p", ProviderType: "subdl", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: reviewBrokenBody{}}, nil
+	})}}
+	req, _ := http.NewRequest("GET", "https://example.test", nil)
+	resp, err := client.Do(ctx, OperationDownload, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatal(err)
+	}
+	got, err := state.GetProviderState(ctx, "p", "download")
+	if err != nil || got.FailureAttempt != 1 || !got.ResetAt.After(clock.Now()) {
+		t.Fatalf("network body failure did not open circuit: state=%+v err=%v", got, err)
+	}
+}
+
+type responseReadFailure struct{ err error }
+
+func (b responseReadFailure) Read([]byte) (int, error) { return 0, b.err }
+func (b responseReadFailure) Close() error             { return nil }
+
+type responseTimeout struct{}
+
+func (responseTimeout) Error() string   { return "private-host timeout" }
+func (responseTimeout) Timeout() bool   { return true }
+func (responseTimeout) Temporary() bool { return true }
+func (responseTimeout) Unwrap() error   { return context.DeadlineExceeded }
+
+type failedDestination struct{}
+
+func (failedDestination) Write([]byte) (int, error) { return 0, errors.New("local destination failed") }
+
+func TestResponseBodyCircuitCompletion(t *testing.T) {
+	for _, scenario := range []string{"unexpected eof", "client timeout", "caller cancellation", "writer failure", "early close", "malformed json", "valid json"} {
+		t.Run(scenario, func(t *testing.T) {
+			clock := testutil.NewClock(time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+			states := &memoryStateStore{states: map[string]store.ProviderState{}}
+			gate := NewGate(states, clock, 1)
+			gate.Configure("p", 1000, 20, 1)
+			if _, err := gate.RecordTransientFailure(context.Background(), "p", OperationSearch, "network_error", time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			clock.Advance(time.Minute + time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var body io.ReadCloser = io.NopCloser(strings.NewReader(`{"ok":true}`))
+			switch scenario {
+			case "unexpected eof":
+				body = responseReadFailure{io.ErrUnexpectedEOF}
+			case "client timeout":
+				body = responseReadFailure{responseTimeout{}}
+			case "caller cancellation":
+				body = responseReadFailure{context.Canceled}
+			case "malformed json":
+				body = io.NopCloser(strings.NewReader(`{"oops":`))
+			}
+			client := Client{Gate: gate, Clock: clock, ProviderID: "p", ProviderType: "subdl", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: http.Header{"Ratelimit": {`"default";r=5;t=60`}}, Body: body}, nil
+			})}}
+			request, _ := http.NewRequest("GET", "https://example.test", nil)
+			response, err := client.Do(ctx, OperationSearch, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := states.GetProviderState(context.Background(), "p", "search")
+			if before.FailureAttempt != 1 {
+				t.Fatalf("headers reset streak: %+v", before)
+			}
+			if scenario == "caller cancellation" {
+				cancel()
+			}
+			switch scenario {
+			case "early close":
+			case "writer failure":
+				_, err = io.Copy(failedDestination{}, response.Body)
+			default:
+				var decoded any
+				err = DecodeJSON(response.Body, &decoded, 1024, "invalid JSON")
+			}
+			response.Body.Close()
+			state, _ := states.GetProviderState(context.Background(), "p", "search")
+			switch scenario {
+			case "unexpected eof", "client timeout":
+				var cooldown *CooldownError
+				if !errors.As(err, &cooldown) || state.FailureAttempt != 2 || state.Remaining > 0 || !state.ResetAt.Equal(clock.Now().Add(5*time.Minute)) {
+					t.Fatalf("error/state = %v/%+v", err, state)
+				}
+				if strings.Contains(err.Error(), "private-host") {
+					t.Fatal("raw transport details leaked")
+				}
+			case "valid json", "malformed json":
+				if state.FailureAttempt != 0 {
+					t.Fatalf("complete body did not reset transport streak: %+v", state)
+				}
+				if scenario == "malformed json" {
+					var invalid *InvalidPayloadError
+					if !errors.As(err, &invalid) {
+						t.Fatalf("error=%v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if state.FailureAttempt != 1 {
+					t.Fatalf("local/canceled/incomplete read changed circuit: %+v", state)
+				}
+			}
+		})
+	}
+}
+
+func TestQueuedRequestHonorsNewAuthenticationDisable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	clock := testutil.NewClock(time.Now())
+	state := &reviewObservedStore{memoryStateStore: &memoryStateStore{states: map[string]store.ProviderState{}}}
+	gate := NewGate(state, clock, 1)
+	gate.Configure("p", 1000, 10, 1)
+	release, err := gate.Acquire(ctx, "p", "https://example.test", OperationSearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.checked = make(chan struct{}, 10)
+	done := make(chan error, 1)
+	go func() {
+		r, e := gate.Acquire(ctx, "p", "https://example.test", OperationSearch)
+		if r != nil {
+			r()
+		}
+		done <- e
+	}()
+	<-state.checked
+	if err := gate.Persist(ctx, Throttle{ProviderID: "p", Scope: OperationAuth, Disabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := <-done; !errors.As(err, new(*DisabledError)) {
+		t.Fatalf("queued request bypassed auth disable: %v", err)
+	}
+	// Rejection must release both semaphore permits.
+	if err := gate.Persist(ctx, Throttle{ProviderID: "p", Scope: OperationAuth}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := gate.Acquire(ctx, "p", "https://example.test", OperationSearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r()
+}
+
+type failedRecoveryStore struct {
+	*memoryStateStore
+	err error
+}
+
+func (s *failedRecoveryStore) PutProviderState(context.Context, store.ProviderState) error {
+	return s.err
+}
+
+func TestResponseEOFReleasesPermitsWhenRecoveryPersistenceFails(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	persistErr := errors.New("recovery persistence failed")
+	states := &failedRecoveryStore{memoryStateStore: &memoryStateStore{states: map[string]store.ProviderState{
+		"p/search": {ProviderID: "p", Scope: "search", Reason: "transient_network_error", Remaining: 0, ResetAt: now.Add(-time.Minute), FailureAttempt: 1},
+	}}, err: persistErr}
+	clock := testutil.NewClock(now)
+	gate := NewGate(states, clock, 1)
+	gate.Configure("p", 1000, 10, 1)
+	client := Client{Gate: gate, Clock: clock, ProviderID: "p", ProviderType: "subdl", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}}
+	request, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
+	response, err := client.Do(context.Background(), OperationSearch, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(response.Body)
+	if string(payload) != "ok" || !errors.Is(err, persistErr) {
+		t.Fatalf("read result=%q/%v", payload, err)
+	}
+	// EOF releases both permits even though recovery persistence changed its
+	// returned error. The caller has deliberately not closed the response yet.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	release, err := gate.Acquire(ctx, "p", "https://example.test", OperationSearch)
+	if err != nil {
+		t.Fatalf("EOF kept permits after recovery failure: %v", err)
+	}
+	release()
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

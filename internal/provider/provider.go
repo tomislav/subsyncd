@@ -32,7 +32,9 @@ const (
 	OperationAll      Operation = "all"
 	OperationSearch   Operation = "search"
 	OperationDownload Operation = "download"
-	OperationAuth     Operation = "auth"
+	// OperationDownloadTransfer redeems an issued URL independently of API link quota.
+	OperationDownloadTransfer Operation = "download_transfer"
+	OperationAuth             Operation = "auth"
 )
 
 type Throttle struct {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -397,4 +398,161 @@ func readFixture(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return payload
+}
+
+type reviewRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f reviewRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func reviewClient(t *testing.T, f reviewRoundTripper) *Client {
+	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	states := &testStateStore{states: map[string]store.ProviderState{}}
+	gate := baseprovider.NewGate(states, clock, 1)
+	gate.Configure("review", 1000, 20, 1)
+	c, err := New(Config{APIKey: "app-key", Username: "u", Password: "p", UserAgent: "review", BaseURL: "https://api.opensubtitles.com/api/v1"}, baseprovider.Client{HTTP: &http.Client{Transport: f}, Gate: gate, Clock: clock, ProviderID: "review", ProviderType: "opensubtitles"}, staticHasher{}, nil, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+func reviewResponse(r *http.Request, status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body)), Request: r}
+}
+func TestLoginRejectionDisablesInstance(t *testing.T) {
+	calls := 0
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) { calls++; return reviewResponse(r, 401, `{}`), nil })
+	q := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}
+	for i := 0; i < 2; i++ {
+		if _, err := c.Search(context.Background(), q); err == nil {
+			t.Fatal("want login rejection")
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("login requests = %d", calls)
+	}
+}
+func TestSearchAdoptsReturnedVIPHost(t *testing.T) {
+	var host string
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/api/v1/login" {
+			return reviewResponse(r, 200, `{"token":"token","base_url":"vip-api.opensubtitles.com"}`), nil
+		}
+		host = r.URL.Host
+		return reviewResponse(r, 200, `{"data":[],"total_pages":1}`), nil
+	})
+	if _, err := c.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}); err != nil {
+		t.Fatal(err)
+	}
+	if host != "vip-api.opensubtitles.com" {
+		t.Fatalf("host = %s", host)
+	}
+}
+func TestIssuedDownloadLinkSurvivesExhaustedAPIQuota(t *testing.T) {
+	cdnCalls := 0
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/api/v1/login":
+			return reviewResponse(r, 200, `{"token":"token"}`), nil
+		case "/api/v1/download":
+			res := reviewResponse(r, 200, `{"link":"https://cdn.example.test/file","file_name":"sub.srt"}`)
+			res.Header.Set("RateLimit", `"default";r=0;t=3600`)
+			return res, nil
+		default:
+			cdnCalls++
+			return reviewResponse(r, 200, "subtitle"), nil
+		}
+	})
+	_, err := c.Download(context.Background(), domain.Candidate{DownloadRef: "1"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cdnCalls != 1 {
+		t.Fatal("expected issued CDN link redemption")
+	}
+}
+func TestSignedDownloadDoesNotForwardAPIKey(t *testing.T) {
+	key := ""
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/api/v1/login":
+			return reviewResponse(r, 200, `{"token":"token"}`), nil
+		case "/api/v1/download":
+			return reviewResponse(r, 200, `{"link":"https://unrelated.example.test/file","file_name":"sub.srt"}`), nil
+		default:
+			key = r.Header.Get("Api-Key")
+			return reviewResponse(r, 200, "subtitle"), nil
+		}
+	})
+	if _, err := c.Download(context.Background(), domain.Candidate{DownloadRef: "1"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if key != "" {
+		t.Fatalf("key = %q", key)
+	}
+}
+
+func TestReturnedAPIHostValidationAndPrivateEndpoints(t *testing.T) {
+	for _, tc := range []struct{ base, returned, want string }{
+		{defaultBaseURL, "vip-api.opensubtitles.com", "https://vip-api.opensubtitles.com/api/v1"},
+		{defaultBaseURL, "https://api.opensubtitles.com/api/v1", defaultBaseURL},
+		{defaultBaseURL, "api.opensubtitles.com.evil.test", ""},
+		{defaultBaseURL, "https://evil.test/api/v1", ""},
+		{defaultBaseURL, "https://user:pass@api.opensubtitles.com", ""},
+		{defaultBaseURL, "https://vip-api.opensubtitles.com:444", ""},
+		{defaultBaseURL, "http://vip-api.opensubtitles.com", ""},
+		{defaultBaseURL, "https://vip-api.opensubtitles.com/other", ""},
+		{defaultBaseURL, "https://vip-api.opensubtitles.com?key=secret", ""},
+		{"http://localhost:1234/api/v1", "api.opensubtitles.com", "http://localhost:1234/api/v1"},
+		{"http://localhost:1234/api/v1", "http://localhost:1234/api/v1", "http://localhost:1234/api/v1"},
+		{"https://private.example/api/v1", "evil.test", ""},
+	} {
+		t.Run(tc.base+"/"+tc.returned, func(t *testing.T) {
+			c := &Client{config: Config{BaseURL: tc.base}}
+			got, err := c.returnedAPIBase(tc.returned)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("unsafe returned host accepted: %s", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("host=%s err=%v want=%s", got, err, tc.want)
+			}
+		})
+	}
+}
+
+type failingSearchBody struct{}
+
+func (failingSearchBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (failingSearchBody) Close() error             { return nil }
+
+func TestSearchBodyFailureRemainsTechnicalAndSuccessfulJSONResetsCircuit(t *testing.T) {
+	failing := true
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/api/v1/login" {
+			return reviewResponse(r, 200, `{"token":"token"}`), nil
+		}
+		response := reviewResponse(r, 200, `{"total_pages":1,"data":[]}`)
+		if failing {
+			response.Body = failingSearchBody{}
+		}
+		return response, nil
+	})
+	q := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}
+	_, err := c.Search(context.Background(), q)
+	var cooldown *baseprovider.CooldownError
+	var invalid *baseprovider.InvalidPayloadError
+	if !errors.As(err, &cooldown) || errors.As(err, &invalid) {
+		t.Fatalf("body transport error misclassified: %T %v", err, err)
+	}
+	c.clock.(*testutil.Clock).Advance(time.Minute + time.Second)
+	failing = false
+	if _, err := c.Search(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	failing = true
+	_, err = c.Search(context.Background(), q)
+	if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(c.clock.Now().Add(time.Minute)) {
+		t.Fatalf("successful JSON did not reset circuit: %v", err)
+	}
 }

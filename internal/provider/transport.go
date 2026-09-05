@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,15 +32,25 @@ type Client struct {
 // permitBody owns the request permits until streaming completes or the caller
 // closes the response. EOF does not replace the caller's obligation to Close.
 type permitBody struct {
-	body    io.ReadCloser
-	release func()
-	once    sync.Once
+	body       io.ReadCloser
+	release    func()
+	once       sync.Once
+	finishOnce sync.Once
+	onReadEnd  func(error) error
 }
 
 func (b *permitBody) Read(payload []byte) (int, error) {
 	n, err := b.body.Read(payload)
-	if err == io.EOF {
-		b.once.Do(b.release)
+	reachedEOF := err == io.EOF
+	if err != nil {
+		b.finishOnce.Do(func() {
+			if b.onReadEnd != nil {
+				err = b.onReadEnd(err)
+			}
+		})
+		if reachedEOF {
+			b.once.Do(b.release)
+		}
 	}
 	return n, err
 }
@@ -72,7 +85,33 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		return nil, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}
 	}
 	if response.Body != nil {
-		response.Body = &permitBody{body: response.Body, release: release}
+		body := &permitBody{body: response.Body, release: release}
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			body.onReadEnd = func(readErr error) error {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if readErr == io.EOF {
+					if err := c.Gate.ResetTransientFailures(ctx, c.ProviderID, operation); err != nil {
+						return err
+					}
+					return readErr
+				}
+				var networkError net.Error
+				if !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.As(readErr, &networkError) {
+					return readErr
+				}
+				if errors.Is(readErr, context.Canceled) {
+					return readErr
+				}
+				state, err := c.Gate.RecordTransientFailure(ctx, c.ProviderID, operation, "network_error", time.Time{})
+				if err != nil {
+					return &bodyReadError{cause: readErr, stateError: err}
+				}
+				return &bodyReadError{cause: readErr, stateError: &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}}
+			}
+		}
+		response.Body = body
 		releaseNow = false
 	}
 	now := c.Clock.Now()
@@ -106,8 +145,10 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 			return response, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: throttle.Reason, ResetAt: throttle.ResetAt}
 		}
 	}
-	if err := c.Gate.ResetTransientFailures(ctx, c.ProviderID, operation); err != nil {
-		return response, err
+	if response.StatusCode < 200 || response.StatusCode >= 300 || response.Body == nil {
+		if err := c.Gate.ResetTransientFailures(ctx, c.ProviderID, operation); err != nil {
+			return response, err
+		}
 	}
 	if response.StatusCode == http.StatusUnauthorized {
 		return response, &AuthenticationError{Message: "HTTP 401"}
@@ -152,3 +193,24 @@ func FallbackReset(now time.Time, providerType string, kind CooldownKind) time.T
 	}
 	return time.Time{}
 }
+
+// DecodeJSON reads the bounded response through EOF so transport completion and
+// body-read failures remain visible before JSON validation.
+func DecodeJSON(reader io.Reader, destination any, limit int64, message string) error {
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > limit {
+		return &InvalidPayloadError{Message: message}
+	}
+	if err := json.Unmarshal(data, destination); err != nil {
+		return &InvalidPayloadError{Message: message}
+	}
+	return nil
+}
+
+type bodyReadError struct{ cause, stateError error }
+
+func (e *bodyReadError) Error() string   { return "provider response body read failed" }
+func (e *bodyReadError) Unwrap() []error { return []error{e.cause, e.stateError} }

@@ -8,13 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/pack"
 	baseprovider "subsyncd/internal/provider"
 )
 
@@ -218,8 +218,8 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		return nil, fmt.Errorf("SubDL search returned HTTP %d", response.StatusCode)
 	}
 	var decoded searchResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&decoded); err != nil {
-		return nil, &baseprovider.InvalidPayloadError{Message: "SubDL search response is not valid JSON"}
+	if err := baseprovider.DecodeJSON(response.Body, &decoded, 4<<20, "SubDL search response is not valid JSON"); err != nil {
+		return nil, err
 	}
 	if (decoded.Status != nil && !*decoded.Status) || (decoded.Success != nil && !*decoded.Success) {
 		if isNoResult(decoded.Error) {
@@ -254,10 +254,17 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 		candidate := domain.Candidate{ProviderID: c.id, ResultID: downloadRef, DownloadRef: downloadRef, Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: year, ExternalIDs: domain.ExternalIDs{IMDb: item.Identity.IMDb, TMDB: item.Identity.TMDB}, Season: item.Season, Episode: item.Episode, ReleaseNames: releases, HearingImpaired: item.Hearing, Rating: min(max(item.Rating, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount}
 		if query.Media.Ref.Kind == domain.MediaEpisode {
 			from, to := item.EpisodeFrom, item.EpisodeEnd
+			rangeSeason, releaseFrom, releaseTo, invalid := releaseRange(releases)
+			if invalid || rangeSeason != 0 && rangeSeason != query.Media.Season {
+				continue
+			}
 			if from <= 0 || to <= from {
-				from, to = releaseRange(releases)
+				from, to = releaseFrom, releaseTo
 			}
 			isPack := from > 0 && to > from
+			if item.Season != 0 && item.Season != query.Media.Season {
+				continue
+			}
 			if isPack && !containsEpisode(from, to, query.Media.Episode, query.Media.AbsoluteEpisode) {
 				continue
 			}
@@ -275,6 +282,10 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 			} else if isPack {
 				candidate.Episode = 0
 				candidate.Pack = &domain.PackInfo{Scope: domain.PackRange, Season: item.Season, EpisodeFrom: from, EpisodeTo: to}
+				if !(from <= query.Media.Episode && query.Media.Episode <= to) && query.Media.AbsoluteEpisode > 0 {
+					candidate.Pack.EpisodeFrom, candidate.Pack.EpisodeTo = 0, 0
+					candidate.Pack.AbsoluteEpisodeFrom, candidate.Pack.AbsoluteEpisodeTo = from, to
+				}
 			} else if item.FullSeason {
 				if item.Season != query.Media.Season {
 					continue
@@ -285,6 +296,10 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 				continue
 			}
 		}
+		if query.Media.Ref.Kind == domain.MediaEpisode && candidate.Episode != query.Media.Episode && candidate.Episode == query.Media.AbsoluteEpisode && candidate.Episode > 0 {
+			candidate.AbsoluteEpisode = candidate.Episode
+			candidate.Episode = 0
+		}
 		candidates = append(candidates, candidate)
 	}
 	candidates = baseprovider.DeduplicateCandidates(candidates)
@@ -292,7 +307,7 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 	for _, candidate := range candidates {
 		// A later duplicate may supply absent episode coordinates. Apply the
 		// unknown-episode gate only after its evidence has been merged.
-		if query.Media.Ref.Kind == domain.MediaEpisode && candidate.Episode == 0 && candidate.Pack == nil {
+		if query.Media.Ref.Kind == domain.MediaEpisode && candidate.Episode == 0 && candidate.AbsoluteEpisode == 0 && candidate.Pack == nil {
 			continue
 		}
 		eligible = append(eligible, candidate)
@@ -301,40 +316,35 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 }
 
 func matchingDirect(files []unpackFile, query baseprovider.SearchQuery) (unpackFile, bool) {
+	var selected unpackFile
+	count := 0
 	for _, file := range files {
 		language, err := fromSubDLLanguage(file.Language)
-		if err != nil || !domain.EquivalentLanguage(language, query.Language) {
+		if err != nil || !domain.EquivalentLanguage(language, query.Language) || file.Season != 0 && file.Season != query.Media.Season {
 			continue
 		}
 		if file.Episode == query.Media.Episode || query.Media.AbsoluteEpisode > 0 && file.Episode == query.Media.AbsoluteEpisode {
-			return file, true
+			selected = file
+			count++
 		}
 	}
-	return unpackFile{}, false
+	return selected, count == 1
 }
 
-var episodeRangePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(?:S\d{1,2})?E(P)?0*(\d{1,4})[-_. ]+E?(?:P)?0*(\d{1,4})`),
-	regexp.MustCompile(`(?i)\bEP0*(\d{1,4})[-_. ]+0*(\d{1,4})\b`),
-}
-
-func releaseRange(releases []string) (int, int) {
+func releaseRange(releases []string) (season, from, to int, invalid bool) {
 	for _, release := range releases {
-		for _, pattern := range episodeRangePatterns {
-			match := pattern.FindStringSubmatch(release)
-			if len(match) == 4 {
-				from, _ := strconv.Atoi(match[2])
-				to, _ := strconv.Atoi(match[3])
-				return from, to
+		s, f, t, found, bad := pack.ReleaseEpisodeRange(release)
+		if bad {
+			return 0, 0, 0, true
+		}
+		if found {
+			if from != 0 && (season != s || from != f || to != t) {
+				return 0, 0, 0, true
 			}
-			if len(match) == 3 {
-				from, _ := strconv.Atoi(match[1])
-				to, _ := strconv.Atoi(match[2])
-				return from, to
-			}
+			season, from, to = s, f, t
 		}
 	}
-	return 0, 0
+	return
 }
 
 func containsEpisode(from, to, standard, absolute int) bool {

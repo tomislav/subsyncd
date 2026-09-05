@@ -5,13 +5,30 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: explicit OpenSubtitles AI and machine translation exclusions are implemented and locally verified
-- Next safe action: push the verified translation exclusion repair as authorized; production deployment still requires a separate explicit request
-- Latest follow-up: exact and broad OpenSubtitles requests explicitly exclude both translation categories on every page; pre-policy search caches are invalidated
+- Current task: all eleven provider review findings repaired, independently reviewed, and locally verified
+- Next safe action: publish the verified repair to GitHub as authorized; Hades deployment requires a separate request
+- Latest follow-up: final repository race tests, vet, tagged E2E, and scoped review pass after timeout classification and EOF-release corrections
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Provider review repairs — 2026-09-05
+
+- Commit: `fix: repair provider identity and transport edge cases` (this commit, based on `39f5e20`), authorized by the user's request to fix all findings and push to GitHub.
+- Adopted all eleven repairs in `docs/provider-review-2026-09-05.md`: response-derived Titlovi identity, complete token-refresh pagination, strict SubDL range parsing, absolute episode/range evidence, season-aware unique direct members, queued availability rechecks, body-network failure circuits, persistent rejected-login state, validated OpenSubtitles session routing, separately gated issued-link redemption, and credential-free file requests.
+- Tightened body completion: bounded JSON reads reach EOF before decoding; genuine network failures preserve typed cooldowns and safe error text. Caller cancellation, malformed payloads, local writer errors, and early Close do not create remote circuits. Rate headers preserve transient streaks until completion, and exhausted quota survives body failures. Underlying EOF releases permits even when recovery-state persistence fails. Typed cooldown/quota classification precedes timeout/cancellation classification for provider events.
+- Normalized cache version advances to `candidate-v5`; old inferred identity and malformed episode evidence cannot be reused. No database migration, schedule reset, installation takeover, automatic scan, or scoring-weight/shortlist/LAPSE-policy change was added. Optional review observations remain follow-ups.
+- Permanent focused RED/GREEN tests cover each finding, downstream scoring evidence, timeout versus caller cancellation, quota preservation, ordinary JSON recovery, trusted/private host boundaries, credential-free CDN transfers, stale caches, and EOF permit ownership. Existing tests were adjusted only where successful-body completion intentionally replaces header-time recovery.
+- Final verification passed: `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, affected provider/pack/application race tests, `./scripts/verify-release-dockerfile.sh`, gofmt and `git diff --check`. HTTP tests used local fake servers or fake transports; no live providers or production access.
+- Independent review approved all eleven repairs after one narrow follow-up wave for timeout event classification and EOF release on recovery persistence failure. Next action is the authorized GitHub push; no production rollout was performed.
+
+### Subtitle provider code review — 2026-09-05
+
+- Reviewed commit `39f5e20`; the historical review is recorded with the subsequent repair commit. The translation-exclusion repair was pushed as `39f5e20`.
+- Recorded eleven actionable findings and follow-up improvements in `docs/provider-review-2026-09-05.md`: Titlovi identity/pagination, SubDL range/absolute/direct-member normalization, shared cooldown/body-failure handling, and OpenSubtitles authentication/host/download handling.
+- No runtime behavior adopted or changed. Existing provider race tests and vet pass; temporary Go overlays and fake transports reproduce gaps without changing tracked tests or contacting live providers. Official OpenSubtitles documentation was checked for login host and rejected-credential contracts.
+- Next task: fix the findings only when requested, promote reproductions into permanent tests, then verify affected packages with race detection. No production access, deployment, commit, or push performed for this review.
 
 ### OpenSubtitles translation exclusions — 2026-09-05
 

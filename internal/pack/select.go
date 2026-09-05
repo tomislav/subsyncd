@@ -449,3 +449,13 @@ func similarity(left, right string) float64 {
 	}
 	return 1 - float64(previous[len(b)])/float64(maximum)
 }
+
+// ReleaseEpisodeRange shares the strict archive range contract with adapters.
+// Invalid distinguishes malformed range evidence from an ordinary release suffix.
+func ReleaseEpisodeRange(name string) (season, from, to int, found, invalid bool) {
+	if hasInvalidOrAmbiguousRangeEvidence(name) {
+		return 0, 0, 0, false, true
+	}
+	season, from, to, found = episodeRange(name)
+	return
+}

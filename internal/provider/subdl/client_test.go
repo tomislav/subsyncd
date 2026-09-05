@@ -367,3 +367,102 @@ func newTestClientWithState(t *testing.T, server *httptest.Server, maxBytes int6
 func episodeMedia() domain.Media {
 	return domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Title: "Example Show", Year: 2024, Season: 1, Episode: 2, OriginalFilename: "Example.Show.S01E02.mkv", ExternalIDs: domain.ExternalIDs{IMDb: "tt1234567", TMDB: 7654}}
 }
+
+func TestSingleEpisodeResolutionIsNotPack(t *testing.T) {
+	c := &Client{id: "subdl-main"}
+	q := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en"}
+	got := c.normalize(q, []searchItem{{URL: "/subtitle/example.zip", Language: "EN", Season: 1, Episode: 2, Releases: []string{"Example.Show.S01E02.1080p.WEB-DL-GROUP"}}})
+	if len(got) != 1 {
+		t.Fatalf("candidates=%#v", got)
+	}
+	if got[0].Pack != nil || got[0].Episode != 2 {
+		t.Fatalf("single episode misclassified: episode=%d pack=%+v", got[0].Episode, got[0].Pack)
+	}
+}
+func TestDirectMemberMustMatchSeason(t *testing.T) {
+	c := &Client{id: "subdl-main"}
+	q := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en"}
+	got := c.normalize(q, []searchItem{{URL: "/subtitle/example.zip", Language: "EN", Season: 1, FullSeason: true, UnpackFiles: []unpackFile{
+		{FileID: "wrong", URL: "/subtitle/wrong.srt", Language: "EN", Season: 2, Episode: 2},
+		{FileID: "right", URL: "/subtitle/right.srt", Language: "EN", Season: 1, Episode: 2},
+	}}})
+	if len(got) != 1 || got[0].DownloadRef != "/subtitle/right.srt" {
+		t.Fatalf("wrong direct selected: %#v", got)
+	}
+}
+func TestAbsoluteRangeSuppliesEpisodeEvidence(t *testing.T) {
+	c := &Client{id: "subdl-main"}
+	media := episodeMedia()
+	media.AbsoluteEpisode = 102
+	q := baseprovider.SearchQuery{Media: media, Language: "en"}
+	got := c.normalize(q, []searchItem{{URL: "/subtitle/example.zip", Language: "EN", Season: 1, EpisodeFrom: 101, EpisodeEnd: 110}})
+	if len(got) != 1 {
+		t.Fatalf("candidates=%#v", got)
+	}
+	if !match.HasEpisodeEvidence(media, got[0]) {
+		t.Fatalf("absolute containing pack lost evidence: %+v", got[0].Pack)
+	}
+}
+
+func TestAbsoluteSingleSuppliesEpisodeEvidence(t *testing.T) {
+	c := &Client{id: "subdl-main"}
+	media := episodeMedia()
+	media.AbsoluteEpisode = 102
+	q := baseprovider.SearchQuery{Media: media, Language: "en"}
+	got := c.normalize(q, []searchItem{{URL: "/subtitle/example.zip", Language: "EN", Episode: 102}})
+	if len(got) != 1 {
+		t.Fatalf("candidates=%#v", got)
+	}
+	if !match.HasEpisodeEvidence(media, got[0]) {
+		t.Fatalf("absolute episode lost evidence: %+v", got[0])
+	}
+}
+
+func TestReleaseRangesUseStrictSharedContract(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		pack, reject bool
+	}{
+		{"Example.S01E02.1080p.WEB-DL-GROUP", false, false},
+		{"Example.S01E02-WEB-DL-GROUP", false, false},
+		{"Example.S01E01-E03.1080p", true, false},
+		{"Example.S01E01-S01E03.1080p", true, false},
+		{"Example.1x01-1x03.1080p", true, false},
+		{"Example.S01E01-S02E03", false, true},
+		{"Example.S01E03-E01", false, true},
+		{"Example.S01E01-E03-E04", false, true},
+		{"Example.S01E01-E03oops", false, true},
+		{"Example.S01E01-E", false, true},
+		{"Example.S02E01-E03", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{id: "subdl"}
+			q := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en"}
+			got := c.normalize(q, []searchItem{{URL: "/subtitle/x", Language: "EN", Season: 1, Episode: 2, ReleaseName: tc.name}})
+			if tc.reject {
+				if len(got) != 0 {
+					t.Fatalf("invalid range accepted: %+v", got)
+				}
+				return
+			}
+			if len(got) != 1 || (got[0].Pack != nil) != tc.pack {
+				t.Fatalf("candidate shape=%+v", got)
+			}
+		})
+	}
+}
+
+func TestDirectMembersRequireUniqueMatch(t *testing.T) {
+	q := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en"}
+	q.Media.AbsoluteEpisode = 102
+	c := &Client{id: "subdl"}
+	files := []unpackFile{{FileID: "one", URL: "/one", Language: "EN", Season: 1, Episode: 2}, {FileID: "two", URL: "/two", Language: "EN", Season: 1, Episode: 2}}
+	got := c.normalize(q, []searchItem{{URL: "/pack", Language: "EN", Season: 1, FullSeason: true, UnpackFiles: files}})
+	if len(got) != 1 || got[0].Pack == nil || got[0].DownloadRef != "/pack" {
+		t.Fatalf("ambiguous member chosen: %+v", got)
+	}
+	got = c.normalize(q, []searchItem{{URL: "/pack", Language: "EN", UnpackFiles: []unpackFile{{FileID: "absolute", URL: "/absolute", Language: "EN", Episode: 102}}}})
+	if len(got) != 1 || got[0].Episode != 0 || got[0].AbsoluteEpisode != 102 || !match.HasEpisodeEvidence(q.Media, got[0]) {
+		t.Fatalf("direct absolute identity=%+v", got)
+	}
+}

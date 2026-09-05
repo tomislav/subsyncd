@@ -2,7 +2,6 @@ package titlovi
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,6 +92,14 @@ func (c *Client) login(ctx context.Context, force bool) error {
 	}
 	response, err := c.transport.Do(ctx, baseprovider.OperationAuth, request)
 	if err != nil {
+		if _, rejected := err.(*baseprovider.AuthenticationError); rejected {
+			if persistErr := c.transport.DisableAuthentication(ctx, "login credentials rejected"); persistErr != nil {
+				if response != nil {
+					response.Body.Close()
+				}
+				return persistErr
+			}
+		}
 		if response != nil {
 			response.Body.Close()
 		}
@@ -103,7 +110,10 @@ func (c *Client) login(ctx context.Context, force bool) error {
 		return fmt.Errorf("Titlovi login returned HTTP %d", response.StatusCode)
 	}
 	var decoded loginResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&decoded); err != nil || decoded.Token == "" || decoded.UserID <= 0 {
+	if err := baseprovider.DecodeJSON(response.Body, &decoded, 1<<20, "Titlovi login response is not valid JSON"); err != nil {
+		return err
+	}
+	if decoded.Token == "" || decoded.UserID <= 0 {
 		return &baseprovider.InvalidPayloadError{Message: "Titlovi login response is incomplete"}
 	}
 	expiresAt, err := parseExpiration(decoded.ExpirationDate)
@@ -161,6 +171,8 @@ func (c *Client) search(ctx context.Context, query baseprovider.SearchQuery, par
 	for page := 1; page <= c.config.MaxPages; page++ {
 		if page > 1 {
 			parameters.Set("pg", strconv.Itoa(page))
+		} else {
+			parameters.Del("pg")
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.config.APIBaseURL, "/")+"/search?"+parameters.Encode(), nil)
 		if err != nil {
@@ -175,10 +187,18 @@ func (c *Client) search(ctx context.Context, query baseprovider.SearchQuery, par
 				if loginErr := c.login(ctx, true); loginErr != nil {
 					return nil, loginErr
 				}
-				return c.search(ctx, query, parameters, false)
+				allowRefresh = false
+				c.mu.Lock()
+				parameters.Set("token", c.token)
+				parameters.Set("userid", strconv.FormatInt(c.userID, 10))
+				c.mu.Unlock()
+				page--
+				continue
 			}
 			if _, unauthorized := err.(*baseprovider.AuthenticationError); unauthorized {
-				_ = c.transport.DisableAuthentication(ctx, "credentials rejected after token refresh")
+				if persistErr := c.transport.DisableAuthentication(ctx, "credentials rejected after token refresh"); persistErr != nil {
+					return nil, persistErr
+				}
 			}
 			return nil, err
 		}
@@ -187,10 +207,10 @@ func (c *Client) search(ctx context.Context, query baseprovider.SearchQuery, par
 			return nil, fmt.Errorf("Titlovi search returned HTTP %d", response.StatusCode)
 		}
 		var decoded searchResponse
-		decodeErr := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&decoded)
+		decodeErr := baseprovider.DecodeJSON(response.Body, &decoded, 4<<20, "Titlovi search response is not valid JSON")
 		response.Body.Close()
 		if decodeErr != nil {
-			return nil, &baseprovider.InvalidPayloadError{Message: "Titlovi search response is not valid JSON"}
+			return nil, decodeErr
 		}
 		candidates = append(candidates, c.normalize(query, decoded.SubtitleResults)...)
 		if decoded.PagesAvailable <= page || len(decoded.SubtitleResults) == 0 {
@@ -237,7 +257,7 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 			continue
 		}
 		titles := akaPattern.Split(item.Title, 2)
-		candidate := domain.Candidate{ProviderID: c.id, ResultID: strconv.FormatInt(item.ID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: strings.TrimSpace(titles[0]), Year: item.Year, Season: item.Season, Episode: item.Episode, ExternalIDs: domain.ExternalIDs{IMDb: query.Media.ExternalIDs.IMDb}, ReleaseNames: []string{item.Release}, Rating: min(max(item.Rating/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount, DownloadRef: downloadRef}
+		candidate := domain.Candidate{ProviderID: c.id, ResultID: strconv.FormatInt(item.ID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: strings.TrimSpace(titles[0]), Year: item.Year, Season: item.Season, Episode: item.Episode, ReleaseNames: []string{item.Release}, Rating: min(max(item.Rating/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount, DownloadRef: downloadRef}
 		if query.Media.Ref.Kind == domain.MediaEpisode && item.Episode == 0 {
 			candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: item.Season}
 		}
@@ -309,7 +329,9 @@ func (c *Client) download(ctx context.Context, candidate domain.Candidate, write
 			return c.download(ctx, candidate, writer, false)
 		}
 		if _, unauthorized := err.(*baseprovider.AuthenticationError); unauthorized {
-			_ = c.transport.DisableAuthentication(ctx, "credentials rejected after token refresh")
+			if persistErr := c.transport.DisableAuthentication(ctx, "credentials rejected after token refresh"); persistErr != nil {
+				return baseprovider.DownloadMetadata{}, persistErr
+			}
 		}
 		return baseprovider.DownloadMetadata{}, err
 	}
