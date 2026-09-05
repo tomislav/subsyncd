@@ -1091,6 +1091,7 @@ func (w *boundedDownloadWriter) Write(payload []byte) (int, error) {
 
 func candidateRecord(candidate domain.Candidate, score domain.Score, eligible bool) (store.CandidateRecord, error) {
 	safe := candidate
+	safe.ResultID = credentialFreeResultID(safe.ResultID)
 	safe.DownloadRef = ""
 	if safe.Pack != nil {
 		packInfo := *safe.Pack
@@ -1109,7 +1110,13 @@ func candidateRecord(candidate domain.Candidate, score domain.Score, eligible bo
 		return store.CandidateRecord{}, err
 	}
 	validation, _ := json.Marshal(map[string]bool{"eligible": eligible})
-	return store.CandidateRecord{ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, MetadataJSON: metadata, ScoreJSON: scoreJSON, ValidationJSON: validation}, nil
+	return store.CandidateRecord{ProviderID: candidate.ProviderID, ResultID: safe.ResultID, MetadataJSON: metadata, ScoreJSON: scoreJSON, ValidationJSON: validation}, nil
+}
+
+func credentialFreeResultID(value string) string {
+	value, _, _ = strings.Cut(value, "?")
+	value, _, _ = strings.Cut(value, "#")
+	return value
 }
 
 func sortAnalyzed(candidates []analyzedCandidate) {

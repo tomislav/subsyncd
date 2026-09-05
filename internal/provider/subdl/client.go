@@ -434,11 +434,7 @@ func (c *Client) downloadReference(raw string) (string, bool) {
 	if !strings.HasPrefix(parsed.Path, "/") {
 		parsed.Path = "/" + parsed.Path
 	}
-	result := parsed.EscapedPath()
-	if parsed.RawQuery != "" {
-		result += "?" + parsed.RawQuery
-	}
-	return result, true
+	return parsed.EscapedPath(), true
 }
 
 func (c *Client) Download(ctx context.Context, candidate domain.Candidate, writer io.Writer) (baseprovider.DownloadMetadata, error) {
@@ -451,6 +447,9 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 	if !c.allowedDownloadURL(endpoint) {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("SubDL download URL is not allowed")
 	}
+	query := endpoint.Query()
+	query.Set("api_key", c.config.APIKey)
+	endpoint.RawQuery = query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("create SubDL download request")

@@ -186,6 +186,38 @@ func TestDownloadStreamsWithinLimitAndRejectsExternalRedirect(t *testing.T) {
 	}
 }
 
+func TestSearchStripsDownloadCredentialsAndDownloadReappliesConfiguredKey(t *testing.T) {
+	var downloadQuery url.Values
+	var downloadHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/subtitles" {
+			io.WriteString(w, `{"status":true,"results":[{"imdb_id":"tt123","name":"Movie","year":2025,"type":"movie"}],"subtitles":[{"name":"movie.srt","url":"/subtitle/movie.srt?api_key=returned-secret","language":"EN"}]}`)
+			return
+		}
+		downloadQuery = r.URL.Query()
+		downloadHeader = r.Header.Get("x-api-key")
+		io.WriteString(w, "subtitle")
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Title: "Movie", Year: 2025, ExternalIDs: domain.ExternalIDs{IMDb: "tt123"}}
+
+	candidates, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: media, Language: "en", Mode: baseprovider.SearchBroad})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ResultID != "/subtitle/movie.srt" || candidates[0].DownloadRef != "/subtitle/movie.srt" {
+		t.Fatalf("credential-free candidate = %#v", candidates)
+	}
+	var output bytes.Buffer
+	if _, err := client.Download(context.Background(), candidates[0], &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "subtitle" || downloadQuery.Get("api_key") != "api-key" || downloadHeader != "api-key" {
+		t.Fatalf("download authentication query/header/output = %q/%q/%q", downloadQuery.Get("api_key"), downloadHeader, output.String())
+	}
+}
+
 func TestForbiddenSearchDisablesProviderUntilExplicitRetry(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

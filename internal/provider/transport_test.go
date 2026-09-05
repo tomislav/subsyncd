@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -69,6 +70,59 @@ func TestTransportPersistsRetryAfterAndNeverSleepsThroughCooldown(t *testing.T) 
 	_, err = transport.Do(context.Background(), OperationSearch, request)
 	if !errors.As(err, &cooldown) || calls != 1 {
 		t.Fatalf("second call error/calls = %v/%d", err, calls)
+	}
+}
+
+func TestTransportIgnoresRetryAfterOnSuccessfulResponse(t *testing.T) {
+	now := time.Date(2026, 9, 5, 9, 34, 57, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	states := &memoryStateStore{states: map[string]store.ProviderState{}}
+	gate := NewGate(states, clock, 1)
+	gate.Configure("opensubtitles-main", 1000, 1, 1)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Retry-After": {"1"}}, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	transport := Client{HTTP: client, Gate: gate, Clock: clock, ProviderID: "opensubtitles-main", ProviderType: "opensubtitles"}
+	request, _ := http.NewRequest(http.MethodPost, "https://api.example/login", nil)
+
+	response, err := transport.Do(context.Background(), OperationAuth, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if state, err := states.GetProviderState(context.Background(), "opensubtitles-main", string(OperationAuth)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("successful response persisted cooldown = %#v, %v", state, err)
+	}
+}
+
+func TestTransportRetainsStandardRateLimitOnSuccessfulResponseWithRetryAfter(t *testing.T) {
+	now := time.Date(2026, 9, 5, 9, 34, 57, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	states := &memoryStateStore{states: map[string]store.ProviderState{}}
+	gate := NewGate(states, clock, 1)
+	gate.Configure("opensubtitles-main", 1000, 1, 1)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		headers := make(http.Header)
+		headers.Set("Retry-After", "1")
+		headers.Set("X-RateLimit-Limit", "100")
+		headers.Set("X-RateLimit-Remaining", "0")
+		headers.Set("X-RateLimit-Reset", fmt.Sprint(now.Add(10*time.Minute).Unix()))
+		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	transport := Client{HTTP: client, Gate: gate, Clock: clock, ProviderID: "opensubtitles-main", ProviderType: "opensubtitles"}
+	request, _ := http.NewRequest(http.MethodPost, "https://api.example/login", nil)
+
+	response, err := transport.Do(context.Background(), OperationAuth, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	state, err := states.GetProviderState(context.Background(), "opensubtitles-main", string(OperationAuth))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Reason != "x-ratelimit" || state.Remaining != 0 || !state.ResetAt.Equal(now.Add(10*time.Minute)) {
+		t.Fatalf("standard rate-limit state = %#v", state)
 	}
 }
 

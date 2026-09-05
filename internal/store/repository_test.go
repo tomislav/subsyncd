@@ -18,12 +18,12 @@ func TestOpenAppliesBaselineIdempotently(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open() run %d error = %v", run, err)
 		}
-		var version string
-		if err := store.db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil {
+		var count int
+		if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version IN ('001_baseline.sql', '002_scrub_provider_credentials.sql')`).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
-		if version != "001_baseline.sql" {
-			t.Fatalf("migration version = %q, want 001_baseline.sql", version)
+		if count != 2 {
+			t.Fatalf("current migration count = %d, want 2", count)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
@@ -45,6 +45,90 @@ func TestOpenRejectsUnknownMigrationLineage(t *testing.T) {
 	_, err = Open(context.Background(), path)
 	if err == nil || !strings.Contains(err.Error(), `unsupported database migration "001_initial.sql"; rebuild from an empty data directory`) {
 		t.Fatalf("Open() error = %v", err)
+	}
+}
+
+func TestMigrationScrubsCredentialBearingProviderRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	database, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := database.Repository()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = '002_scrub_provider_credentials.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`INSERT INTO instances(name, type, base_url, reconciliation_cursor, status, updated_at_ns) VALUES ('sonarr-main', 'sonarr', 'http://sonarr:8989', '2026-09-05T08:00:00Z', 'healthy', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, lease_owner, lease_until_ns, priority) VALUES (?, 'en', 'pending', 3, 2, 10, 'active-job', 20, 300)`, mediaID); err != nil {
+		t.Fatal(err)
+	}
+	dirty := "/subtitle/movie.srt?api_key=secret"
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO provider_cache(cache_key, provider_id, results_json, expires_at_ns) VALUES ('dirty', 'subdl-main', ?, 1), ('clean', 'subdl-main', '[]', 1)`, []any{`[{"result_id":"` + dirty + `"}]`}},
+		{`INSERT INTO candidates(media_id, language, provider_id, result_id, metadata_json, score_json, created_at_ns) VALUES (?, 'en', 'subdl-main', ?, '{}', '{}', 1), (?, 'en', 'subdl-main', 'clean', '{}', '{}', 1)`, []any{mediaID, dirty, mediaID}},
+		{`INSERT INTO pack_cache(provider_id, result_id, series_key, season, language, content_checksum, manifest_path, candidate_json, byte_size, expires_at_ns, last_access_at_ns) VALUES ('subdl-main', ?, 'series', 1, 'en', 'dirty', '/cache/dirty', '{}', 1, 1, 1), ('subdl-main', 'clean', 'series', 1, 'en', 'clean', '/cache/clean', '{}', 1, 1, 1)`, []any{dirty}},
+		{`INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, installed_at_ns) VALUES (?, 'en', '/media/movie.en.srt', 'dirty', 'subdl-main', ?, 1), (?, 'hr', '/media/movie.hr.srt', 'clean', 'subdl-main', 'clean', 1)`, []any{mediaID, dirty, mediaID}},
+		{`INSERT INTO candidate_rejections(media_id, language, provider_id, result_id, candidate_signature, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns) VALUES (?, 'en', 'subdl-main', ?, 'dirty', 'lapse_unsure', 'tool', '/media/movie.mkv', 1, 1, 1, 1, 2), (?, 'en', 'subdl-main', 'clean', 'clean', 'lapse_unsure', 'tool', '/media/movie.mkv', 1, 1, 1, 1, 2)`, []any{mediaID, dirty, mediaID}},
+	}
+	for _, statement := range statements {
+		if _, err := database.db.Exec(statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.db.Exec(`INSERT INTO pack_members(pack_id, safe_name, cache_path, checksum) SELECT id, 'dirty.srt', '/cache/dirty.srt', 'dirty' FROM pack_cache WHERE result_id = ?`, dirty); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`INSERT INTO pack_members(pack_id, safe_name, cache_path, checksum) SELECT id, 'clean.srt', '/cache/clean.srt', 'clean' FROM pack_cache WHERE result_id = 'clean'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	checks := []string{
+		`SELECT count(*) FROM provider_cache WHERE cache_key = 'dirty'`,
+		`SELECT count(*) FROM candidates WHERE result_id LIKE '%api_key=%'`,
+		`SELECT count(*) FROM pack_cache WHERE result_id LIKE '%api_key=%'`,
+		`SELECT count(*) FROM installations WHERE candidate_id LIKE '%api_key=%'`,
+		`SELECT count(*) FROM candidate_rejections WHERE result_id LIKE '%api_key=%'`,
+	}
+	for _, query := range checks {
+		var count int
+		if err := database.db.QueryRow(query).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("credential row count for %q = %d, %v", query, count, err)
+		}
+	}
+	for table := range map[string]struct{}{"provider_cache": {}, "candidates": {}, "pack_cache": {}, "installations": {}, "candidate_rejections": {}} {
+		var count int
+		if err := database.db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("preserved %s rows = %d, %v", table, count, err)
+		}
+	}
+	var cursor, leaseOwner string
+	var attempt, failureAttempt, leaseUntil int64
+	if err := database.db.QueryRow(`SELECT reconciliation_cursor FROM instances WHERE name = 'sonarr-main'`).Scan(&cursor); err != nil || cursor != "2026-09-05T08:00:00Z" {
+		t.Fatalf("reconciliation cursor = %q, %v", cursor, err)
+	}
+	if err := database.db.QueryRow(`SELECT attempt, failure_attempt, lease_owner, lease_until_ns FROM search_states WHERE media_id = ? AND language = 'en'`, mediaID).Scan(&attempt, &failureAttempt, &leaseOwner, &leaseUntil); err != nil || attempt != 3 || failureAttempt != 2 || leaseOwner != "active-job" || leaseUntil != 20 {
+		t.Fatalf("search lease = %d/%d/%q/%d, %v", attempt, failureAttempt, leaseOwner, leaseUntil, err)
+	}
+	var memberCount int
+	if err := database.db.QueryRow(`SELECT count(*) FROM pack_members`).Scan(&memberCount); err != nil || memberCount != 1 {
+		t.Fatalf("preserved/cascaded pack members = %d, %v", memberCount, err)
 	}
 }
 

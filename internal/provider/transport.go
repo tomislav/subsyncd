@@ -43,7 +43,12 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		return nil, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}
 	}
 	now := c.Clock.Now()
-	window, found := ParseRateLimit(now, response.Header)
+	rateHeaders := response.Header
+	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices && response.Header.Get("Retry-After") != "" {
+		rateHeaders = response.Header.Clone()
+		rateHeaders.Del("Retry-After")
+	}
+	window, found := ParseRateLimit(now, rateHeaders)
 	if response.StatusCode >= http.StatusInternalServerError && response.StatusCode <= 599 {
 		var resetAt time.Time
 		if found && window.Remaining <= 0 {

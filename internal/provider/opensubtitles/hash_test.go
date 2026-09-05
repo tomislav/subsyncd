@@ -3,6 +3,7 @@ package opensubtitles
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,28 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestFileHasherSupportsFilesLargerThanNineGigabytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large-movie.bin")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = int64(14_836_065_099)
+	if err := file.Truncate(size); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	result, err := CalculateHash(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("%016x", uint64(size)); result.MovieHash != want || result.ByteSize != size {
+		t.Fatalf("hash = %#v, want %s/%d", result, want, size)
+	}
+}
 
 func TestFileHasherMatchesReferenceAndPreservesFileOffset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "movie.bin")

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"subsyncd/internal/domain"
@@ -137,6 +138,7 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 		if found {
 			var candidates []domain.Candidate
 			if err := json.Unmarshal(entry.ResultsJSON, &candidates); err == nil {
+				candidates = deduplicateCandidates(candidates)
 				events.Log(ctx, slog.LevelDebug, "provider.cache_hit", "provider search cache hit", base...)
 				complete(candidates, "hit", nil)
 				return candidates, nil
@@ -149,6 +151,7 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 		complete(nil, "miss", err)
 		return nil, err
 	}
+	candidates = deduplicateCandidates(candidates)
 	if c.Cache != nil {
 		encoded, err := json.Marshal(cacheSafeCandidates(candidates))
 		if err != nil {
@@ -164,6 +167,88 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 	}
 	complete(candidates, "miss", nil)
 	return candidates, nil
+}
+
+func deduplicateCandidates(candidates []domain.Candidate) []domain.Candidate {
+	result := make([]domain.Candidate, 0, len(candidates))
+	indices := make(map[string]int, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.ProviderID == "" || candidate.ResultID == "" {
+			result = append(result, candidate)
+			continue
+		}
+		key := candidate.ProviderID + "\x00" + candidate.ResultID
+		index, exists := indices[key]
+		if !exists {
+			indices[key] = len(result)
+			candidate.ReleaseNames = append([]string(nil), candidate.ReleaseNames...)
+			result = append(result, candidate)
+			continue
+		}
+		merged := &result[index]
+		if merged.Language == "" {
+			merged.Language = candidate.Language
+		}
+		if merged.Kind == "" {
+			merged.Kind = candidate.Kind
+		}
+		if merged.Title == "" {
+			merged.Title = candidate.Title
+		}
+		if merged.Year == 0 {
+			merged.Year = candidate.Year
+		}
+		if merged.Season == 0 {
+			merged.Season = candidate.Season
+		}
+		if merged.Episode == 0 {
+			merged.Episode = candidate.Episode
+		}
+		if merged.AbsoluteEpisode == 0 {
+			merged.AbsoluteEpisode = candidate.AbsoluteEpisode
+		}
+		if merged.ExternalIDs.IMDb == "" {
+			merged.ExternalIDs.IMDb = candidate.ExternalIDs.IMDb
+		}
+		if merged.ExternalIDs.TMDB == 0 {
+			merged.ExternalIDs.TMDB = candidate.ExternalIDs.TMDB
+		}
+		if merged.ExternalIDs.TVDB == 0 {
+			merged.ExternalIDs.TVDB = candidate.ExternalIDs.TVDB
+		}
+		merged.ReleaseNames = appendUniqueStrings(merged.ReleaseNames, candidate.ReleaseNames...)
+		merged.ExactHash = merged.ExactHash || candidate.ExactHash
+		merged.Forced = merged.Forced || candidate.Forced
+		merged.HearingImpaired = merged.HearingImpaired || candidate.HearingImpaired
+		merged.Rating = max(merged.Rating, candidate.Rating)
+		merged.Popularity = max(merged.Popularity, candidate.Popularity)
+		merged.DownloadCount = max(merged.DownloadCount, candidate.DownloadCount)
+		if merged.DownloadRef == "" {
+			merged.DownloadRef = candidate.DownloadRef
+		}
+		if merged.Pack == nil {
+			merged.Pack = candidate.Pack
+		}
+	}
+	return result
+}
+
+func appendUniqueStrings(existing []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(existing)+len(additions))
+	for _, value := range existing {
+		seen[value] = struct{}{}
+	}
+	for _, value := range additions {
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		existing = append(existing, value)
+	}
+	return existing
 }
 
 func providerOutcome(err error, candidateCount int) string {
@@ -212,12 +297,35 @@ func cacheSafeCandidates(candidates []domain.Candidate) []domain.Candidate {
 	safe := make([]domain.Candidate, len(candidates))
 	copy(safe, candidates)
 	for index := range safe {
+		safe[index].ResultID = stripCandidateQuery(safe[index].ResultID)
 		parsed, err := url.Parse(safe[index].DownloadRef)
 		if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
 			safe[index].DownloadRef = ""
+		} else {
+			safe[index].DownloadRef = stripCandidateQuery(safe[index].DownloadRef)
+		}
+		if safe[index].Pack != nil {
+			pack := *safe[index].Pack
+			pack.DirectMembers = append([]domain.PackMemberRef(nil), pack.DirectMembers...)
+			for member := range pack.DirectMembers {
+				pack.DirectMembers[member].DownloadRef = ""
+			}
+			safe[index].Pack = &pack
 		}
 	}
 	return safe
+}
+
+func stripCandidateQuery(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		value, _, _ := strings.Cut(raw, "?")
+		return value
+	}
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	return parsed.String()
 }
 
 func providerCacheKey(providerID string, query SearchQuery) string {

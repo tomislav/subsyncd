@@ -3,7 +3,9 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -127,6 +129,59 @@ func TestCoordinatorCachesNormalizedResultsForSixHours(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDeduplicatesStableCandidateIdentityBeforeCaching(t *testing.T) {
+	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {
+		{ProviderID: "only", ResultID: "same", ReleaseNames: []string{"Release.A"}, Rating: 0.4, Popularity: 0.3, DownloadCount: 10},
+		{ProviderID: "only", ResultID: "same", Language: "en", Kind: domain.MediaEpisode, Title: "Show", Year: 2026, Season: 1, Episode: 2, AbsoluteEpisode: 14, ExternalIDs: domain.ExternalIDs{IMDb: "tt123", TMDB: 456, TVDB: 789}, ReleaseNames: []string{"Release.B", "Release.A"}, Rating: 0.8, Popularity: 0.7, DownloadCount: 20},
+		{ProviderID: "only", ResultID: "same", Language: "hr", Kind: domain.MediaMovie, Title: "Conflicting title", Year: 1999, Season: 9, Episode: 8, AbsoluteEpisode: 77, ExternalIDs: domain.ExternalIDs{IMDb: "tt999", TMDB: 999, TVDB: 999}},
+	}}}
+	coordinator := newTestCoordinator(provider)
+	query := SearchQuery{Media: testQueryMedia(), Language: "en"}
+
+	first := coordinator.Search(context.Background(), query)
+	second := coordinator.Search(context.Background(), query)
+	for _, result := range []SearchResult{first, second} {
+		if len(result.Candidates) != 1 {
+			t.Fatalf("deduplicated candidates = %#v", result.Candidates)
+		}
+		candidate := result.Candidates[0]
+		if candidate.ResultID != "same" || candidate.Language != "en" || candidate.Kind != domain.MediaEpisode || candidate.Title != "Show" || candidate.Year != 2026 || candidate.Season != 1 || candidate.Episode != 2 || candidate.AbsoluteEpisode != 14 || candidate.ExternalIDs != (domain.ExternalIDs{IMDb: "tt123", TMDB: 456, TVDB: 789}) || !slices.Equal(candidate.ReleaseNames, []string{"Release.A", "Release.B"}) || candidate.Rating != 0.8 || candidate.Popularity != 0.7 || candidate.DownloadCount != 20 {
+			t.Fatalf("merged candidate = %#v", candidate)
+		}
+	}
+	cache := coordinator.Cache.(*memoryCache)
+	for _, entry := range cache.entries {
+		var cached []domain.Candidate
+		if err := json.Unmarshal(entry.ResultsJSON, &cached); err != nil || len(cached) != 1 {
+			t.Fatalf("cached candidates = %#v, %v", cached, err)
+		}
+	}
+}
+
+func TestCoordinatorDeduplicatesLegacyCachedCandidates(t *testing.T) {
+	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{}}
+	coordinator := newTestCoordinator(provider)
+	query := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad}
+	candidates := []domain.Candidate{
+		{ProviderID: "only", ResultID: "same", ReleaseNames: []string{"Release.A"}},
+		{ProviderID: "only", ResultID: "same", ReleaseNames: []string{"Release.B"}},
+	}
+	payload, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := coordinator.Cache.(*memoryCache)
+	cache.entries[providerCacheKey(provider.ID(), query)] = store.ProviderCacheEntry{ResultsJSON: payload, ExpiresAt: coordinator.Clock.Now().Add(time.Hour)}
+
+	result := coordinator.Search(context.Background(), query)
+	if len(result.Candidates) != 1 || !slices.Equal(result.Candidates[0].ReleaseNames, []string{"Release.A", "Release.B"}) {
+		t.Fatalf("legacy cached candidates = %#v", result.Candidates)
+	}
+	if len(provider.calls) != 0 {
+		t.Fatalf("provider calls = %#v, want cache-only", provider.calls)
+	}
+}
+
 func TestCoordinatorNeverCachesDownloadURLs(t *testing.T) {
 	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "https://signed.example/subtitle?token=secret"}}}}
 	coordinator := newTestCoordinator(provider)
@@ -135,6 +190,30 @@ func TestCoordinatorNeverCachesDownloadURLs(t *testing.T) {
 	for _, entry := range cache.entries {
 		if strings.Contains(string(entry.ResultsJSON), "signed.example") || strings.Contains(string(entry.ResultsJSON), "secret") {
 			t.Fatalf("cache leaked temporary download URL: %s", entry.ResultsJSON)
+		}
+	}
+}
+
+func TestCoordinatorNeverCachesCredentialBearingCandidateIDs(t *testing.T) {
+	provider := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{
+		ProviderID:  "only",
+		ResultID:    "/subtitle/movie.srt?api_key=secret",
+		DownloadRef: "/subtitle/movie.srt?api_key=secret",
+		Pack: &domain.PackInfo{DirectMembers: []domain.PackMemberRef{{
+			ID:          "member",
+			DownloadRef: "https://signed.example/member?token=secret",
+		}}},
+	}}}}
+	coordinator := newTestCoordinator(provider)
+	coordinator.Search(context.Background(), SearchQuery{Media: testQueryMedia(), Language: "en"})
+	cache := coordinator.Cache.(*memoryCache)
+	for _, entry := range cache.entries {
+		if strings.Contains(string(entry.ResultsJSON), "api_key") || strings.Contains(string(entry.ResultsJSON), "secret") || strings.Contains(string(entry.ResultsJSON), "signed.example") {
+			t.Fatalf("cache leaked candidate credential: %s", entry.ResultsJSON)
+		}
+		var candidates []domain.Candidate
+		if err := json.Unmarshal(entry.ResultsJSON, &candidates); err != nil || len(candidates) != 1 || candidates[0].ResultID != "/subtitle/movie.srt" || candidates[0].DownloadRef != "/subtitle/movie.srt" || candidates[0].Pack == nil || candidates[0].Pack.DirectMembers[0].DownloadRef != "" {
+			t.Fatalf("safe cached candidate = %#v, %v", candidates, err)
 		}
 	}
 }

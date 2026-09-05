@@ -55,6 +55,42 @@ func TestObservedProviderLogsDownloadBytesWithoutProviderMetadata(t *testing.T) 
 	}
 }
 
+func TestObservedProviderStripsCandidateQueryFromLogs(t *testing.T) {
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "debug", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := Observe(downloadProvider{}, events)
+	_, err = item.Download(context.Background(), domain.Candidate{ResultID: "/subtitle/movie.srt?api_key=secret"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := providerEvents(providerLogRecords(t, logs.String()), "provider.download_completed")
+	if len(records) != 1 || records[0]["candidate_id"] != "/subtitle/movie.srt" {
+		t.Fatalf("safe candidate correlation = %#v", records)
+	}
+	if strings.Contains(logs.String(), "api_key") || strings.Contains(logs.String(), "secret") {
+		t.Fatalf("candidate query leaked to logs: %s", logs.String())
+	}
+}
+
+func TestObservedProviderStripsMalformedCandidateQueryFromLogs(t *testing.T) {
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "debug", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := Observe(downloadProvider{}, events)
+	_, err = item.Download(context.Background(), domain.Candidate{ResultID: "/subtitle/%zz?api_key=secret#fragment"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "api_key") || strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "fragment") {
+		t.Fatalf("malformed candidate query leaked to logs: %s", logs.String())
+	}
+}
+
 func TestObservedProviderClassifiesDownloadCooldown(t *testing.T) {
 	var logs bytes.Buffer
 	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", Redact: func(error) string { return "provider unavailable" }})

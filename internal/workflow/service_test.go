@@ -36,6 +36,16 @@ func TestServiceStopsForEmbeddedOrProtectedSubtitle(t *testing.T) {
 	}
 }
 
+func TestCandidateRecordStripsCredentialBearingIdentity(t *testing.T) {
+	record, err := candidateRecord(domain.Candidate{ProviderID: "subdl-main", ResultID: "/subtitle/movie.srt?api_key=secret", DownloadRef: "/subtitle/movie.srt?api_key=secret"}, domain.Score{Total: 50}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ResultID != "/subtitle/movie.srt" || strings.Contains(string(record.MetadataJSON), "api_key") || strings.Contains(string(record.MetadataJSON), "secret") {
+		t.Fatalf("credential-free candidate record = %#v", record)
+	}
+}
+
 func TestServiceUsesRefreshedFilesystemFingerprintForProviderSearch(t *testing.T) {
 	request := serviceRequest(t)
 	refreshed := request.Media.Fingerprint
