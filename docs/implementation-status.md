@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: observe the first natural six-hour reconciliation after the scoped real-webhook Stage 3 deployment
-- Next safe action: after that cycle passes, explicitly approve one exact Sonarr media mapping or broader rollout; do not broaden automatically
-- Latest follow-up: Stage 3 mapped, duplicate, and actual outside-scope Radarr webhook deliveries passed on Hades
+- Current task: execute the approved clean SQLite baseline reset and isolated Hades cutover
+- Next safe action: complete full race/vet/e2e/container verification before touching the Hades database or exact S01E06 sidecar
+- Latest follow-up: schema Tasks 1–3 are implemented locally; Hades still runs the verified Stage 5 three-file canary unchanged
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Clean schema baseline Tasks 1–4 — implementation pending full verification
+
+- Replaced the ten pre-release migrations with one complete `001_baseline.sql` while retaining the ordered embedded migration runner. Startup now rejects applied migration names outside the embedded lineage with an explicit rebuild-from-empty error.
+- The baseline enforces positive `media.entity_id` in SQLite and retains separate replaceable `file_id`, current event-local zero identities, fingerprints, queues, rejections, notifications, and all final indexes/foreign keys.
+- Removed zero-entity adoption, import/rename entity fallback, the unused default-priority search wrapper, and obsolete old-cache compatibility tests. Current file-replacement conflict checks, candidate serialization, provider cache safety, and entity-addressed deletions remain covered.
+- Focused red/green store, catalog, worker, provider, and domain suites pass under the race detector. Full verification, clean image construction, GitHub publication, and the authorized recoverable Hades database/sidecar cutover remain pending.
 
 ### Hades Stage 3 Task 2 — direct image and real Radarr webhook
 
