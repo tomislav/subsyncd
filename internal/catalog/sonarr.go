@@ -74,19 +74,24 @@ type sonarrSeries struct {
 }
 
 func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Media, error) {
+	media, _, err := s.hydrateMedia(ctx, ref)
+	return media, err
+}
+
+func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.Media, []int64, error) {
 	if ref.Instance != s.client.instance || ref.Kind != domain.MediaEpisode || ref.FileID <= 0 {
-		return domain.Media{}, fmt.Errorf("invalid Sonarr media reference")
+		return domain.Media{}, nil, fmt.Errorf("invalid Sonarr media reference")
 	}
 	var file sonarrEpisodeFile
 	if err := s.client.getJSON(ctx, "/api/v3/episodefile/"+strconv.FormatInt(ref.FileID, 10), nil, &file); err != nil {
-		return domain.Media{}, err
+		return domain.Media{}, nil, err
 	}
 	var episodes []sonarrEpisode
 	if err := s.client.getJSON(ctx, "/api/v3/episode", url.Values{"episodeFileId": {strconv.FormatInt(ref.FileID, 10)}}, &episodes); err != nil {
-		return domain.Media{}, err
+		return domain.Media{}, nil, err
 	}
 	if len(episodes) == 0 {
-		return domain.Media{}, fmt.Errorf("Sonarr file %d has no episode", ref.FileID)
+		return domain.Media{}, nil, fmt.Errorf("Sonarr file %d has no episode", ref.FileID)
 	}
 	sort.Slice(episodes, func(i, j int) bool {
 		if episodes[i].SeasonNumber != episodes[j].SeasonNumber {
@@ -100,6 +105,13 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 		}
 		return episodes[i].ID < episodes[j].ID
 	})
+	episodeIDs := make([]int64, len(episodes))
+	for index := range episodes {
+		if episodes[index].ID <= 0 {
+			return domain.Media{}, nil, fmt.Errorf("Sonarr file %d has an episode without identity", ref.FileID)
+		}
+		episodeIDs[index] = episodes[index].ID
+	}
 	episode := episodes[0]
 	seriesID := file.SeriesID
 	if seriesID == 0 {
@@ -107,13 +119,14 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	}
 	var series sonarrSeries
 	if err := s.client.getJSON(ctx, "/api/v3/series/"+strconv.FormatInt(seriesID, 10), nil, &series); err != nil {
-		return domain.Media{}, err
+		return domain.Media{}, nil, err
 	}
 	path, err := MapPath(file.Path, s.mappings, s.mediaRoots)
 	if err != nil {
-		return domain.Media{}, fmt.Errorf("map Sonarr file %d: %w", ref.FileID, err)
+		return domain.Media{}, nil, fmt.Errorf("map Sonarr file %d: %w", ref.FileID, err)
 	}
 	media := domain.Media{
+		EntityID:         episode.ID,
 		Ref:              ref,
 		Fingerprint:      domain.MediaFingerprint{Path: path, FileID: ref.FileID, Size: file.Size, ModTime: file.DateAdded},
 		Title:            series.Title,
@@ -135,7 +148,7 @@ func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	if len(episodes) > 1 {
 		media.UnsupportedReason = domain.UnsupportedMultiEpisode
 	}
-	return media, nil
+	return media, episodeIDs, nil
 }
 
 func (s *Sonarr) ListChangesSince(ctx context.Context, since time.Time) ([]HistoryChange, error) {

@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,6 +9,57 @@ import (
 
 	"subsyncd/internal/config"
 )
+
+func TestMapPathOutsideScopeClassification(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(t.TempDir(), "elsewhere")
+	for name, test := range map[string]struct {
+		remote   string
+		mappings []config.PathMapping
+		roots    []string
+	}{
+		"unmatched mapping": {remote: "/other/show.mkv", mappings: []config.PathMapping{{Remote: "/data/tv", Local: root}}, roots: []string{root}},
+		"outside root":      {remote: "/data/tv/show.mkv", mappings: []config.PathMapping{{Remote: "/data/tv", Local: out}}, roots: []string{root}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := MapPath(test.remote, test.mappings, test.roots)
+			if !errors.Is(err, ErrOutsideScope) || !IsOutsideScope(err) {
+				t.Fatalf("MapPath() error = %v, want ErrOutsideScope", err)
+			}
+		})
+	}
+}
+
+func TestMapPathOutsideScopeDoesNotHideUnsafeFailures(t *testing.T) {
+	root := t.TempDir()
+	dangling := filepath.Join(root, "dangling")
+	if err := os.Symlink(filepath.Join(root, "missing-target"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	nonDirectoryParent := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(nonDirectoryParent, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missingRoot := filepath.Join(t.TempDir(), "missing-root")
+	for name, test := range map[string]struct {
+		remote   string
+		mappings []config.PathMapping
+		roots    []string
+	}{
+		"traversal":           {remote: "/data/tv/../../etc/passwd", mappings: []config.PathMapping{{Remote: "/data/tv", Local: root}}, roots: []string{root}},
+		"relative mapping":    {remote: "/data/tv/show.mkv", mappings: []config.PathMapping{{Remote: "/data/tv", Local: "relative"}}, roots: []string{root}},
+		"inaccessible parent": {remote: "/data/tv/show.mkv", mappings: []config.PathMapping{{Remote: "/data/tv", Local: nonDirectoryParent}}, roots: []string{root}},
+		"symlink resolution":  {remote: "/data/tv/dangling/show.mkv", mappings: []config.PathMapping{{Remote: "/data/tv", Local: root}}, roots: []string{root}},
+		"root resolution":     {remote: "/data/tv/show.mkv", mappings: []config.PathMapping{{Remote: "/data/tv", Local: root}}, roots: []string{missingRoot}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := MapPath(test.remote, test.mappings, test.roots)
+			if err == nil || errors.Is(err, ErrOutsideScope) || IsOutsideScope(err) {
+				t.Fatalf("MapPath() error = %v, want hard failure", err)
+			}
+		})
+	}
+}
 
 func TestMapPathUsesLongestPrefixAndNormalizesWindowsSeparators(t *testing.T) {
 	root := t.TempDir()

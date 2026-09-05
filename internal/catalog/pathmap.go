@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,12 @@ import (
 
 	"subsyncd/internal/config"
 )
+
+var ErrOutsideScope = errors.New("media is outside configured scope")
+
+func IsOutsideScope(err error) bool {
+	return errors.Is(err, ErrOutsideScope)
+}
 
 func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) (string, error) {
 	normalizedRemote := normalizeRemote(remote)
@@ -25,7 +32,7 @@ func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) 
 		candidates = append(candidates, candidate{remote: prefix, local: mapping.Local})
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("remote path %q does not match a configured mapping", remote)
+		return "", fmt.Errorf("%w: remote path %q does not match a configured mapping", ErrOutsideScope, remote)
 	}
 	sort.Slice(candidates, func(i, j int) bool { return len(candidates[i].remote) > len(candidates[j].remote) })
 	selected := candidates[0]
@@ -54,7 +61,7 @@ func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) 
 			return mapped, nil
 		}
 	}
-	return "", fmt.Errorf("mapped path %q is outside configured media roots", mapped)
+	return "", fmt.Errorf("%w: mapped path %q is outside configured media roots", ErrOutsideScope, mapped)
 }
 
 func normalizeRemote(path string) string {

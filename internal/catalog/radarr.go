@@ -56,6 +56,9 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	if err := r.client.getJSON(ctx, "/api/v3/moviefile/"+strconv.FormatInt(ref.FileID, 10), nil, &file); err != nil {
 		return domain.Media{}, err
 	}
+	if file.MovieID <= 0 {
+		return domain.Media{}, fmt.Errorf("Radarr file %d has no movie identity", ref.FileID)
+	}
 	var movie radarrMovie
 	if err := r.client.getJSON(ctx, "/api/v3/movie/"+strconv.FormatInt(file.MovieID, 10), nil, &movie); err != nil {
 		return domain.Media{}, err
@@ -65,6 +68,7 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 		return domain.Media{}, fmt.Errorf("map Radarr file %d: %w", ref.FileID, err)
 	}
 	return domain.Media{
+		EntityID:         file.MovieID,
 		Ref:              ref,
 		Fingerprint:      domain.MediaFingerprint{Path: path, FileID: ref.FileID, Size: file.Size, ModTime: file.DateAdded},
 		Title:            movie.Title,

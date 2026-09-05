@@ -39,6 +39,9 @@ func TestRadarrGetMediaHydratesFileAndMovie(t *testing.T) {
 	if media.Title != "Example Movie" || media.Year != 2024 || media.ExternalIDs.TMDB != 2468 || media.ExternalIDs.IMDb != "tt7654321" {
 		t.Fatalf("movie identity = %#v", media)
 	}
+	if media.EntityID != 20 {
+		t.Fatalf("entity ID = %d, want 20", media.EntityID)
+	}
 	if media.Fingerprint.Path != filepath.Join(root, "Example Movie", "Example.Movie.2024.mkv") || media.Fingerprint.Size != 4321 {
 		t.Fatalf("fingerprint = %#v", media.Fingerprint)
 	}

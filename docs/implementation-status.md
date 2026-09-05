@@ -6,12 +6,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: arrapi stable-identity reconciliation implementation
-- Next task: assign stable entity identity during detailed hydration and classify safe outside-scope media (Task 3)
-- Latest follow-up: Task 2 added stable entity persistence and upgrade-in-place behavior
+- Next task: replace custom file-based history DTOs with arrapi entity reconciliation (Task 4)
+- Latest follow-up: Task 3 added stable detail identity and typed outside-scope handling
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Arrapi stable-identity reconciliation Task 3 — detail identity and scope
+
+- Radarr detail hydration now assigns the stable movie ID from the movie file and rejects a missing movie identity. Sonarr assigns the deterministic canonical episode ID, rejects attached episodes without IDs, and privately returns the complete sorted attached-episode set for later history membership checks.
+- `ErrOutsideScope` identifies only deliberate scope exclusions: no boundary-aware mapping or a safely resolved mapped path outside configured media roots. Traversal, relative mappings, inaccessible/non-directory parents, dangling-symlink resolution, and media-root resolution remain hard failures.
+- TDD evidence: focused tests first failed on missing entity assignments, Sonarr hydration evidence, and scope sentinel. Race-enabled `internal/catalog`, `internal/store`, and `internal/app` verification plus `git diff --check` passed using local fake Arr servers. One old history fixture was corrected to include the episode ID present in real hydrated responses.
+- Next task: use arrapi v2.0.5 history and current-entity reads, reduce by stable entity, filter at the captured page end, and collapse combined-episode present state canonically.
 
 ### Arrapi stable-identity reconciliation Task 2 — stable entity persistence
 

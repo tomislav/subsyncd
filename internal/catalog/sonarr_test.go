@@ -46,6 +46,9 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	if media.Title != "Example Show" || media.EpisodeTitle != "Second Episode" || media.Season != 1 || media.Episode != 2 || media.AbsoluteEpisode != 14 {
 		t.Fatalf("episode identity = %#v", media)
 	}
+	if media.EntityID != 101 {
+		t.Fatalf("entity ID = %d, want 101", media.EntityID)
+	}
 	if media.Fingerprint.Path != filepath.Join(root, "Example Show", "Example.Show.S01E02.mkv") || media.Fingerprint.Size != 1234 {
 		t.Fatalf("fingerprint = %#v", media.Fingerprint)
 	}
@@ -77,12 +80,15 @@ func TestSonarrGetMediaIndexesMultiEpisodeFileAsUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	media, err := catalog.GetMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001})
+	media, episodeIDs, err := catalog.hydrateMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if media.Season != 1 || media.Episode != 1 || media.EpisodeTitle != "First" || media.UnsupportedReason != domain.UnsupportedMultiEpisode {
+	if media.EntityID != 101 || media.Season != 1 || media.Episode != 1 || media.EpisodeTitle != "First" || media.UnsupportedReason != domain.UnsupportedMultiEpisode {
 		t.Fatalf("multi-episode media = %#v", media)
+	}
+	if len(episodeIDs) != 2 || episodeIDs[0] != 101 || episodeIDs[1] != 102 {
+		t.Fatalf("attached episode IDs = %v, want [101 102]", episodeIDs)
 	}
 }
 
@@ -127,7 +133,7 @@ func TestSonarrListChangesSinceHydratesLatestRelevantHistory(t *testing.T) {
 			fileRequests++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 1, "dateAdded": "2026-09-04T10:00:00Z"})
 		case r.URL.Path == "/api/v3/episode":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"seriesId": 10, "seasonNumber": 1, "episodeNumber": 1}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1}})
 		case r.URL.Path == "/api/v3/series/10":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Show"})
 		default:
