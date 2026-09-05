@@ -10,6 +10,7 @@ Reviewed `9d292c4` after the temporary workspace and LAPSE downstream repairs we
 | R2, R3 | `03c3cb9`, `6265b03` | Completed-probe migration, inventory snapshot/CAS and live-file checks, deleted-media commit guards. Review also repaired delete/reimport lease preservation and terminal completion. |
 | R4, R13 | `08d6985` | Lock before mutable assembly; existing-schema read-only diagnostics and temporary analysis cache; sanitized startup errors with one output owner. |
 | R10, R11, R12 | `0a9b2ab` | Parent-aware cancellation admission, copied active-route SQL claim scope, and a 75-second container shutdown allowance. |
+| Combined review F1, F2 | `5407480` | Active-only scan enumeration and language backfill; migration preserves legacy deletion established by unanimous terminal searches and retained lifecycle chronology. Ambiguous or pruned history remains active. |
 
 Scope: catalog reconciliation and Arr detail clients, webhook batches and identity, worker dispatch/leases/shutdown, inventory caching and ownership, application initialization/CLI locking and errors, configuration, migrations, and container publication. Provider adapters, scoring, archive extraction, LAPSE analysis/finalization, installer rollback, and notification delivery had already received separate reviews; this pass examined their integration where relevant.
 
@@ -125,4 +126,4 @@ The reviewed repair baseline passed race-enabled tests, vet, tagged local E2E, f
 
 No additional confirmed findings were identified in the bounded review of hash-cache ownership, upgrade guards, migration lineage checks, or Dockerfile parity/publication wiring.
 
-All R1–R13 now have permanent regression coverage and the repairs listed above. On `0a9b2ab`, the complete race suite, vet, tagged local E2E, release-Dockerfile parity, parsed Compose configuration validation, formatting, and diff checks passed. Validation used local fixtures and fake servers; production was neither inspected nor redeployed during these repairs. Migration 003 applies during the next mutating startup; diagnostics now require an existing current-schema database.
+All R1–R13 and the combined-review follow-ups now have permanent regression coverage and the repairs listed above. On `5407480`, the complete race suite, vet, tagged local E2E, release-Dockerfile parity, parsed Compose configuration validation, formatting, and diff checks passed. Validation used local fixtures and fake servers; production was neither inspected nor redeployed during these repairs. Migration 003 applies during the next mutating startup; diagnostics now require an existing current-schema database.
