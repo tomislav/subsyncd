@@ -6,12 +6,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 - Branch: `main`
 - Current task: codebase correctness-repair Tasks 1–9, the final review fix wave, and its authorized focused follow-up are implemented and locally verified; production remains out of scope
-- Next safe action: re-review the focused follow-up, then request separate approval before any push, image publication, or deployment
-- Latest follow-up: the complete local verification matrix passed without live Arr, provider, Silo, or production-host access
+- Next safe action: re-review the decomposed-Unicode correction, then request separate approval before any push, image publication, or deployment
+- Latest follow-up: decomposed Unicode release suffixes retain their single-episode/range evidence; the complete local verification matrix passed without live services or production-host access
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs corrective review — decomposed Unicode suffixes
+
+- The continuation boundary treats Unicode combining marks as word continuation, preserving decomposed `Édition` and `Épisode` release/title suffixes after tabs, nonbreaking spaces, and em spaces. The change is confined to the continuation guard; supported range syntax and existing ambiguity rejection remain intact.
+- RED reproduced rejection of 24 decomposed suffix/expression combinations through the selectors, with range parsing also rejecting valid ranges. Composed controls passed. GREEN covers those canonical forms through `episodeRange`, `Select`, and `SelectSingleEpisode`, together with every prior separated/incomplete whitespace regression.
+- Fresh verification passed focused pack/workflow controls, complete pack/workflow race suites, `go test ./... -race -count=1`, vet, tagged E2E, credential-unset provider contracts (all three skipped), Compose, formatting/diff checks, and privacy/reference scans. Full/E2E used approved loopback fake servers; no live services, production hosts, image builds, push, or deployment were used.
+- Commit: `fix: preserve decomposed Unicode release suffixes` (corrective review based on `bb2bd02`). Next safe action: independent re-review of this correction.
 
 ### Conventional repairs final follow-up — cancellation errors and Unicode whitespace
 

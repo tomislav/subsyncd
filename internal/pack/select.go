@@ -274,7 +274,9 @@ func episodeContinuation(name string, offset int) bool {
 		return true
 	}
 	next, _ := utf8.DecodeRuneInString(suffix[match[1]:])
-	return !isAlphaNumeric(next)
+	// Combining marks continue the preceding letter in decomposed release
+	// text, so an accented E must not become an incomplete episode endpoint.
+	return !isAlphaNumeric(next) && !unicode.IsMark(next)
 }
 
 func hasMalformedHyphenatedRangeEvidence(name string) bool {

@@ -224,6 +224,32 @@ func TestEpisodeSelectionPreservesWhitespaceReleaseSuffixes(t *testing.T) {
 	}
 }
 
+func TestEpisodeRangeAndSelectionPreserveDecomposedReleaseSuffixes(t *testing.T) {
+	for label, separator := range map[string]string{"tab": "\t", "nbsp": "\u00a0", "em space": "\u2003"} {
+		t.Run(label, func(t *testing.T) {
+			for _, suffix := range []string{"Édition", "E\u0301dition", "Épisode", "E\u0301pisode"} {
+				for expression, rule := range map[string]string{
+					"S01E01": "episode_token", "S01E01-E03": "episode_range", "S01E01-S01E03": "episode_range", "1x01-1x03": "episode_range",
+				} {
+					name := "Show." + expression + separator + suffix + ".srt"
+					season, from, to, found := episodeRange(name)
+					if found != (rule == "episode_range") || found && [3]int{season, from, to} != [3]int{1, 1, 3} {
+						t.Errorf("episodeRange(%q) = %d,%d,%d,%v; want %s", name, season, from, to, found, rule)
+					}
+					for label, selector := range map[string]func(Manifest, domain.Candidate, domain.Media, bool) (Member, error){
+						"Select": Select, "SelectSingleEpisode": SelectSingleEpisode,
+					} {
+						selected, err := selector(Manifest{Members: []Member{{SafeName: name}}}, domain.Candidate{}, domain.Media{Season: 1, Episode: 1}, false)
+						if err != nil || selected.SelectionRule != rule {
+							t.Errorf("%s(%q) = %#v, %v; want %s", label, name, selected, err, rule)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestSelectSingleMovieEnforcesForcedPolicy(t *testing.T) {
 	manifest := Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.forced.srt", Forced: true}}}
 	_, err := SelectSingleMovie(manifest, domain.Candidate{Forced: true}, false)
