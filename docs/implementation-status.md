@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: isolated Hades daemon canary running on two embedded-English Radarr movies
-- Next task: observe the daemon canary before enabling automatic Arr webhooks or broadening media scope
-- Latest follow-up: published and deployed `sha-b3a2d45`, then verified daemon queue, deduplication, restart recovery, and zero-write embedded skips
+- Current task: arrapi stable-identity reconciliation design review
+- Next task: user review, then write the test-driven implementation plan
+- Latest follow-up: diagnosed the live reconciliation contract mismatch and recorded the approved arrapi/stable-entity repair design
 - Runtime module: `subsyncd` on Go 1.27
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — arrapi stable-identity reconciliation design
+
+- Live Hades evidence and the exact Radarr 6.3.0.10514 and Sonarr 4.0.19.2979 contracts show that history exposes stable `movieId`/`episodeId`, not the top-level `movieFileId`/`episodeFileId` assumed by subsyncd. Import records may carry `data.fileId`; deletion records do not. Nested current file IDs cannot serve as historical deletion identity.
+- The approved design is `docs/superpowers/specs/2026-09-05-arrapi-stable-identity-reconciliation-design.md`. It pins `github.com/cplieger/arrapi/v2` behind the catalog adapter, persists stable entity identity separately from replaceable file identity, reduces history by entity, resolves authoritative current state, and commits entity adoption/deletion/audit/cursor changes atomically.
+- Because arrapi's curated DTOs omit scoring/provenance fields subsyncd currently needs, the hardened custom detail requests remain temporarily as a narrow enrichment boundary; the custom history DTO and transport are removed.
+- Deliberately unmapped history becomes a typed outside-scope result so the two-movie Hades canary can consume production Radarr history without indexing or reading the rest of the library. Unsafe paths and filesystem resolution failures still fail closed.
+- Existing rows adopt `entity_id` lazily on their next successful hydration. No startup or full-library network backfill is introduced. Delete webhooks retain file-ID behavior; the one-time legacy limitation for a missed deletion before adoption is explicit.
+- The design also prevents failed reconciliation from retrying every recovery poll while retaining the durable cursor for a later scheduled attempt. Publication, GitHub push, and Hades deployment remain separate actions requiring approval.
+- Design-boundary verification: placeholder/ambiguity review and `git diff --check`. Next task: user review, then write the test-driven implementation plan.
 
 ### Follow-up — isolated Hades daemon canary
 
