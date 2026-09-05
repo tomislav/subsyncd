@@ -2,7 +2,7 @@
 
 This isolated deployment tests daemon lifecycle, health, reconciliation, webhook deduplication, persisted queue dispatch, restart recovery, and structured logs against only two Radarr movies with full embedded English subtitles. It uses a fresh database, one worker, English only, OpenSubtitles only, no Silo, no automatic restart, and an immutable image tag.
 
-The two exact path mappings are the safety boundary. Before the first daemon start, run `doctor` once to create the database, stop all containers using it, and initialize `radarr-daemon-canary`'s reconciliation cursor to the current UTC time. This deliberately skips historical production Radarr events. A future unrelated Radarr history event cannot map and makes the complete reconciliation page fail atomically without advancing its cursor or scheduling partial work.
+The two exact path mappings are the safety boundary. Before the first daemon start, run `doctor` once to create the database, stop all containers using it, and initialize `radarr-daemon-canary`'s reconciliation cursor to the current UTC time. This deliberately skips historical production Radarr events. Reconciliation consumes later unrelated entities as outside-scope audits without indexing or reading their media files; unsafe mappings and filesystem failures still fail the complete page atomically.
 
 The HTTP listener is published only at Hades loopback port `18097`. Do not configure an automatic Radarr connection during this phase. Post the two sanitized fixtures manually, using the secret from the root-owned `.env` file without printing it.
 
@@ -44,3 +44,11 @@ Before the first `serve`, `doctor` created the fresh database and the instance c
 Two manual Download fixtures returned HTTP 204. Both English jobs ran serially at import priority and completed as `satisfied` from embedded inventory: 1917 had five embedded subtitle streams and Arrival had ten. Duplicate 1917 delivery was a no-op before and after restart. Final checks found no pending lease, candidate, installation, provider cache/state, provider call, LAPSE run, notification, warning, or error. The two pre-existing Croatian SRT checksums remained unchanged.
 
 The canary was left running with `restart: "no"` and no automatic Radarr connection. Continue observing it before adding a real webhook or a third file. Stop it before using `/opt/subsyncd-canary` against either mounted movie.
+
+## Stable-identity Stage 1 retest — 2026-09-05
+
+The locally verified arm64 image from commit `f04b3c9` was streamed directly to Hades without registry publication and loaded as `subsyncd:hades-arrapi-f04b3c9`. Its image ID is `sha256:9138534acd0cd9e4196abf7a95693656f50bf92aa7427551c427dbe98d66d4fb`, and the embedded development version is `arrapi-local`. The canary Compose file is pinned to this local tag. The prior Compose file is recoverable at `/opt/subsyncd-daemon-canary/compose.yml.before-f04b3c9`; the complete stopped data directory is recoverable at `/opt/subsyncd-daemon-canary/data.before-f04b3c9`.
+
+Migration `010_media_entity_ids.sql` applied on startup. The previously failing cursor `2026-09-04T17:44:39.142509216Z` reconciled successfully in 56 ms and advanced atomically to `2026-09-05T07:08:48.568200533Z`. Two unrelated Radarr entities were recorded as zero-file outside-scope delete audits; no additional media row was created. The database remained at two mapped movies, two completed English search states, and 17 existing tracks. Both legacy media rows still have zero entity IDs because this page contained no live mapped event to hydrate them, which is the documented lazy-adoption behavior.
+
+The bounded post-start audit found one `reconcile.started`, one `reconcile.completed`, and no `reconcile.failed`. Candidate, installation, provider cache/state, media hash, rejection, notification, provider, LAPSE, and installation activity all remained zero. `/healthz` returned `ok`, `/readyz` returned `ready`, and the container was left running healthy with `restart: "no"`. The deployment did not change mappings, credentials, the manual `/opt/subsyncd-canary`, or any other Hades service.

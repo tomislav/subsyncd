@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: none; arrapi stable-identity reconciliation is locally complete
-- Next safe action: review and explicitly authorize a GitHub push, image publication, or Hades deployment separately
-- Latest follow-up: Task 7 completed durable documentation and the full verification matrix
+- Current task: observe the isolated Hades Stage 1 daemon canary after the stable-identity deployment
+- Next safe action: leave the two-movie canary running, inspect its next scheduled reconciliation, then separately authorize GitHub publication or broader scope only if desired
+- Latest follow-up: stable-identity Stage 1 reconciliation passed on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Follow-up — stable-identity Hades Stage 1 retest
+
+- Commit `f04b3c9`'s locally verified arm64 image was streamed to Hades without publication and loaded as `subsyncd:hades-arrapi-f04b3c9`, image ID `sha256:9138534acd0cd9e4196abf7a95693656f50bf92aa7427551c427dbe98d66d4fb`. The isolated `/opt/subsyncd-daemon-canary` Compose file is pinned to that tag; its prior Compose and complete stopped data directory are retained as `compose.yml.before-f04b3c9` and `data.before-f04b3c9`.
+- Migration 010 applied and the exact cursor that previously produced `movie history record has incomplete identity` completed successfully in 56 ms. The cursor advanced from `2026-09-04T17:44:39.142509216Z` to `2026-09-05T07:08:48.568200533Z`; two unrelated Radarr entities became zero-file outside-scope delete audits.
+- The scope boundary held: media remained at the two mapped movies, search states remained two completed English `satisfied` rows, and embedded inventory remained 17 tracks. There were zero candidates, installations, provider cache/state, media hashes, rejections, notifications, or provider/LAPSE/install log events. The two legacy rows remain at zero entity ID pending a later live mapped hydration.
+- Health and readiness returned `ok`/`ready`; logs contained one reconciliation start, one completion, and no failure. The updated canary was left running with `restart: "no"`. Mappings, secrets, `/opt/subsyncd-canary`, and every other Hades service were unchanged.
 
 ### Arrapi stable-identity reconciliation Task 7 — durable contract and release gate
 
