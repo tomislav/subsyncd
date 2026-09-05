@@ -1,6 +1,6 @@
 # Hades daemon canary
 
-This isolated deployment now covers two exact Radarr movies plus one exact Sonarr episode. English routes only to OpenSubtitles and Croatian only to Titlovi. It uses one worker, confidence-gated LAPSE, no Silo, no automatic restart, and an immutable image tag. Radarr connection ID `8` is active; Sonarr delivery remains manual until its scoped webhook behavior has been observed separately.
+This isolated deployment now covers two exact Radarr movies plus one exact Sonarr episode. English routes only to OpenSubtitles and Croatian only to Titlovi. It uses one worker, confidence-gated LAPSE, no Silo, no automatic restart, and an immutable image tag. Radarr connection ID `8` and Sonarr connection ID `10` are active.
 
 The application-level safety boundary is the three exact file mappings. The Sonarr episode shares a directory with the rest of its season, so Docker must mount that directory writable to support atomic sidecar creation; subsyncd maps, indexes, and schedules only episode-file `10545`. The database must remain at exactly three media rows unless the canary is deliberately broadened.
 
@@ -82,3 +82,13 @@ The daemon was stopped and recoverable copies were created at `compose.yml.befor
 The sanitized `webhook-1883-s01e06.json` fixture returned HTTP 204 and applied once. English completed as `satisfied` from the embedded stream. Croatian searched Titlovi and received two candidates in 4.062 seconds. Candidate `342548` scored 59, below the confidence bypass, so it was the only candidate downloaded (13,021 bytes) and sent to LAPSE. LAPSE analysis took 56.345 seconds and returned `solid`, confidence `0.859118`, agreement and coverage `1`, ratio `1`, offset `-1 ms`; sync took 8.009 seconds. The candidate was selected in `lapse` mode and installed in 2.610 seconds. Total Croatian workflow time was 75.059 seconds, with the next upgrade check scheduled for `2026-09-12T07:39:31.284641855Z`.
 
 Final state: exactly three media rows; four completed search outcomes (the Croatian row is scheduled/pending for its upgrade date with last outcome `installed`); two candidate metadata rows; one provider download; one LAPSE analysis; one installation from `titlovi-main` candidate `342548`, score 59, verdict `solid`; no provider errors. The sidecar is `0644`, owned `1000:1000`, 29,034 bytes, SHA-256 `85299991788b0e8803a43d43a7b34a7a99a075b3c3a0c197e75ad4e29185244d`. `/healthz` and `/readyz` both passed and the daemon was left running. No global Sonarr connection was created in this stage.
+
+## Scoped real Sonarr webhook Stage 5 — 2026-09-05
+
+Sonarr connection ID `10`, named `subsyncd daemon canary`, now targets the daemon over the shared `apps` network. It is global at the delivery layer and enables download/import, upgrade, rename, episode-file deletion, and upgrade-file deletion; Grab is disabled. Exact path mappings remain the application-level authorization boundary.
+
+Sonarr's native connection test returned HTTP 200. subsyncd accepted its Test payload, classified it as ignored HTTP 204 with zero events, and left the database unchanged at three media, seven events, and four search states.
+
+The unique mapped `webhook-1883-s01e06-rename.json` fixture returned HTTP 204 and committed exactly one event. English satisfied from the embedded stream in 3 ms. Croatian satisfied from the installed sidecar/provenance in 8 ms, retained score 59, and advanced its upgrade check to `2026-09-12T07:45:50.235691291Z`. The sidecar checksum did not change, no provider download occurred, no lease remained, and media stayed at three rows.
+
+An outside-scope Download payload was then constructed in memory from actual current Sonarr episode-file `10543`; its path was neither printed nor persisted and the temporary payload was deleted. subsyncd returned ignored HTTP 204 in 12 ms with `event_count=1` and `applied_count=0`. Database counts remained exactly `3 media / 8 events / 4 search states / 2 candidates / 1 installation`, no lease remained, and no search started. The daemon was left running with both real Arr connections active and the three-file scope unchanged.
