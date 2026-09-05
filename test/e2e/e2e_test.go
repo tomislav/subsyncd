@@ -297,7 +297,7 @@ func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *t
 		Season:      1,
 		Episode:     2,
 	}
-	if _, err := repository.ApplyMediaEvent(context.Background(), store.MediaEventMutation{EventID: "seed:1002", Type: "import", Ref: deletedRef, Media: deletedMedia, Languages: []domain.Language{"en"}, At: now.Add(-2 * time.Hour)}); err != nil {
+	if _, err := repository.ApplyMediaEvent(context.Background(), store.MediaEventMutation{EventID: "seed:1002", Type: "import", EntityID: deletedMedia.EntityID, Ref: deletedRef, Media: deletedMedia, Languages: []domain.Language{"en"}, At: now.Add(-2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 
