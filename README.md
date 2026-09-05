@@ -1,114 +1,203 @@
 # subsyncd
 
-`subsyncd` is a small, headless subtitle service for one or more Sonarr and Radarr instances. It indexes embedded and external subtitles, searches ordered providers per language, scores release compatibility, uses LAPSE when release evidence is uncertain, installs sidecars atomically, and can notify Silo through its native scan API.
+**Automatic subtitles for your Sonarr and Radarr library.**
 
-It intentionally has no browser UI and no management API. The HTTP surface is limited to Arr webhooks plus liveness/readiness checks; inspection and manual actions use the CLI.
+subsyncd finds, downloads, and synchronizes subtitles for your movies and TV shows. Choose your languages and subtitle providers, connect your Sonarr or Radarr instances, and let it run in the background.
+
+Subtitles are saved alongside your media files. Configuration lives in a YAML file, with command-line tools for diagnostics and manual searches. There is no web interface.
 
 ## Features
 
-- Any canonical BCP 47 language can be configured independently.
-- Each language has an explicit ordered provider list. The example routes Croatian only to Titlovi and English to OpenSubtitles followed by SubDL.
-- Adding a language later backfills an immediately due, low-priority search for every media item already indexed under a configured Arr instance. Existing schedules and installations are preserved.
-- Embedded tracks are fingerprint-cached in SQLite; sidecars are rescanned before every search.
-- OpenSubtitles file hashes are calculated lazily once per exact file fingerprint and persisted.
-- Hash-capable providers are queried sequentially before broad search. Exact candidates are tried lazily in provider order without the broad shortlist cap; broad search begins only after exact candidates are exhausted, and downloads stop at the first committed installation. Exact-hash matches skip LAPSE.
-- A first install with a score of at least 75 plus identity, release-group, episode, and any required movie-edition evidence can also skip LAPSE; uncertain matches, packs, edition-unknown movies, and upgrades require LAPSE's strict `solid` verdict by default.
-- LAPSE candidates run as a lazy score-tier tournament: lower-scored files are untouched after a higher tier installs, equal-score ties are compared by analysis confidence, and only the selected candidate is synchronized unless fallback is needed.
-- Season packs use one bounded extractor and fail closed when the target member is ambiguous.
-- Live sidecar inventory is authoritative: if a managed subtitle is deleted, its historical database row cannot satisfy the request and the subtitle is reacquired. A present sidecar whose checksum changed remains protected as user-owned content.
-- Deterministic candidate failures are quarantined for the exact media/release evidence, allowing later-ranked results to advance without repeated downloads; operational failures remain retryable.
-- Provider cooldowns, quotas, operation-scoped outage circuits, search schedules, leases, candidate evidence/rejections, install provenance, and notifications survive restarts. Transient provider failures back off globally instead of generating one request per media file.
-- Each installed sidecar and its checksum-deduplicated notification intents commit together. Delivery is durable and asynchronous, so a later notifier outage never rolls back a valid subtitle.
-- Persisted searches favor new imports, then missing subtitles, then upgrade checks. Webhooks wake free workers immediately, while coalesced signals and periodic polling recover safely after bursts or restarts.
-- Sonarr/Radarr reconciliation tracks the stable movie or episode identity separately from the replaceable physical file identity. Imports, renames, upgrades, deletions, audit rows, and the cursor commit together, so a failed page is retried without losing changes.
-- Deliberately unmapped Arr media is skipped safely, allowing narrow canaries without indexing or reading the rest of a library. Unsafe mappings and filesystem failures still fail closed.
-- Sonarr files containing multiple episodes are indexed and explained as unsupported, but never sent to providers or LAPSE until combined-episode matching is implemented safely.
-- Media workflow concurrency is configurable from one to eight and defaults to one, which is the conservative choice for LAPSE and network-mounted media.
-- Shutdown is bounded even when an external tool ignores cancellation; unfinished durable leases are left for recovery after restart.
+- **Movies and TV shows:** connect one or more Sonarr and Radarr instances.
+- **Your languages, your providers:** choose a different provider order for each language. Adding a language schedules searches for already-indexed media after a restart.
+- **Checks what you already have:** detects embedded subtitles and separate subtitle files before searching.
+- **Release-aware matching:** compares file hashes and release details to find suitable subtitles.
+- **Automatic synchronization:** uses bundled LAPSE to check and adjust timing when a match needs verification.
+- **Season-pack support:** extracts the matching episode from ZIP and RAR downloads, skipping ambiguous matches.
+- **Ongoing searches and upgrades:** retries missing subtitles and looks for better matches for subtitles it manages.
+- **Respects your files:** protects existing subtitles and user edits from automatic replacement.
+- **Remembers its progress:** saves search history and provider limits across restarts, and avoids repeatedly downloading rejected results.
+- **Optional Silo refresh:** asks Silo to rescan a media file after installing subtitles.
 
-See [providers.md](docs/providers.md) for search/scoring behavior and [operations.md](docs/operations.md) for deployment, webhooks, commands, recovery, and upgrades.
+## Supported services
 
-For a deliberately narrow production trial, the [Hades manual canary](deploy/hades-canary/README.md) pins an immutable image, disables daemon/webhook/Silo behavior, and permits only four exact Arr media-file mappings.
+| Service | Integration |
+| --- | --- |
+| Sonarr | TV library, imports, upgrades, renames, and file deletions |
+| Radarr | Movie library, imports, upgrades, renames, and file deletions |
+| Silo (optional) | Refreshes subtitle inventory through its pre-1.0 native scan API |
+| LAPSE | Subtitle timing analysis and synchronization; included in the Docker image |
 
-## Private container image
+TV files containing multiple episodes are currently unsupported and skipped during subtitle searches.
 
-GitHub Actions publishes `ghcr.io/tomislav/subsyncd` for `linux/amd64` and `linux/arm64`. The repository and package are private, so each Docker host must authenticate with a GitHub token that can read packages:
+Sonarr or Radarr supplies the library: subsyncd does not scan a standalone folder as a replacement for either service. See the [Silo compatibility notes](docs/references/silo.md) before enabling that integration.
 
-```bash
-docker login ghcr.io --username tomislav
-```
+## Subtitle providers
 
-Enter the token through Docker's password prompt; do not put it in this repository or in a command argument.
+| Provider | Credentials | Support |
+| --- | --- | --- |
+| OpenSubtitles.com | Username and password (application key included in published images) | File-hash and title/episode searches across multiple languages |
+| SubDL | API key | Movie, episode, and season-pack searches across multiple languages |
+| Titlovi | API-enabled account username and password | Bosnian, Croatian, English, Macedonian, Serbian (Latin and Cyrillic), and Slovenian |
 
-Successful pushes to `main` publish `latest` and an immutable `sha-<commit>` tag. Stable `v*` tags also publish semantic-version aliases; prereleases publish only their full version and SHA. Set `SUBSYNCD_IMAGE_TAG` to pin Compose to a version or immutable SHA.
+Use one provider or combine several. Available languages depend on the provider; subsyncd checks your language/provider settings at startup. Provider account limits still apply.
 
-## Quick start with Compose
-
-1. Copy `config.example.yaml` to `config/config.yaml`.
-2. Set the credential variables used by that file.
-3. Optionally set `PUID`, `PGID`, and `TZ` in `.env`; they default to `1000`, `1000`, and `Europe/Zagreb`.
-4. Ensure that UID/GID can write the mounted data, movies, and TV directories.
-5. Make the external `media` network (or change the network in the example) and start the service:
-
-```bash
-docker compose -f compose.example.yml pull
-docker compose -f compose.example.yml up -d
-docker compose -f compose.example.yml exec subsyncd subsyncd doctor --config /config/config.yaml
-```
-
-The `ghcr.io/tomislav/subsyncd:latest` production image supports Linux amd64 and arm64. It contains Go 1.27.1-built `subsyncd`, FFmpeg/FFprobe and timezone data from Debian 13.2, and checksummed LAPSE v2.0.5 release assets. Debian 13 is required because the upstream LAPSE binaries need glibc 2.38 or newer. The image defaults to unprivileged UID/GID `1000:1000`; Compose can select another existing host identity through `PUID` and `PGID` without starting the container as root. The Compose example uses a read-only root filesystem; only `/data`, `/tmp`, and the mapped media roots are writable.
-
-## Structured logs
-
-`subsyncd` writes one JSON object per line to stderr for Docker, Grafana Alloy, or another container-log collector. The default level is `info`:
+The example configuration uses Titlovi for Croatian and OpenSubtitles followed by SubDL for English. Change this to suit your library:
 
 ```yaml
-logging:
-  level: info # debug, info, warn, or error
+languages:
+  en:
+    providers: [opensubtitles-main, subdl-main]
+  hr:
+    providers: [titlovi-main]
 ```
 
-`SUBSYNCD_LOG_LEVEL` overrides the YAML value when set. Logging configuration is read at startup, so changing either value requires a restart. Job and workflow events include a sanitized `media_title` (`Movie (Year)` or `Show - S01E02 - Episode Title`) as a searchable JSON field, not a Loki label. `debug` adds candidate scoring, bounded release diagnostics, cache decisions, and root-relative media paths; it should be enabled only for a short investigation. Logs never intentionally include credentials, provider URLs/bodies, absolute media paths, command arguments, or raw LAPSE output. Collection, labels, retention, and Loki credentials belong to Alloy rather than this service; see [Structured logging and Grafana Loki](docs/operations.md#structured-logging-and-grafana-loki).
+Hearing-impaired subtitles (SDH/HI) are excluded by default. Set `allow_hearing_impaired: true` to include them. See [provider configuration](docs/providers.md) for more options.
 
-## Native build
+## Install with Docker Compose
 
-Requirements are Go 1.27.1, `ffprobe`, and a compatible LAPSE v2.0.5 executable.
+You need Docker with the Compose plugin, a Sonarr or Radarr instance, and credentials for at least one subtitle provider. The image supports **Linux amd64 and arm64** and includes LAPSE and FFmpeg—no separate installation is needed.
+
+### 1. Get the configuration files
+
+```bash
+git clone https://github.com/tomislav/subsyncd.git
+cd subsyncd
+mkdir -p config data
+cp config.example.yaml config/config.yaml
+cp compose.example.yml compose.yaml
+```
+
+### 2. Set paths and credentials
+
+Create a `.env` file next to `compose.yaml`. The following covers the services and providers in the example configuration; replace the placeholders with your own values:
+
+```dotenv
+PUID=1000
+PGID=1000
+TZ=Etc/UTC
+MOVIES_PATH=/srv/media/movies
+TV_PATH=/srv/media/tv
+
+SONARR_MAIN_API_KEY=your-sonarr-api-key
+SONARR_MAIN_WEBHOOK_TOKEN=your-own-random-sonarr-secret
+RADARR_MAIN_API_KEY=your-radarr-api-key
+RADARR_MAIN_WEBHOOK_TOKEN=your-own-random-radarr-secret
+
+TITLOVI_USERNAME=your-username
+TITLOVI_PASSWORD=your-password
+OPENSUBTITLES_USERNAME=your-username
+OPENSUBTITLES_PASSWORD=your-password
+SUBDL_API_KEY=your-api-key
+```
+
+Find the Sonarr and Radarr API keys in each application's settings. Choose a separate random webhook secret for each instance; you will use it again in step 4. Keep `.env` private—it contains your credentials.
+
+Edit `config/config.yaml` to:
+
+- Set the Sonarr and Radarr URLs to addresses reachable from the container. Remove any instance you do not use.
+- Keep only the providers you want, and remove unused provider names from `languages` too.
+- Choose your languages, using tags such as `en`, `hr`, or `pt-BR`.
+- Match each `path_mappings.remote` to the path reported by Sonarr or Radarr. The `local` path is where that same folder appears inside subsyncd.
+
+For example, if Sonarr reports `/data/tv/Show/episode.mkv` and your TV folder is mounted at `/media/tv`, use:
+
+```yaml
+path_mappings:
+  - remote: /data/tv
+    local: /media/tv
+```
+
+Set `PUID` and `PGID` to a host user and group that can read your media and write subtitles into its folders. The same identity must be able to read `config/config.yaml` and write to `data/`. You can check your own IDs with `id -u` and `id -g`. The container does not change folder ownership for you; see [permissions](docs/operations.md#filesystem-and-container-permissions) if you need help.
+
+### 3. Connect the network and start
+
+The supplied Compose file uses an existing Docker network called `media`. Create it if needed:
+
+```bash
+docker network inspect media >/dev/null 2>&1 || docker network create media
+```
+
+Attach your Sonarr and Radarr containers to that same network so they can reach `subsyncd:8097` and subsyncd can reach them by service name. If your stack already uses another shared network, change `media` in `compose.yaml` to that network's name.
+
+If Sonarr or Radarr runs outside Docker, use its reachable host address in the configuration and add a port mapping to the `subsyncd` service in `compose.yaml`:
+
+```yaml
+    ports:
+      - "8097:8097"
+```
+
+Then start subsyncd and check its local setup:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose exec subsyncd subsyncd doctor
+docker compose logs -f subsyncd
+```
+
+`doctor` checks configuration, storage, and bundled tools. It does not test provider credentials or connections to Sonarr, Radarr, or Silo.
+
+### 4. Add Sonarr and Radarr webhooks
+
+In each application's **Settings → Connect**, add a webhook using the instance name from `config/config.yaml` and the secret you chose in `.env`:
+
+```text
+http://subsyncd:8097/webhooks/sonarr-main?token=YOUR_SONARR_SECRET
+http://subsyncd:8097/webhooks/radarr-main?token=YOUR_RADARR_SECRET
+```
+
+For an instance outside Docker, replace `subsyncd` with your Docker host's address and use the published port.
+
+Enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches.
+
+subsyncd also checks for library changes on startup and periodically while running.
+
+## Updates
+
+The Compose file pulls `ghcr.io/tomislav/subsyncd:latest` by default. To update:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose exec subsyncd subsyncd doctor
+```
+
+To stay on a particular build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. Back up `data/` with the service stopped before upgrading; it holds search history, caches, and records of installed subtitles.
+
+Logs are available through `docker compose logs`. Set `logging.level: debug` in your configuration and restart for more detail while troubleshooting. See [structured logging](docs/operations.md#structured-logging-and-grafana-loki) for log settings and Grafana Loki integration.
+
+## Documentation and development
+
+- [Configuration example](config.example.yaml) — all settings in one place.
+- [Operations guide](docs/operations.md) — manual searches, diagnostics, Silo setup, backups, and troubleshooting.
+- [Provider guide](docs/providers.md) — language support, matching, synchronization, and retry schedules.
+- [Implementation status](docs/implementation-status.md) — shipped behavior and known follow-ups.
+- [Hades manual canary](deploy/hades-canary/README.md) — a host-specific, limited deployment runbook.
+
+To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.0.5. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
 
 ```bash
 go build -trimpath -o subsyncd ./cmd/subsyncd
-./subsyncd --version
-./subsyncd doctor --config ./config.yaml
-./subsyncd serve --config ./config.yaml
+./subsyncd doctor --config ./config/config.yaml
+./subsyncd serve --config ./config/config.yaml
+```
 
+To build a local Docker image:
+
+```bash
 docker build --build-arg VERSION=dev -t subsyncd:local .
 ```
 
-The configuration requires absolute `data_dir`, `media_roots`, mapping destinations, and `sync.lapse_path` values.
-
-Published containers include the subsyncd application key for OpenSubtitles. Native Go builds and images built from the legacy-compatible `Dockerfile` do not; their private configuration must set `api_key` on each OpenSubtitles provider. `Dockerfile.release` is reserved for the BuildKit-based publication workflow and requires its application key as a build secret.
-
-## Arr webhooks
-
-Configure a webhook/connection in each Arr instance using its configured instance name and secret:
-
-```text
-http://subsyncd:8097/webhooks/sonarr-main?token=THE_SONARR_WEBHOOK_TOKEN
-http://subsyncd:8097/webhooks/radarr-main?token=THE_RADARR_WEBHOOK_TOKEN
-```
-
-Enable download/import, upgrade, rename, and file-delete events. Connections are configured manually; `subsyncd` does not create or modify Arr settings. Arr test events and imports/renames that are deliberately outside configured path scope return an ignored success and create no work. Unsafe path/filesystem failures still fail the request. Exact redeliveries are transactionally idempotent.
-
-Reconciliation uses `github.com/cplieger/arrapi/v2` v2.0.5 for bounded history and current movie/episode requests. It runs immediately after startup without blocking startup itself, normally repeats every six hours, and backs failures off after 5 minutes, 15 minutes, 1 hour, then 6 hours. Second-resolution history requests deliberately overlap the fractional persisted cursor; stable Arr history event IDs make that replay harmless. Every persisted media row has a positive stable Arr entity ID, while physical file ID remains separate and replaceable. Startup performs no Arr request, identity backfill, or full-library scan. It does reconcile configured languages locally in SQLite: a newly added language gets one missing-priority search for each already-indexed media item, while every existing search row remains unchanged. Configuration changes require a restart.
-
-subsyncd currently supports only databases created from `001_baseline.sql`. A database containing migration names from the pre-release `001_initial.sql`–`010_media_entity_ids.sql` lineage is rejected explicitly. Stop the service, preserve the old data directory if rollback matters, and start with an empty data directory. The migration runner remains in place for migrations added after the baseline.
-
-## Development and tests
-
-Default tests never contact Arr, subtitle providers, Silo, or LAPSE. They use injected runners, synthetic files, and loopback fake servers.
+For contributions, read [AGENTS.md](AGENTS.md) and run the local test suite. Ordinary tests use local fixtures and fake services; they do not contact your library or subtitle providers.
 
 ```bash
 GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./... -race
 GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go vet ./...
-GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test/e2e -tags=e2e -v
 ```
 
-Real provider smoke tests are deliberately excluded from normal CI. They run only with `-tags=provider_contract` and the corresponding provider credentials in the environment.
+## License
+
+subsyncd is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Tomislav Filipcic.
+
+Third-party dependencies and bundled tools retain their respective licenses.

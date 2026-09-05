@@ -768,3 +768,11 @@ This file is the resumable implementation ledger. The approved design and plan r
 - `config.example.yaml`, `compose.example.yml`, and the provider example intentionally omit the application-key setting. The README distinguishes published images from native Go and legacy-Docker builds, whose private configuration must provide the override.
 - GitHub Actions reads `OPENSUBTITLES_API_KEY` from its repository secret, rejects an empty release secret, and passes it to `Dockerfile.release` through a BuildKit secret mount. The value is not a build argument or persisted in an intermediate filesystem layer. Because the value is intentionally linked into the distributed application binary, it is recoverable by image recipients; BuildKit protects its build-time transport and history, not the released application credential.
 - The root `Dockerfile` remains compatible with legacy native Docker and produces an unkeyed source build. `Dockerfile.release` is BuildKit-only; its runtime and LAPSE stages must remain synchronized with the root file. The Go stage bypasses cache reuse so rotating the secret cannot silently reuse a binary linked with the previous value.
+
+### Follow-up — public README and MIT license, 2026-09-05
+
+- Commit: this documentation commit, based on `1def056`. Adopted the user-requested public-facing README and MIT License with copyright attributed to Tomislav Filipcic (2026).
+- README now presents features, supported services/providers, and Docker Compose installation with credentials, paths, permissions, networking, webhooks, diagnostics, and updates. Private-registry login instructions are removed for the planned public release. Preserved current application-key packaging, source-build requirements, language backfill, multi-episode limitation, logging links, and the manual-canary link.
+- Third-party tools retain their own licenses. No runtime behavior or repository/package visibility changed. Local, unrelated review notes were left out of this commit.
+- Verification passed: documentation links, MIT attribution, Compose rendering, `git diff --check`, `go test ./... -race -count=1`, `go vet ./...`, and `go test ./test/e2e -tags=e2e -race -count=1`, using writable caches and local fake servers.
+- Next task: complete public repository/package visibility changes separately and retain the existing operational follow-ups.
