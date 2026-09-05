@@ -861,3 +861,9 @@ This file is the resumable implementation ledger. The approved design and plan r
 - Commit: this documentation verification commit, following `5407480`. The combined review's two confirmed findings are repaired: scans and language backfill exclude tombstones, and migration 003 preserves locally proven pre-upgrade deletion while leaving absent/conflicting evidence active. Contributor guidance, the plan, and review commit map now match that tightened contract.
 - Fresh verification on `5407480` passed: complete `go test ./... -race -count=1`, `go vet ./...`, tagged E2E race (4.494s), release-Dockerfile parity, Compose configuration validation, gofmt, and diff checks. Local fixtures/fake servers only; no production operation.
 - Next task: scoped independent re-review of the final fix wave, then the authorized fast-forward and GitHub push. The conservative migration cannot reconstruct pruned audit history; ambiguous rows remain active rather than risking false deletion after reimport.
+
+### Follow-up — remaining repairs ready for publication (2026-09-05)
+
+- Commit: this publication-ledger commit, following `2466415`; runtime code remains `5407480`. The final scoped re-review approved F1 and F2 with no new actionable issues. All thirteen original findings and both combined-review integration findings are closed under the documented contracts. Full verification evidence above remains current; subsequent commits changed documentation only.
+- Migration decision: preserve only positively proven historical deletion; absent/pruned or conflicting chronology stays active to avoid suppressing legitimate reimports. Ambiguous older rows can still need reconciliation or operator correction. No scoring-policy change or production deployment is included.
+- Publication: proceed with the user-authorized fast-forward of main and GitHub push. Next task: observe repository CI; production rollout remains a separate operator action.
