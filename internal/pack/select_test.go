@@ -81,6 +81,29 @@ func TestEpisodeRangeRequiresExplicitHyphenatedEndpoint(t *testing.T) {
 	}
 }
 
+func TestSelectRejectsInvalidOrAmbiguousRangeEvidenceWithoutTokenFallback(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		member string
+		media  domain.Media
+	}{
+		{"multiple valid ranges", "Show.S01E01-E03.S02E01-E03.srt", domain.Media{Season: 1, Episode: 1}},
+		{"invalid then valid first token", "Show.S01E01-S02E03.S03E01-E03.srt", domain.Media{Season: 1, Episode: 1}},
+		{"invalid then valid later range", "Show.S01E01-S02E03.S03E01-E03.srt", domain.Media{Season: 3, Episode: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selected, err := Select(Manifest{Members: []Member{{SafeName: test.member}}}, domain.Candidate{}, test.media, false)
+			var selection *SelectionError
+			if !errors.As(err, &selection) {
+				t.Fatalf("Select() = %#v, %v", selected, err)
+			}
+			if selected.SelectionRule == "episode_token" {
+				t.Fatalf("Select() unexpectedly used episode-token fallback: %#v", selected)
+			}
+		})
+	}
+}
+
 func TestSelectSingleMovieEnforcesForcedPolicy(t *testing.T) {
 	manifest := Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.forced.srt", Forced: true}}}
 	_, err := SelectSingleMovie(manifest, domain.Candidate{Forced: true}, false)

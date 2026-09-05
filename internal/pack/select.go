@@ -65,6 +65,9 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 
 	var episodeMatches []Member
 	for _, member := range members {
+		if hasInvalidOrAmbiguousRangeEvidence(member.SafeName) {
+			continue
+		}
 		if _, _, _, ranged := episodeRange(member.SafeName); ranged {
 			continue
 		}
@@ -79,6 +82,9 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 
 	var rangeMatches []Member
 	for _, member := range members {
+		if hasInvalidOrAmbiguousRangeEvidence(member.SafeName) {
+			continue
+		}
 		season, from, to, found := episodeRange(member.SafeName)
 		if found && season == media.Season && from <= media.Episode && media.Episode <= to {
 			rangeMatches = append(rangeMatches, member)
@@ -102,7 +108,7 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 	if len([]rune(normalizeTitle(media.EpisodeTitle))) > 4 {
 		var titleMatches []Member
 		for _, member := range members {
-			if hasEpisodeEvidence(member.SafeName) || member.NormalizedTitle == "" {
+			if hasInvalidOrAmbiguousRangeEvidence(member.SafeName) || hasEpisodeEvidence(member.SafeName) || member.NormalizedTitle == "" {
 				continue
 			}
 			if similarity(normalizeTitle(media.EpisodeTitle), normalizeTitle(member.NormalizedTitle)) >= 0.98 {
@@ -125,7 +131,7 @@ func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media do
 		return selected, nil
 	}
 	members := eligibleMembers(manifest.Members, wantForced)
-	if candidate.Pack == nil && len(members) == 1 && !hasEpisodeEvidence(members[0].SafeName) {
+	if candidate.Pack == nil && len(members) == 1 && !hasInvalidOrAmbiguousRangeEvidence(members[0].SafeName) && !hasEpisodeEvidence(members[0].SafeName) {
 		selected = members[0]
 		selected.SelectionRule = "single_generic"
 		selected.SelectionEvidence = "single subtitle member has no conflicting episode evidence"
@@ -235,6 +241,14 @@ func rangeLikeEpisodeMatches(name string) []episodeRangeMatch {
 		}
 	}
 	return matches
+}
+
+func hasInvalidOrAmbiguousRangeEvidence(name string) bool {
+	if len(rangeLikeEpisodeMatches(name)) == 0 {
+		return false
+	}
+	_, _, _, _, accepted := acceptedEpisodeRangeMatch(name)
+	return !accepted
 }
 
 func acceptedEpisodeRange(name string, match []int, patternIndex int) (int, int, int, bool) {
