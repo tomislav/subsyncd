@@ -128,7 +128,7 @@ func TestNewWiresProviderObservabilityIntoSuppliedProvidersAndSearchers(t *testi
 	if _, err := application.Providers["english"].Download(context.Background(), domain.Candidate{ResultID: "candidate"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	application.Workflows["en"].Searcher.Search(context.Background(), provider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaEpisode, FileID: 1}}, Language: "en"})
+	application.Workflows["en"].Searcher.Search(context.Background(), provider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaEpisode, FileID: 1}}, Language: "en", Mode: provider.SearchBroad})
 
 	records := decodeLogRecords(t, logs.String())
 	want := map[string]bool{"provider.download_completed": false, "provider.search_started": false, "provider.search_completed": false}

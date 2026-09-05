@@ -60,6 +60,9 @@ func TestServiceUsesRefreshedFilesystemFingerprintForProviderSearch(t *testing.T
 	if searcher.query.Media.Fingerprint != refreshed {
 		t.Fatalf("provider fingerprint = %#v, want refreshed %#v", searcher.query.Media.Fingerprint, refreshed)
 	}
+	if searcher.query.Mode != provider.SearchBroad {
+		t.Fatalf("provider search mode = %q, want %q", searcher.query.Mode, provider.SearchBroad)
+	}
 }
 
 func TestServiceTreatsInstallationRollbackFailureAsTechnical(t *testing.T) {

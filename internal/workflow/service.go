@@ -292,7 +292,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		}
 	}
 
-	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language})
+	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchBroad})
 	candidateCount = len(search.Candidates)
 	if err := ctx.Err(); err != nil {
 		return result, err
