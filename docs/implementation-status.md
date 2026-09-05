@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: codebase correctness-repair Task 5 (atomic installation and notification outbox) is implemented locally; production remains out of scope
-- Next safe action: implement Task 6 (YAML document cardinality) after this task commit
+- Current task: codebase correctness-repair Task 6 (YAML document cardinality) is implemented locally; production remains out of scope
+- Next safe action: implement Task 7 (root-aware Silo path mappings) after this task commit
 - Latest follow-up: `.agents/production.local.md` exists only in this checkout with mode `0600`; no subsyncd container is running on Hades
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Conventional repairs Task 6 — YAML document cardinality
+
+- Configuration loading now decodes the original YAML byte stream as a document stream before environment expansion. Any non-empty trailing document is rejected with a secret-redacted cardinality error, while empty trailing separators remain harmless.
+- Strict known-field validation still runs on the single expanded document, and the post-round-trip cardinality check was removed because it can no longer observe the original stream safely.
+- RED/GREEN coverage proves a second document containing an environment placeholder is rejected before lookup/expansion can leak its value, while a normal configuration followed by an empty separator still loads unchanged.
+- Verification: focused document-cardinality tests, complete `internal/config` race-enabled suite, and `git diff --check`. No providers, Silo, Hades, images, or deployments were touched.
+- Commit: `fix: reject trailing configuration documents`.
+- Next task: root-aware Silo path mappings.
 
 ### Conventional repairs Task 5 — atomic installation and notification outbox
 

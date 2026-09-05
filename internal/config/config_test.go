@@ -41,6 +41,32 @@ languages:
 	}
 }
 
+func TestLoadRejectsSecondYAMLDocumentBeforeEnvironmentExpansion(t *testing.T) {
+	root := t.TempDir()
+	text := validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n") + "\n---\nsecret: ${SECOND_DOCUMENT_SECRET}\n"
+	_, err := loadTextWithLookup(t, text, func(name string) (string, bool) {
+		if name == "TEST_SUBDL_KEY" {
+			return "provider-secret", true
+		}
+		if name == "SECOND_DOCUMENT_SECRET" {
+			return "must-not-appear", true
+		}
+		return "", false
+	})
+	assertErrorContains(t, err, "exactly one", "yaml", "document")
+	if strings.Contains(strings.ToLower(err.Error()), "must-not-appear") {
+		t.Fatalf("error leaked expanded trailing document: %v", err)
+	}
+}
+
+func TestLoadAcceptsEmptyTrailingYAMLSeparator(t *testing.T) {
+	root := t.TempDir()
+	text := validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n") + "\n---\n"
+	if _, err := loadText(t, text); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
 func TestExampleConfigurationLoads(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"), func(name string) (string, bool) {
 		if name == "SUBSYNCD_LOG_LEVEL" {

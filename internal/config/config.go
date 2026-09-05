@@ -204,9 +204,9 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
-	var document yaml.Node
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
+	document, err := decodeSingleDocument(data)
+	if err != nil {
+		return Config{}, err
 	}
 	if err := expandEnv(&document, lookupEnv); err != nil {
 		return Config{}, err
@@ -221,9 +221,6 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&raw); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
-	}
-	if err := ensureSingleDocument(decoder); err != nil {
-		return Config{}, err
 	}
 
 	cfg, err := normalize(raw)
@@ -243,16 +240,33 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 	return cfg, nil
 }
 
-func ensureSingleDocument(decoder *yaml.Decoder) error {
-	var extra any
-	err := decoder.Decode(&extra)
-	if err == io.EOF {
-		return nil
+func decodeSingleDocument(data []byte) (yaml.Node, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return yaml.Node{}, fmt.Errorf("parse config: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("decode trailing config document: %w", err)
+	for {
+		var extra yaml.Node
+		err := decoder.Decode(&extra)
+		if err == io.EOF {
+			return document, nil
+		}
+		if err != nil {
+			return yaml.Node{}, fmt.Errorf("decode trailing config document: %w", err)
+		}
+		if !emptyYAMLDocument(extra) {
+			return yaml.Node{}, fmt.Errorf("config must contain exactly one YAML document")
+		}
 	}
-	return fmt.Errorf("config must contain exactly one YAML document")
+}
+
+func emptyYAMLDocument(node yaml.Node) bool {
+	if len(node.Content) == 0 {
+		return true
+	}
+	return node.Kind == yaml.DocumentNode && len(node.Content) == 1 &&
+		node.Content[0].Kind == yaml.ScalarNode && node.Content[0].Tag == "!!null" && node.Content[0].Value == ""
 }
 
 func expandEnv(node *yaml.Node, lookupEnv func(string) (string, bool)) error {
