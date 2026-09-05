@@ -130,8 +130,9 @@ and strict title evidence remains valid.
 
 ### Forced-only members
 
-Every selected subtitle member passes the same forced-only and
-hearing-impaired policy, regardless of archive shape. Remove the movie/plain
+Every selected subtitle member passes the same forced-only policy, regardless
+of archive shape. Candidate-level hearing-impaired policy remains applied before
+download. Remove the movie/plain
 single-member shortcut that directly takes `manifest.Members[0]`; use one
 selection path that inspects provider metadata and bounded filename evidence
 before returning a member.
