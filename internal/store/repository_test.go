@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1820,6 +1821,82 @@ func TestCatalogDeleteRejectsInstallationAndInventoryUntilReimport(t *testing.T)
 			}
 			if err := repo.RecordInstallation(ctx, install); err != nil {
 				t.Fatalf("reimport cannot install: %v", err)
+			}
+		})
+	}
+}
+
+func TestDeleteDuringLeaseRetainsOwnershipAndReimportCoalescesRerun(t *testing.T) {
+	for _, reimport := range []bool{false, true} {
+		t.Run(fmt.Sprint(reimport), func(t *testing.T) {
+			ctx := context.Background()
+			repo := openTestRepository(t)
+			media := testMedia()
+			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+			event := MediaEventMutation{EventID: "initial", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now, Priority: SearchPriorityImport}
+			if _, err := repo.ApplyMediaEvent(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+			leases, err := repo.LeaseDueSearches(ctx, now, 1, 5*time.Minute)
+			if err != nil || len(leases) != 1 {
+				t.Fatalf("initial lease: %#v %v", leases, err)
+			}
+			lease := leases[0]
+			if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "deleted", Type: "delete", Ref: media.Ref, At: now.Add(time.Minute)}); err != nil {
+				t.Fatal(err)
+			}
+			var owner sql.NullString
+			var expiry sql.NullInt64
+			if err := repo.store.db.QueryRow(`SELECT lease_owner,lease_until_ns FROM search_states WHERE media_id=? AND language='en'`, lease.MediaID).Scan(&owner, &expiry); err != nil {
+				t.Fatal(err)
+			}
+			if !owner.Valid || owner.String != lease.JobID || !expiry.Valid || expiry.Int64 != lease.LeaseUntil.UnixNano() {
+				t.Errorf("delete abandoned active lease: %v/%v", owner, expiry)
+			}
+			if reimport {
+				for i := 0; i < 2; i++ {
+					event.EventID = fmt.Sprintf("reimport-%d", i)
+					event.At = now.Add(2 * time.Minute)
+					if _, err := repo.ApplyMediaEvent(ctx, event); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if competing, err := repo.LeaseDueSearches(ctx, now.Add(2*time.Minute), 1, 5*time.Minute); err != nil || len(competing) != 0 {
+				t.Errorf("second workflow before owner completed: %#v %v", competing, err)
+			}
+			result, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: lease.JobID, Outcome: "transport_error", NextAttemptAt: now.Add(24 * time.Hour), AdvanceFailureAttempt: true, Priority: SearchPriorityUpgrade})
+			if err != nil {
+				t.Fatalf("owner completion: %v", err)
+			}
+			if result.RerunScheduled != reimport {
+				t.Fatalf("rerun scheduled=%v want %v", result.RerunScheduled, reimport)
+			}
+			status, err := repo.GetSearchStatus(ctx, lease.MediaID, "en")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reimport && (status.State != "complete" || status.LastOutcome != "deleted" || status.FailureAttempt != 0 || status.RerunPending) {
+				t.Fatalf("completion revived deleted media: %#v", status)
+			}
+			reruns, err := repo.LeaseDueSearches(ctx, now.Add(3*time.Minute), 10, 5*time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reimport {
+				if len(reruns) != 1 || reruns[0].Priority != SearchPriorityImport {
+					t.Fatalf("coalesced rerun: %#v", reruns)
+				}
+				result, err = repo.CompleteSearch(ctx, SearchCompletion{JobID: reruns[0].JobID, Outcome: "satisfied"})
+				if err != nil || result.RerunScheduled {
+					t.Fatalf("rerun completion: %#v %v", result, err)
+				}
+			} else if len(reruns) != 0 {
+				t.Fatalf("deleted media leased: %#v", reruns)
+			}
+			more, err := repo.LeaseDueSearches(ctx, now.Add(25*time.Hour), 10, 5*time.Minute)
+			if err != nil || len(more) != 0 {
+				t.Fatalf("unexpected subsequent workflow: %#v %v", more, err)
 			}
 		})
 	}

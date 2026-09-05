@@ -734,13 +734,20 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		return SearchCompletionResult{}, fmt.Errorf("begin search completion: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var rerunScheduled bool
-	if err := tx.QueryRowContext(ctx, `SELECT rerun_requested FROM search_states WHERE lease_owner=?`, completion.JobID).Scan(&rerunScheduled); errors.Is(err, sql.ErrNoRows) {
+	var rerunScheduled, deleted bool
+	if err := tx.QueryRowContext(ctx, `SELECT search_states.rerun_requested, media.deleted FROM search_states JOIN media ON media.id=search_states.media_id WHERE search_states.lease_owner=?`, completion.JobID).Scan(&rerunScheduled, &deleted); errors.Is(err, sql.ErrNoRows) {
 		return SearchCompletionResult{}, fmt.Errorf("search lease %s not found", completion.JobID)
 	} else if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("read search completion state: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE search_states SET
+	var result sql.Result
+	if deleted {
+		// A deleted row stays terminal even if its old workflow reports a retry or
+		// success. Retain ownership until this owner-checked completion arrives.
+		rerunScheduled = false
+		result, err = tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL WHERE lease_owner=?`, completion.JobID)
+	} else {
+		result, err = tx.ExecContext(ctx, `UPDATE search_states SET
 		state=CASE WHEN rerun_requested=1 THEN 'pending' ELSE ? END,
 		attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN 0 ELSE attempt+? END,
 		failure_attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN 0 ELSE failure_attempt+? END,
@@ -749,6 +756,7 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		priority=CASE WHEN rerun_requested=1 OR ?=0 THEN priority ELSE ? END,
 		rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL
 		WHERE lease_owner=?`, state, completion.ResetMissingAttempt, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.Outcome, completion.Priority, completion.Priority, completion.JobID)
+	}
 	if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("complete search: %w", err)
 	}
@@ -1348,7 +1356,7 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted=1 WHERE id=?`, mediaID); err != nil {
 				return false, fmt.Errorf("mark deleted media: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL WHERE media_id=?`, mediaID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, rerun_requested=0 WHERE media_id=?`, mediaID); err != nil {
 				return false, fmt.Errorf("cancel deleted media searches: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE events SET media_id=?, file_id=?, entity_id=? WHERE event_id=?`, mediaID, fileID, entityID, mutation.EventID); err != nil {
