@@ -13,6 +13,11 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Comparative reference documentation cleanup
+
+- Commit `863f5d7` removes the obsolete comparative reference document, its contributor-guide requirement, stale publication-plan checks, and every remaining mention from the current repository tree.
+- Historical Git objects were deliberately left unchanged; rewriting published history would change commit identities and require a coordinated force-push.
+
 ### Newly configured language backfill
 
 - Commit `2c64814` adds an offline startup reconciliation that inserts only absent search rows for every configured language and already-indexed media item belonging to a currently configured Arr instance. Supported media is immediately due at missing priority; unsupported multi-episode media receives its existing terminal outcome.
