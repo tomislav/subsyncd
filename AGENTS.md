@@ -5,17 +5,14 @@ Read these documents before changing behavior:
 1. `docs/implementation-status.md` for the behavior actually shipped and the resumable handoff ledger
 2. `docs/providers.md` for provider, scoring, scheduling, and upgrade behavior
 3. `docs/operations.md` for deployment, filesystem, LAPSE, webhook, and recovery behavior
-4. `docs/references/bazarr.md` before changing provider or matching behavior
-5. `docs/references/silo.md` before changing Silo notification behavior
-6. `docs/superpowers/specs/2026-09-04-standalone-github-publishing-design.md` and its matching plan before changing repository or image publication
-7. `docs/superpowers/specs/2026-09-04-priority-search-dispatch-design.md` and its matching plan before changing daemon queue dispatch, priorities, leases, or webhook wakeups
-8. `docs/superpowers/specs/2026-09-04-lapse-score-tier-tournament-design.md` and its matching plan before changing shortlist preparation, LAPSE evaluation, early stopping, or synchronization fallback
-9. `docs/superpowers/specs/2026-09-04-structured-loki-logging-design.md` and its matching plan before changing logging levels, event ownership, fields, privacy, or Alloy/Loki guidance
-10. `docs/superpowers/specs/2026-09-05-arrapi-stable-identity-reconciliation-design.md` and its matching plan before changing Sonarr/Radarr clients, catalog identities, history reconciliation, or reconciliation cursor behavior
+4. `docs/references/silo.md` before changing Silo notification behavior
+5. `docs/superpowers/specs/2026-09-04-standalone-github-publishing-design.md` and its matching plan before changing repository or image publication
+6. `docs/superpowers/specs/2026-09-04-priority-search-dispatch-design.md` and its matching plan before changing daemon queue dispatch, priorities, leases, or webhook wakeups
+7. `docs/superpowers/specs/2026-09-04-lapse-score-tier-tournament-design.md` and its matching plan before changing shortlist preparation, LAPSE evaluation, early stopping, or synchronization fallback
+8. `docs/superpowers/specs/2026-09-04-structured-loki-logging-design.md` and its matching plan before changing logging levels, event ownership, fields, privacy, or Alloy/Loki guidance
+9. `docs/superpowers/specs/2026-09-05-arrapi-stable-identity-reconciliation-design.md` and its matching plan before changing Sonarr/Radarr clients, catalog identities, history reconciliation, or reconciliation cursor behavior
 
 `AGENTS.md` and `docs/implementation-status.md` are the authoritative entry points for current behavior. Historical design material that lived outside the original `subsyncd/` subtree is not required by the standalone repository.
-
-Bazarr commit `da73aeaf5e4d89ad86c8d559d3abd0e4129b24b2` is a GPL-3.0 behavioral reference only. Do not copy, vendor, execute, or translate its Python implementation or fixtures.
 
 Use test-driven development: add one focused failing test, confirm the expected failure, implement the smallest production change, then run the affected package with `-race`. Ordinary tests must use sanitized fixtures and local fake servers; they must never contact Arr applications or subtitle providers.
 

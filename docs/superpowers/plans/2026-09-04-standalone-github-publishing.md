@@ -53,7 +53,6 @@ No application package or database schema changes are required.
 - Existing: `docs/implementation-status.md`
 - Existing: `docs/providers.md`
 - Existing: `docs/operations.md`
-- Existing: `docs/references/bazarr.md`
 - Existing: `docs/references/silo.md`
 - Existing: `docs/release-notes.md`
 
@@ -114,9 +113,8 @@ Read these documents before changing behavior:
 1. `docs/implementation-status.md` for the behavior actually shipped and the resumable handoff ledger
 2. `docs/providers.md` for provider, scoring, scheduling, and upgrade behavior
 3. `docs/operations.md` for deployment, filesystem, LAPSE, webhook, and recovery behavior
-4. `docs/references/bazarr.md` before changing provider or matching behavior
-5. `docs/references/silo.md` before changing Silo notification behavior
-6. `docs/superpowers/specs/2026-09-04-standalone-github-publishing-design.md` and its matching plan before changing repository or image publication
+4. `docs/references/silo.md` before changing Silo notification behavior
+5. `docs/superpowers/specs/2026-09-04-standalone-github-publishing-design.md` and its matching plan before changing repository or image publication
 
 `AGENTS.md` and `docs/implementation-status.md` are the authoritative entry points for current behavior. Historical design material that lived outside the original `subsyncd/` subtree is not required by the standalone repository.
 ```
@@ -135,7 +133,6 @@ Run:
 test -r docs/implementation-status.md
 test -r docs/providers.md
 test -r docs/operations.md
-test -r docs/references/bazarr.md
 test -r docs/references/silo.md
 test -r docs/superpowers/specs/2026-09-04-standalone-github-publishing-design.md
 test -r docs/superpowers/plans/2026-09-04-standalone-github-publishing.md

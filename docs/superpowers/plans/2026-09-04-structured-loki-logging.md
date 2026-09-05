@@ -830,7 +830,7 @@ Expected: FAIL because no logging configuration or Alloy guidance exists.
 
 - [ ] **Step 3: Document runtime behavior and configuration**
 
-Add a concise README feature/config note: JSON stderr, default `info`, YAML setting, environment precedence, restart requirement, debug privacy behavior, and Alloy ownership. Do not mention Bazarr.
+Add a concise README feature/config note: JSON stderr, default `info`, YAML setting, environment precedence, restart requirement, debug privacy behavior, and Alloy ownership. Keep the description focused on subsyncd.
 
 Add the approved logging spec and plan to `AGENTS.md`'s required reading list before future agents change logging behavior.
 

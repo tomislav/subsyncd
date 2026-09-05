@@ -34,7 +34,7 @@ Verification passed:
 - native legacy-Docker production build without explicit target arguments
 - in-container `subsyncd --version`
 - in-container `subsyncd doctor` using real SQLite, FFprobe, and LAPSE
-- complete Go module graph inspection with no Bazarr module/runtime dependency
+- complete Go module graph inspection for unexpected runtime dependencies
 
 The attempted linux/amd64 smoke build on this arm64 host reached the amd64 Go toolchain but its legacy Docker/QEMU environment crashed inside `go mod download`. The amd64 LAPSE archive itself was downloaded and checksum-verified. Run a native amd64 or BuildKit/buildx CI build before publishing the amd64 image.
 
