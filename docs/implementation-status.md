@@ -13,6 +13,25 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Provider cache replay and malformed download repair — 2026-09-06
+
+- Commit: this repair commit, based on `fee9e86`; user authorized implementation, adjacent review, and GitHub push after stopping production.
+- Adopted candidate-v6 versioned search-cache records. Sanitization changes to result IDs, top-level download references or direct-member download references force a fresh provider search before reuse. Failed refreshes never fall back to incomplete candidates; unchanged references and empty searches retain six-hour caching. Credential stripping remains intact.
+- Tightened Titlovi/SubDL reference validation before normalization and download transport: reject missing/root-only, query/fragment-only, userinfo and network-path references. Titlovi also rejects bare download endpoints without a query. These failures stay technical and do not create subtitle-content rejections.
+- Disabled raw SSA parser callbacks during extraction, LAPSE output validation and installation without changing syntax/timestamp policy or process-global logging. Recorded the adjacent review and separate WebVTT logging/dormant member-ID follow-ups in `docs/provider-cache-review-2026-09-06.md`.
+- Verification passed: focused failing-then-passing cache/adapter/parser tests, actual SQLite close/reopen plus local fake HTTP download/extraction, full `go test ./... -race -count=1`, `go vet ./...`, tagged `go test ./test/e2e -tags=e2e -race -count=1`, and `git diff --check`, using writable caches. An initial full run overlapped the final adapter RED test; the final complete rerun passed. No ordinary tests used live providers or production.
+- Independent final code review approved with no actionable introduced defects. No automatic rejection clearing, production lifecycle action, scoring change, or deployment occurred.
+- Next task: verify published image, obtain rollout authorization, then retry Braveheart Croatian with the explicit scoped rejection override while the daemon is stopped; resume the daemon afterward when authorized.
+
+### Production Napoleon candidate diagnosis — 2026-09-06
+
+- Commit: uncommitted diagnostic ledger entry; no runtime change.
+- User authorized downloading Titlovi candidate 380121 for Napoleon (2023). Retrieved its fresh link using configured credentials kept in remote memory and downloaded to local temporary storage; no installation, service lifecycle action, or production database write.
+- Fresh ZIP was 30,908 bytes, matching the logged download size, with one SRT containing 977 cues. The original rejection has no artifact checksum, so original byte identity cannot be established.
+- Reproduced invalid_subtitle using pack.Extract with default limits: cue 976 starts at 02:28:54.609, before cue 975 at 02:28:55.635, violating monotonic-start validation before LAPSE. No behavior changed.
+- Verification: isolated extractor invocation and independent timestamp inspection; temporary Go harness removed. No ordinary tests contacted providers.
+- Next task: assess support for out-of-order cues if requested; do not implicitly clear production rejections or change validation.
+
 ### Follow-up — logging documentation CI contract, 2026-09-06
 
 - Commit: this test correction commit, based on `47c75da`.

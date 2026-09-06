@@ -158,8 +158,8 @@ func TestCoordinatorDeduplicatesStableCandidateIdentityBeforeCaching(t *testing.
 	}
 	cache := coordinator.Cache.(*memoryCache)
 	for _, entry := range cache.entries {
-		var cached []domain.Candidate
-		if err := json.Unmarshal(entry.ResultsJSON, &cached); err != nil || len(cached) != 1 {
+		var cached cachedSearchResults
+		if err := json.Unmarshal(entry.ResultsJSON, &cached); err != nil || len(cached.Candidates) != 1 {
 			t.Fatalf("cached candidates = %#v, %v", cached, err)
 		}
 	}
@@ -217,7 +217,7 @@ func TestCoordinatorDeduplicatesLegacyCachedCandidates(t *testing.T) {
 		{ProviderID: "only", ResultID: "same", ReleaseNames: []string{"Release.A"}},
 		{ProviderID: "only", ResultID: "same", ReleaseNames: []string{"Release.B"}},
 	}
-	payload, err := json.Marshal(candidates)
+	payload, err := json.Marshal(cachedSearchResults{Version: 1, Candidates: candidates})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,9 +262,13 @@ func TestCoordinatorNeverCachesCredentialBearingCandidateIDs(t *testing.T) {
 		if strings.Contains(string(entry.ResultsJSON), "api_key") || strings.Contains(string(entry.ResultsJSON), "secret") || strings.Contains(string(entry.ResultsJSON), "signed.example") {
 			t.Fatalf("cache leaked candidate credential: %s", entry.ResultsJSON)
 		}
-		var candidates []domain.Candidate
-		if err := json.Unmarshal(entry.ResultsJSON, &candidates); err != nil || len(candidates) != 1 || candidates[0].ResultID != "/subtitle/movie.srt" || candidates[0].DownloadRef != "/subtitle/movie.srt" || candidates[0].Pack == nil || candidates[0].Pack.DirectMembers[0].DownloadRef != "" {
-			t.Fatalf("safe cached candidate = %#v, %v", candidates, err)
+		var cached cachedSearchResults
+		if err := json.Unmarshal(entry.ResultsJSON, &cached); err != nil {
+			t.Fatal(err)
+		}
+		candidates := cached.Candidates
+		if len(candidates) != 1 || candidates[0].ResultID != "/subtitle/movie.srt" || candidates[0].DownloadRef != "/subtitle/movie.srt" || candidates[0].Pack == nil || candidates[0].Pack.DirectMembers[0].DownloadRef != "" {
+			t.Fatalf("safe cached candidate = %#v", candidates)
 		}
 	}
 }
@@ -275,7 +279,7 @@ func TestCoordinatorLogsSearchAttemptsAndCacheStateWithoutMediaDetails(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "https://signed.example/subtitle?token=secret"}}}}
+	item := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: {{ProviderID: "only", ResultID: "one", DownloadRef: "opaque-id"}}}}
 	coordinator := newTestCoordinator(item)
 	coordinator.Events = events
 	query := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: SearchBroad}

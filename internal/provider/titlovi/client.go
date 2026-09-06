@@ -268,16 +268,24 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 
 func (c *Client) downloadReference(raw string) (string, bool) {
 	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", false
-	}
-	if parsed.IsAbs() && !c.allowedDownloadURL(parsed) {
+	if err != nil || !c.validDownloadReference(parsed) {
 		return "", false
 	}
 	if !strings.HasPrefix(parsed.Path, "/") {
 		parsed.Path = "/" + parsed.Path
 	}
 	return parsed.EscapedPath() + querySuffix(parsed.RawQuery), true
+}
+
+// A reference must identify a resource, never just the provider's root page.
+func (c *Client) validDownloadReference(reference *url.URL) bool {
+	if reference == nil || strings.TrimSpace(reference.Path) == "" || path.Clean("/"+reference.Path) == "/" || reference.User != nil || reference.Host != "" && !reference.IsAbs() {
+		return false
+	}
+	if path.Clean("/"+reference.Path) == "/download" && reference.RawQuery == "" {
+		return false
+	}
+	return !reference.IsAbs() || c.allowedDownloadURL(reference)
 }
 
 func querySuffix(raw string) string {
@@ -292,17 +300,17 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 }
 
 func (c *Client) download(ctx context.Context, candidate domain.Candidate, writer io.Writer, allowRefresh bool) (baseprovider.DownloadMetadata, error) {
-	if err := c.login(ctx, false); err != nil {
-		return baseprovider.DownloadMetadata{}, err
-	}
 	base, _ := url.Parse(strings.TrimRight(c.config.DownloadBaseURL, "/") + "/")
 	reference, err := url.Parse(candidate.DownloadRef)
-	if err != nil {
+	if err != nil || !c.validDownloadReference(reference) {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("Titlovi candidate has invalid download reference")
 	}
 	endpoint := base.ResolveReference(reference)
 	if !c.allowedDownloadURL(endpoint) {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("Titlovi download URL is not allowed")
+	}
+	if err := c.login(ctx, false); err != nil {
+		return baseprovider.DownloadMetadata{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {

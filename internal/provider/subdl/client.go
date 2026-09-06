@@ -419,10 +419,7 @@ func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operat
 
 func (c *Client) downloadReference(raw string) (string, bool) {
 	parsed, err := url.Parse(raw)
-	if err != nil || raw == "" || parsed.User != nil || parsed.Host != "" && !parsed.IsAbs() {
-		return "", false
-	}
-	if parsed.IsAbs() && !c.allowedDownloadURL(parsed) {
+	if err != nil || !c.validDownloadReference(parsed) {
 		return "", false
 	}
 	if !strings.HasPrefix(parsed.Path, "/") {
@@ -431,10 +428,18 @@ func (c *Client) downloadReference(raw string) (string, bool) {
 	return parsed.EscapedPath(), true
 }
 
+// A reference must identify a resource, never just the provider's root page.
+func (c *Client) validDownloadReference(reference *url.URL) bool {
+	if reference == nil || strings.TrimSpace(reference.Path) == "" || path.Clean("/"+reference.Path) == "/" || reference.User != nil || reference.Host != "" && !reference.IsAbs() {
+		return false
+	}
+	return !reference.IsAbs() || c.allowedDownloadURL(reference)
+}
+
 func (c *Client) Download(ctx context.Context, candidate domain.Candidate, writer io.Writer) (baseprovider.DownloadMetadata, error) {
 	base, _ := url.Parse(strings.TrimRight(c.config.DownloadBaseURL, "/") + "/")
 	reference, err := url.Parse(candidate.DownloadRef)
-	if err != nil {
+	if err != nil || !c.validDownloadReference(reference) {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("SubDL candidate has invalid download reference")
 	}
 	endpoint := base.ResolveReference(reference)

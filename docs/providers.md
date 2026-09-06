@@ -97,7 +97,7 @@ Set `sync.policy: always` to run LAPSE for every nonexact candidate. Exact file 
 
 ## Retries and provider limits
 
-Missing subtitles are checked again automatically: initially within minutes and hours, then after days, and eventually about every two weeks. Recent search results are cached for six hours, so every scheduled check does not necessarily make another provider request.
+Missing subtitles are checked again automatically: initially within minutes and hours, then after days, and eventually about every two weeks. Reusable search results are cached for six hours, so every scheduled check does not necessarily make another provider request. Results whose download links cannot be safely stored, including Titlovi links with query parameters, need a fresh provider search before downloading.
 
 Provider rate limits and outages are handled automatically. subsyncd waits before retrying and remembers those delays across restarts. Restarting does not reset a provider's quota.
 

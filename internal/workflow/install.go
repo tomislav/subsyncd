@@ -377,7 +377,7 @@ func validatedSubtitle(path string, mediaDuration time.Duration) ([]byte, error)
 	case ".srt":
 		subtitles, err = astisub.ReadFromSRT(bytes.NewReader(payload))
 	case ".ass", ".ssa":
-		subtitles, err = astisub.ReadFromSSA(bytes.NewReader(payload))
+		subtitles, err = astisub.ReadFromSSAWithOptions(bytes.NewReader(payload), astisub.SSAOptions{})
 	case ".vtt":
 		subtitles, err = astisub.ReadFromWebVTT(bytes.NewReader(payload))
 	default:

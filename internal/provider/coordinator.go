@@ -19,8 +19,16 @@ import (
 
 const (
 	searchCacheTTL                  = 6 * time.Hour
-	normalizedCandidateCacheVersion = "candidate-v5"
+	normalizedCandidateCacheVersion = "candidate-v6"
 )
+
+// Cached download references may be sanitized for persistence. Such results must
+// be refreshed before they can enter acquisition again.
+type cachedSearchResults struct {
+	Version         int                `json:"version"`
+	Candidates      []domain.Candidate `json:"candidates"`
+	RequiresRefresh bool               `json:"requires_refresh"`
+}
 
 type SearchCache interface {
 	GetProviderCache(context.Context, string, time.Time) (store.ProviderCacheEntry, bool, error)
@@ -146,9 +154,9 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 			return nil, wrapped
 		}
 		if found {
-			var candidates []domain.Candidate
-			if err := json.Unmarshal(entry.ResultsJSON, &candidates); err == nil {
-				candidates = DeduplicateCandidates(candidates)
+			var cached cachedSearchResults
+			if err := json.Unmarshal(entry.ResultsJSON, &cached); err == nil && cached.Version == 1 && !cached.RequiresRefresh {
+				candidates := DeduplicateCandidates(cached.Candidates)
 				events.Log(ctx, slog.LevelDebug, "provider.cache_hit", "provider search cache hit", base...)
 				complete(candidates, "hit", nil)
 				return candidates, nil
@@ -163,7 +171,8 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 	}
 	candidates = DeduplicateCandidates(candidates)
 	if c.Cache != nil {
-		encoded, err := json.Marshal(cacheSafeCandidates(candidates))
+		safe := cacheSafeCandidates(candidates)
+		encoded, err := json.Marshal(cachedSearchResults{Version: 1, Candidates: safe, RequiresRefresh: cacheReferencesChanged(candidates, safe)})
 		if err != nil {
 			wrapped := fmt.Errorf("encode %s search cache: %w", provider.ID(), err)
 			complete(candidates, "miss", wrapped)
@@ -325,6 +334,23 @@ func cacheSafeCandidates(candidates []domain.Candidate) []domain.Candidate {
 		}
 	}
 	return safe
+}
+
+// Compare only the fields that persistence sanitizes; never store the originals.
+func cacheReferencesChanged(original, safe []domain.Candidate) bool {
+	for i, candidate := range original {
+		if candidate.ResultID != safe[i].ResultID || candidate.DownloadRef != safe[i].DownloadRef {
+			return true
+		}
+		if candidate.Pack != nil {
+			for j, member := range candidate.Pack.DirectMembers {
+				if member.DownloadRef != safe[i].Pack.DirectMembers[j].DownloadRef {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func stripCandidateQuery(raw string) string {

@@ -363,7 +363,7 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 		case ".srt":
 			return astisub.ReadFromSRT(bytes.NewReader(text))
 		case ".ass", ".ssa":
-			return astisub.ReadFromSSA(bytes.NewReader(text))
+			return astisub.ReadFromSSAWithOptions(bytes.NewReader(text), astisub.SSAOptions{})
 		case ".vtt":
 			return astisub.ReadFromWebVTT(bytes.NewReader(text))
 		default:
