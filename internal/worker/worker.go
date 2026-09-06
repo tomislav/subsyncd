@@ -462,8 +462,10 @@ func (w *Worker) renewNotificationLease(ctx context.Context, cancel context.Canc
 	})
 }
 
+var errRenewalFinished = errors.New("lease renewal finished")
+
 func (w *Worker) renew(ctx context.Context, cancelJob context.CancelFunc, renew func(context.Context) error) leaseRenewal {
-	renewCtx, stop := context.WithCancel(ctx)
+	renewCtx, stop := context.WithCancelCause(ctx)
 	done := make(chan error, 1)
 	go func() {
 		ticker := time.NewTicker(w.RenewInterval)
@@ -475,6 +477,13 @@ func (w *Worker) renew(ctx context.Context, cancelJob context.CancelFunc, renew 
 				return
 			case <-ticker.C:
 				if err := renew(renewCtx); err != nil {
+					// finish stops renewal before the owner-checked completion.
+					// Canceling that in-flight SQL call is normal cleanup, not
+					// evidence that the job lost its lease.
+					if errors.Is(err, context.Canceled) && context.Cause(renewCtx) == errRenewalFinished && ctx.Err() == nil {
+						done <- nil
+						return
+					}
 					done <- err
 					cancelJob()
 					return
@@ -482,7 +491,7 @@ func (w *Worker) renew(ctx context.Context, cancelJob context.CancelFunc, renew 
 			}
 		}
 	}()
-	return leaseRenewal{stop: stop, done: done}
+	return leaseRenewal{stop: func() { stop(errRenewalFinished) }, done: done}
 }
 
 func (w *Worker) reconcileDue(ctx context.Context) error {

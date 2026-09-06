@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: single-run LAPSE preparation complete; independent reviews and verification passed
-- Next safe action: publish the reviewed commits to GitHub main; production rollout is a separate operator action
+- Current task: lease-renewal completion race repaired; independent review and verification passed
+- Next safe action: publish the lease-renewal repair to GitHub main; production rollout is a separate operator action
 - Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Lease-renewal completion cancellation repair — 2026-09-06
+
+- Commit: this repair commit, based on `5a503d5`; user authorized the fix and GitHub push.
+- Reproduced successful search completion being abandoned when stopping an in-flight renewal canceled its SQL context. Production could log `job.lease_lost` immediately after installation and retain the lease until expiry.
+- Normal renewal shutdown now carries a private cancellation cause. Suppress only its context-canceled error while the parent remains live; genuine renewal failures and external cancellation retain their existing behavior. Search and notification completion still use owner-checked durable completion.
+- Verification passed: focused failing-then-passing search regression, notification completion regression, real failure and concurrent parent-cancellation coverage, affected worker race tests, full `go test ./... -race -count=1`, `go vet ./...`, tagged race-enabled end-to-end tests, and `git diff --check`. Tests used local fakes. Independent review found no actionable defects.
+- Next task: verify the published image and roll out when authorized. No production lifecycle or database mutation was performed for this repair.
 
 ### Provider cache replay and malformed download repair — 2026-09-06
 
