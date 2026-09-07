@@ -11,7 +11,7 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 - **Movies and TV shows:** connect one or more Sonarr and Radarr instances.
 - **Your languages, your providers:** choose a different provider order for each language. Adding a language schedules searches for already-indexed media after a restart.
 - **Checks what you already have:** detects embedded subtitles and separate subtitle files before searching.
-- **Smart matching and synchronization:** scores candidates against your media’s identity and release details, then uses bundled LAPSE to verify and adjust timing when needed.
+- **Smart matching and synchronization:** scores candidates against your media’s identity and release details, then uses bundled [LAPSE](https://github.com/Schwponaco-org/lapse) to verify and adjust timing when needed.
 - **Season-pack support:** extracts the matching episode from ZIP and RAR downloads, skipping ambiguous matches.
 - **Ongoing searches:** keeps checking for missing subtitles when no suitable match is available.
 - **Safe subtitle upgrades:** can replace subtitles it installed with better matches, while protecting manually added subtitles and any files you’ve edited.
@@ -25,7 +25,6 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 | [Sonarr](https://github.com/sonarr/sonarr) | TV library, imports, upgrades, renames, and file deletions |
 | [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file deletions |
 | [Silo](https://github.com/Silo-Server/silo-server) | Refreshes subtitle inventory through its native scan API |
-| [LAPSE](https://github.com/Schwponaco-org/lapse) | Subtitle timing analysis and synchronization; included in the Docker image |
 
 TV files containing multiple episodes are currently unsupported and skipped during subtitle searches.
 
