@@ -11,16 +11,6 @@ services:
       - no-new-privileges:true
     environment:
       TZ: ${TZ:-Europe/Zagreb}
-      SONARR_MAIN_API_KEY: ${SONARR_MAIN_API_KEY:-}
-      SONARR_MAIN_WEBHOOK_TOKEN: ${SONARR_MAIN_WEBHOOK_TOKEN:-}
-      RADARR_MAIN_API_KEY: ${RADARR_MAIN_API_KEY:-}
-      RADARR_MAIN_WEBHOOK_TOKEN: ${RADARR_MAIN_WEBHOOK_TOKEN:-}
-      TITLOVI_USERNAME: ${TITLOVI_USERNAME:-}
-      TITLOVI_PASSWORD: ${TITLOVI_PASSWORD:-}
-      OPENSUBTITLES_USERNAME: ${OPENSUBTITLES_USERNAME:-}
-      OPENSUBTITLES_PASSWORD: ${OPENSUBTITLES_PASSWORD:-}
-      SUBDL_API_KEY: ${SUBDL_API_KEY:-}
-      SILO_API_KEY: ${SILO_API_KEY:-disabled}
     volumes:
       - ./config:/config:ro
       - ./data:/data:rw

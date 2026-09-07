@@ -68,7 +68,7 @@ cp compose.example.yml compose.yaml
 
 ### 2. Set paths and credentials
 
-Create a `.env` file next to `compose.yaml`. The following covers the services and providers in the example configuration; replace the placeholders with your own values:
+Create a `.env` file next to `compose.yaml`. Use it for host paths and container settings:
 
 ```dotenv
 PUID=1000
@@ -76,27 +76,19 @@ PGID=1000
 TZ=Etc/UTC
 MOVIES_PATH=/srv/media/movies
 TV_PATH=/srv/media/tv
-
-SONARR_MAIN_API_KEY=your-sonarr-api-key
-SONARR_MAIN_WEBHOOK_TOKEN=your-own-random-sonarr-secret
-RADARR_MAIN_API_KEY=your-radarr-api-key
-RADARR_MAIN_WEBHOOK_TOKEN=your-own-random-radarr-secret
-
-TITLOVI_USERNAME=your-username
-TITLOVI_PASSWORD=your-password
-OPENSUBTITLES_USERNAME=your-username
-OPENSUBTITLES_PASSWORD=your-password
-SUBDL_API_KEY=your-api-key
 ```
 
-Find the Sonarr and Radarr API keys in each application's settings. Choose a separate random webhook secret for each instance; you will use it again in step 4. Keep `.env` private—it contains your credentials.
+Find the Sonarr and Radarr API keys in each application's settings. Choose a separate random webhook secret for each instance; you will use it again in step 4. Enter the API keys and webhook secrets in the quoted placeholders under `instances` in `config/config.yaml`.
 
 Edit `config/config.yaml` to:
 
 - Set the Sonarr and Radarr URLs to addresses reachable from the container. Remove any instance you do not use.
-- Keep only the providers you want, and remove unused provider names from `languages` too.
+- Keep only the providers you want, enter their usernames, passwords, and API keys directly in the quoted placeholders, and remove unused provider names from `languages` too.
+- If you use Silo, enable it and replace its API-key placeholder in the same file.
 - Choose your languages, using tags such as `en`, `hr`, or `pt-BR`.
 - Match each `path_mappings.remote` to the path reported by Sonarr or Radarr. The `local` path is where that same folder appears inside subsyncd.
+
+Keep `config/config.yaml` private—it contains all your service credentials. Keep the single quotes around values; write an apostrophe inside a value as two apostrophes (`it''s`).
 
 For example, if Sonarr reports `/data/tv/Show/episode.mkv` and your TV folder is mounted at `/media/tv`, use:
 
@@ -138,7 +130,7 @@ docker compose logs -f subsyncd
 
 ### 4. Add Sonarr and Radarr webhooks
 
-In each application's **Settings → Connect**, add a webhook using the instance name from `config/config.yaml` and the secret you chose in `.env`:
+In each application's **Settings → Connect**, add a webhook using the instance name from `config/config.yaml` and the webhook secret you entered in that file:
 
 ```text
 http://subsyncd:8097/webhooks/sonarr-main?token=YOUR_SONARR_SECRET

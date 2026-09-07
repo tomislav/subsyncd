@@ -14,24 +14,24 @@ Provider account quotas still apply. OpenSubtitles results marked as AI or machi
 
 ## Add your providers
 
-The following sections belong under `providers:` in `config/config.yaml`. Keep only the entries you use, and put their credential values in the Compose `.env` file. The supplied Compose example already forwards these variables into the container.
+The following sections belong under `providers:` in `config/config.yaml`. Keep only the entries you use and replace the quoted placeholders with your credentials directly in this file. Keep your configured copy private.
 
 ```yaml
 providers:
   opensubtitles-main:
     type: opensubtitles
-    username: ${OPENSUBTITLES_USERNAME}
-    password: ${OPENSUBTITLES_PASSWORD}
+    username: 'your-opensubtitles-username'
+    password: 'your-opensubtitles-password'
     user_agent: subsyncd
 
   subdl-main:
     type: subdl
-    api_key: ${SUBDL_API_KEY}
+    api_key: 'your-subdl-api-key'
 
   titlovi-main:
     type: titlovi
-    username: ${TITLOVI_USERNAME}
-    password: ${TITLOVI_PASSWORD}
+    username: 'your-titlovi-username'
+    password: 'your-titlovi-password'
 ```
 
 Published containers include the OpenSubtitles application key. Native builds and locally built images need an explicit `api_key` in that provider's configuration as well as the account credentials.
@@ -54,7 +54,7 @@ Order sets provider preference; it does not mean subsyncd always downloads the f
 
 OpenSubtitles and SubDL support multiple languages. Titlovi supports Bosnian (`bs`), Croatian (`hr`), English (`en`), Macedonian (`mk`), Serbian (`sr` and `sr-Cyrl`), and Slovenian (`sl`). subsyncd validates each language/provider combination at startup.
 
-Restart after changing languages or provider settings. Adding a language schedules checks for media subsyncd already indexes. Removing a language stops its future searches without deleting installed subtitles. Recreate the container with `docker compose up -d` if you changed credentials in `.env`.
+Restart after changing languages or provider settings. Adding a language schedules checks for media subsyncd already indexes. Removing a language stops its future searches without deleting installed subtitles. Restart with `docker compose restart subsyncd` after changing credentials in the configuration file.
 
 Hearing-impaired subtitles (SDH/HI) are excluded by default. To include them, add this at the configuration root:
 

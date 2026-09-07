@@ -42,7 +42,7 @@ Temporary downloads and synchronization files use `/tmp`. Keep it separate from 
 
 ## Sonarr and Radarr setup
 
-Each instance in `config/config.yaml` needs a unique name, reachable URL, API key, webhook secret, and path mapping. The remote path is what Sonarr or Radarr reports; the local path is where the same folder appears inside subsyncd.
+Each instance in `config/config.yaml` needs a unique name, reachable URL, API key, webhook secret, and path mapping. Replace the quoted API-key and webhook-secret placeholders directly in that file. The remote path is what Sonarr or Radarr reports; the local path is where the same folder appears inside subsyncd.
 
 For example:
 
@@ -100,19 +100,19 @@ To reconcile retained history for an instance, use `scan --instance sonarr-main`
 
 ## Optional Silo refresh
 
-subsyncd can ask Silo to rescan the containing folder after a subtitle is installed. Set `SILO_API_KEY` in your Compose `.env`, then configure:
+subsyncd can ask Silo to rescan the containing folder after a subtitle is installed. Enter the admin API key directly in `config/config.yaml`:
 
 ```yaml
 silo:
   enabled: true
   url: http://silo:8080
-  api_key: ${SILO_API_KEY}
+  api_key: 'your-silo-admin-api-key'
   path_mappings:
     - from: /media
       to: /mnt/media
 ```
 
-Use Silo's reachable native API address and an admin API key. The mapping translates subsyncd's media paths to Silo's paths. Recreate the container with `docker compose up -d` after changing its environment.
+Use Silo's reachable native API address and an admin API key. The mapping translates subsyncd's media paths to Silo's paths. Restart with `docker compose restart subsyncd` after changing the configuration.
 
 A failed Silo refresh does not undo an installed subtitle. This integration supports Silo's pre-1.0 API; check [compatibility](references/silo.md) before upgrading Silo.
 
@@ -139,7 +139,7 @@ Allow the container to stop fully before starting another process against the sa
 | Permission denied | The configured UID/GID must read configuration and media, and write `data/` and subtitle folders. |
 | Media path is outside configured roots | Match the Arr path mapping to the actual container mounts. |
 | No subtitle download | Use `explain` to check existing subtitles, the next search time, provider limits, or rejected matches. |
-| Provider authentication rejected | Correct the credentials, recreate the container if its environment changed, then clear the affected provider's state as shown below. |
+| Provider authentication rejected | Correct the credentials in `config/config.yaml`, restart the service, then clear the affected provider's state as shown below. |
 | Another mutation process is active | Stop the daemon before a manual search, scan, or retry. Do not delete the lock file. |
 | LAPSE takes a long time | Its first run may read much of the media file, especially noticeable on network storage. Results are cached for later use. |
 | LAPSE reports `unsure` or `nothing` | The candidate did not pass timing verification; subsyncd will consider other matches. |

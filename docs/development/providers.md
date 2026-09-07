@@ -31,8 +31,8 @@ Titlovi uses the supported Kodi API with an API-enabled account. It supports `bs
 ```yaml
 titlovi-main:
   type: titlovi
-  username: ${TITLOVI_USERNAME}
-  password: ${TITLOVI_PASSWORD}
+  username: 'your-titlovi-username'
+  password: 'your-titlovi-password'
   requests_per_second: 1
   burst: 1
   max_concurrent: 1
@@ -52,8 +52,8 @@ The published subsyncd container includes the application's OpenSubtitles API ke
 ```yaml
 opensubtitles-main:
   type: opensubtitles
-  username: ${OPENSUBTITLES_USERNAME}
-  password: ${OPENSUBTITLES_PASSWORD}
+  username: 'your-opensubtitles-username'
+  password: 'your-opensubtitles-password'
   user_agent: subsyncd
   requests_per_second: 1
   burst: 1
@@ -67,7 +67,7 @@ SubDL is broad-only. For episodes it searches standard season/episode, an availa
 ```yaml
 subdl-main:
   type: subdl
-  api_key: ${SUBDL_API_KEY}
+  api_key: 'your-subdl-api-key'
   requests_per_second: 1
   burst: 1
   max_concurrent: 1

@@ -1,3 +1,5 @@
+# Replace credential placeholders in your private config/config.yaml.
+# Keep quotes around credentials. In single quotes, escape an apostrophe as two.
 data_dir: /data
 media_roots:
   - /media/movies
@@ -16,16 +18,16 @@ instances:
   - name: sonarr-main
     type: sonarr
     url: http://sonarr:8989
-    api_key: ${SONARR_MAIN_API_KEY}
-    webhook_token: ${SONARR_MAIN_WEBHOOK_TOKEN}
+    api_key: 'your-sonarr-api-key'
+    webhook_token: 'your-own-random-sonarr-secret'
     path_mappings:
       - remote: /data/tv
         local: /media/tv
   - name: radarr-main
     type: radarr
     url: http://radarr:7878
-    api_key: ${RADARR_MAIN_API_KEY}
-    webhook_token: ${RADARR_MAIN_WEBHOOK_TOKEN}
+    api_key: 'your-radarr-api-key'
+    webhook_token: 'your-own-random-radarr-secret'
     path_mappings:
       - remote: /data/movies
         local: /media/movies
@@ -33,23 +35,23 @@ instances:
 providers:
   titlovi-main:
     type: titlovi
-    username: ${TITLOVI_USERNAME}
-    password: ${TITLOVI_PASSWORD}
+    username: 'your-titlovi-username'
+    password: 'your-titlovi-password'
     requests_per_second: 1
     burst: 1
     max_concurrent: 1
     max_pages: 5
   opensubtitles-main:
     type: opensubtitles
-    username: ${OPENSUBTITLES_USERNAME}
-    password: ${OPENSUBTITLES_PASSWORD}
+    username: 'your-opensubtitles-username'
+    password: 'your-opensubtitles-password'
     user_agent: subsyncd
     requests_per_second: 1
     burst: 1
     max_concurrent: 1
   subdl-main:
     type: subdl
-    api_key: ${SUBDL_API_KEY}
+    api_key: 'your-subdl-api-key'
     requests_per_second: 1
     burst: 1
     max_concurrent: 1
@@ -96,8 +98,7 @@ silo:
   enabled: false
   # Silo's native API listener.
   url: http://silo:8080
-  # Replace with ${SILO_API_KEY} when enabled.
-  api_key: disabled
+  api_key: 'your-silo-admin-api-key'
   path_mappings:
     - from: /media
       to: /mnt/media

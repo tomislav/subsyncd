@@ -13,6 +13,14 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Follow-up — direct service credential configuration, 2026-09-07
+
+- Commit: working-tree example/documentation update based on `3f0250d`; no commit created in this task.
+- Moved subtitle-provider usernames/passwords/API keys and the optional Silo admin key to quoted placeholders in `config.example.yaml`. Removed their environment forwarding from Compose and updated README, user guides, and developer examples. A follow-up moved Sonarr/Radarr API keys and webhook secrets into quoted configuration placeholders too. Compose now forwards only the timezone; `.env` supplies host paths and container settings.
+- No parser or runtime behavior changed; existing environment-expansion support remains available. Silo remains disabled by default. Configured credentials belong only in the private copied configuration, not the tracked example.
+- Verification passed: `go test ./internal/config -race -count=1` with writable caches, Compose rendering, obsolete-variable scan across the current setup guides/examples, and `git diff --check`.
+- Next task: publish the example and guide changes when requested.
+
 ### Lease-renewal completion cancellation repair — 2026-09-06
 
 - Commit: this repair commit, based on `5a503d5`; user authorized the fix and GitHub push.

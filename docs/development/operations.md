@@ -178,7 +178,7 @@ Enable Silo only after setting its native API URL and admin API key:
 silo:
   enabled: true
   url: http://silo:8080
-  api_key: ${SILO_API_KEY}
+  api_key: 'your-silo-admin-api-key'
   path_mappings:
     - from: /media
       to: /mnt/media
