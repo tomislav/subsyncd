@@ -24,7 +24,7 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 | --- | --- |
 | [Sonarr](https://github.com/sonarr/sonarr) | TV library, imports, upgrades, renames, and file deletions |
 | [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file deletions |
-| [Silo](https://github.com/Silo-Server/silo-server) (optional) | Refreshes subtitle inventory through its pre-1.0 native scan API |
+| [Silo](https://github.com/Silo-Server/silo-server) | Refreshes subtitle inventory through its native scan API |
 | [LAPSE](https://github.com/Schwponaco-org/lapse) | Subtitle timing analysis and synchronization; included in the Docker image |
 
 TV files containing multiple episodes are currently unsupported and skipped during subtitle searches.
