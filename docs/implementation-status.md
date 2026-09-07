@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: lease-renewal completion race repaired; independent review and verification passed
-- Next safe action: publish the lease-renewal repair to GitHub main; production rollout is a separate operator action
+- Current task: Radarr whole-movie and Sonarr whole-series deletion repaired; independent review and verification passed
+- Next safe action: push the whole-deletion repair to GitHub main and verify CI; production rollout remains a separate operator action
 - Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Whole-movie and whole-series webhook deletion repair — 2026-09-07
+
+- Commit: this repair commit, based on `03d31f0`; user authorized both fixes and the GitHub push.
+- Reproduced Radarr `MovieDelete` failing with `invalid_event` before any mutation. Whole-movie deletion now resolves `movie.id` through the existing transactional entity-delete path, without hydrating the removed movie. Existing file-delete handling remains unchanged.
+- Confirmed the analogous Sonarr `SeriesDelete` gap against official upstream webhook builders. Added migration `004_sonarr_series.sql` and persisted Sonarr series identity through hydration, both media upsert paths, and reads. Series deletion resolves stored episodes and retires media/searches with per-episode audit records in one transaction. Both whole-delete events work when `deletedFiles` is false; unknown identities are audited idempotently and never matched to unrelated file IDs.
+- Legacy Sonarr rows retain unknown series identity (zero) until ordinary catalog hydration supplies it. Series deletion does not infer ownership from title/path/external IDs, perform startup backfill, or enumerate Arr libraries. This compatibility limit is documented in operations and release notes.
+- Verification passed with writable caches: focused failing-then-passing movie and series regressions, Sonarr hydration RED/GREEN, affected catalog/store/httpapi race tests, full `go test ./... -race -count=1`, `go vet ./...`, tagged `go test ./test/e2e -tags=e2e -race -count=1`, gofmt, and `git diff --check`. Coverage includes real SQLite/HTTP handling, replay dedup, instance/entity isolation, malformed identities, unknown legacy series, active-worker terminal completion, migration preservation, and whole-series transaction rollback. One initial affected-suite run was blocked by sandbox loopback restrictions; rerun with local fake-server access passed. All tests used sanitized fixtures and local fakes.
+- Independent code and final test/documentation reviews found no actionable issues. No production access, deployment, provider request, filesystem media mutation, or production rejection override occurred.
+- Next task: push this verified commit, observe GitHub verification/publication, then roll out only when requested.
 
 ### Follow-up — direct service credential configuration, 2026-09-07
 

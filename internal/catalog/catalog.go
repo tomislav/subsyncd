@@ -39,6 +39,8 @@ const (
 )
 
 type WebhookEvent struct {
+	SeriesID         int64
+	EntityID         int64
 	EventID          string
 	Type             EventType
 	Ref              domain.MediaRef

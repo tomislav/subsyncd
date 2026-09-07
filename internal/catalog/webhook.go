@@ -19,7 +19,13 @@ var (
 	ErrInvalidWebhook = errors.New("invalid Arr webhook")
 )
 
+type webhookEntity struct {
+	ID int64 `json:"id"`
+}
+
 type webhookPayload struct {
+	Series              webhookEntity `json:"series"`
+	Movie               webhookEntity `json:"movie"`
 	EventType           string        `json:"eventType"`
 	IsUpgrade           bool          `json:"isUpgrade"`
 	MovieFile           webhookFile   `json:"movieFile"`
@@ -46,6 +52,24 @@ func NormalizeWebhook(instance, instanceType string, body []byte) ([]WebhookEven
 	}
 	if strings.EqualFold(payload.EventType, "test") {
 		return nil, ErrIgnoredEvent
+	}
+
+	// Whole-movie deletion has a stable movie identity, not a file identity.
+	// The repository resolves its current file within the deletion transaction.
+	if strings.EqualFold(instanceType, "radarr") && strings.EqualFold(payload.EventType, "MovieDelete") {
+		if payload.Movie.ID <= 0 {
+			return nil, fmt.Errorf("%w: movie deletion has no entity identity", ErrInvalidWebhook)
+		}
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00moviedelete\x00movie\x00%d", instance, payload.Movie.ID)))
+		return []WebhookEvent{{EventID: hex.EncodeToString(sum[:16]), Type: EventDelete, EntityID: payload.Movie.ID, Ref: domain.MediaRef{Instance: instance, Kind: domain.MediaMovie}}}, nil
+	}
+
+	if strings.EqualFold(instanceType, "sonarr") && strings.EqualFold(payload.EventType, "SeriesDelete") {
+		if payload.Series.ID <= 0 {
+			return nil, fmt.Errorf("%w: series deletion has no series identity", ErrInvalidWebhook)
+		}
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00seriesdelete\x00episode\x00%d", instance, payload.Series.ID)))
+		return []WebhookEvent{{EventID: hex.EncodeToString(sum[:16]), Type: EventDelete, SeriesID: payload.Series.ID, Ref: domain.MediaRef{Instance: instance, Kind: domain.MediaEpisode}}}, nil
 	}
 
 	kind, files, eventType, err := webhookFiles(instanceType, payload)
@@ -158,6 +182,8 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 		}
 		mutation := store.MediaEventMutation{
 			EventID:   event.EventID,
+			EntityID:  event.EntityID,
+			SeriesID:  event.SeriesID,
 			Type:      string(event.Type),
 			Ref:       event.Ref,
 			Languages: h.Languages,

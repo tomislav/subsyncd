@@ -50,6 +50,9 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	if media.StreamingService != "netflix" {
 		t.Fatalf("streaming service = %q, want netflix", media.StreamingService)
 	}
+	if media.SeriesID != 10 {
+		t.Fatalf("series ID = %d, want 10", media.SeriesID)
+	}
 	if media.EntityID != 101 {
 		t.Fatalf("entity ID = %d, want 101", media.EntityID)
 	}

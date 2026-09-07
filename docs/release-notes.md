@@ -1,5 +1,12 @@
 # Release verification
 
+## Whole-movie and series deletion — 2026-09-07
+
+Radarr `MovieDelete` and Sonarr `SeriesDelete` webhooks now retire the corresponding catalog searches instead of returning HTTP 400. Deletion uses stored identities, needs no live Arr lookup, and remains effective when media files are retained. Replays are idempotent, and whole-series changes commit atomically.
+
+Migration `004_sonarr_series.sql` stores Sonarr series IDs. Existing episode rows acquire them during normal catalog hydration; whole-series deletion leaves rows with unknown series IDs untouched. No startup library scan or identity inference is introduced. File-delete events remain supported as before.
+
+
 ## Human-readable media identity in logs — 2026-09-05
 
 Structured processing events now include a sanitized `media_title` after the media row resolves. Movies render as `Movie (Year)` and episodes as `Show - S01E02 - Episode Title`; values are normalized to one line and bounded to 2,048 Unicode code points. The field follows worker, workflow, provider, candidate, LAPSE, and completion events as JSON data and is deliberately excluded from the recommended Loki label set.

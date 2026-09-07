@@ -135,6 +135,7 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 	}
 	media := domain.Media{
 		EntityID:         episode.ID,
+		SeriesID:         seriesID,
 		Ref:              ref,
 		Fingerprint:      domain.MediaFingerprint{Path: path, FileID: ref.FileID, Size: file.Size, ModTime: file.DateAdded},
 		Title:            series.Title,
