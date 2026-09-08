@@ -4,14 +4,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Current state
 
-- Branch: `codex/lapse-cue-order`
+- Branch: `main`
 - Current task: normalize valid LAPSE cue ordering and invalidate historical invalid-output rejections once
-- Next safe action: integrate the verified fix; production rollout remains separate
+- Next safe action: verify image publication before production rollout
 - Latest follow-up: full race/e2e/vet and final affected-package race verification passed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### LAPSE ordering integration — 2026-09-08
+
+- User authorized merging to main. Fast-forwarded `main` from `9b4cdf1` to verified fix `1956f1d` without conflicts; this ledger commit records the integration for GitHub publication. The identical runtime code passed the full race/e2e/vet and final affected-package checks recorded below. No production deployment.
+- Next task: verify image publication, then deploy; the one-time rejection migration runs on updated mutating startup.
 
 ### LAPSE cue ordering and rejection reconsideration — 2026-09-08
 
