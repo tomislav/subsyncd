@@ -97,7 +97,7 @@ func TestDownloadScratchRetainsOnlySelectedAfterCaching(t *testing.T) {
 	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, cache, nil, nil)
 	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider", payloads: map[string][]byte{"pack": workflowZIP(t, map[string]string{"Show.S01E02.srt": installSRT, "Show.S01E03.srt": installSRT})}, filenames: map[string]string{"pack": "season.zip"}}}
 	workspace := t.TempDir()
-	selected, _, err := service.downloadAndSelect(context.Background(), request, candidate, workspace, 0)
+	selected, _, _, err := service.downloadAndSelect(context.Background(), request, candidate, workspace, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

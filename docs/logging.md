@@ -51,6 +51,8 @@ For a delayed or failed search, find its completion record and follow the same `
 
 Use [`explain`](operations.md#inspect-or-search-one-file) for the saved result and next search time. Successful health checks are deliberately quiet.
 
+At debug level, `archive.classified` reports archive type, subtitle-member count, and `single`, `provider_pack`, or `runtime_pack` classification. `pack_cache.publication` reports whether caching succeeded, failed, was disabled, or lacked safe identity; `pack_cache.lookup` reports a hit, miss, or error and whether the selected entry is a runtime pack. These events omit member filenames, paths, and download references.
+
 ## Sharing logs
 
 Credentials and absolute media paths are redacted, but logs can still include media titles and debug release details. Review excerpts before posting them publicly, and include only the relevant job and error messages.

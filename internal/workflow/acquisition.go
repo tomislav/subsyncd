@@ -69,7 +69,7 @@ func (s *Service) tryExactCandidates(
 			result.Decisions = append(result.Decisions, Decision{Stage: "candidate_rejection", ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, Reason: rejection.ReasonCode})
 			continue
 		}
-		path, decisions, err := s.downloadAndSelect(ctx, request, candidate, workspace, -index-1)
+		path, runtimePack, decisions, err := s.downloadAndSelect(ctx, request, candidate, workspace, -index-1)
 		result.Decisions = append(result.Decisions, decisions...)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -89,7 +89,7 @@ func (s *Service) tryExactCandidates(
 		if !found {
 			priority = len(s.ProviderOrder)
 		}
-		prepared, err := s.prepareCandidate(ctx, request, downloadedCandidate{candidate: candidate, score: score, priority: priority, path: path}, installed, existing, workspace, -index-2)
+		prepared, err := s.prepareCandidate(ctx, request, downloadedCandidate{candidate: candidate, score: score, priority: priority, path: path, runtimePack: runtimePack}, installed, existing, workspace, -index-2)
 		if err != nil {
 			if handleErr := s.handleCandidateFailure(ctx, request, candidate, path, err, candidateFailures); handleErr != nil {
 				return false, handleErr

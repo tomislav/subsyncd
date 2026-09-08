@@ -53,7 +53,7 @@ func TestDownloadLocalFailureOverridesContentRejection(t *testing.T) {
 			failure := errors.New("local writer failed")
 			adapter := &localFailureDownloadProvider{fakeProvider: fakeProvider{id: "provider"}, failWrite: test.failWrite, exceed: test.exceed, failure: failure}
 			service := &Service{Providers: map[string]provider.Provider{"provider": adapter}}
-			_, _, err := service.downloadAndSelect(context.Background(), serviceRequest(t), exactCandidate("failure"), t.TempDir(), 0)
+			_, _, _, err := service.downloadAndSelect(context.Background(), serviceRequest(t), exactCandidate("failure"), t.TempDir(), 0)
 			var content *pack.ContentError
 			if err == nil || errors.As(err, &content) {
 				t.Fatalf("local failure classified as content: %T %v", err, err)

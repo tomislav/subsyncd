@@ -16,8 +16,23 @@ type EvaluatedCandidate struct {
 }
 
 func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage domain.Language) domain.Score {
+	return evaluate(media, candidate, requestedLanguage, false)
+}
+
+// EvaluateSelectedPackMember is only for a runtime-pack member already selected
+// by the strict archive selector. It substitutes member episode evidence without
+// rewriting provider identity or changing point weights. Exact hashes cannot be
+// transferred between media through this path.
+func EvaluateSelectedPackMember(media domain.Media, candidate domain.Candidate, language domain.Language) domain.Score {
+	if media.Ref.Kind != domain.MediaEpisode || candidate.ExactHash {
+		return Evaluate(media, candidate, language)
+	}
+	return evaluate(media, candidate, language, true)
+}
+
+func evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage domain.Language, selectedMember bool) domain.Score {
 	releases := parseReleases(candidate.ReleaseNames)
-	rejected := identityRejections(media, candidate, requestedLanguage, releases)
+	rejected := identityRejections(media, candidate, requestedLanguage, releases, selectedMember)
 	if len(rejected) != 0 {
 		return domain.Score{RejectedReasons: rejected}
 	}
@@ -40,7 +55,7 @@ func Evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 	contributions := []domain.Contribution{
 		contribution("external_id", boolPoints(externalMatch, 20), "matching IMDb, TMDB, or TVDB identity"),
 		contribution("title_year", boolPoints(titleMatch && yearMatch, 15), "normalized title and year"),
-		contribution("episode", boolPoints(episodeEvidenceMatches(media, candidate, releases), 20), "episode or containing pack"),
+		contribution("episode", boolPoints(selectedMember || episodeEvidenceMatches(media, candidate, releases), 20), "episode or containing pack"),
 		contribution("release_group", boolPoints(releaseGroupMatches(releases, media.ReleaseGroup), 25), "release group"),
 		contribution("source", boolPoints(releaseSourceMatches(releases, media.Source), 15), "media source"),
 		contribution("edition", boolPoints(editionMatches(releases, media.Edition), 10), "edition or cut"),
@@ -115,7 +130,7 @@ func Rank(items []EvaluatedCandidate) {
 	})
 }
 
-func identityRejections(media domain.Media, candidate domain.Candidate, requestedLanguage domain.Language, releases []Release) []string {
+func identityRejections(media domain.Media, candidate domain.Candidate, requestedLanguage domain.Language, releases []Release, selectedMember bool) []string {
 	var reasons []string
 	if !domain.EquivalentLanguage(candidate.Language, requestedLanguage) {
 		reasons = append(reasons, "candidate language conflicts with requested language")
@@ -138,7 +153,7 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 		if candidate.Season != 0 && candidate.Season != media.Season {
 			reasons = append(reasons, "candidate season conflicts with target")
 		}
-		if candidate.Episode != 0 && candidate.Episode != media.Episode && candidate.Episode != media.AbsoluteEpisode {
+		if !selectedMember && candidate.Episode != 0 && candidate.Episode != media.Episode && candidate.Episode != media.AbsoluteEpisode {
 			reasons = append(reasons, "candidate episode conflicts with target")
 		}
 	}

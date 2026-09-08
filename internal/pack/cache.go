@@ -25,6 +25,7 @@ const (
 type cacheClock interface{ Now() time.Time }
 
 type CachedMember struct {
+	RuntimePack       bool
 	Path              string
 	Checksum          string
 	Candidate         domain.Candidate
@@ -102,6 +103,13 @@ func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language d
 			}
 			continue
 		}
+		manifest.RuntimePack = manifest.RuntimePack || IsRuntimePack(manifest)
+		if manifest.RuntimePack {
+			season, safe := RuntimeCacheSeason(manifest)
+			if !safe || season != media.Season || season != entry.Season {
+				continue
+			}
+		}
 		member, err := Select(manifest, manifest.Candidate, media, false)
 		if err != nil {
 			selectionErr = err
@@ -120,7 +128,7 @@ func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language d
 			}
 			continue
 		}
-		cached := CachedMember{Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
+		cached := CachedMember{RuntimePack: manifest.RuntimePack, Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
 		if accept != nil {
 			accepted, err := accept(cached)
 			if err != nil {
@@ -144,6 +152,12 @@ func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language d
 func (c *Cache) Put(ctx context.Context, manifest Manifest, expiresAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	manifest.RuntimePack = manifest.RuntimePack || IsRuntimePack(manifest)
+	if manifest.RuntimePack {
+		if _, safe := RuntimeCacheSeason(manifest); !safe {
+			return fmt.Errorf("runtime pack lacks safe cache identity")
+		}
+	}
 	if manifest.ProviderID == "" || manifest.ResultID == "" || manifest.Language == "" || manifest.Checksum == "" || len(manifest.Members) == 0 {
 		return fmt.Errorf("pack manifest identity and members are required")
 	}
@@ -228,6 +242,9 @@ func (c *Cache) Put(ctx context.Context, manifest Manifest, expiresAt time.Time)
 		return fmt.Errorf("encode cached candidate: %w", err)
 	}
 	season := sanitized.Candidate.Season
+	if sanitized.RuntimePack {
+		season, _ = RuntimeCacheSeason(sanitized)
+	}
 	if sanitized.Candidate.Pack != nil && sanitized.Candidate.Pack.Season != 0 {
 		season = sanitized.Candidate.Pack.Season
 	}

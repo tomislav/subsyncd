@@ -13,6 +13,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Runtime season-pack detection and reuse — 2026-09-08
+
+- Commit: this `fix: detect and cache runtime season packs` commit, based on `21eec6e`; user authorized the repair and subsequent commit/push. No production rollout performed.
+- Adopted content-derived runtime classification for episode payloads with multiple subtitle members or a valid multi-episode range. Manifest persistence and private preparation state enforce nonexact LAPSE on fresh and cached members without rewriting provider candidates. Genuine exact hashes retain bypass and are excluded from runtime cache publication to prevent cross-episode hash-authority transfer.
+- Cache publication requires provider series identity and one positive, consistent provider/member season; malformed, unknown, mixed, and zero-special seasons fail closed for caching while strict selection and LAPSE remain active. Cached strict member evidence replaces only the original episode restriction and supplies the existing episode points; all other identity gates, scoring weights and HI policy remain unchanged. Original cache sources/manifests remain immutable; rejection stays media/language/member scoped and publication survives LAPSE rejection. No migration or configuration change.
+- RED: high-scoring multi-episode fixture installed with zero LAPSE calls; a separate diagnostic regression reproduced missing cache-hit visibility. GREEN covers mandatory synchronization, first download/publication, SQLite/cache reopen and second-episode reuse without search/download, remembered rejection without rerunning LAPSE, usable siblings, source/manifest immutability, credential stripping, season/range ambiguity, forced variants, ordinary singleton and exact bypass, best-effort cache-write failure, unchanged 37-point scoring and other identity gates. Debug archive classification, publication and lookup events use bounded fields without filenames/paths/references.
+- Verification passed: affected pack/match/workflow race suites, `go test ./... -race -count=1`, `go vet ./...`, `go test ./test/e2e -tags=e2e -race -count=1`, and `docker compose -f compose.example.yml config --quiet`, with writable caches and approved loopback fake servers only. Independent read-only code review found no actionable correctness issues. Formatting and `git diff --check` also passed.
+- Next task: observe GitHub CI after the authorized push; production deployment remains a separate operator action.
+
 ### Remember invalid generated LAPSE output — 2026-09-08
 
 - Commit: this repair commit, based on `bec4db5`; user approved remembering invalid LAPSE output and reviewing adjacent failure-classification gaps.

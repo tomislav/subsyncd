@@ -30,6 +30,7 @@ type Member struct {
 }
 
 type Manifest struct {
+	RuntimePack bool `json:",omitempty"`
 	ProviderID  string
 	ResultID    string
 	Language    domain.Language

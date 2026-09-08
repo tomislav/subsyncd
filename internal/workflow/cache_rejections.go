@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/match"
 	"subsyncd/internal/pack"
 )
 
@@ -29,4 +30,17 @@ func (s *Service) findUnrejectedPack(ctx context.Context, request Request, resul
 		return !rejected, nil
 	})
 	return
+}
+
+// Cache lookup has already rerun strict episode selection and verified the
+// immutable member checksum. Keep that evidence separate from provider identity.
+func (s *Service) evaluateCachedMember(media domain.Media, member pack.CachedMember, language domain.Language) domain.Score {
+	if !member.RuntimePack {
+		return s.evaluate(media, member.Candidate, language)
+	}
+	score := match.EvaluateSelectedPackMember(media, member.Candidate, language)
+	if member.Candidate.HearingImpaired && !s.AllowHearingImpaired {
+		score.RejectedReasons = append(score.RejectedReasons, "hearing-impaired candidate is disabled by policy")
+	}
+	return score
 }

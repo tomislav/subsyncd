@@ -126,6 +126,7 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 	for index := range manifest.Members {
 		manifest.Members[index].NormalizedPath = filepath.Join(dst, manifest.Members[index].SafeName)
 	}
+	manifest.RuntimePack = IsRuntimePack(manifest)
 	return manifest, nil
 }
 

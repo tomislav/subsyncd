@@ -76,6 +76,8 @@ When timing needs verification, [LAPSE](https://github.com/Schwponaco-org/lapse)
 
 Season packs must contain a clearly identifiable subtitle for the requested episode. Ambiguous or wrong-episode members are skipped. Explicit season/episode and absolute-number evidence must agree with the target when those coordinates are known; a matching token or provider member reference cannot override conflicting filename evidence. Other valid members in the same pack remain eligible.
 
+An episode result also receives pack handling when its downloaded payload contains multiple subtitle members or a valid multi-episode range, even if the provider labels it as one episode. Nonexact runtime packs always use LAPSE. When provider series identity and a consistent season are available, the original subtitles are cached for later episodes; each episode still undergoes strict selection and its own timing check. Missing or conflicting cache identity disables caching without relaxing selection or timing checks. A rejected member does not reject the other episodes.
+
 subsyncd upgrades only subtitles it installed and that remain unedited. A replacement must be an exact match or improve the score by at least 10 points. Manually added and edited subtitles are protected.
 
 ## Adjusting matching settings
