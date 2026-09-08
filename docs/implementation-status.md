@@ -4,14 +4,27 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Current state
 
-- Branch: `main`
-- Current task: per-language fallback providers and safe promotion implemented and locally verified
-- Next safe action: observe GitHub verification/image publication for the merged fallback-provider change; production rollout remains separate
-- Latest follow-up: fallback routing, provenance, promotion and manual scheduling passed local verification and independent review
+- Branch: `codex/lapse-cue-order`
+- Current task: normalize valid LAPSE cue ordering and invalidate historical invalid-output rejections once
+- Next safe action: integrate the verified fix; production rollout remains separate
+- Latest follow-up: full race/e2e/vet and final affected-package race verification passed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### LAPSE cue ordering and rejection reconsideration — 2026-09-08
+
+- Commit: this `fix: normalize LAPSE cue ordering and retry invalid outputs` commit on `codex/lapse-cue-order`, based on `9b4cdf1`. User authorized the ordering fix, one-time invalidation of all historical `lapse_invalid_output` rejections, and commit/push to GitHub. No production mutation or deployment.
+- Stable-sort complete generated cue records before final validation, preserving timestamps, text, styling and equal-start order. Already ordered output stays byte-identical. Negative/reversed intervals and existing size/encoding/syntax guards still reject. Ambiguous record boundaries or changing ASS/SSA event formats fail technically without poisoning candidate rejection state. Original sources and cached pack members remain unchanged.
+- Migration `007_clear_lapse_invalid_output.sql` deletes only existing rejections with that reason, once. Other rejection reasons, media, installations, caches, schedules and leases remain unchanged; fresh invalid-output rejections survive restart. Candidates are reconsidered on normal schedules, not through an immediate library-wide search.
+- Verification: observed focused failing ordering and migration tests before implementation; full race suite, tagged e2e race suite and vet passed. Independent review found changing ASS event-format context; added a regression and fail-safe guard including whitespace before the colon. Final syncer/workflow race verification passed after the guard correction. Tests used sanitized fixtures and local fake services, with approved socket access where required.
+- Next task: review/integrate and deploy this branch; migration takes effect at the first mutating startup of the updated version.
+
+### Timestamp rejection diagnostic — 2026-09-08
+
+- Diagnostic only, no runtime code commit. Scoped inspection found three cached episode-one sources with 614 cues each and no negative, reversed or decreasing start timestamps. Reproducing cached Titlovi candidate `384788` through deployed LAPSE v2.0.5 in private temporary storage with `--no-cache` produced `solid`, `auto/recut`, exit zero and three decreasing start-time pairs (cues 171, 449, 532), but no negative or reversed intervals. Temporary artifacts were removed; no provider requests, subtitle installation, persistent database/cache changes or service lifecycle changes.
+- Basic media ffprobe returned zero with no reported errors; this was not a full decode/integrity test. Evidence identifies LAPSE output cue ordering rejected by subsyncd's monotonic-start validation, not demonstrated media corruption. Follow-up authorized: normalize cue ordering while retaining negative/reversed interval guards, and clear historical invalid-output rejections once by reason.
 
 ### Fallback-provider integration — 2026-09-08
 

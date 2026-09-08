@@ -125,3 +125,5 @@ Nonexact installed subtitles are normally reconsidered after 7, 30, or 90 days d
 If credentials are rejected, correct them and clear the affected provider's saved state using the [provider recovery instructions](operations.md#troubleshooting). Use [manual searches and explain](operations.md#inspect-or-search-one-file) to investigate a particular file.
 
 The exact point values, schedules, API handling, and cache rules are in the [developer provider reference](development/providers.md).
+
+LAPSE-generated cues with valid intervals but decreasing start times are stably reordered before final validation. Complete cue records retain their timestamps, text, styling and identifiers; equal-start cues retain their order. Negative or reversed intervals still reject. Migration `007_clear_lapse_invalid_output.sql` clears all existing `lapse_invalid_output` rejections once so these candidates can be reconsidered on normal search schedules. It preserves other rejection reasons and does not change schedules or bypass output validation; new invalid-output rejections remain retained.

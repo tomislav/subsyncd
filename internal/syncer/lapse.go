@@ -179,6 +179,9 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 	if !samePath(report.Output, outputPath) {
 		return domain.SyncResult{}, fmt.Errorf("LAPSE reported an unexpected output path")
 	}
+	if err := normalizeOutputOrder(outputPath); err != nil {
+		return domain.SyncResult{}, err
+	}
 	if err := validateOutput(outputPath); err != nil {
 		return domain.SyncResult{}, err
 	}
@@ -364,20 +367,20 @@ func analysisCopy(source string) (string, string, error) {
 	return workspace, destination, nil
 }
 
-func validateOutput(path string) error {
+func readOutput(path string) (*astisub.Subtitles, []byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("LAPSE output is missing or not a regular file")
+		return nil, nil, fmt.Errorf("LAPSE output is missing or not a regular file")
 	}
 	if info.Size() <= 0 || info.Size() > maximumSubtitleBytes {
-		return &InvalidOutputError{reason: "LAPSE output size is invalid"}
+		return nil, nil, &InvalidOutputError{reason: "LAPSE output size is invalid"}
 	}
 	payload, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read LAPSE output: %w", err)
+		return nil, nil, fmt.Errorf("read LAPSE output: %w", err)
 	}
 	if !utf8.Valid(payload) || bytes.IndexByte(payload, 0) >= 0 {
-		return &InvalidOutputError{reason: "LAPSE output is not valid UTF-8 text"}
+		return nil, nil, &InvalidOutputError{reason: "LAPSE output is not valid UTF-8 text"}
 	}
 	var subtitles *astisub.Subtitles
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -388,10 +391,18 @@ func validateOutput(path string) error {
 	case ".vtt":
 		subtitles, err = astisub.ReadFromWebVTT(bytes.NewReader(payload))
 	default:
-		return fmt.Errorf("LAPSE output has an unsupported extension")
+		return nil, nil, fmt.Errorf("LAPSE output has an unsupported extension")
 	}
 	if err != nil || subtitles == nil || len(subtitles.Items) == 0 || len(subtitles.Items) > maximumSubtitleCues {
-		return &InvalidOutputError{reason: "LAPSE output subtitle syntax is invalid"}
+		return nil, nil, &InvalidOutputError{reason: "LAPSE output subtitle syntax is invalid"}
+	}
+	return subtitles, payload, nil
+}
+
+func validateOutput(path string) error {
+	subtitles, _, err := readOutput(path)
+	if err != nil {
+		return err
 	}
 	previous := subtitles.Items[0].StartAt
 	for _, item := range subtitles.Items {
