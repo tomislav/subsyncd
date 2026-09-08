@@ -30,12 +30,14 @@ The level behavior is:
 
 | Level | Intended records |
 | --- | --- |
-| `info` | Service, webhook, durable job, search, selected candidate, install/provenance, notification, reconciliation, and recovery lifecycle summaries. |
+| `info` | Service, webhook, durable job, search, archive-member selection, candidate rejection/retained skip, selected candidate, install/provenance, notification, reconciliation, and recovery lifecycle summaries. |
 | `warn` | Expected degraded states such as throttling, persisted provider cooldown/circuit/auth transitions, non-solid LAPSE decisions, readiness loss, and bounded shutdown drain timeout. |
 | `error` | Technical failures that require retry or operator attention. |
-| `debug` | Candidate score components/rejections, release-name diagnostics, cache decisions, tournament/fallback decisions, and media paths only when safely root-relative. |
+| `debug` | Candidate score components, release-name diagnostics, cache decisions, tournament/fallback decisions, and media paths only when safely root-relative. |
 
 Successful `/healthz` and `/readyz` requests are intentionally silent. Readiness emits only a transition to unhealthy and a later recovery, avoiding probe noise. Webhook paths exclude query strings. Error text passes through configuration-aware redaction and is normalized to one line. Credentials, bearer/API keys, provider URLs and bodies, notification payloads, absolute media/data/temp paths, command arguments, and raw LAPSE stdout/stderr are never intentional log fields. If root containment cannot be proven, even the debug relative path is omitted.
 
 When diagnosing one workflow, follow records with the same `job_id` and inspect `job.started`, provider search/download events, `candidate.selected`, any LAPSE phase, installation/notification, and `job.completed`. Acquisition LAPSE work emits one `lapse.sync_started` at `info` immediately before the subprocess call, followed by the matching completion or `lapse.failed` event. Selection and installation follow preparation of the complete current score tier; a sync completion alone does not mean that candidate was installed. Start events contain correlation, phase, provider, candidate, and compatibility-version fields, but no duration or result fields. Candidate details require a temporary `SUBSYNCD_LOG_LEVEL=debug` restart; return to `info` immediately afterward.
 
+
+`archive.members_selected` is an info event with provider, candidate_id, selection_rule, matching_member_count and subtitle_member_count. Deterministic content/preparation failures emit `candidate.rejected` immediately at info with a bounded reason_code; selection failures add bounded archive type/rule/counts. `candidate.skipped` reports retained rejections at info. Multi-version preparation and selected/installed records carry member_index/member_count so repeated LAPSE events for the same provider candidate can be distinguished. Indices are local to the current preparation group; no filename or path is emitted. `candidate.rejection_details` and score/cache/tournament details remain debug-only.

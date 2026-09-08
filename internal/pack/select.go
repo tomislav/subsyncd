@@ -23,15 +23,15 @@ type SelectionError struct {
 func (e *SelectionError) Error() string { return "subtitle archive member rejected: " + e.Reason }
 
 var (
-	episodeTokenPattern  = regexp.MustCompile(`(?i)(?:s(\d{1,3})e(\d{1,4})|(\d{1,3})x(\d{1,4}))`)
+	episodeTokenPattern  = regexp.MustCompile(`(?i)(?:s(\d{1,3})\.?e(\d{1,4})|(\d{1,3})x(\d{1,4}))`)
 	episodeRangePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,4})-e(\d{1,4})`),
-		regexp.MustCompile(`(?i)s(\d{1,3})e(\d{1,4})-s(\d{1,3})e(\d{1,4})`),
+		regexp.MustCompile(`(?i)s(\d{1,3})\.?e(\d{1,4})-e(\d{1,4})`),
+		regexp.MustCompile(`(?i)s(\d{1,3})\.?e(\d{1,4})-s(\d{1,3})\.?e(\d{1,4})`),
 		regexp.MustCompile(`(?i)(\d{1,3})x(\d{1,4})-(\d{1,3})x(\d{1,4})`),
 	}
-	rangeEndpointBeforePattern = regexp.MustCompile(`(?i)(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})$`)
-	rangeEndpointAfterPattern  = regexp.MustCompile(`(?i)^(?:s\d{1,3}e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})(?:$|[^[:alnum:]])`)
-	episodeContinuationPattern = regexp.MustCompile(`(?i)^(?:s\d{1,3}e\d{0,4}|\d{1,3}x\d{0,4}|e\d{0,4})`)
+	rangeEndpointBeforePattern = regexp.MustCompile(`(?i)(?:s\d{1,3}\.?e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})$`)
+	rangeEndpointAfterPattern  = regexp.MustCompile(`(?i)^(?:s\d{1,3}\.?e\d{1,4}|\d{1,3}x\d{1,4}|e\d{1,4})(?:$|[^[:alnum:]])`)
+	episodeContinuationPattern = regexp.MustCompile(`(?i)^(?:s\d{1,3}\.?e\d{0,4}|\d{1,3}x\d{0,4}|e\d{0,4})`)
 	absolutePattern            = regexp.MustCompile(`(?i)(?:\bEP|\bABS(?:OLUTE)?[ ._-]*)(\d{2,5})\b`)
 	forcedPattern              = regexp.MustCompile(`(?i)(?:^|[ ._-])forced(?:[ ._-]|$)`)
 )
@@ -237,18 +237,20 @@ func selectionError(manifest Manifest, rule string, matchingMembers int, reason 
 }
 
 func episodeToken(name string) (int, int, bool) {
-	match := episodeTokenPattern.FindStringSubmatch(name)
-	if len(match) == 0 {
-		return 0, 0, false
-	}
-	if match[1] != "" {
-		season, _ := strconv.Atoi(match[1])
-		episode, _ := strconv.Atoi(match[2])
+	for _, indices := range episodeTokenPattern.FindAllStringSubmatchIndex(name, -1) {
+		if !completeRangeToken(name, indices[0], indices[1]) {
+			continue
+		}
+		if indices[2] >= 0 {
+			season, _ := strconv.Atoi(name[indices[2]:indices[3]])
+			episode, _ := strconv.Atoi(name[indices[4]:indices[5]])
+			return season, episode, true
+		}
+		season, _ := strconv.Atoi(name[indices[6]:indices[7]])
+		episode, _ := strconv.Atoi(name[indices[8]:indices[9]])
 		return season, episode, true
 	}
-	season, _ := strconv.Atoi(match[3])
-	episode, _ := strconv.Atoi(match[4])
-	return season, episode, true
+	return 0, 0, false
 }
 
 func episodeRange(name string) (int, int, int, bool) {
@@ -458,7 +460,8 @@ func normalizeTitle(value string) string {
 }
 
 func hasEpisodeEvidence(name string) bool {
-	_, _, episode := episodeToken(name)
+	// Malformed episode-shaped text must not become generic/title-only evidence.
+	episode := episodeTokenPattern.MatchString(name)
 	_, _, _, episodeRange := episodeRange(name)
 	_, absolute := absoluteEpisode(name)
 	return episode || episodeRange || absolute

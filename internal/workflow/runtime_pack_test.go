@@ -164,7 +164,8 @@ func TestRuntimePackSafetyAndBestEffortCache(t *testing.T) {
 			case "ambiguous":
 				delete(members, "Movie.S01E02.srt")
 				members["Other.S01E01.srt"] = installSRT
-				wantPuts, wantSync, wantOutcome = 0, 0, OutcomeRejected
+				// Identical episode versions collapse to one LAPSE invocation.
+				wantPuts, wantSync, wantOutcome = 1, 1, OutcomeInstalled
 			case "range":
 				members = map[string]string{"Movie.S01E01-E02.srt": installSRT}
 			case "single":

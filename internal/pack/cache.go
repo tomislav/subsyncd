@@ -25,6 +25,8 @@ const (
 type cacheClock interface{ Now() time.Time }
 
 type CachedMember struct {
+	MemberScoped      bool
+	Alternatives      []CachedMember
 	RuntimePack       bool
 	Path              string
 	Checksum          string
@@ -79,6 +81,7 @@ func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language d
 		return CachedMember{}, false, err
 	}
 	var selectionErr error
+entriesLoop:
 	for _, entry := range entries {
 		if err := c.secureRegularPath(entry.ManifestPath); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -110,34 +113,43 @@ func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language d
 				continue
 			}
 		}
-		member, err := Select(manifest, manifest.Candidate, media, false)
+		members, err := SelectAlternatives(manifest, manifest.Candidate, media, false)
 		if err != nil {
 			selectionErr = err
 			continue
 		}
-		if err := c.secureRegularPath(member.NormalizedPath); err != nil {
-			if err := c.invalidateEntry(ctx, entry); err != nil {
-				return CachedMember{}, false, err
+		var acceptedMembers []CachedMember
+		for _, member := range members {
+			if err := c.secureRegularPath(member.NormalizedPath); err != nil {
+				if err := c.invalidateEntry(ctx, entry); err != nil {
+					return CachedMember{}, false, err
+				}
+				continue entriesLoop
 			}
+			payload, err := os.ReadFile(member.NormalizedPath)
+			if err != nil || checksum(payload) != member.Checksum {
+				if err := c.invalidateEntry(ctx, entry); err != nil {
+					return CachedMember{}, false, err
+				}
+				continue entriesLoop
+			}
+			cached := CachedMember{MemberScoped: len(members) > 1, RuntimePack: manifest.RuntimePack, Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
+			if accept != nil {
+				accepted, err := accept(cached)
+				if err != nil {
+					return CachedMember{}, false, err
+				}
+				if !accepted {
+					continue
+				}
+			}
+			acceptedMembers = append(acceptedMembers, cached)
+		}
+		if len(acceptedMembers) == 0 {
 			continue
 		}
-		memberPayload, err := os.ReadFile(member.NormalizedPath)
-		if err != nil || checksum(memberPayload) != member.Checksum {
-			if err := c.invalidateEntry(ctx, entry); err != nil {
-				return CachedMember{}, false, err
-			}
-			continue
-		}
-		cached := CachedMember{RuntimePack: manifest.RuntimePack, Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
-		if accept != nil {
-			accepted, err := accept(cached)
-			if err != nil {
-				return CachedMember{}, false, err
-			}
-			if !accepted {
-				continue
-			}
-		}
+		cached := acceptedMembers[0]
+		cached.Alternatives = acceptedMembers[1:]
 		if err := c.repo.TouchPack(ctx, entry.ID, now); err != nil {
 			return CachedMember{}, false, err
 		}

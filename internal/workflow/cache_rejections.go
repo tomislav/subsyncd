@@ -19,7 +19,11 @@ func (s *Service) findUnrejectedPack(ctx context.Context, request Request, resul
 		return
 	}
 	member, found, cacheErr = filtered.FindEligible(ctx, request.Media, request.Language, func(candidate pack.CachedMember) (bool, error) {
-		rejection, rejected, err := s.candidateRejection(ctx, request, candidate.Candidate, candidate.Checksum)
+		scoped := request
+		if candidate.MemberScoped {
+			scoped = memberRequest(request, candidate.Checksum)
+		}
+		rejection, rejected, err := s.candidateRejection(ctx, scoped, candidate.Candidate, candidate.Checksum)
 		if err != nil {
 			rejectionErr = err
 			return false, err

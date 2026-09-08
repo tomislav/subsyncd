@@ -29,8 +29,8 @@ logging:
 
 | Level | Use it for |
 | --- | --- |
-| `info` | Everyday use: searches, downloads, installations, and service activity. This is the default. |
-| `debug` | Investigating candidate scores, rejected matches, and cache decisions. |
+| `info` | Everyday use: searches, downloads, member selection, rejection reasons, installations, and service activity. This is the default. |
+| `debug` | Investigating candidate scores, release evidence, and cache decisions. |
 | `warn` | Warnings and errors, including provider limits and unsuccessful timing checks. |
 | `error` | Errors only. |
 
@@ -48,6 +48,8 @@ Each application log line is a JSON record. The useful fields are:
 - `outcome` and `reason`: the result and why it happened.
 
 For a delayed or failed search, find its completion record and follow the same `job_id` backward. Provider events show limits or connection problems. `lapse.sync_started` means timing verification is running; it can take time on large files or network storage. A successful synchronization alone does not mean the subtitle was installed—look for the installation and final job outcome.
+
+A `provider.download_completed` success confirms only the transfer. `archive.members_selected` shows how many episode versions passed selection. `candidate.rejected` immediately reports deterministic preparation or content rejection through `reason_code`, with bounded selection rules/counts for archive failures. `candidate.skipped` identifies a remembered rejection. For multiple versions of the same provider candidate, use `member_index` and `member_count` to connect LAPSE results with the selected and installed version. These info events contain no archive filenames or paths.
 
 Use [`explain`](operations.md#inspect-or-search-one-file) for the saved result and next search time. Successful health checks are deliberately quiet.
 

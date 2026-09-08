@@ -1,5 +1,11 @@
 # Release verification
 
+## Episode-pack versions and rejection visibility — 2026-09-08
+
+Dotted episode tokens such as `S04.E13` now identify the target episode. Packs containing two or three explicit versions of one episode are downloaded once and evaluated through LAPSE; identical content is evaluated once, and installation can fall back to another retained solid output. More than three distinct versions and ambiguous episode identity remain rejected. Info logs now show member selection, deterministic rejection reasons, retained skips and per-version LAPSE/winner correlation.
+
+Episode-selection rejection signatures changed so previously rejected episode packs can be reconsidered once after upgrade. Other legacy episode rejections may also be reconsidered once; movie rejections are unchanged. No migration or configuration change is required.
+
 ## Full Sonarr and Radarr library discovery
 
 After upgrading, the daemon performs one background discovery pass for each configured Arr instance, including existing instances. Files in your configured mappings can now be queued even without retained import history. Existing searches and installation provenance are preserved. Startup and readiness remain offline.

@@ -216,7 +216,7 @@ func TestCacheFindEligibleSkipsRejectedPackWithoutTouchingIt(t *testing.T) {
 	}
 }
 
-func TestCacheFindRerunsStrictSelectionAndRejectsAmbiguousPack(t *testing.T) {
+func TestCacheFindRerunsSelectionAndDeduplicatesIdenticalVersions(t *testing.T) {
 	ctx := context.Background()
 	repository := openRepository(t)
 	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
@@ -233,13 +233,8 @@ func TestCacheFindRerunsStrictSelectionAndRejectsAmbiguousPack(t *testing.T) {
 	if err := cache.Put(ctx, manifest, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := cache.Find(ctx, cacheMedia(), "en"); found || err == nil {
-		t.Fatalf("ambiguous cache lookup = found %v, error %T %v", found, err, err)
-	} else {
-		var selectionError *SelectionError
-		if !errors.As(err, &selectionError) {
-			t.Fatalf("error = %T %v", err, err)
-		}
+	if member, found, err := cache.Find(ctx, cacheMedia(), "en"); err != nil || !found || len(member.Alternatives) != 0 {
+		t.Fatalf("deduplicated versions = %+v/%v/%v", member, found, err)
 	}
 }
 

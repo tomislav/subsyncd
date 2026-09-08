@@ -36,11 +36,12 @@ const (
 )
 
 type Request struct {
-	MediaID    int64
-	Media      domain.Media
-	Language   domain.Language
-	Manual     bool
-	ForceProbe bool
+	memberScope string
+	MediaID     int64
+	Media       domain.Media
+	Language    domain.Language
+	Manual      bool
+	ForceProbe  bool
 }
 
 type Decision struct {
@@ -139,6 +140,10 @@ type Service struct {
 }
 
 type downloadedCandidate struct {
+	memberIndex int
+	memberCount int
+	fromCache   bool
+	memberScope string
 	runtimePack bool
 	candidate   domain.Candidate
 	score       domain.Score
@@ -149,6 +154,7 @@ type downloadedCandidate struct {
 // preparedCandidate retains the immutable selected source for rejection identity
 // separately from the installable artifact and the result that produced it.
 type preparedCandidate struct {
+	groupMayReject bool
 	downloadedCandidate
 	sync   domain.SyncResult
 	output string
@@ -257,7 +263,11 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		if cacheErr != nil {
 			result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", Reason: cacheErr.Error()})
 		} else if found {
-			rejection, rejected, rejectionErr := s.candidateRejection(ctx, request, cached.Candidate, cached.Checksum)
+			scoped := request
+			if cached.MemberScoped {
+				scoped = memberRequest(request, cached.Checksum)
+			}
+			rejection, rejected, rejectionErr := s.candidateRejection(ctx, scoped, cached.Candidate, cached.Checksum)
 			if rejectionErr != nil {
 				return result, rejectionErr
 			}
@@ -277,38 +287,41 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 					setReassessmentResult(&result, existing, cached.Candidate, score, s.Clock.Now())
 					result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 				} else {
-					downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, path: cached.Path, runtimePack: cached.RuntimePack}
-					prepared, prepareErr := s.prepareCandidate(ctx, request, downloaded, activeInstallation, existing, workspace, -1)
-					if ctxErr := ctx.Err(); ctxErr != nil {
-						return result, ctxErr
+					downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, runtimePack: cached.RuntimePack, fromCache: true}
+					if cached.MemberScoped {
+						downloaded.memberScope = "versions"
 					}
-					if prepareErr == nil {
-						result, prepareErr = s.install(ctx, request, prepared, existing, activeInstallation, result)
-						if prepareErr != nil {
-							if _, rejected := prepareErr.(*subtitleValidationError); !rejected {
-								return result, prepareErr
+					paths := []string{cached.Path}
+					for _, alternative := range cached.Alternatives {
+						paths = append(paths, alternative.Path)
+					}
+					prepared, prepareErr := s.prepareMembers(ctx, request, downloaded, paths, activeInstallation, existing, workspace, -100, &candidateFailures, &result)
+					if prepareErr != nil {
+						return result, prepareErr
+					}
+					sortPrepared(prepared)
+					for _, item := range prepared {
+						result, err = s.install(ctx, request, item, existing, activeInstallation, result)
+						if err != nil {
+							if _, rejected := err.(*subtitleValidationError); !rejected {
+								return result, err
 							}
 							if ctxErr := ctx.Err(); ctxErr != nil {
 								return result, ctxErr
 							}
+							if handleErr := s.handleCandidateFailure(ctx, memberRequest(request, item.memberScope), item.candidate, item.path, err, &candidateFailures); handleErr != nil {
+								return result, handleErr
+							}
 						} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
 							return result, nil
 						}
-						// The cache owns the source; only its private derivative is disposable.
-						if cleanupErr := removeWorkflowArtifact(workspace, prepared.output); cleanupErr != nil {
+						if cleanupErr := removeWorkflowArtifact(workspace, item.output); cleanupErr != nil {
 							return result, cleanupErr
 						}
 						result.Outcome = ""
 					}
-					if prepareErr != nil {
-						recorded, recordErr := s.recordCandidateRejection(ctx, request, cached.Candidate, cached.Checksum, prepareErr)
-						if recordErr != nil {
-							return result, recordErr
-						}
-						if !recorded && !isMediaValidationRejection(prepareErr) {
-							candidateFailures = append(candidateFailures, prepareErr)
-						}
-						result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: prepareErr.Error()})
+					if err := s.rejectExhaustedVersions(ctx, request, prepared); err != nil {
+						return result, err
 					}
 				}
 			}
@@ -463,7 +476,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				return result, err
 			}
 			item := eligible[index]
-			path, runtimePack, decisions, prepareErr := s.downloadAndSelect(ctx, request, item.Candidate, workspace, index)
+			paths, runtimePack, decisions, prepareErr := s.downloadAndSelectMembers(ctx, request, item.Candidate, workspace, index)
 			result.Decisions = append(result.Decisions, decisions...)
 			if prepareErr != nil {
 				if err := ctx.Err(); err != nil {
@@ -479,25 +492,12 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				result.Decisions = append(result.Decisions, candidateFailureDecision("candidate", item.Candidate, prepareErr))
 				continue
 			}
-			downloaded := downloadedCandidate{candidate: item.Candidate, score: item.Score, priority: item.ProviderPriority, path: path, runtimePack: runtimePack}
-			prepared, syncErr := s.prepareCandidate(ctx, request, downloaded, activeInstallation, existing, workspace, index)
-			if syncErr != nil {
-				if err := ctx.Err(); err != nil {
-					return result, err
-				}
-				if err := s.handleCandidateFailure(ctx, request, item.Candidate, path, syncErr, &candidateFailures); err != nil {
-					return result, err
-				}
-				if err := removeWorkflowArtifact(workspace, path); err != nil {
-					return result, err
-				}
-				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_prepare", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: lapseFailureDecision(syncErr)})
-				continue
+			downloaded := downloadedCandidate{candidate: item.Candidate, score: item.Score, priority: item.ProviderPriority, runtimePack: runtimePack}
+			prepared, prepareErr := s.prepareMembers(ctx, request, downloaded, paths, activeInstallation, existing, workspace, index*4, &candidateFailures, &result)
+			if prepareErr != nil {
+				return result, prepareErr
 			}
-			if !prepared.bypass {
-				result.Decisions = append(result.Decisions, Decision{Stage: "lapse_prepare", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "solid"})
-			}
-			preparedTier = append(preparedTier, prepared)
+			preparedTier = append(preparedTier, prepared...)
 		}
 		sortPrepared(preparedTier)
 		for index, prepared := range preparedTier {
@@ -516,7 +516,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				}
 				// Rejection identity follows the selected source, not the LAPSE
 				// derivative, just as it does for preparation failures.
-				if handleErr := s.handleCandidateFailure(ctx, request, prepared.candidate, prepared.path, err, &candidateFailures); handleErr != nil {
+				if handleErr := s.handleCandidateFailure(ctx, memberRequest(request, prepared.memberScope), prepared.candidate, prepared.path, err, &candidateFailures); handleErr != nil {
 					return result, handleErr
 				}
 				result.Decisions = append(result.Decisions, candidateFailureDecision("installation", prepared.candidate, err))
@@ -531,6 +531,9 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 			if index+1 < len(preparedTier) {
 				result.Decisions = append(result.Decisions, Decision{Stage: "fallback", Reason: "next candidate in tier"})
 			}
+		}
+		if err := s.rejectExhaustedVersions(ctx, request, preparedTier); err != nil {
+			return result, err
 		}
 		if tierEnd < len(eligible) {
 			if err := ctx.Err(); err != nil {
@@ -644,9 +647,19 @@ func (s *Service) logSearchPhase(ctx context.Context, mode provider.SearchMode, 
 
 func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 	event := "candidate.decision"
+	level := slog.LevelDebug
 	switch decision.Stage {
-	case "candidate_rejection", "candidate":
-		event = "candidate.rejected"
+	case "candidate_rejection":
+		event = "candidate.skipped"
+		level = slog.LevelInfo
+		switch decision.Reason {
+		case "pack_selection", "invalid_subtitle", "lapse_unsure", "lapse_nothing", "lapse_invalid_output":
+			decision.ReasonCode = decision.Reason
+		default:
+			decision.ReasonCode = "retained_rejection"
+		}
+	case "candidate":
+		event = "candidate.rejection_details"
 	case "tournament_tier":
 		event = "candidate.tier_started"
 	case "fallback":
@@ -670,7 +683,7 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 			slog.Int("matching_member_count", decision.MatchingMemberCount),
 		)
 	}
-	s.workflowEvents().Log(ctx, slog.LevelDebug, event, "subtitle candidate decision", attrs...)
+	s.workflowEvents().Log(ctx, level, event, "subtitle candidate decision", attrs...)
 }
 
 func candidateFailureDecision(stage string, candidate domain.Candidate, failure error) Decision {
@@ -785,6 +798,9 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 
 func (s *Service) candidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, bool, error) {
 	signature, err := candidateSignature(candidate, request.Media)
+	if request.memberScope != "" {
+		signature += "/member-" + request.memberScope
+	}
 	if err != nil {
 		return store.CandidateRejection{}, false, err
 	}
@@ -816,6 +832,9 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 		return false, nil
 	}
 	signature, err := candidateSignature(candidate, request.Media)
+	if request.memberScope != "" {
+		signature += "/member-" + request.memberScope
+	}
 	if err != nil {
 		return false, err
 	}
@@ -829,6 +848,9 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	if err := s.Repository.PutCandidateRejection(ctx, rejection); err != nil {
 		return false, err
 	}
+	decision := candidateFailureDecision("candidate", candidate, failure)
+	decision.ReasonCode = reasonCode
+	s.logCandidateRejection(ctx, decision)
 	return true, nil
 }
 
@@ -873,6 +895,7 @@ func candidateSignature(candidate domain.Candidate, media ...domain.Media) (stri
 			EpisodeTitle    string
 		}{media[0].Season, media[0].Episode, media[0].AbsoluteEpisode, media[0].EpisodeTitle})
 		payload = append(payload, evidence...)
+		payload = append(payload, []byte("/episode-selection-v2")...)
 	}
 	sum := sha256.Sum256(payload)
 	return fmt.Sprintf("%x", sum[:]), nil
@@ -907,22 +930,30 @@ func (s *Service) validate(request Request) error {
 	return nil
 }
 
-func (s *Service) downloadAndSelect(ctx context.Context, request Request, candidate domain.Candidate, workspace string, index int) (selected string, runtimePack bool, decisions []Decision, retErr error) {
+func (s *Service) downloadAndSelect(ctx context.Context, request Request, candidate domain.Candidate, workspace string, index int) (string, bool, []Decision, error) {
+	paths, runtime, decisions, err := s.downloadAndSelectMembers(ctx, request, candidate, workspace, index)
+	if err != nil {
+		return "", runtime, decisions, err
+	}
+	return paths[0], runtime, decisions, nil
+}
+
+func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request, candidate domain.Candidate, workspace string, index int) (selected []string, runtimePack bool, decisions []Decision, retErr error) {
 	adapter := s.Providers[candidate.ProviderID]
 	if adapter == nil {
-		return "", runtimePack, nil, fmt.Errorf("provider %q is not available for download", candidate.ProviderID)
+		return nil, runtimePack, nil, fmt.Errorf("provider %q is not available for download", candidate.ProviderID)
 	}
 	payloadPath := filepath.Join(workspace, fmt.Sprintf("download-%d", index))
 	payload, err := os.OpenFile(payloadPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return "", runtimePack, nil, err
+		return nil, runtimePack, nil, err
 	}
 	extractionPath := filepath.Join(workspace, fmt.Sprintf("extracted-%d", index))
 	defer func() {
 		if cleanupErr := errors.Join(os.RemoveAll(payloadPath), os.RemoveAll(extractionPath)); cleanupErr != nil {
 			// Cleanup failure is infrastructure failure, even when processing also
 			// rejected content. Do not persist it as a deterministic rejection.
-			selected = ""
+			selected = nil
 			retErr = fmt.Errorf("cleanup candidate scratch: %v; processing error: %v", cleanupErr, retErr)
 		}
 	}()
@@ -932,21 +963,21 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	syncErr := payload.Sync()
 	closeErr := payload.Close()
 	if localErr := errors.Join(bounded.writeErr, syncErr, closeErr); localErr != nil {
-		return "", runtimePack, nil, fmt.Errorf("write or flush provider download: %w", localErr)
+		return nil, runtimePack, nil, fmt.Errorf("write or flush provider download: %w", localErr)
 	}
 	if bounded.exceeded {
-		return "", runtimePack, nil, &pack.ContentError{Err: fmt.Errorf("provider download exceeds %d bytes", bounded.limit)}
+		return nil, runtimePack, nil, &pack.ContentError{Err: fmt.Errorf("provider download exceeds %d bytes", bounded.limit)}
 	}
 	if downloadErr != nil {
-		return "", runtimePack, nil, downloadErr
+		return nil, runtimePack, nil, downloadErr
 	}
 	info, err := os.Stat(payloadPath)
 	if err != nil {
-		return "", runtimePack, nil, err
+		return nil, runtimePack, nil, err
 	}
 	reader, err := os.Open(payloadPath)
 	if err != nil {
-		return "", runtimePack, nil, err
+		return nil, runtimePack, nil, err
 	}
 	extractionCandidate := candidate
 	if metadata.Filename != "" {
@@ -956,10 +987,10 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	closeErr = reader.Close()
 	removeErr := os.Remove(payloadPath)
 	if closeErr != nil || removeErr != nil {
-		return "", runtimePack, nil, fmt.Errorf("release downloaded payload: %v", errors.Join(closeErr, removeErr))
+		return nil, runtimePack, nil, fmt.Errorf("release downloaded payload: %v", errors.Join(closeErr, removeErr))
 	}
 	if err != nil {
-		return "", runtimePack, nil, err
+		return nil, runtimePack, nil, err
 	}
 	runtimePack = manifest.RuntimePack
 	classification := "single"
@@ -970,23 +1001,24 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	}
 	s.workflowEvents().Log(ctx, slog.LevelDebug, "archive.classified", "subtitle archive classified", slog.String("archive_type", manifest.ArchiveType), slog.Int("subtitle_member_count", len(manifest.Members)), slog.String("classification", classification))
 	var member pack.Member
+	var members []pack.Member
 	if request.Media.Ref.Kind == domain.MediaEpisode && candidate.Pack == nil && !runtimePack && len(manifest.Members) == 1 {
 		member, err = pack.SelectSingleEpisode(manifest, extractionCandidate, request.Media, false)
 		if err != nil {
-			return "", runtimePack, nil, err
+			return nil, runtimePack, nil, err
 		}
 	} else if request.Media.Ref.Kind == domain.MediaEpisode {
-		member, err = pack.Select(manifest, extractionCandidate, request.Media, false)
+		members, err = pack.SelectAlternatives(manifest, extractionCandidate, request.Media, false)
 		if err != nil {
-			return "", runtimePack, nil, err
+			return nil, runtimePack, nil, err
 		}
 	} else if len(manifest.Members) == 1 {
 		member, err = pack.SelectSingleMovie(manifest, extractionCandidate, false)
 		if err != nil {
-			return "", runtimePack, nil, err
+			return nil, runtimePack, nil, err
 		}
 	} else {
-		return "", runtimePack, nil, &pack.SelectionError{Reason: "movie candidate archive contains multiple subtitle files"}
+		return nil, runtimePack, nil, &pack.SelectionError{Reason: "movie candidate archive contains multiple subtitle files"}
 	}
 	cacheable := candidate.Pack != nil
 	if runtimePack {
@@ -1007,9 +1039,16 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 		}
 	}
 	s.workflowEvents().Log(ctx, slog.LevelDebug, "pack_cache.publication", "pack cache publication considered", slog.String("cache_outcome", cacheOutcome))
-	selected = filepath.Join(workspace, fmt.Sprintf("selected-%d%s", index, filepath.Ext(member.NormalizedPath)))
-	if err := os.Rename(member.NormalizedPath, selected); err != nil {
-		return "", runtimePack, decisions, err
+	if len(members) == 0 {
+		members = []pack.Member{member}
+	}
+	s.workflowEvents().Log(ctx, slog.LevelInfo, "archive.members_selected", "subtitle archive members selected", slog.String("provider", observability.SafeText(candidate.ProviderID)), slog.String("candidate_id", observability.SafeText(candidate.ResultID)), slog.String("selection_rule", members[0].SelectionRule), slog.Int("matching_member_count", len(members)), slog.Int("subtitle_member_count", len(manifest.Members)))
+	for n, member := range members {
+		path := filepath.Join(workspace, fmt.Sprintf("selected-%d-%d%s", index, n, filepath.Ext(member.NormalizedPath)))
+		if err := os.Rename(member.NormalizedPath, path); err != nil {
+			return nil, runtimePack, decisions, err
+		}
+		selected = append(selected, path)
 	}
 	return selected, runtimePack, decisions, nil
 }
@@ -1036,8 +1075,8 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 	if !item.runtimePack && canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
 		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
-	// Cached preparation reserves -1, exact candidates use lower negative
-	// indexes, and broad candidates retain their shortlist index after ranking.
+	// Cached preparation uses a negative range; broad candidates each reserve
+	// four slots for their bounded versions. Exact work runs between these phases.
 	// Each preparation therefore owns a distinct output even across fallback.
 	extension := strings.ToLower(filepath.Ext(item.path))
 	output := filepath.Join(workspace, fmt.Sprintf("synchronized-%d%s", index, extension))
@@ -1137,6 +1176,9 @@ func candidateHasEpisodeEvidence(media domain.Media, candidate domain.Candidate)
 }
 
 func (s *Service) install(ctx context.Context, request Request, prepared preparedCandidate, existing store.Installation, installed bool, result Result) (Result, error) {
+	if prepared.memberIndex > 0 {
+		ctx = observability.WithAttrs(ctx, slog.Int("member_index", prepared.memberIndex), slog.Int("member_count", prepared.memberCount))
+	}
 	destination := subtitleDestination(request.Media.Fingerprint.Path, request.Language, prepared.output)
 	if installed {
 		if !strings.EqualFold(filepath.Ext(existing.Path), filepath.Ext(prepared.output)) {

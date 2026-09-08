@@ -1165,7 +1165,7 @@ func TestServiceClearsPersistedCandidatesAfterSuccessfulEmptySearch(t *testing.T
 }
 
 func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {
-	t.Run("ambiguous pack", func(t *testing.T) {
+	t.Run("too many episode versions", func(t *testing.T) {
 		request := serviceRequest(t)
 		request.Media.Ref.Kind = domain.MediaEpisode
 		request.Media.Season = 1
@@ -1174,7 +1174,7 @@ func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {
 		candidate.Kind = domain.MediaEpisode
 		candidate.Season = 1
 		candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: 1}
-		providerFake := &fakeProvider{id: "provider", payloads: map[string][]byte{"pack": workflowZIP(t, map[string]string{"one.S01E02.srt": installSRT, "two.S01E02.srt": installSRT})}, filenames: map[string]string{"pack": "season.zip"}}
+		providerFake := &fakeProvider{id: "provider", payloads: map[string][]byte{"pack": workflowZIP(t, map[string]string{"one.S01E02.srt": installSRT, "two.S01E02.srt": strings.ReplaceAll(installSRT, "Hello", "second"), "three.S01E02.srt": strings.ReplaceAll(installSRT, "Hello", "third"), "four.S01E02.srt": strings.ReplaceAll(installSRT, "Hello", "fourth")})}, filenames: map[string]string{"pack": "season.zip"}}
 		cache := &fakePackCache{}
 		repository := &workflowRepository{}
 		service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, cache, &fakeSynchronizer{}, &fakeInstaller{})

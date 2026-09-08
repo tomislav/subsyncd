@@ -5,13 +5,25 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: full-library discovery for Sonarr and Radarr verified and authorized for publication
-- Next safe action: push the verified full-library discovery commit as authorized; production rollout remains separate
+- Current task: episode-pack version selection and info-level rejection logging repaired and locally verified
+- Next safe action: observe GitHub verification/publication after the authorized episode-pack repair push; production rollout remains separate
 - Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Episode-pack versions, dotted tokens and info rejection logs — 2026-09-08
+
+- Commit: this `fix: evaluate episode pack versions and explain rejections` commit, based on `169b1f5`. User explicitly authorized both observed pack-selection repairs, info-level logging improvements, and the subsequent commit/push. No production deployment performed. Contract/plan: `docs/superpowers/{specs,plans}/2026-09-08-episode-pack-versions*`.
+- Adopted optional-dot season/episode tokens and ranges (`S04.E13`) with complete-token boundaries. Tightened malformed-token handling so junk suffixes cannot become positive episode identity or generic singleton/title fallback. Preserved contradictory-coordinate, malformed/cross-season range, forced and exact-hash guards.
+- Nonexact packs may now supply up to three distinct-content versions with explicit consistent target-episode tokens. Identical bytes collapse before the bound; other selection ambiguity and excessive versions remain rejected. One provider download supplies the versions, one LAPSE output run prepares each, and the existing release-score tier ranks retained solid outputs by confidence. Provider identity and three-result shortlist stay unchanged. Cached groups verify/filter members separately and retain immutable manifests/sources.
+- Rejections use original-source member signatures and checksums. A failed version cannot hide a sibling; provider-result exhaustion is recorded only for the current media/language when every version failed deterministically, including installation-content fallback. Technical failures and cancellation do not poison rejection state. Episode-selection v2 permits one reconsideration of legacy episode rejections so old parser/ambiguity failures do not hide repaired candidates; movie signatures are unchanged. No migration/configuration change.
+- Info now includes `archive.members_selected`, immediate `candidate.rejected` reason/type/rule/count fields, retained `candidate.skipped`, and member_index/member_count on multi-version LAPSE and winner/installation events. No archive filenames, paths, references or content are logged. Existing preparation/cache decisions remain available at debug.
+- RED/GREEN reproduced dotted-token rejection, rejected multiple-version preparation, missing info rejection/winner correlation, repeated download of a cached sibling, exhausted installation redownload, contaminated-token acceptance and generic singleton fallback. Synthetic coverage verifies installed winning bytes, retained-output fallback, database reopen/cache immutability, cancellation, permanent all-version rejection and mixed technical retry without sibling poisoning. Independent review found and verified fixes for lost preparation decisions and malformed singleton fallback; no remaining actionable findings.
+- Verification passed: affected pack/workflow race suites; full `go test ./... -race -count=1`; `go vet ./...`; tagged `go test ./test/e2e -tags=e2e -race -count=1`; formatting and `git diff --check`, with writable caches and local fake-server binding. The additional mixed-failure regression passed separately with race detection. Ordinary tests contain sanitized fixtures and never contact live services.
+- A throwaway offline diagnostic against the previously user-authorized Titlovi API downloads confirmed `133625`: 27 archive members, two selected episode versions; `198474`: 13 members, one selected version. Original subtitle content was not added to the repository or ordinary tests. No new provider/API or production operation occurred during implementation.
+- Next task: observe GitHub verification/publication after the authorized push, then separately authorize rollout. Hades still runs the previous image until deployed; no production rejection clear or retry was performed.
 
 ### Runtime season-pack detection and reuse — 2026-09-08
 

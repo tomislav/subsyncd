@@ -179,7 +179,7 @@ func TestWorkflowLogsBoundedArchiveSelectionDiagnostics(t *testing.T) {
 		filenames: map[string]string{"306201": "306201.zip"},
 	}
 	var logs bytes.Buffer
-	events, err := observability.New(&logs, observability.Options{Level: "debug", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
 	if err != nil {
 		t.Fatal(err)
 	}

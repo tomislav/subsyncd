@@ -21,7 +21,7 @@ To follow activity:
 docker compose logs -f subsyncd
 ```
 
-Logs show searches, downloads, synchronization, installations, and errors. See the [logging guide](logging.md) for debug settings and how to follow a particular search.
+Logs show searches, downloads, archive-member selection, rejection reasons, synchronization, installations, and errors. See the [logging guide](logging.md) for debug settings and how to follow a particular search.
 
 ## Filesystem and container permissions
 
