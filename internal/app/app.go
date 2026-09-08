@@ -303,6 +303,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 
 	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
+	application.pruneLapseCache(ctx)
 	return application, nil
 }
 
@@ -432,6 +433,11 @@ func (a *App) Serve(ctx context.Context) error {
 	server := &http.Server{Handler: a.Handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	cacheTicker := time.NewTicker(time.Hour)
+	cacheCtx, stopCache := context.WithCancel(runCtx)
+	cacheDone := make(chan struct{})
+	go func() { defer close(cacheDone); a.maintainLapseCache(cacheCtx, cacheTicker.C) }()
+	defer func() { cacheTicker.Stop(); stopCache(); <-cacheDone }()
 	serverDone := make(chan error, 1)
 	workerDone := make(chan error, 1)
 	go func() { serverDone <- server.Serve(listener) }()

@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: Radarr whole-movie and Sonarr whole-series deletion repaired; independent review and verification passed
-- Next safe action: push the whole-deletion repair to GitHub main and verify CI; production rollout remains a separate operator action
+- Current task: configurable LAPSE speech-cache expiry verified and approved for commit
+- Next safe action: publish LAPSE cache expiry when requested; production rollout remains a separate operator action
 - Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Configurable LAPSE speech-cache expiry — 2026-09-08
+
+- Commit: this implementation commit, based on `e159f60`; user authorized committing the verified change and approved configurable expiry with a 30-day default, startup/hourly cleanup, and active-LAPSE protection.
+- Added top-level `lapse_cache.ttl`, default `720h`, with strict positive-duration validation. Cache age is measured from last write (mtime), not last access; cache hits do not refresh it. Expired profiles rebuild on demand without changing installed subtitles, searches, or permanent candidate rejections.
+- Mutating assembly performs one best-effort sweep; serving repeats hourly with cancellation-bound maintenance. The shared LAPSE runner lock makes sweeps skip active processes and excludes new processes while pruning. Read-only assembly and standalone temporary diagnostic caches remain isolated from persistent cleanup.
+- Rooted filesystem operations remove only regular `<16 lowercase hex>.spans` and `.spans.tmp` entries at or beyond the TTL cutoff, including old profiles from before this feature. Symlink roots, entry symlinks, directories, and unknown names are never traversed or cleaned. Rechecked naming and temporary publication against the local official LAPSE v2.0.5 source tag. Failures emit a bounded `lapse.cache_cleanup_failed` warning without paths; successful removal counts are debug-only `lapse.cache_cleaned`. Filesystem calls themselves remain subject to operating-system latency; cancellation is checked between entries.
+- Verification passed with writable caches: focused RED/GREEN for configuration, expiry, and assembly; affected app/config/syncer race tests; full `go test ./... -race -count=1`; `go vet ./...`; tagged `go test ./test/e2e -tags=e2e -race -count=1`; gofmt and `git diff --check`. Tests cover exact TTL boundary, recent/future profiles, abandoned temporary files, unrelated files/directories/symlinks, active-runner exclusion, cancellation, startup and tick-driven periodic expiry, and read-only isolation. Ordinary tests used local fakes only.
+- Independent review found no actionable issues. Updated the example configuration, operator/developer guidance, and contributor contract. No production access, cache deletion on Hades, GitHub push, or deployment occurred.
+- Next task: publish when requested, then deploy separately; existing configurations adopt 30 days on the new binary without a YAML change.
 
 ### Permanent deterministic rejections and Sonarr review — 2026-09-08
 

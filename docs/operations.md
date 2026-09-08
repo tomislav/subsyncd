@@ -78,6 +78,21 @@ subsyncd can upgrade subtitles it installed when a better match becomes availabl
 
 See [matching and upgrades](providers.md#matching-and-upgrades) for more about selection and timing checks.
 
+## LAPSE cache expiry
+
+LAPSE caches detected speech timings in `/data/lapse-cache` to avoid rescanning the same media for every subtitle. Configure its retention separately from the season-pack cache:
+
+```yaml
+lapse_cache:
+  ttl: 720h # 30 days; default
+```
+
+Use a positive duration such as `168h` or `720h`; zero and negative values are rejected. Expiry is measured from each profile's last write, not its last use. Reading a cached profile does not extend its lifetime.
+
+subsyncd removes expired profiles at mutating startup and checks hourly while serving. A sweep skips the cache while LAPSE is running and tries again on the next check. Only recognized profile files and expired temporary profile files are removed; symlinks, directories, and unknown files are left alone. Read-only diagnostics do not clean the persistent cache. Cleanup failures log a warning and leave acquisition available.
+
+Expired profiles rebuild automatically when needed. This may require another media scan, but it does not remove installed subtitles, reset search schedules, or clear candidate rejections. Restart after changing the configuration.
+
 ## Inspect or search one file
 
 To see why a subtitle was installed, skipped, or delayed:

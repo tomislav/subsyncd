@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -39,6 +40,7 @@ type Options struct {
 }
 
 type Lapse struct {
+	cacheMu            sync.RWMutex
 	path               string
 	cacheDir           string
 	analyzeTimeout     time.Duration
@@ -173,6 +175,8 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 }
 
 func (l *Lapse) execute(ctx context.Context, timeout time.Duration, command Command) (Execution, error) {
+	l.cacheMu.RLock()
+	defer l.cacheMu.RUnlock()
 	runContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	execution, err := l.runner.Run(runContext, command)

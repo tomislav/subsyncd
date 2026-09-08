@@ -658,7 +658,7 @@ func e2eConfig(t *testing.T, root, arrURL, providerURL, siloURL string) config.C
 		Instances: []config.InstanceConfig{{Name: "radarr-main", Type: "radarr", URL: arrURL, APIKey: "arr-key", WebhookToken: "webhook-key", PathMappings: []config.PathMapping{{Remote: "/remote/movies", Local: root}}}},
 		Providers: map[string]config.ProviderSpec{"opensubtitles-main": {Type: "opensubtitles", RequestsPerSecond: 100, Burst: 10, MaxConcurrent: 1, Settings: *providerNode.Content[0]}},
 		Languages: map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"opensubtitles-main"}}}, AllowHearingImpaired: true, MinimumReleaseScore: 35,
-		ProviderHTTP: config.ProviderHTTPConfig{SharedOriginMaxConcurrent: 1}, PackCache: config.PackCacheConfig{TTL: 24 * time.Hour, MaxBytes: 16 << 20},
+		ProviderHTTP: config.ProviderHTTPConfig{SharedOriginMaxConcurrent: 1}, LapseCache: config.LapseCacheConfig{TTL: 720 * time.Hour}, PackCache: config.PackCacheConfig{TTL: 24 * time.Hour, MaxBytes: 16 << 20},
 		Sync: config.SyncConfig{LapsePath: "/fake/lapse", Timeout: time.Minute, Policy: "confidence", BypassScore: 75, RequireIdentityAnchor: true, RequireEpisodeEvidence: true, RequireReleaseGroup: true, LapseForPacks: true, LapseForUpgrades: true}, Install: config.InstallConfig{FileMode: 0o640},
 		Silo: config.SiloConfig{Enabled: true, URL: siloURL, APIKey: "silo-key"},
 	}

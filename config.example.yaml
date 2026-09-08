@@ -75,6 +75,10 @@ pack_cache:
   ttl: 24h
   max_bytes: 536870912
 
+lapse_cache:
+  # Speech profiles expire 30 days after their last write; reads do not renew TTL.
+  ttl: 720h
+
 sync:
   # The production image installs the pinned LAPSE release here.
   lapse_path: /opt/lapse/lapse

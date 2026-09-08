@@ -44,6 +44,7 @@ type Config struct {
 	AllowHearingImpaired bool
 	MinimumReleaseScore  int
 	ProviderHTTP         ProviderHTTPConfig
+	LapseCache           LapseCacheConfig
 	PackCache            PackCacheConfig
 	Sync                 SyncConfig
 	Install              InstallConfig
@@ -90,6 +91,10 @@ type LanguageConfig struct {
 
 type ProviderHTTPConfig struct {
 	SharedOriginMaxConcurrent int `yaml:"shared_origin_max_concurrent"`
+}
+
+type LapseCacheConfig struct {
+	TTL time.Duration
 }
 
 type PackCacheConfig struct {
@@ -139,6 +144,7 @@ type rawConfig struct {
 	AllowHearingImpaired *bool                     `yaml:"allow_hearing_impaired"`
 	MinimumReleaseScore  int                       `yaml:"minimum_release_score"`
 	ProviderHTTP         rawProviderHTTPConfig     `yaml:"provider_http"`
+	LapseCache           rawLapseCacheConfig       `yaml:"lapse_cache"`
 	PackCache            rawPackCacheConfig        `yaml:"pack_cache"`
 	Sync                 rawSyncConfig             `yaml:"sync"`
 	Install              rawInstallConfig          `yaml:"install"`
@@ -151,6 +157,10 @@ type rawProviderHTTPConfig struct {
 
 type rawWorkerConfig struct {
 	MaxConcurrent *int `yaml:"max_concurrent"`
+}
+
+type rawLapseCacheConfig struct {
+	TTL *duration `yaml:"ttl"`
 }
 
 type rawPackCacheConfig struct {
@@ -332,6 +342,11 @@ func normalize(raw rawConfig) (Config, error) {
 	}
 	cfg.ProviderHTTP.SharedOriginMaxConcurrent = shared
 
+	cfg.LapseCache.TTL = 720 * time.Hour
+	if raw.LapseCache.TTL != nil {
+		cfg.LapseCache.TTL = time.Duration(*raw.LapseCache.TTL)
+	}
+
 	cacheTTL := defaultPackCacheTTL
 	if raw.PackCache.TTL != nil {
 		cacheTTL = time.Duration(*raw.PackCache.TTL)
@@ -442,6 +457,9 @@ func (c Config) Validate() error {
 	}
 	if c.Worker.MaxConcurrent < 1 || c.Worker.MaxConcurrent > 8 {
 		return fmt.Errorf("worker max_concurrent must be between 1 and 8")
+	}
+	if c.LapseCache.TTL <= 0 {
+		return fmt.Errorf("lapse cache ttl must be positive")
 	}
 	if c.PackCache.TTL <= 0 {
 		return fmt.Errorf("pack cache ttl must be positive")
