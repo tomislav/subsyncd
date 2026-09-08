@@ -5,13 +5,31 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: configurable LAPSE speech-cache expiry verified and approved for commit
-- Next safe action: publish LAPSE cache expiry when requested; production rollout remains a separate operator action
+- Current task: Sonarr webhook and conflicting TV archive evidence repairs verified and authorized for commit
+- Next safe action: publish the verified Sonarr/TV repairs when requested; production rollout remains a separate operator action
 - Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Sonarr webhook and conflicting TV archive evidence repairs — 2026-09-08
+
+- Commit: this implementation commit, based on `8169ed2`; user authorized committing the verified repairs and approved repairing both findings from the first-run review below. Preserved the review ledger entry.
+- Added singular `episodeFile` handling for Sonarr per-file Download/import/upgrade events while preserving plural `episodeFiles` import-complete batches and existing event IDs. No schema, queue priority, or reconciliation changes.
+- Archive selection now checks all filename episode tokens and known absolute coordinates before any positive rule, including provider-direct selection. Accepted ranges remain one containing interval; contradictory additional tokens, wrong ranges, and malformed ranges cannot fall through to an absolute match. Other pack members remain eligible; generic singleton compatibility remains intact.
+- Focused regressions reproduced both failures before production changes. Catalog/pack/workflow race tests and tagged E2E race tests passed. New Sonarr E2E coverage exercises singular HTTP webhook, actual hydration and SQLite scheduling, worker wake, provider episode query, one LAPSE synchronization, sidecar publication, and restart redelivery deduplication. A workflow regression verifies candidate-local rejection and next-candidate installation.
+- Final verification passed with writable caches: `go test ./... -race -count=1`, `go vet ./...`, tagged `go test ./test/e2e -tags=e2e -race -count=1`, gofmt and `git diff --check`. Independent review caught resolution text being interpreted as an additional episode token; focused failing tests for 1920x1080/3840x2160 led to complete-token boundary checks. Final review found no remaining actionable introduced issues.
+- No production access, live provider requests, push, or deployment. Next task: publish when requested, then separately authorize rollout.
+
+### First Sonarr/TV run review — 2026-09-08
+
+- Commit reviewed: `8169ed2`; review only, no runtime change or commit. No production access or live provider requests.
+- Found unsupported singular `episodeFile` on Sonarr per-file Download/import/upgrade webhooks; the parser accepts only the plural import-complete shape. Verified both shapes against official Sonarr `WebhookBase.cs`. Existing fixtures cover only the plural shape.
+- Reproduced archive selection accepting contradictory episode evidence: target S02E02/absolute 14 accepts `Show.S01E03.ABS14.srt`, `Show.S02E02.ABS99.srt`, and `Show.S02E02.extra.S03E05.srt`. Selection should reject conflicting coordinates before applying positive matching rules.
+- First-run limitation remains intentional: scan reconciles retained history, not the full library; multi-episode files remain unsupported. No behavior adopted or tightened in this review.
+- Verification: catalog, pack, match, and all provider package tests passed with `-race -count=1` using writable caches and local fake servers after allowing loopback binding. Temporary standalone selection reproduction removed. Independent catalog review confirmed the webhook finding.
+- Next task: repair both findings with focused failing regressions and add a Sonarr singular-webhook-to-install end-to-end test before broad TV rollout.
 
 ### Configurable LAPSE speech-cache expiry — 2026-09-08
 

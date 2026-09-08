@@ -299,6 +299,15 @@ func TestServiceExactCandidatesSkipIneligibleRejectedAndDeterministicFailures(t 
 			wantReason: "invalid_subtitle",
 		},
 		{
+			name: "conflicting episode member",
+			prepare: func(t *testing.T, request Request, _ *Service, _ *workflowRepository, adapter *fakeProvider, candidate *domain.Candidate) {
+				adapter.payloads[candidate.ResultID] = workflowZIP(t, map[string]string{"Show.S01E02.extra.S03E05.srt": installSRT})
+				adapter.filenames[candidate.ResultID] = "episode.zip"
+			},
+			want:       []string{"first", "good"},
+			wantReason: "pack_selection",
+		},
+		{
 			name: "wrong episode member",
 			prepare: func(t *testing.T, request Request, _ *Service, _ *workflowRepository, adapter *fakeProvider, candidate *domain.Candidate) {
 				candidate.Kind = domain.MediaEpisode

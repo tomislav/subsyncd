@@ -41,6 +41,15 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 	if len(members) == 0 {
 		return Member{}, selectionError(manifest, "forced_policy", 0, "no members satisfy the forced-subtitle policy")
 	}
+	// Explicit conflicting coordinates veto every positive rule, including
+	// provider-direct and absolute matches. Keep other pack members eligible.
+	consistent := members[:0]
+	for _, member := range members {
+		if !conflictingEpisodeEvidence(member.SafeName, media) {
+			consistent = append(consistent, member)
+		}
+	}
+	members = consistent
 	if candidate.Pack != nil && len(candidate.Pack.DirectMembers) != 0 {
 		var matches []Member
 		seen := map[string]struct{}{}
@@ -174,6 +183,39 @@ func directMatchesMedia(direct domain.PackMemberRef, media domain.Media) bool {
 	standard := direct.Episode == media.Episode && (direct.Season == 0 || direct.Season == media.Season)
 	absolute := media.AbsoluteEpisode > 0 && direct.AbsoluteEpisode == media.AbsoluteEpisode
 	return standard || absolute
+}
+
+func conflictingEpisodeEvidence(name string, media domain.Media) bool {
+	if hasInvalidOrAmbiguousRangeEvidence(name) {
+		return true
+	}
+	// A valid range is one piece of evidence: its endpoints need not equal
+	// the target individually. Check remaining tokens independently.
+	ranged, season, from, to, found := acceptedEpisodeRangeMatch(name)
+	if found {
+		if season != media.Season || media.Episode < from || media.Episode > to {
+			return true
+		}
+		name = name[:ranged.indices[0]] + " " + name[ranged.indices[1]:]
+	}
+	for _, token := range episodeTokenPattern.FindAllStringIndex(name, -1) {
+		if !completeRangeToken(name, token[0], token[1]) {
+			continue
+		}
+		season, episode, _ := episodeToken(name[token[0]:token[1]])
+		if season != media.Season || episode != media.Episode {
+			return true
+		}
+	}
+	absolute := media.AbsoluteEpisode
+	for _, token := range absolutePattern.FindAllStringSubmatch(name, -1) {
+		value, _ := strconv.Atoi(token[1])
+		if absolute > 0 && value != absolute {
+			return true
+		}
+		absolute = value
+	}
+	return false
 }
 
 func uniqueRule(manifest Manifest, matches []Member, rule, evidence string) (Member, bool, error) {

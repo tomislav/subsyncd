@@ -110,6 +110,11 @@ func webhookFiles(instanceType string, payload webhookPayload) (domain.MediaKind
 	case "sonarr":
 		switch event {
 		case "download":
+			// Per-file imports use episodeFile; import-complete notifications
+			// use episodeFiles with the same event type.
+			if len(payload.EpisodeFiles) == 0 && payload.EpisodeFile.ID > 0 {
+				return domain.MediaEpisode, []webhookFile{payload.EpisodeFile}, EventImport, nil
+			}
 			return domain.MediaEpisode, payload.EpisodeFiles, EventImport, nil
 		case "rename":
 			return domain.MediaEpisode, payload.RenamedEpisodeFiles, EventRename, nil

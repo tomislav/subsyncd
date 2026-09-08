@@ -60,7 +60,7 @@ http://subsyncd:8097/webhooks/INSTANCE_NAME?token=YOUR_WEBHOOK_SECRET
 
 Use the instance name and secret from your configuration. If the application runs outside Docker, use the Docker host address and a published port instead.
 
-Enable import/download, upgrade, rename, and file-delete events where available. Radarr movie-delete and Sonarr series-delete events are also supported. Test the connection. Test events do not start searches.
+Enable import/download, upgrade, rename, and file-delete events where available. Radarr movie-delete and Sonarr series-delete events are also supported. Test the connection. Test events do not start searches. Sonarr per-file imports/upgrades (`episodeFile`) and import-complete batches (`episodeFiles`) are both accepted.
 
 Whole-movie and whole-series deletion retires indexed media and its searches even when you keep the files on disk. Sonarr series deletion requires the stored Sonarr series ID: episode records created before this feature acquire it on their next normal import, rename, manual search, or history hydration. Until then, file-delete events and history reconciliation retain their existing behavior; series deletion does not guess ownership from titles or paths. Startup does not scan the library to backfill these IDs.
 

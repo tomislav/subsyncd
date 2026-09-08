@@ -353,3 +353,40 @@ func TestSelectUsesEpisodeTitleOnlyAtStrictSimilarityThreshold(t *testing.T) {
 		t.Fatal("short episode titles should not be selected")
 	}
 }
+
+func TestEpisodeSelectionRejectsConflictingCoordinatesBeforeEveryRule(t *testing.T) {
+	media := domain.Media{Season: 2, Episode: 2, AbsoluteEpisode: 14, EpisodeTitle: "The Return"}
+	for _, name := range []string{
+		"Show.S01E03.ABS14.srt", "Show.S02E02.ABS99.srt",
+		"Show.S02E02.extra.S03E05.srt", "Show.ABS14.extra.ABS99.srt",
+		"Show.S02E01-E03.extra.S03E05.srt", "Show.S01E01-E03.ABS14.srt",
+		"Show.S02E03-E01.ABS14.srt", "Show.S02E02-E.ABS14.srt",
+	} {
+		t.Run(name, func(t *testing.T) {
+			for label, selector := range map[string]func(Manifest, domain.Candidate, domain.Media, bool) (Member, error){"pack": Select, "single": SelectSingleEpisode} {
+				for _, direct := range []bool{false, true} {
+					candidate := domain.Candidate{}
+					if direct {
+						candidate.Pack = &domain.PackInfo{DirectMembers: []domain.PackMemberRef{{Filename: name, Season: 2, Episode: 2}}}
+					}
+					manifest := Manifest{Members: []Member{{SafeName: name, NormalizedTitle: "The Return"}}}
+					got, err := selector(manifest, candidate, media, false)
+					var rejection *SelectionError
+					if !errors.As(err, &rejection) {
+						t.Errorf("%s direct=%v selected %q via %s: %v", label, direct, got.SafeName, got.SelectionRule, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestEpisodeSelectionPreservesConsistentCoordinatesAndSkipsConflictingMembers(t *testing.T) {
+	media := domain.Media{Season: 2, Episode: 2, AbsoluteEpisode: 14}
+	for _, name := range []string{"Show.S02E02.ABS14.srt", "Show.S02E01-E03.ABS14.srt", "Show.S02E01-S02E03.srt", "Show.2x01-2x03.srt", "Show.S02E02.1080p.srt", "Show.S02E02.1920x1080.srt", "Show.S02E02.3840x2160.srt"} {
+		selected, err := Select(Manifest{Members: []Member{{SafeName: "Show.S01E03.ABS14.srt"}, {SafeName: name}}}, domain.Candidate{}, media, false)
+		if err != nil || selected.SafeName != name {
+			t.Errorf("Select(%q) = %#v, %v", name, selected, err)
+		}
+	}
+}

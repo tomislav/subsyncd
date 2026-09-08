@@ -1,0 +1,7 @@
+{
+  "eventType": "Download",
+  "isUpgrade": true,
+  "series": {"id": 10, "title": "Example Show", "tvdbId": 12345},
+  "episodes": [{"id": 101, "seasonNumber": 1, "episodeNumber": 2}],
+  "episodeFile": {"id": 1001, "path": "/tv/Example.Show.S01E02.mkv", "sceneName": "Example.Show.S01E02.1080p.WEB-DL-GROUP", "quality": "WEBDL-1080p", "releaseGroup": "GROUP"}
+}

@@ -21,6 +21,7 @@ func TestNormalizeWebhookFixtures(t *testing.T) {
 		wantKind domain.MediaKind
 		wantID   int64
 	}{
+		{"sonarr per-file download", "sonarr", "sonarr_download_single.json", EventImport, domain.MediaEpisode, 1001},
 		{"sonarr download", "sonarr", "sonarr_download.json", EventImport, domain.MediaEpisode, 1001},
 		{"sonarr rename", "sonarr", "sonarr_rename.json", EventRename, domain.MediaEpisode, 1001},
 		{"sonarr delete", "sonarr", "sonarr_delete.json", EventDelete, domain.MediaEpisode, 1001},
@@ -305,4 +306,35 @@ func (f *fakeEventStore) HasAppliedMediaEvent(_ context.Context, id string) (boo
 		}
 	}
 	return false, nil
+}
+
+func TestSonarrDownloadShapesPreserveIdentityAndUpgradeMetadata(t *testing.T) {
+	var firstID string
+	for _, body := range []string{
+		`{"eventType":"Download","isUpgrade":true,"episodeFile":{"id":42,"path":"/tv/Show.S02E02.mkv","sceneName":"Show.S02E02.1080p.WEB-DL-GROUP","releaseGroup":"GROUP","quality":"WEBDL-1080p"}}`,
+		`{"eventType":"Download","isUpgrade":true,"episodeFiles":[{"id":42,"path":"/tv/Show.S02E02.mkv","sceneName":"Show.S02E02.1080p.WEB-DL-GROUP","releaseGroup":"GROUP","quality":"WEBDL-1080p"}]}`,
+	} {
+		events, err := NormalizeWebhook("sonarr-main", "sonarr", []byte(body))
+		if err != nil || len(events) != 1 {
+			t.Fatalf("events = %#v, %v", events, err)
+		}
+		event := events[0]
+		if !event.IsUpgrade || event.OriginalFilename != "Show.S02E02.1080p.WEB-DL-GROUP" || event.ReleaseGroup != "GROUP" || event.Quality != "WEBDL-1080p" {
+			t.Fatalf("lost metadata: %#v", event)
+		}
+		if firstID == "" {
+			firstID = event.EventID
+		} else if event.EventID != firstID {
+			t.Fatal("equivalent payload shapes changed event identity")
+		}
+	}
+	for _, body := range []string{`{"eventType":"Download"}`, `{"eventType":"Download","episodeFile":null}`, `{"eventType":"Download","episodeFile":{"id":0}}`, `{"eventType":"Download","episodeFile":{"id":-1}}`} {
+		if _, err := NormalizeWebhook("sonarr-main", "sonarr", []byte(body)); !errors.Is(err, ErrInvalidWebhook) {
+			t.Fatalf("invalid identity accepted: %v", err)
+		}
+	}
+	events, err := NormalizeWebhook("sonarr-main", "sonarr", []byte(`{"eventType":"Download","episodeFiles":[{"id":42},{"id":43}]}`))
+	if err != nil || len(events) != 2 || events[0].Ref.FileID != 42 || events[1].Ref.FileID != 43 {
+		t.Fatalf("batch = %#v, %v", events, err)
+	}
 }
