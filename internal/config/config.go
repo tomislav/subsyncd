@@ -86,7 +86,15 @@ type ProviderSpec struct {
 }
 
 type LanguageConfig struct {
-	Providers []string `yaml:"providers"`
+	Providers         []string `yaml:"providers"`
+	FallbackProviders []string `yaml:"fallback_providers"`
+}
+
+// AllProviders returns a fresh ordered list of primary and fallback providers.
+func (c LanguageConfig) AllProviders() []string {
+	providers := make([]string, 0, len(c.Providers)+len(c.FallbackProviders))
+	providers = append(providers, c.Providers...)
+	return append(providers, c.FallbackProviders...)
 }
 
 type ProviderHTTPConfig struct {
@@ -503,7 +511,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("language %s requires at least one provider", language)
 		}
 		seen := make(map[string]struct{}, len(languageConfig.Providers))
-		for _, id := range languageConfig.Providers {
+		for _, id := range languageConfig.AllProviders() {
 			if _, ok := c.Providers[id]; !ok {
 				return fmt.Errorf("language %s references unknown provider %s", language, id)
 			}

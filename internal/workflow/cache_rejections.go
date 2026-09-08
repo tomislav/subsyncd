@@ -16,9 +16,13 @@ func (s *Service) findUnrejectedPack(ctx context.Context, request Request, resul
 	})
 	if !ok {
 		member, found, cacheErr = s.PackCache.Find(ctx, request.Media, request.Language)
+		found = found && s.cacheProviderAllowed(member.Candidate.ProviderID)
 		return
 	}
 	member, found, cacheErr = filtered.FindEligible(ctx, request.Media, request.Language, func(candidate pack.CachedMember) (bool, error) {
+		if !s.cacheProviderAllowed(candidate.Candidate.ProviderID) {
+			return false, nil
+		}
 		scoped := request
 		if candidate.MemberScoped {
 			scoped = memberRequest(request, candidate.Checksum)

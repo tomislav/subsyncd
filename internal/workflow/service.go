@@ -122,21 +122,25 @@ func DefaultLapsePolicy() LapsePolicy {
 }
 
 type Service struct {
-	Inventory            InventoryRefresher
-	Searcher             Searcher
-	PackCache            PackCache
-	Synchronizer         CandidateSynchronizer
-	Installer            CandidateInstaller
-	Repository           WorkflowRepository
-	Providers            map[string]provider.Provider
-	ProviderOrder        []string
-	MinimumScore         int
-	MinimumUpgradeDelta  int
-	PackTTL              time.Duration
-	LapsePolicy          LapsePolicy
-	AllowHearingImpaired bool
-	Clock                WorkflowClock
-	Events               *observability.Emitter
+	Inventory              InventoryRefresher
+	Searcher               Searcher
+	FallbackSearcher       Searcher
+	FallbackProviderOrder  []string
+	preferredProviderOrder []string
+	fallbackTier           bool
+	PackCache              PackCache
+	Synchronizer           CandidateSynchronizer
+	Installer              CandidateInstaller
+	Repository             WorkflowRepository
+	Providers              map[string]provider.Provider
+	ProviderOrder          []string
+	MinimumScore           int
+	MinimumUpgradeDelta    int
+	PackTTL                time.Duration
+	LapsePolicy            LapsePolicy
+	AllowHearingImpaired   bool
+	Clock                  WorkflowClock
+	Events                 *observability.Emitter
 }
 
 type downloadedCandidate struct {
@@ -202,9 +206,6 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		return Result{}, err
 	}
 	result = Result{ProviderErrors: map[string]error{}}
-	var candidateFailures []error
-	var exactRecords []store.CandidateRecord
-	sameCandidateAssessed := false
 	current, err := s.Inventory.Refresh(ctx, request.MediaID, request.Media, request.ForceProbe)
 	if err != nil {
 		events.Log(ctx, slog.LevelError, "inventory.refresh_failed", "subtitle inventory refresh failed", events.ErrorAttrs("inventory", err)...)
@@ -235,12 +236,22 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		if scoreErr != nil {
 			return result, scoreErr
 		}
-		if exact {
+		if exact && !s.isFallbackProvider(existing.ProviderID) {
 			result.Outcome = OutcomeSatisfied
 			return result, nil
 		}
 	}
 
+	return s.runProviderTiers(ctx, request, existing, activeInstallation, &candidateCount)
+}
+
+// acquire performs one provider tier after inventory has been checked once.
+func (s *Service) acquire(ctx context.Context, request Request, existing store.Installation, activeInstallation bool, candidateCount *int) (result Result, runErr error) {
+	result = Result{ProviderErrors: map[string]error{}}
+	var candidateFailures []error
+	var exactRecords []store.CandidateRecord
+	sameCandidateAssessed := false
+	var err error
 	workspace, err := os.MkdirTemp("", ".subsyncd-work-")
 	if err != nil {
 		return result, fmt.Errorf("create candidate workspace: %w", err)
@@ -284,7 +295,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 						return result, err
 					}
 					sameCandidateAssessed = true
-					setReassessmentResult(&result, existing, cached.Candidate, score, s.Clock.Now())
+					s.setReassessmentResult(&result, existing, cached.Candidate, score, s.Clock.Now())
 					result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 				} else {
 					downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, runtimePack: cached.RuntimePack, fromCache: true}
@@ -330,23 +341,29 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 
 	exact := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchExactHash})
 	s.logSearchPhase(ctx, provider.SearchExactHash, exact)
+	if err := searchPersistenceFailure(exact.Errors); err != nil {
+		return result, err
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
 	terminal, err := s.tryExactCandidates(ctx, request, workspace, existing, activeInstallation, exact, &result, &candidateFailures, &exactRecords)
-	candidateCount = len(exactRecords)
+	*candidateCount = len(exactRecords)
 	if err != nil || terminal {
 		return result, err
 	}
 
 	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchBroad})
 	s.logSearchPhase(ctx, provider.SearchBroad, search)
+	if err := searchPersistenceFailure(search.Errors); err != nil {
+		return result, err
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
 	result.ProviderErrors = search.Errors
 	if len(search.Candidates) == 0 {
-		candidateCount = len(exactRecords)
+		*candidateCount = len(exactRecords)
 		if len(exactRecords) != 0 || len(s.ProviderOrder) == 0 || len(search.Errors) < len(s.ProviderOrder) {
 			if err := s.Repository.RecordCandidates(ctx, request.MediaID, request.Language, exactRecords); err != nil {
 				return result, err
@@ -363,7 +380,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 			return result, nil
 		}
 		if len(s.ProviderOrder) > 0 && len(search.Errors) >= len(s.ProviderOrder) {
-			return result, fmt.Errorf("all %d assigned subtitle providers failed", len(s.ProviderOrder))
+			return result, &acquisitionExhaustedError{fmt.Errorf("all %d assigned subtitle providers failed", len(s.ProviderOrder))}
 		}
 		if classified, failureErr, found := classifyCandidateFailures(result, candidateFailures); found {
 			return classified, failureErr
@@ -394,7 +411,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		records = append(records, record)
 	}
 	records = mergeCandidateRecords(exactRecords, records)
-	candidateCount = len(records)
+	*candidateCount = len(records)
 	if err := s.Repository.RecordCandidates(ctx, request.MediaID, request.Language, records); err != nil {
 		return result, err
 	}
@@ -409,7 +426,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				return result, err
 			}
 			sameCandidateAssessed = true
-			setReassessmentResult(&result, existing, item.Candidate, item.Score, s.Clock.Now())
+			s.setReassessmentResult(&result, existing, item.Candidate, item.Score, s.Clock.Now())
 			result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 			break
 		}
@@ -424,7 +441,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 				result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: item.Candidate.ProviderID, ResultID: item.Candidate.ResultID, Reason: "provider candidate is already installed"})
 				continue
 			}
-			allowed, upgradeErr := ShouldUpgradeForMedia(existing, request.Media, item.Score, item.Candidate.ExactHash, s.MinimumUpgradeDelta)
+			allowed, upgradeErr := s.shouldUpgrade(existing, request.Media, item.Candidate, item.Score)
 			if upgradeErr != nil {
 				return result, upgradeErr
 			}
@@ -1061,7 +1078,7 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 		if sameInstalledCandidate(existing, request.Media, item.candidate) {
 			return preparedCandidate{}, fmt.Errorf("provider candidate is already installed")
 		}
-		allowed, err := ShouldUpgradeForMedia(existing, request.Media, item.score, item.candidate.ExactHash, s.MinimumUpgradeDelta)
+		allowed, err := s.shouldUpgrade(existing, request.Media, item.candidate, item.score)
 		if err != nil || !allowed {
 			if err != nil {
 				return preparedCandidate{}, err
@@ -1129,11 +1146,11 @@ func (s *Service) updateInstallationAssessment(ctx context.Context, existing sto
 	return existing, nil
 }
 
-func setReassessmentResult(result *Result, installation store.Installation, candidate domain.Candidate, score domain.Score, now time.Time) {
+func (s *Service) setReassessmentResult(result *Result, installation store.Installation, candidate domain.Candidate, score domain.Score, now time.Time) {
 	result.Candidate = candidate
 	result.Score = score
 	result.Installation = installation
-	result.NextUpgrade = NextUpgradeAt(now, score, candidate.ExactHash)
+	result.NextUpgrade = s.nextUpgradeAt(now, score, candidate)
 }
 
 func (p LapsePolicy) normalized() LapsePolicy {
@@ -1194,7 +1211,7 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	}
 	s.workflowEvents().Log(ctx, slog.LevelInfo, "candidate.selected", "subtitle candidate selected", slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("exact_hash", prepared.candidate.ExactHash), slog.String("selection_mode", selectionMode))
 	startedAt := time.Now()
-	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, SourcePath: prepared.output, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync})
+	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, Fallback: s.fallbackTier, SourcePath: prepared.output, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync})
 	if err != nil {
 		attrs := append([]slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}, s.workflowEvents().ErrorAttrs("installation", err)...)
 		s.workflowEvents().Log(ctx, slog.LevelError, "subtitle.install_failed", "subtitle installation failed", attrs...)
@@ -1204,7 +1221,7 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	if len(checksum) > 12 {
 		checksum = checksum[:12]
 	}
-	attrs := []slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("replaced", installed), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}
+	attrs := []slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("replaced", installed), slog.Bool("fallback", s.fallbackTier), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}
 	if checksum != "" {
 		attrs = append(attrs, slog.String("checksum_prefix", checksum))
 	}
@@ -1214,7 +1231,7 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	result.Score = prepared.score
 	result.SyncResult = prepared.sync
 	result.Installation = installation
-	result.NextUpgrade = NextUpgradeAt(s.Clock.Now(), prepared.score, prepared.candidate.ExactHash)
+	result.NextUpgrade = s.nextUpgradeAt(s.Clock.Now(), prepared.score, prepared.candidate)
 	return result, nil
 }
 
@@ -1415,7 +1432,7 @@ func classifyCandidateFailures(result Result, failures []error) (Result, error, 
 		result.RetryAt = retry
 		return result, nil, true
 	}
-	return result, errors.Join(failures...), true
+	return result, &acquisitionExhaustedError{errors.Join(failures...)}, true
 }
 
 // removeWorkflowArtifact releases only a file directly owned by this private

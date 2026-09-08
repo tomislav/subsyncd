@@ -56,7 +56,7 @@ func (s *Service) tryExactCandidates(
 			if err != nil {
 				return false, err
 			}
-			setReassessmentResult(result, updated, candidate, score, s.Clock.Now())
+			s.setReassessmentResult(result, updated, candidate, score, s.Clock.Now())
 			result.Outcome = OutcomeSatisfied
 			result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: candidate.ProviderID, ResultID: candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 			return true, nil

@@ -53,6 +53,7 @@ type InstallationStore interface {
 }
 
 type InstallRequest struct {
+	Fallback        bool
 	MediaID         int64
 	Media           domain.Media
 	Language        domain.Language
@@ -218,7 +219,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 		return restore(fmt.Errorf("encode synchronization result: %w", err))
 	}
 	fingerprint := request.Media.Fingerprint
-	installation := store.Installation{MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: checksumBytes(payload), ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
+	installation := store.Installation{Fallback: request.Fallback, MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: checksumBytes(payload), ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
 	now := time.Now().UTC()
 	if i.Now != nil {
 		now = i.Now()

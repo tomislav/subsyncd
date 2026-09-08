@@ -35,6 +35,15 @@ type SearchCache interface {
 	PutProviderCache(context.Context, store.ProviderCacheEntry) error
 }
 
+// SearchPersistenceError distinguishes repository failures from provider outages.
+// Callers must not hide these failures by continuing acquisition in another tier.
+type SearchPersistenceError struct {
+	Err error
+}
+
+func (e *SearchPersistenceError) Error() string { return "search cache persistence failed" }
+func (e *SearchPersistenceError) Unwrap() error { return e.Err }
+
 type Coordinator struct {
 	Providers []Provider
 	Cache     SearchCache
@@ -149,7 +158,7 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 	if c.Cache != nil {
 		entry, found, err := c.Cache.GetProviderCache(ctx, key, now)
 		if err != nil {
-			wrapped := fmt.Errorf("read %s search cache: %w", provider.ID(), err)
+			wrapped := &SearchPersistenceError{Err: fmt.Errorf("read %s search cache: %w", provider.ID(), err)}
 			complete(nil, "error", wrapped)
 			return nil, wrapped
 		}
@@ -179,7 +188,7 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 			return nil, wrapped
 		}
 		if err := c.Cache.PutProviderCache(ctx, store.ProviderCacheEntry{Key: key, ProviderID: provider.ID(), ResultsJSON: encoded, ExpiresAt: now.Add(searchCacheTTL)}); err != nil {
-			wrapped := fmt.Errorf("write %s search cache: %w", provider.ID(), err)
+			wrapped := &SearchPersistenceError{Err: fmt.Errorf("write %s search cache: %w", provider.ID(), err)}
 			complete(candidates, "miss", wrapped)
 			return nil, wrapped
 		}

@@ -257,7 +257,8 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner}}
 	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events}
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
-	for language, providerIDs := range routes {
+	for language, route := range cfg.Languages {
+		providerIDs := route.Providers
 		ordered := make([]provider.Provider, 0, len(providerIDs))
 		for _, id := range providerIDs {
 			ordered = append(ordered, providers[id])
@@ -268,6 +269,14 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			MinimumScore: cfg.MinimumReleaseScore, MinimumUpgradeDelta: workflow.DefaultMinimumUpgradeDelta, PackTTL: cfg.PackCache.TTL,
 			LapsePolicy:          workflow.LapsePolicy{Mode: cfg.Sync.Policy, BypassScore: cfg.Sync.BypassScore, RequireIdentityAnchor: cfg.Sync.RequireIdentityAnchor, RequireEpisodeEvidence: cfg.Sync.RequireEpisodeEvidence, RequireReleaseGroup: cfg.Sync.RequireReleaseGroup, LapseForPacks: cfg.Sync.LapseForPacks, LapseForUpgrades: cfg.Sync.LapseForUpgrades},
 			AllowHearingImpaired: cfg.AllowHearingImpaired, Clock: clock, Events: events,
+		}
+		if len(route.FallbackProviders) > 0 {
+			fallback := make([]provider.Provider, 0, len(route.FallbackProviders))
+			for _, id := range route.FallbackProviders {
+				fallback = append(fallback, providers[id])
+			}
+			workflows[language].FallbackSearcher = &provider.Coordinator{Providers: fallback, Cache: repository, Clock: clock, Events: events}
+			workflows[language].FallbackProviderOrder = append([]string(nil), route.FallbackProviders...)
 		}
 	}
 
@@ -366,7 +375,7 @@ func buildProviders(cfg config.Config, database *store.Store, repository *store.
 func languageRoutes(cfg config.Config) map[domain.Language][]string {
 	routes := make(map[domain.Language][]string, len(cfg.Languages))
 	for language, route := range cfg.Languages {
-		routes[language] = append([]string(nil), route.Providers...)
+		routes[language] = route.AllProviders()
 	}
 	return routes
 }
@@ -590,6 +599,11 @@ func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, l
 	if err != nil {
 		return "", err
 	}
+	if !result.NextUpgrade.IsZero() && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
+		if err := a.Repository.EnsureUpgradeSearch(ctx, mediaID, language, result.NextUpgrade); err != nil {
+			return "", err
+		}
+	}
 	return formatWorkflowResult(mediaID, result), nil
 }
 
@@ -674,7 +688,7 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 		return "", err
 	}
 	if installed {
-		fmt.Fprintf(&output, "installation: provider=%s candidate=%s checksum=%s score=%s lapse=%s rollback=%t\n", installation.ProviderID, installation.CandidateID, installation.Checksum, compactJSON(installation.ScoreJSON), compactJSON(installation.SyncResultJSON), installation.RollbackPath != "")
+		fmt.Fprintf(&output, "installation: provider=%s candidate=%s checksum=%s score=%s lapse=%s rollback=%t fallback=%t\n", installation.ProviderID, installation.CandidateID, installation.Checksum, compactJSON(installation.ScoreJSON), compactJSON(installation.SyncResultJSON), installation.RollbackPath != "", installation.Fallback)
 	} else {
 		fmt.Fprintln(&output, "installation: none")
 	}
@@ -683,7 +697,7 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 		return "", err
 	}
 	fmt.Fprintf(&output, "pack_cache: reusable=%d\n", len(packs))
-	for _, providerID := range a.Config.Languages[language].Providers {
+	for _, providerID := range a.Config.Languages[language].AllProviders() {
 		states, err := a.Repository.ListProviderStates(ctx, providerID)
 		if err != nil {
 			return "", err

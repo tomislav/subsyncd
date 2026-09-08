@@ -78,6 +78,8 @@ When nothing suitable is found, searches continue automatically with longer inte
 
 subsyncd can upgrade subtitles it installed when a better match becomes available. Manually added or edited subtitles are protected. If you delete a managed subtitle, it can be downloaded again on a later search. TV files containing multiple episodes are currently skipped.
 
+Optional per-language `fallback_providers` supply subtitles when preferred providers have no installable result or are unavailable. Fallback installations get weekly preferred-provider checks, including exact matches; a known preferred cooldown can bring the first check forward. `explain` displays the stored `fallback` flag. See [provider tiers](providers.md#choose-languages) for configuration and promotion rules.
+
 See [matching and upgrades](providers.md#matching-and-upgrades) for more about selection and timing checks.
 
 ## LAPSE cache expiry
@@ -113,7 +115,7 @@ docker compose run --rm --no-deps subsyncd search --instance radarr-main --kind 
 docker compose up -d subsyncd
 ```
 
-Review the command's result before restarting. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
+Review the command's result before restarting. Successful manual searches save any future upgrade check, including fallback promotion, while preserving earlier queued work and retained leases. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
 
 To discover any unindexed files in the full library and reconcile retained history, use `scan --instance sonarr-main` or `scan --instance radarr-main` in place of `search ...` in the same stop/run/start sequence. The command queues new work; the daemon processes it after restarting. Rescanning does not reset existing search schedules, reconsider retained deletions, or overwrite installation provenance.
 

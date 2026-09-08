@@ -75,6 +75,8 @@ subdl-main:
 
 ## Search order and caches
 
+Languages may add `fallback_providers` after their required `providers` list. Provider tier precedes cache/exact/broad preference: run the sequence below within the preferred tier first, then the fallback tier only after acquisition is exhausted. Each tier has its own three-result broad shortlist; persisted candidate evidence covers both attempted tiers. Cache selection filters provider membership before accepting/touching a cached entry. Terminal inventory, repository, cancellation, media/publication and rollback failures do not enter another tier.
+
 For one media/language job:
 
 1. Reuse embedded inventory only when an actual completed probe has matching path, Arr file ID, size, and mtime; empty completed probes are valid, fresh catalog rows are not. Always rescan sibling sidecars. A stale or deleted catalog identity aborts inventory refresh technically before acquisition.
@@ -110,7 +112,7 @@ Known identity conflicts reject before points are considered. Conflicts include 
 
 | Signal | Points |
 | --- | ---: |
-| Verified exact media-file hash | 100 (terminal) |
+| Verified exact media-file hash | 100 (terminal within its provider tier) |
 | Matching IMDb/TMDB/TVDB ID | 20 |
 | Normalized title and year | 15 |
 | Matching episode or containing pack | 20 |
@@ -130,7 +132,7 @@ Sonarr/Radarr hydration derives streaming-service evidence from explicit web-rel
 
 Edition comparison normalizes punctuation and recognizes Director's Cut, Extended, Remastered, Unrated, Theatrical, Final Cut, Special Edition, Ultimate Cut, Redux, and Anniversary Edition labels. Edition markers are read from the release descriptor after a movie year when present, so a title containing edition-like words is not mistaken for an edition. An explicit matching edition contributes 10 points; an explicit mismatch is rejected.
 
-Release score is primary and lower score tiers cannot outrank a solid higher tier. Within one equal-score tier, LAPSE confidence is followed by configured provider priority, provider rating, provider ID, then result ID. Popularity already contributes up to two points to the primary score. A managed subtitle upgrades only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default.
+Release score is primary and lower score tiers cannot outrank a solid higher tier. Within one equal-score tier, LAPSE confidence is followed by configured provider priority, provider rating, provider ID, then result ID. Popularity already contributes up to two points to the primary score. A managed subtitle upgrades within its tier only for an exact hash or a score improvement of at least 10, and non-exact upgrades run LAPSE by default. Fallback-to-preferred promotion bypasses the delta and existing-exact terminal rule, but retains eligibility and LAPSE gates. Preferred-to-fallback downgrades are disallowed.
 
 ## Rate limits and cooldowns
 
@@ -163,7 +165,7 @@ Missing results reach absolute milestones from import or schedule reset: immedia
 
 Every due workflow refreshes local sidecar inventory, but a retry does not necessarily contact a provider. Reusable normalized search results, including an empty result set, remain cached for six hours; results requiring refreshed download links are searched again. With the default milestones, provider traffic for a continuously missing subtitle with reusable cached results is therefore normally around import, 8 hours, 24 hours, 3 days, 7 days, and 14 days; the 30-minute and 2-hour checks usually reuse cached results while still detecting a sidecar added by another tool.
 
-Managed nonexact subtitles are reconsidered after 7 days for scores 35–59, 30 days for 60–84, and 90 days for 85–99. Exact-hash installations are terminal until the media fingerprint changes.
+Managed nonexact subtitles are reconsidered after 7 days for scores 35–59, 30 days for 60–84, and 90 days for 85–99. Preferred exact-hash installations are terminal until the media fingerprint changes. Fallback installations, including exact hashes and score 100, get weekly promotion checks. After a fallback install during a preferred cooldown, use the earlier future preferred reset or weekly check, including partial preferred outages. Retained fallback results remain upgrade-priority work; technical/throttle results retain existing backoff handling. Migration 006 stores a default-false installation `fallback` flag in the same sidecar/outbox commit; scores and filenames are unchanged. Current configured tier membership controls promotion, while the flag records installation-time provenance. Configuration changes do not proactively reopen terminal exact searches; manual search can reconsider them.
 
 The persisted daemon queue has three strict classes: Arr imports and renames (`import`), missing/rejected subtitle searches and reconciliation discoveries (`missing`), and successful nonexact reassessments (`upgrade`). Higher classes are leased first, then older due times. Technical failures and provider throttles retain the job's class. Webhook wakeups accelerate dispatch but do not alter schedules, provider ordering, cache validity, token buckets, or cooldown enforcement.
 

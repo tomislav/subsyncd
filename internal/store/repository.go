@@ -252,6 +252,7 @@ type PackMemberRecord struct {
 }
 
 type Installation struct {
+	Fallback       bool
 	MediaID        int64
 	Language       string
 	Path           string
@@ -1214,7 +1215,7 @@ func (r *Repository) DeletePack(ctx context.Context, packID int64) error {
 
 func (r *Repository) GetInstallation(ctx context.Context, mediaID int64, language domain.Language) (Installation, bool, error) {
 	var installation Installation
-	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath, &installation.MediaPath, &installation.MediaFileID, &installation.MediaSize, &installation.MediaModTimeNS)
+	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, fallback FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath, &installation.MediaPath, &installation.MediaFileID, &installation.MediaSize, &installation.MediaModTimeNS, &installation.Fallback)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Installation{}, false, nil
 	}
@@ -1266,7 +1267,7 @@ func (r *Repository) RecordInstallationWithNotifications(ctx context.Context, in
 	if len(installation.SyncResultJSON) == 0 {
 		installation.SyncResultJSON = []byte(`{}`)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, installed_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET path=excluded.path, checksum=excluded.checksum, provider_id=excluded.provider_id, candidate_id=excluded.candidate_id, score_json=excluded.score_json, sync_result_json=excluded.sync_result_json, rollback_path=excluded.rollback_path, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, installed_at_ns=excluded.installed_at_ns`, installation.MediaID, installation.Language, installation.Path, installation.Checksum, installation.ProviderID, installation.CandidateID, installation.ScoreJSON, installation.SyncResultJSON, installation.RollbackPath, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, installed_at_ns, fallback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET path=excluded.path, checksum=excluded.checksum, provider_id=excluded.provider_id, candidate_id=excluded.candidate_id, score_json=excluded.score_json, sync_result_json=excluded.sync_result_json, rollback_path=excluded.rollback_path, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, installed_at_ns=excluded.installed_at_ns, fallback=excluded.fallback`, installation.MediaID, installation.Language, installation.Path, installation.Checksum, installation.ProviderID, installation.CandidateID, installation.ScoreJSON, installation.SyncResultJSON, installation.RollbackPath, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS, now, installation.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("record installation: %w", err)
 	}
@@ -1289,8 +1290,8 @@ func (r *Repository) RecordInstallationWithNotifications(ctx context.Context, in
 // The full artifact and media identity guard prevents stale workers from
 // updating a replacement installation.
 func (r *Repository) UpdateInstallationAssessment(ctx context.Context, installation Installation) error {
-	result, err := r.store.db.ExecContext(ctx, `UPDATE installations SET score_json=?, sync_result_json=? WHERE media_id=? AND language=? AND provider_id=? AND candidate_id=? AND checksum=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=?`,
-		installation.ScoreJSON, installation.SyncResultJSON, installation.MediaID, installation.Language, installation.ProviderID, installation.CandidateID, installation.Checksum, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS)
+	result, err := r.store.db.ExecContext(ctx, `UPDATE installations SET score_json=?, sync_result_json=?, fallback=? WHERE media_id=? AND language=? AND provider_id=? AND candidate_id=? AND checksum=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=?`,
+		installation.ScoreJSON, installation.SyncResultJSON, installation.Fallback, installation.MediaID, installation.Language, installation.ProviderID, installation.CandidateID, installation.Checksum, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS)
 	if err != nil {
 		return fmt.Errorf("update installation assessment: %w", err)
 	}
@@ -1571,7 +1572,7 @@ func preserveAuthoritativeModTime(media *domain.Media, existingFileID, existingS
 }
 
 func invalidateInstallationTx(ctx context.Context, tx *sql.Tx, mediaID int64) error {
-	_, err := tx.ExecContext(ctx, `UPDATE installations SET score_json='{}', sync_result_json='{}', media_path='', media_file_id=0, media_size=0, media_mod_time_ns=0 WHERE media_id=?`, mediaID)
+	_, err := tx.ExecContext(ctx, `UPDATE installations SET score_json='{}', sync_result_json='{}', fallback=0, media_path='', media_file_id=0, media_size=0, media_mod_time_ns=0 WHERE media_id=?`, mediaID)
 	if err != nil {
 		return fmt.Errorf("invalidate installation provenance: %w", err)
 	}

@@ -63,6 +63,8 @@ languages:
   hr:
     providers:
       - titlovi-main
+    # Optional: try only after preferred providers have no installable result.
+    # fallback_providers: [opensubtitles-main]
   en:
     providers:
       - opensubtitles-main

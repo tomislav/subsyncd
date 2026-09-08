@@ -1,5 +1,11 @@
 # Release verification
 
+## Per-language fallback providers — 2026-09-08
+
+Languages can configure optional `fallback_providers`. Preferred cache/exact/broad results are exhausted before fallback acquisition. Fallback subtitles keep their actual scores and receive weekly promotion checks, even for exact hashes. Safe preferred replacements bypass the ordinary score delta; user-owned subtitles remain protected. Migration `006_fallback_installations.sql` records installation-time fallback provenance without rewriting existing scores. Existing configurations retain their single-tier behavior.
+
+Provider-tier configuration changes do not reopen already terminal exact searches automatically; use manual search for those installations. Back up the database before upgrading as usual.
+
 ## Episode-pack versions and rejection visibility — 2026-09-08
 
 Dotted episode tokens such as `S04.E13` now identify the target episode. Packs containing two or three explicit versions of one episode are downloaded once and evaluated through LAPSE; identical content is evaluated once, and installation can fall back to another retained solid output. More than three distinct versions and ambiguous episode identity remain rejected. Info logs now show member selection, deterministic rejection reasons, retained skips and per-version LAPSE/winner correlation.

@@ -4,14 +4,25 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Current state
 
-- Branch: `main`
-- Current task: episode-pack version selection and info-level rejection logging repaired and locally verified
-- Next safe action: observe GitHub verification/publication after the authorized episode-pack repair push; production rollout remains separate
-- Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
+- Branch: `codex/fallback-providers`
+- Current task: per-language fallback providers and safe promotion implemented and locally verified
+- Next safe action: review/integrate the local fallback-provider branch; publication and production rollout remain separate
+- Latest follow-up: fallback routing, provenance, promotion and manual scheduling passed local verification and independent review
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Per-language fallback providers and preferred promotion — 2026-09-08
+
+- Commit: this `feat: add per-language fallback subtitle providers` commit, based on `98ac272`, on `codex/fallback-providers`. User approved the proposed two-tier model and requested implementation. No push, publication or production interaction.
+- Added optional ordered `fallback_providers` per canonical language, with nonempty primary/unknown/duplicate/language-support validation. Each tier has an independent coordinator; preferred cache/exact/broad acquisition finishes before fallback cache/exact/broad. Cache membership follows the active tier and each broad tier keeps the three-result cap; scored evidence from both tiers remains persisted.
+- Migration `006_fallback_installations.sql` adds default-false boolean installation provenance, atomically persisted with sidecar/outbox and cleared on media fingerprint invalidation. Scores and filenames are unchanged; explain and installation logs expose fallback status. Current configuration determines promotion eligibility; stored provenance records installation time.
+- Fallback-to-preferred promotion may replace an exact fallback and bypass the ordinary score delta while retaining minimum score, identity, LAPSE and ownership gates. Same-tier upgrades keep existing delta/exact rules. Preferred installations cannot downgrade to fallback. Exact fallback and exhausted promotion searches retain weekly checks; successful fallback installations use an earlier future preferred cooldown reset, including partial outages.
+- Tightened error handling: typed search-cache persistence failures stop acquisition, cancellation preserves rollback errors, and only acquisition exhaustion permits a later provider tier. Technical failures remain retryable and never create deterministic candidate rejection state. Refreshed fallback assessments report the newly persisted score without changing subtitle bytes.
+- Successful manual searches now persist nonterminal NextUpgrade results. The store reopens completed searches at upgrade priority, preserves earlier queued work and all retained leases (including expired), and excludes deleted/unsupported media. Configuration changes do not automatically reopen historical terminal exact searches; manual search is the explicit reconsideration path.
+- Verification: focused red/green tests for config, migration/reopen/provenance, preferred-before-fallback, outage/rejection fallback, exact promotion, same-tier delta, cache gating, protected inventory, terminal cancellation/publication/cache failures, cooldown timing and manual scheduling. Full `go test ./... -race -count=1`, `go vet ./...`, and `go test ./test/e2e -tags=e2e -race -count=1` passed with documented writable caches. Workflow/app race suites repeated after final score-reporting correction; `git diff --check` clean. Local HTTP fixtures needed approved sandbox socket access; no Arr/provider/Silo network calls.
+- Independent review found partial-cooldown timing and search-cache error-boundary gaps; both fixed and re-reviewed. Next task: integrate/review this local feature branch, then separately authorize publication/deployment if wanted.
 
 ### Episode-pack versions, dotted tokens and info rejection logs — 2026-09-08
 
