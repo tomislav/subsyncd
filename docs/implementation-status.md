@@ -4,14 +4,19 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Current state
 
-- Branch: `codex/fallback-providers`
+- Branch: `main`
 - Current task: per-language fallback providers and safe promotion implemented and locally verified
-- Next safe action: review/integrate the local fallback-provider branch; publication and production rollout remain separate
+- Next safe action: observe GitHub verification/image publication for the merged fallback-provider change; production rollout remains separate
 - Latest follow-up: fallback routing, provenance, promotion and manual scheduling passed local verification and independent review
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Fallback-provider integration — 2026-09-08
+
+- User explicitly authorized merge and push. Fast-forwarded `main` from `98ac272` to verified implementation `a8873a8` and pushed it to `https://github.com/tomislav/subsyncd.git`. No conflicts or runtime changes during integration; prior full race/e2e/vet and final affected-package results apply to the identical commit.
+- Verified push success and local/remote main alignment. No production deployment. Next task: observe GitHub verification/image publication before using the new configuration on an updated installation.
 
 ### Per-language fallback providers and preferred promotion — 2026-09-08
 
