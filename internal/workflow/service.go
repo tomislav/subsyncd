@@ -792,8 +792,11 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	var selection *pack.SelectionError
 	var content *pack.ContentError
 	_, installContent := failure.(*subtitleValidationError)
+	_, invalidOutput := failure.(*syncer.InvalidOutputError)
 	reasonCode := ""
 	switch {
+	case invalidOutput:
+		reasonCode = "lapse_invalid_output"
 	case errors.As(failure, &verdict) && (verdict.Verdict == "unsure" || verdict.Verdict == "nothing"):
 		reasonCode = "lapse_" + verdict.Verdict
 	case errors.As(failure, &selection):
@@ -919,14 +922,14 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 	metadata, downloadErr := adapter.Download(ctx, candidate, bounded)
 	syncErr := payload.Sync()
 	closeErr := payload.Close()
+	if localErr := errors.Join(bounded.writeErr, syncErr, closeErr); localErr != nil {
+		return "", nil, fmt.Errorf("write or flush provider download: %w", localErr)
+	}
 	if bounded.exceeded {
 		return "", nil, &pack.ContentError{Err: fmt.Errorf("provider download exceeds %d bytes", bounded.limit)}
 	}
 	if downloadErr != nil {
 		return "", nil, downloadErr
-	}
-	if syncErr != nil || closeErr != nil {
-		return "", nil, fmt.Errorf("flush provider download")
 	}
 	info, err := os.Stat(payloadPath)
 	if err != nil {
@@ -1174,9 +1177,13 @@ type boundedDownloadWriter struct {
 	remaining int64
 	limit     int64
 	exceeded  bool
+	writeErr  error
 }
 
 func (w *boundedDownloadWriter) Write(payload []byte) (int, error) {
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
 	if int64(len(payload)) > w.remaining {
 		w.exceeded = true
 		if w.remaining == 0 {
@@ -1186,7 +1193,11 @@ func (w *boundedDownloadWriter) Write(payload []byte) (int, error) {
 	}
 	written, err := w.writer.Write(payload)
 	w.remaining -= int64(written)
+	if err == nil && written != len(payload) {
+		err = io.ErrShortWrite
+	}
 	if err != nil {
+		w.writeErr = err
 		return written, err
 	}
 	if w.exceeded {

@@ -13,6 +13,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Remember invalid generated LAPSE output — 2026-09-08
+
+- Commit: this repair commit, based on `bec4db5`; user approved remembering invalid LAPSE output and reviewing adjacent failure-classification gaps.
+- Added a typed generated-content failure for invalid output size, UTF-8/text, subtitle syntax or timestamps after regular-file validation. Workflow records only the direct typed failure as `lapse_invalid_output`, preserving the original selected-source checksum and existing media/candidate/tool/policy identity. It is retained without expiry and alternatives remain eligible for movies and Sonarr episodes.
+- Missing/nonregular files, read/process/JSON/output-path failures, cancellation, no-speech and mixed technical errors remain outside candidate rejection. Existing historical workflow errors were never persisted as rejections and may require one further evaluation after deployment before the new reason is recorded.
+- Adjacent review fixed local writer errors being masked by oversized-download rejection: retain swallowed/short writes and prioritize write/sync/close errors over content rejection. Existing bounded-download protection remains intact.
+- Verification: focused tests reproduced untyped syntax/timestamp/encoding/empty-output failures, repeated workflow errors for movie/episode, and swallowed/oversized local write/flush failures before their fixes. Tests cover SQLite reopen plus ten-year rejection retention, original checksum, no repeated download/LAPSE, new-candidate installation and technical/mixed-error exclusions. Full `go test ./... -race -count=1`, `go vet ./...`, tagged E2E race, and `git diff --check` passed with writable caches and local fakes. Independent review found no remaining blocking issues.
+- User authorized commit and GitHub push after verification. No production mutation or deployment. Next task: deploy with authorization and verify Godfather retries use the new rejection reason.
+
 ### Full-library discovery for Sonarr and Radarr — 2026-09-08
 
 - Commit: this implementation commit, based on `e652ea7`; user authorized commit and push after verification and requested automatic discovery of existing movies and episodes, closing the shared history-only gap. Scope/design and implementation plan are in `docs/superpowers/{specs,plans}/2026-09-08-full-library-discovery*`.

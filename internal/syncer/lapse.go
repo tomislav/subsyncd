@@ -49,6 +49,17 @@ type Lapse struct {
 	runner             Runner
 }
 
+// InvalidOutputError identifies deterministic content validation failure in a
+// generated subtitle. Process, protocol, and filesystem failures never use it.
+type InvalidOutputError struct{ reason string }
+
+func (e *InvalidOutputError) Error() string {
+	if e.reason == "" {
+		return "LAPSE generated invalid subtitle content"
+	}
+	return e.reason
+}
+
 type VerdictError struct {
 	Verdict string
 	Reason  string
@@ -359,14 +370,14 @@ func validateOutput(path string) error {
 		return fmt.Errorf("LAPSE output is missing or not a regular file")
 	}
 	if info.Size() <= 0 || info.Size() > maximumSubtitleBytes {
-		return fmt.Errorf("LAPSE output size is invalid")
+		return &InvalidOutputError{reason: "LAPSE output size is invalid"}
 	}
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read LAPSE output: %w", err)
 	}
 	if !utf8.Valid(payload) || bytes.IndexByte(payload, 0) >= 0 {
-		return fmt.Errorf("LAPSE output is not valid UTF-8 text")
+		return &InvalidOutputError{reason: "LAPSE output is not valid UTF-8 text"}
 	}
 	var subtitles *astisub.Subtitles
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -380,12 +391,12 @@ func validateOutput(path string) error {
 		return fmt.Errorf("LAPSE output has an unsupported extension")
 	}
 	if err != nil || subtitles == nil || len(subtitles.Items) == 0 || len(subtitles.Items) > maximumSubtitleCues {
-		return fmt.Errorf("LAPSE output subtitle syntax is invalid")
+		return &InvalidOutputError{reason: "LAPSE output subtitle syntax is invalid"}
 	}
 	previous := subtitles.Items[0].StartAt
 	for _, item := range subtitles.Items {
 		if item.StartAt < 0 || item.EndAt < item.StartAt || item.StartAt < previous {
-			return fmt.Errorf("LAPSE output timestamps are invalid")
+			return &InvalidOutputError{reason: "LAPSE output timestamps are invalid"}
 		}
 		previous = item.StartAt
 	}
