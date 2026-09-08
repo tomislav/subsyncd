@@ -64,6 +64,89 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	}
 }
 
+func TestSonarrListLibraryHydratesFilesWithoutHistory(t *testing.T) {
+	root := t.TempDir()
+	fileRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v3/series":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 10, "title": "Show"}})
+		case r.URL.Path == "/api/v3/episodefile" && r.URL.Query().Get("seriesId") == "10":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 1001, "seriesId": 10, "seasonNumber": 1, "path": "/remote/tv/Show/episode.mkv"},
+				{"id": 1001, "seriesId": 10, "seasonNumber": 1, "path": "/remote/tv/Show/episode.mkv"},
+			})
+		case r.URL.Path == "/api/v3/episodefile/1001":
+			fileRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/Show/episode.mkv", "size": 1234})
+		case r.URL.Path == "/api/v3/episode" && r.URL.Query().Get("episodeFileId") == "1001":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 3, "title": "Third"},
+				{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "title": "Second"},
+			})
+		case r.URL.Path == "/api/v3/series/10":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Show"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cat, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := cat.ListLibrary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].SeriesID != 10 || items[0].EntityID != 101 || items[0].Ref.FileID != 1001 || items[0].UnsupportedReason != domain.UnsupportedMultiEpisode {
+		t.Fatalf("library = %#v", items)
+	}
+	if fileRequests != 1 {
+		t.Fatalf("detail requests = %d, want 1", fileRequests)
+	}
+}
+
+func TestSonarrGetMediaRejectsMismatchedHydrationIdentities(t *testing.T) {
+	root := t.TempDir()
+	for name, tc := range map[string]struct {
+		file     map[string]any
+		episodes []map[string]any
+		series   map[string]any
+	}{
+		"file":       {map[string]any{"id": 1002, "seriesId": 10, "path": "/remote/tv/show.mkv"}, []map[string]any{{"id": 101, "seriesId": 10}}, map[string]any{"id": 10}},
+		"episode":    {map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}, []map[string]any{{"id": 101, "seriesId": 11}}, map[string]any{"id": 10}},
+		"attachment": {map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}, []map[string]any{{"id": 101, "seriesId": 10, "episodeFileId": 1002}}, map[string]any{"id": 10}},
+		"series":     {map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}, []map[string]any{{"id": 101, "seriesId": 10}}, map[string]any{"id": 11}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/api/v3/episodefile/1001":
+					_ = json.NewEncoder(w).Encode(tc.file)
+				case r.URL.Path == "/api/v3/episode":
+					_ = json.NewEncoder(w).Encode(tc.episodes)
+				case r.URL.Path == "/api/v3/series/10":
+					_ = json.NewEncoder(w).Encode(tc.series)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			cat, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.GetMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001}); err == nil {
+				t.Fatal("GetMedia() error = nil")
+			}
+		})
+	}
+}
+
 func TestSonarrGetMediaIndexesMultiEpisodeFileAsUnsupported(t *testing.T) {
 	root := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

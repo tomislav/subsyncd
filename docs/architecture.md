@@ -31,3 +31,9 @@ Each canonical language owns an ordered provider chain. Candidates pass identity
 Installation validates and stages a sidecar beside its destination, applies permissions, fsyncs, atomically renames, fsyncs the directory, and commits checksum-bound provenance. Managed replacement uses a retained rollback copy. If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
 
 A committed installation may enqueue a checksum-deduplicated Silo notification. Notification leases and retries are independent, so notification failure never rolls back subtitle acquisition.
+
+## Existing-library discovery
+
+Concrete Sonarr/Radarr catalogs expose optional full-library enumeration via arrapi v2.0.5. A reconciler first performs one background discovery pass per configured scope; explicit scan forces another. Assembly/readiness remain offline. Sonarr lists series then their episode files, Radarr lists movies with files, and both scope-check before complete detail hydration. Missing library history does not prevent discovery.
+
+Migration 005 persists each instance's discovery scope and event revision. Discovery captures the revision before network work, then atomically inserts only unknown media with missing-priority searches and records completion if the revision still matches. Existing rows (including deleted rows), leases, schedules, rejections, and installations remain unchanged. Every inserted event advances the revision, including unknown entity/series deletions, so a concurrent webhook forces retry. History cursor advancement remains separate. A busy instance may delay discovery until an enumeration pass completes without a concurrent event. The snapshot is additive; its omissions never delete catalog rows.

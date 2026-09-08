@@ -282,7 +282,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	webhookInstances := make(map[string]httpapi.Instance, len(cfg.Instances))
 	for _, instance := range cfg.Instances {
 		arrCatalog := catalogs[instance.Name]
-		reconciler := catalog.Reconciler{Instance: instance.Name, Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnCommitted: notify}
+		reconciler := catalog.Reconciler{Instance: instance.Name, LibraryScope: libraryDiscoveryScope(instance, cfg.MediaRoots), Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnCommitted: notify}
 		reconcilers[instance.Name] = reconciler
 		webhookInstances[instance.Name] = httpapi.Instance{Token: instance.WebhookToken, Handler: catalog.WebhookHandler{Instance: instance.Name, InstanceType: instance.Type, Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnApplied: notify}}
 	}
@@ -537,6 +537,9 @@ func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (strin
 	reconciler, ok := a.Reconcilers[instance]
 	if !ok {
 		return "", fmt.Errorf("unknown instance %q", instance)
+	}
+	if err := reconciler.DiscoverLibrary(ctx, true); err != nil {
+		return "", err
 	}
 	if err := reconciler.Run(ctx); err != nil {
 		return "", err

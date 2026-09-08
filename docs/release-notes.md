@@ -1,5 +1,12 @@
 # Release verification
 
+## Full Sonarr and Radarr library discovery
+
+After upgrading, the daemon performs one background discovery pass for each configured Arr instance, including existing instances. Files in your configured mappings can now be queued even without retained import history. Existing searches and installation provenance are preserved. Startup and readiness remain offline.
+
+Migration `005_library_discovery.sql` persists completion and a concurrent-event guard. Failed, interrupted or stale passes retry through reconciliation backoff. Explicit `scan --instance NAME` repeats discovery of unindexed files; mapping/root changes also trigger a new pass. Multi-episode files remain skipped. A rescan does not resurrect retained catalog deletions or reset existing schedules.
+
+
 ## Whole-movie and series deletion — 2026-09-07
 
 Radarr `MovieDelete` and Sonarr `SeriesDelete` webhooks now retire the corresponding catalog searches instead of returning HTTP 400. Deletion uses stored identities, needs no live Arr lookup, and remains effective when media files are retained. Replays are idempotent, and whole-series changes commit atomically.

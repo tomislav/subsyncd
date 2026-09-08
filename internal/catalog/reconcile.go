@@ -15,15 +15,19 @@ type ReconciliationStore interface {
 }
 
 type Reconciler struct {
-	Instance    string
-	Catalog     Catalog
-	Store       ReconciliationStore
-	Languages   []domain.Language
-	Now         func() time.Time
-	OnCommitted func()
+	Instance     string
+	LibraryScope string
+	Catalog      Catalog
+	Store        ReconciliationStore
+	Languages    []domain.Language
+	Now          func() time.Time
+	OnCommitted  func()
 }
 
 func (r Reconciler) Run(ctx context.Context) error {
+	if err := r.DiscoverLibrary(ctx, false); err != nil {
+		return err
+	}
 	cursor, err := r.Store.GetReconciliationCursor(ctx, r.Instance)
 	if err != nil {
 		return fmt.Errorf("read %s reconciliation cursor: %w", r.Instance, err)

@@ -2,6 +2,8 @@
 
 **Status:** Implemented and locally verified
 
+The original full-library-discovery non-goal is superseded by [full-library discovery](2026-09-08-full-library-discovery-design.md). Startup assembly remains offline; background discovery is separate from history cursor reconciliation.
+
 ## Purpose
 
 Replace subsyncd's hand-written Sonarr/Radarr history transport and inaccurate

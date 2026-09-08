@@ -22,9 +22,18 @@ type sonarrEntityClient interface {
 	EpisodeByID(context.Context, int) (arrapi.Episode, error)
 }
 
+type sonarrLibraryClient interface {
+	Series(context.Context) ([]arrapi.Series, error)
+	EpisodeFiles(context.Context, int) ([]arrapi.EpisodeFile, error)
+}
+
 type radarrEntityClient interface {
 	arrHistoryClient
 	MovieByID(context.Context, int) (arrapi.Movie, error)
+}
+
+type radarrLibraryClient interface {
+	Movies(context.Context) ([]arrapi.Movie, error)
 }
 
 func newSonarrEntityClient(instance, baseURL, apiKey string, events *observability.Emitter) (sonarrEntityClient, error) {

@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -12,6 +13,91 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 )
+
+func (r *Radarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	library, ok := r.entity.(radarrLibraryClient)
+	if !ok {
+		return nil, fmt.Errorf("Radarr catalog does not support library enumeration")
+	}
+	movies, err := library.Movies(ctx)
+	if err != nil {
+		return nil, safeArrAPIError(r.client.instance, "movie_library", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if movies == nil {
+		return nil, fmt.Errorf("Radarr library returned an incomplete movie collection")
+	}
+	sort.Slice(movies, func(i, j int) bool { return movies[i].ID < movies[j].ID })
+	items := make([]domain.Media, 0, len(movies))
+	type movieIdentity struct {
+		hasFile bool
+		fileID  int64
+		path    string
+	}
+	seenEntities := make(map[int64]movieIdentity, len(movies))
+	seenFiles := make(map[int64]int64, len(movies))
+	for _, movie := range movies {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		entityID := int64(movie.ID)
+		if entityID <= 0 {
+			return nil, fmt.Errorf("Radarr library movie has invalid identity")
+		}
+		if movie.HasFile && movie.MovieFile == nil {
+			return nil, fmt.Errorf("Radarr movie %d reports a file without file details", entityID)
+		}
+		identity := movieIdentity{hasFile: movie.HasFile}
+		if movie.MovieFile != nil {
+			identity.fileID = int64(movie.MovieFile.ID)
+			identity.path = normalizeRemote(movie.MovieFile.Path)
+		}
+		if existing, duplicate := seenEntities[entityID]; duplicate {
+			if existing != identity {
+				return nil, fmt.Errorf("Radarr movie %d has conflicting duplicate library records", entityID)
+			}
+			continue
+		}
+		seenEntities[entityID] = identity
+		if !movie.HasFile {
+			continue
+		}
+		fileID := int64(movie.MovieFile.ID)
+		if fileID <= 0 {
+			return nil, fmt.Errorf("Radarr movie %d has invalid current file identity", entityID)
+		}
+		if existing, duplicate := seenFiles[fileID]; duplicate {
+			if existing != entityID {
+				return nil, fmt.Errorf("Radarr file %d belongs to multiple movies", fileID)
+			}
+			continue
+		}
+		seenFiles[fileID] = entityID
+		if _, err := MapPath(movie.MovieFile.Path, r.mappings, r.mediaRoots); err != nil {
+			if IsOutsideScope(err) {
+				continue
+			}
+			return nil, fmt.Errorf("map current Radarr movie %d: %w", entityID, err)
+		}
+		item, err := r.GetMedia(ctx, domain.MediaRef{Instance: r.client.instance, Kind: domain.MediaMovie, FileID: fileID})
+		if err != nil {
+			return nil, fmt.Errorf("hydrate Radarr library entity %d: %w", entityID, err)
+		}
+		if item.EntityID != entityID {
+			return nil, fmt.Errorf("Radarr library entity %d resolved to entity %d", entityID, item.EntityID)
+		}
+		items = append(items, item)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 type Radarr struct {
 	client     *arrClient
@@ -63,12 +149,18 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 	if err := r.client.getJSON(ctx, "/api/v3/moviefile/"+strconv.FormatInt(ref.FileID, 10), nil, &file); err != nil {
 		return domain.Media{}, err
 	}
+	if file.ID != ref.FileID {
+		return domain.Media{}, fmt.Errorf("Radarr file %d returned identity %d", ref.FileID, file.ID)
+	}
 	if file.MovieID <= 0 {
 		return domain.Media{}, fmt.Errorf("Radarr file %d has no movie identity", ref.FileID)
 	}
 	var movie radarrMovie
 	if err := r.client.getJSON(ctx, "/api/v3/movie/"+strconv.FormatInt(file.MovieID, 10), nil, &movie); err != nil {
 		return domain.Media{}, err
+	}
+	if movie.ID != file.MovieID {
+		return domain.Media{}, fmt.Errorf("Radarr movie %d returned identity %d", file.MovieID, movie.ID)
 	}
 	path, err := MapPath(file.Path, r.mappings, r.mediaRoots)
 	if err != nil {

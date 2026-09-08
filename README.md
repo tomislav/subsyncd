@@ -141,7 +141,7 @@ For an instance outside Docker, replace `subsyncd` with your Docker host's addre
 
 Enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches.
 
-subsyncd also checks for library changes on startup and periodically while running.
+After the daemon starts, subsyncd discovers existing movie and episode files in each configured Sonarr/Radarr library once, including files absent from retained history, and queues subtitle checks. It remembers completion across restarts and then follows changes through webhooks and periodic history reconciliation. Run `scan --instance NAME` with the daemon stopped to discover unindexed files again.
 
 ## Updates
 

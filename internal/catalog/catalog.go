@@ -12,6 +12,12 @@ type Catalog interface {
 	ListChanges(context.Context, time.Time, time.Time) ([]HistoryChange, error)
 }
 
+// LibraryCatalog is an optional capability implemented by catalogs that can
+// enumerate their complete current library independently of retained history.
+type LibraryCatalog interface {
+	ListLibrary(context.Context) ([]domain.Media, error)
+}
+
 type HistoryState string
 
 const (

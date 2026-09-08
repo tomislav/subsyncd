@@ -64,7 +64,9 @@ Enable import/download, upgrade, rename, and file-delete events where available.
 
 Whole-movie and whole-series deletion retires indexed media and its searches even when you keep the files on disk. Sonarr series deletion requires the stored Sonarr series ID: episode records created before this feature acquire it on their next normal import, rename, manual search, or history hydration. Until then, file-delete events and history reconciliation retain their existing behavior; series deletion does not guess ownership from titles or paths. Startup does not scan the library to backfill these IDs.
 
-subsyncd checks retained Arr history on startup and normally every six hours. This is not a full-library scan: older files absent from that history need a later webhook or a manual search to be discovered.
+After starting the daemon, subsyncd imports the existing Sonarr and Radarr libraries in the background once per instance. This also happens for already-configured instances after upgrading to a version with full-library discovery. It discovers movies and episode files within your path mappings even when their import history is gone, and queues subtitle checks for configured languages. Files already indexed keep their existing searches and installation records; suitable embedded or sidecar subtitles can satisfy checks without a download. Files containing multiple episodes remain unsupported.
+
+Completed discovery is remembered across restarts. Changed path mappings or media roots trigger another discovery pass. A failed or interrupted pass is retried with reconciliation backoff. If a webhook commits during enumeration, the snapshot is discarded and retried to avoid importing stale state. Startup validation and readiness stay local/offline; library API requests happen only during background work or an explicit scan. After discovery, retained Arr history is reconciled normally every six hours, with webhooks providing immediate updates.
 
 After adding an instance, provider, or language, restart subsyncd. A new language schedules checks for media already indexed under your configured instances. Existing subtitles may satisfy those checks without a download.
 
@@ -113,7 +115,7 @@ docker compose up -d subsyncd
 
 Review the command's result before restarting. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
 
-To reconcile retained history for an instance, use `scan --instance sonarr-main` in place of `search ...` in the same stop/run/start sequence. This also is not a full-library enumeration.
+To discover any unindexed files in the full library and reconcile retained history, use `scan --instance sonarr-main` or `scan --instance radarr-main` in place of `search ...` in the same stop/run/start sequence. The command queues new work; the daemon processes it after restarting. Rescanning does not reset existing search schedules, reconsider retained deletions, or overwrite installation provenance.
 
 ## Optional Silo refresh
 

@@ -32,6 +32,10 @@ func TestSonarrSingleFileWebhookInstallsAndDeduplicatesAfterRestart(t *testing.T
 			return
 		}
 		switch r.URL.Path {
+		case "/api/v3/series":
+			io.WriteString(w, `[{"id":10,"title":"Show"}]`)
+		case "/api/v3/episodefile":
+			io.WriteString(w, `[{"id":42,"seriesId":10,"path":"/remote/tv/Show.S02E02.mkv"}]`)
 		case "/api/v3/episodefile/42":
 			hydration.Add(1)
 			io.WriteString(w, `{"id":42,"seriesId":10,"path":"/remote/tv/Show.S02E02.mkv","size":196608,"dateAdded":"2026-09-08T10:00:00Z","sceneName":"Show.S02E02.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}`)
@@ -129,6 +133,7 @@ func TestSonarrSingleFileWebhookInstallsAndDeduplicatesAfterRestart(t *testing.T
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
+	hydrationBeforeRestart := hydration.Load()
 	second := build()
 	defer second.Close()
 	post(second)
@@ -140,7 +145,7 @@ func TestSonarrSingleFileWebhookInstallsAndDeduplicatesAfterRestart(t *testing.T
 	if err := second.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if hydration.Load() != 1 || downloads.Load() != 1 || runner.work.Load() != 1 {
+	if hydration.Load() != hydrationBeforeRestart || downloads.Load() != 1 || runner.work.Load() != 1 {
 		t.Fatalf("restart repeated work: hydration/downloads/LAPSE = %d/%d/%d", hydration.Load(), downloads.Load(), runner.work.Load())
 	}
 }

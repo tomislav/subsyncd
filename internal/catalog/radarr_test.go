@@ -56,6 +56,80 @@ func TestRadarrGetMediaHydratesFileAndMovie(t *testing.T) {
 	}
 }
 
+func TestRadarrListLibraryHydratesInScopeMoviesWithoutHistory(t *testing.T) {
+	root := t.TempDir()
+	fileRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/movie":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 20, "hasFile": true, "movieFile": map[string]any{"id": 2001, "path": "/remote/movies/Example/Example.mkv"}},
+				{"id": 20, "hasFile": true, "movieFile": map[string]any{"id": 2001, "path": "/remote/movies/Example/Example.mkv"}},
+				{"id": 21, "hasFile": false},
+				{"id": 22, "hasFile": true, "movieFile": map[string]any{"id": 2002, "path": "/elsewhere/Other.mkv"}},
+			})
+		case "/api/v3/moviefile/2001":
+			fileRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 2001, "movieId": 20, "path": "/remote/movies/Example/Example.mkv", "size": 4321})
+		case "/api/v3/movie/20":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 20, "title": "Example", "year": 2024})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cat, err := NewRadarr("radarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := cat.ListLibrary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].EntityID != 20 || items[0].Ref.FileID != 2001 || items[0].Title != "Example" {
+		t.Fatalf("library = %#v", items)
+	}
+	if fileRequests != 1 {
+		t.Fatalf("detail requests = %d, want 1", fileRequests)
+	}
+}
+
+func TestRadarrGetMediaRejectsMismatchedHydrationIdentities(t *testing.T) {
+	root := t.TempDir()
+	for name, tc := range map[string]struct {
+		file  map[string]any
+		movie map[string]any
+	}{
+		"file":   {map[string]any{"id": 2002, "movieId": 20, "path": "/remote/movies/movie.mkv"}, map[string]any{"id": 20, "title": "Movie"}},
+		"movie":  {map[string]any{"id": 2001, "movieId": 20, "path": "/remote/movies/movie.mkv"}, map[string]any{"id": 21, "title": "Movie"}},
+		"entity": {map[string]any{"id": 2001, "movieId": 0, "path": "/remote/movies/movie.mkv"}, map[string]any{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v3/moviefile/2001":
+					_ = json.NewEncoder(w).Encode(tc.file)
+				case "/api/v3/movie/20":
+					_ = json.NewEncoder(w).Encode(tc.movie)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			cat, err := NewRadarr("radarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.GetMedia(context.Background(), domain.MediaRef{Instance: "radarr-main", Kind: domain.MediaMovie, FileID: 2001}); err == nil {
+				t.Fatal("GetMedia() error = nil")
+			}
+		})
+	}
+}
+
 func TestRadarrHistoryResolvesLatestEntityStateWithinPageEnd(t *testing.T) {
 	root := t.TempDir()
 	history, err := os.ReadFile("testdata/radarr_history.json")

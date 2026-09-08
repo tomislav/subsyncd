@@ -22,6 +22,96 @@ type Sonarr struct {
 	mediaRoots []string
 }
 
+func (s *Sonarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	library, ok := s.entity.(sonarrLibraryClient)
+	if !ok {
+		return nil, fmt.Errorf("Sonarr catalog does not support library enumeration")
+	}
+	series, err := library.Series(ctx)
+	if err != nil {
+		return nil, safeArrAPIError(s.client.instance, "series_library", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if series == nil {
+		return nil, fmt.Errorf("Sonarr library returned an incomplete series collection")
+	}
+	sort.Slice(series, func(i, j int) bool { return series[i].ID < series[j].ID })
+	items := make([]domain.Media, 0)
+	seenSeries := make(map[int64]struct{}, len(series))
+	type fileIdentity struct {
+		seriesID int64
+		path     string
+	}
+	seenFiles := make(map[int64]fileIdentity)
+	for _, show := range series {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		seriesID := int64(show.ID)
+		if seriesID <= 0 {
+			return nil, fmt.Errorf("Sonarr library series has invalid identity")
+		}
+		if _, duplicate := seenSeries[seriesID]; duplicate {
+			continue
+		}
+		seenSeries[seriesID] = struct{}{}
+		files, err := library.EpisodeFiles(ctx, show.ID)
+		if err != nil {
+			return nil, safeArrAPIError(s.client.instance, "episode_file_library", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if files == nil {
+			return nil, fmt.Errorf("Sonarr series %d returned an incomplete file collection", seriesID)
+		}
+		sort.Slice(files, func(i, j int) bool { return files[i].ID < files[j].ID })
+		for _, file := range files {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			fileID := int64(file.ID)
+			if fileID <= 0 {
+				return nil, fmt.Errorf("Sonarr series %d has invalid file identity", seriesID)
+			}
+			if int64(file.SeriesID) != seriesID {
+				return nil, fmt.Errorf("Sonarr file %d has mismatched series identity", fileID)
+			}
+			identity := fileIdentity{seriesID: seriesID, path: normalizeRemote(file.Path)}
+			if existing, duplicate := seenFiles[fileID]; duplicate {
+				if existing != identity {
+					return nil, fmt.Errorf("Sonarr file %d belongs to multiple series", fileID)
+				}
+				continue
+			}
+			seenFiles[fileID] = identity
+			if _, err := MapPath(file.Path, s.mappings, s.mediaRoots); err != nil {
+				if IsOutsideScope(err) {
+					continue
+				}
+				return nil, fmt.Errorf("map current Sonarr file %d: %w", fileID, err)
+			}
+			media, _, err := s.hydrateMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: fileID})
+			if err != nil {
+				return nil, fmt.Errorf("hydrate Sonarr library file %d: %w", fileID, err)
+			}
+			if media.SeriesID != seriesID {
+				return nil, fmt.Errorf("Sonarr library file %d resolved to series %d", fileID, media.SeriesID)
+			}
+			items = append(items, media)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func NewSonarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string, events *observability.Emitter) (*Sonarr, error) {
 	client, err := newArrClient(instance, rawURL, apiKey, nil)
 	if err != nil {
@@ -62,6 +152,7 @@ type sonarrEpisodeFile struct {
 type sonarrEpisode struct {
 	ID                    int64  `json:"id"`
 	SeriesID              int64  `json:"seriesId"`
+	EpisodeFileID         int64  `json:"episodeFileId"`
 	SeasonNumber          int    `json:"seasonNumber"`
 	EpisodeNumber         int    `json:"episodeNumber"`
 	AbsoluteEpisodeNumber int    `json:"absoluteEpisodeNumber"`
@@ -94,6 +185,12 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 	if err := s.client.getJSON(ctx, "/api/v3/episodefile/"+strconv.FormatInt(ref.FileID, 10), nil, &file); err != nil {
 		return domain.Media{}, nil, err
 	}
+	if file.ID != ref.FileID {
+		return domain.Media{}, nil, fmt.Errorf("Sonarr file %d returned identity %d", ref.FileID, file.ID)
+	}
+	if file.SeriesID <= 0 {
+		return domain.Media{}, nil, fmt.Errorf("Sonarr file %d has no series identity", ref.FileID)
+	}
 	var episodes []sonarrEpisode
 	if err := s.client.getJSON(ctx, "/api/v3/episode", url.Values{"episodeFileId": {strconv.FormatInt(ref.FileID, 10)}}, &episodes); err != nil {
 		return domain.Media{}, nil, err
@@ -114,20 +211,31 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 		return episodes[i].ID < episodes[j].ID
 	})
 	episodeIDs := make([]int64, len(episodes))
+	seenEpisodes := make(map[int64]struct{}, len(episodes))
 	for index := range episodes {
 		if episodes[index].ID <= 0 {
 			return domain.Media{}, nil, fmt.Errorf("Sonarr file %d has an episode without identity", ref.FileID)
 		}
+		if episodes[index].SeriesID != file.SeriesID {
+			return domain.Media{}, nil, fmt.Errorf("Sonarr file %d has an episode with mismatched series identity", ref.FileID)
+		}
+		if episodes[index].EpisodeFileID != 0 && episodes[index].EpisodeFileID != ref.FileID {
+			return domain.Media{}, nil, fmt.Errorf("Sonarr file %d has an episode attached to file %d", ref.FileID, episodes[index].EpisodeFileID)
+		}
+		if _, duplicate := seenEpisodes[episodes[index].ID]; duplicate {
+			return domain.Media{}, nil, fmt.Errorf("Sonarr file %d has duplicate episode identity %d", ref.FileID, episodes[index].ID)
+		}
+		seenEpisodes[episodes[index].ID] = struct{}{}
 		episodeIDs[index] = episodes[index].ID
 	}
 	episode := episodes[0]
 	seriesID := file.SeriesID
-	if seriesID == 0 {
-		seriesID = episode.SeriesID
-	}
 	var series sonarrSeries
 	if err := s.client.getJSON(ctx, "/api/v3/series/"+strconv.FormatInt(seriesID, 10), nil, &series); err != nil {
 		return domain.Media{}, nil, err
+	}
+	if series.ID != seriesID {
+		return domain.Media{}, nil, fmt.Errorf("Sonarr series %d returned identity %d", seriesID, series.ID)
 	}
 	path, err := MapPath(file.Path, s.mappings, s.mediaRoots)
 	if err != nil {

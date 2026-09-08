@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: Sonarr webhook and conflicting TV archive evidence repairs verified and authorized for commit
-- Next safe action: publish the verified Sonarr/TV repairs when requested; production rollout remains a separate operator action
+- Current task: full-library discovery for Sonarr and Radarr verified and authorized for publication
+- Next safe action: push the verified full-library discovery commit as authorized; production rollout remains separate
 - Latest follow-up: single-run runtime `cfcb21c` and guidance `98a22cc` passed independent task and whole-branch review; publication follows this ledger commit
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Full-library discovery for Sonarr and Radarr — 2026-09-08
+
+- Commit: this implementation commit, based on `e652ea7`; user authorized commit and push after verification and requested automatic discovery of existing movies and episodes, closing the shared history-only gap. Scope/design and implementation plan are in `docs/superpowers/{specs,plans}/2026-09-08-full-library-discovery*`.
+- Adopted one background discovery pass per instance/type/URL/mapping/root scope, including existing instances on upgrade, with explicit scan forcing another pass. Startup assembly/readiness/diagnostics remain offline. History cursors remain independent; ongoing updates still use webhooks/history.
+- Discovery is additive: only unknown stable entity/file identities are imported and scheduled at missing priority. Existing schedules, leases, deletion tombstones, rejections and installation provenance are retained. Multi-episode files remain terminal unsupported. Scope checks precede metadata hydration; no subtitle-provider work is part of enumeration itself.
+- Migration 005 persists completion plus a per-instance event revision. Imports and completion commit atomically only if no event arrived during enumeration; unknown file/entity/series deletes also invalidate a fetched snapshot. Failed/canceled/stale passes retry without completion. Accepted tradeoff: a busy instance can delay a full discovery pass until an enumeration window has no concurrent event.
+- Catalog and store tasks use focused failing regressions before changes. Store race tests passed, including transactional audit bounding, conflicting snapshot identities, existing leases/deletions/provenance, cancellation/rollback, restart completion and unknown-delete fences. Application RED/GREEN tests verify both empty-history libraries, explicit rescans, unchanged schedules, failure retry, scope change and offline assembly. Tagged E2E race passed with both actual Arr adapters and synthetic exact-hash installation without history or webhooks; completed discovery and downloads are not repeated after restart.
+- Final verification passed with writable caches: full `go test ./... -race -count=1`, `go vet ./...`, tagged `go test ./test/e2e -tags=e2e -race -count=1`, gofmt and `git diff --check`. Catalog validation also rejects null collections, conflicting duplicate identities and explicitly conflicting Sonarr episode-file attachments, with focused RED/GREEN coverage. Independent store/integration and final whole-branch reviews found no remaining actionable issues.
+- No production access, live Arr/provider requests or deployment. User authorized commit and push; next task after publication is a separately authorized rollout.
 
 ### Sonarr webhook and conflicting TV archive evidence repairs — 2026-09-08
 

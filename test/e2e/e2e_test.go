@@ -633,6 +633,8 @@ func newArrServer(t *testing.T, mediaPath string) *httptest.Server {
 			return
 		}
 		switch request.URL.Path {
+		case "/api/v3/movie":
+			_, _ = io.WriteString(response, `[{"id":9,"hasFile":true,"movieFile":{"id":42,"path":"/remote/movies/`+filepath.Base(mediaPath)+`"}}]`)
 		case "/api/v3/moviefile/42":
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": 42, "movieId": 9, "path": "/remote/movies/" + filepath.Base(mediaPath), "size": 196608, "dateAdded": time.Now().UTC(), "sceneName": "Movie.2024.1080p.WEB-DL-GROUP", "releaseGroup": "GROUP", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-1080p", "resolution": 1080, "source": "WEB-DL"}}, "mediaInfo": map[string]any{"runTime": "01:30:00"}})
 		case "/api/v3/movie/9":
