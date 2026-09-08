@@ -506,7 +506,7 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 	}
 
 	output, err := application.Explain(context.Background(), "tv", "movie", 7, "en")
-	if err != nil || !strings.Contains(output, "candidate_rejections: 1") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") {
+	if err != nil || !strings.Contains(output, "candidate_rejections: 1") || !strings.Contains(output, "expires=never") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") {
 		t.Fatalf("Explain() = %q/%v", output, err)
 	}
 }

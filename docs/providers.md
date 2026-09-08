@@ -101,7 +101,7 @@ Missing subtitles are checked again automatically: initially within minutes and 
 
 Provider rate limits and outages are handled automatically. subsyncd waits before retrying and remembers those delays across restarts. Restarting does not reset a provider's quota.
 
-Candidates rejected for invalid content, ambiguous episode selection, or failed timing checks are normally skipped for 30 days. That applies to the particular candidate and media, not the entire provider. Network and service failures do not mark a subtitle as unsuitable.
+Candidates rejected for invalid content, ambiguous archive selection, or failed timing checks are skipped without a time limit while their media, candidate evidence, and synchronization policy/version remain unchanged. Searches continue looking for new candidates; subsyncd does not periodically redownload rejected subtitles. This applies to one movie or episode and language, not an entire season pack or provider. Corrected Sonarr episode titles or numbering allow reconsideration. Use `search --retry-rejected` for an explicit override. Network and service failures remain retryable and do not mark a subtitle as unsuitable.
 
 Nonexact installed subtitles are normally reconsidered after 7, 30, or 90 days depending on their score. Exact matches need no scheduled upgrade check while the media stays unchanged.
 

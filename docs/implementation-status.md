@@ -13,6 +13,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Permanent deterministic rejections and Sonarr review — 2026-09-08
+
+- Commit: this implementation commit, based on `b1d8b2c`; user approved indefinite deterministic rejection retention, no periodic redownload, Sonarr coverage, and adjacent review. Preserved the pre-existing local Room operator ledger entry.
+- Adopted no time expiry for new or legacy matching rejection rows. Retained the legacy database column for schema compatibility; new writes store zero and reads ignore expiry. Searches still discover new candidates, technical failures retain backoff, and the explicit media/language rejection clear remains available. `explain` reports `expires=never`.
+- Fixed four adjacent review findings: Sonarr episode title/season/episode/absolute corrections now change selection identity; unordered release/direct-member evidence is canonicalized without mutating candidates; ambiguous multi-subtitle movie archives now create candidate-local selection rejections; rejected cached packs no longer hide other usable packs or get their access timestamp refreshed. Rejection lookup failures remain technical errors and cannot be swallowed by cache fallback.
+- Compatibility: legacy episode signatures lack selection metadata and may be reconsidered once. Older noncanonical evidence ordering may likewise cause one reconsideration; subsequent ordering/duplicate changes do not. A silently replaced provider file with unchanged evidence remains skipped unless explicitly overridden. No periodic download refresh is introduced.
+- Tests cover old expiry values, ten-year persistence across SQLite close/reopen for movies and Sonarr episodes, no download/LAPSE for unchanged rejection, new candidate installation, manual clear, episode evidence/media scoping, ambiguous movie archives, evidence permutations, actual two-pack workflow fallback, cache access timestamps, and callback failures. Focused regressions failed before their fixes. Full `go test ./... -race -count=1`, `go vet ./...`, tagged race-enabled end-to-end tests, and `git diff --check` passed using writable caches and local fakes.
+- Independent final review found no remaining actionable issues. Next task: publish and deploy when requested. No production access or mutation occurred during this implementation.
+
 ### Whole-movie and whole-series webhook deletion repair — 2026-09-07
 
 - Commit: this repair commit, based on `03d31f0`; user authorized both fixes and the GitHub push.

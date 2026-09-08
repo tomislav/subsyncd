@@ -62,6 +62,14 @@ func NewCache(root string, repository *store.Repository, clock cacheClock, maxBy
 }
 
 func (c *Cache) Find(ctx context.Context, media domain.Media, language domain.Language) (CachedMember, bool, error) {
+	return c.FindEligible(ctx, media, language, nil)
+}
+
+// FindEligible applies accept after validating each selected member and before
+// marking it used. Rejected members do not hide later matching packs. A nil
+// callback accepts every member; callback errors stop lookup without touching
+// that entry. The callback runs under the cache lock and must not reenter Cache.
+func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language domain.Language, accept func(CachedMember) (bool, error)) (CachedMember, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.clock.Now()
@@ -112,10 +120,20 @@ func (c *Cache) Find(ctx context.Context, media domain.Media, language domain.La
 			}
 			continue
 		}
+		cached := CachedMember{Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
+		if accept != nil {
+			accepted, err := accept(cached)
+			if err != nil {
+				return CachedMember{}, false, err
+			}
+			if !accepted {
+				continue
+			}
+		}
 		if err := c.repo.TouchPack(ctx, entry.ID, now); err != nil {
 			return CachedMember{}, false, err
 		}
-		return CachedMember{Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}, true, nil
+		return cached, true, nil
 	}
 	if selectionErr != nil {
 		return CachedMember{}, false, selectionErr

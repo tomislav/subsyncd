@@ -96,7 +96,7 @@ Search-result cache entries live for six hours when their acquisition references
 
 Episode ranges are recognized only through complete hyphenated tokens: `S01E01-E03`, same-season `S01E01-S01E03`, or same-season `1x01-1x03`. Cross-season, reversed, chained, incomplete, and suffix-contaminated forms fail closed. Release suffixes such as `S01E01.1080p` remain single-episode evidence rather than becoming a range. Forced-only policy applies to every selected archive member, including a plain one-member movie payload.
 
-Candidate rejections are not provider blacklists. They are scoped to one media/language/provider result and expire after 30 days. Media fingerprint, stable release metadata, selected member checksum, LAPSE compatibility version, or synchronization-policy changes invalidate the applicable match. Volatile provider rating, popularity, download counts, and temporary download URLs deliberately do not change the rejection identity. A downloaded archive with no unique member for the requested episode is recorded as `pack_selection`; the workflow continues through its remaining shortlist without opening a provider cooldown.
+Candidate rejections are not provider blacklists. They are scoped to one media/language/provider result and do not expire with time. Media fingerprint, stable release metadata, Sonarr season/episode/absolute numbering or episode title, selected member checksum, LAPSE compatibility version, or synchronization-policy changes invalidate the applicable match. Volatile provider rating, popularity, download counts, and temporary download URLs deliberately do not change the rejection identity. Set-like release names and direct-member evidence are sorted and deduplicated before hashing, without mutating provider results. A downloaded archive with no unique member for the requested episode is recorded as `pack_selection`; the workflow continues through its remaining shortlist without opening a provider cooldown.
 
 ## Score model
 
@@ -170,3 +170,9 @@ go test ./test/providercontract -tags=provider_contract -v
 ```
 
 The tests skip each provider unless its normal credential environment variables are present. They execute one bounded broad search for a fixed movie query defined in the contract test and do not download a subtitle.
+
+### Permanent rejection compatibility
+
+The legacy SQLite `expires_at_ns` column is retained to avoid rewriting the schema; new rows store zero, and all historical expiry values are ignored. Existing matching rejections remain effective even after their former deadline. Diagnostic output uses `expires=never`. No background download rechecks are performed. A silently replaced provider file under unchanged evidence stays skipped until an explicit override or another identity change.
+
+Episode rejection signatures now include season, episode, absolute episode and episode title. Pre-change episode signatures cannot establish this evidence and may be evaluated once again after upgrading. Canonicalizing unordered provider evidence can likewise cause a one-time reconsideration of older noncanonical signatures. Subsequent reordering or duplicate evidence does not trigger another download. Cached lookup skips rejected members before touching the pack's access timestamp and continues to other usable cached packs; rejection lookup failures remain technical errors.

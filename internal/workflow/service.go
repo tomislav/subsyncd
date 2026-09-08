@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -25,8 +26,6 @@ import (
 )
 
 type Outcome string
-
-const defaultCandidateRejectionTTL = 30 * 24 * time.Hour
 
 const (
 	OutcomeSatisfied Outcome = "satisfied"
@@ -242,7 +241,10 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	defer os.RemoveAll(workspace)
 
 	if request.Media.Ref.Kind == domain.MediaEpisode && s.PackCache != nil {
-		cached, found, cacheErr := s.PackCache.Find(ctx, request.Media, request.Language)
+		cached, found, cacheErr, lookupErr := s.findUnrejectedPack(ctx, request, &result)
+		if lookupErr != nil {
+			return result, lookupErr
+		}
 		if cacheErr != nil {
 			result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", Reason: cacheErr.Error()})
 		} else if found {
@@ -773,7 +775,7 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 }
 
 func (s *Service) candidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, bool, error) {
-	signature, err := candidateSignature(candidate)
+	signature, err := candidateSignature(candidate, request.Media)
 	if err != nil {
 		return store.CandidateRejection{}, false, err
 	}
@@ -801,7 +803,7 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	default:
 		return false, nil
 	}
-	signature, err := candidateSignature(candidate)
+	signature, err := candidateSignature(candidate, request.Media)
 	if err != nil {
 		return false, err
 	}
@@ -810,7 +812,7 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	rejection := store.CandidateRejection{
 		MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
 		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ReasonCode: reasonCode, ToolSignature: s.rejectionToolSignature(),
-		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(defaultCandidateRejectionTTL),
+		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now,
 	}
 	if err := s.Repository.PutCandidateRejection(ctx, rejection); err != nil {
 		return false, err
@@ -823,23 +825,42 @@ func isMediaValidationRejection(failure error) bool {
 	return errors.As(failure, &noSpeech)
 }
 
-func candidateSignature(candidate domain.Candidate) (string, error) {
+func candidateSignature(candidate domain.Candidate, media ...domain.Media) (string, error) {
 	safe := candidate
 	safe.DownloadRef = ""
 	safe.Rating = 0
 	safe.Popularity = 0
 	safe.DownloadCount = 0
+	safe.ReleaseNames = slices.Clone(safe.ReleaseNames)
+	slices.Sort(safe.ReleaseNames)
+	safe.ReleaseNames = slices.Compact(safe.ReleaseNames)
 	if safe.Pack != nil {
 		packInfo := *safe.Pack
 		packInfo.DirectMembers = append([]domain.PackMemberRef(nil), safe.Pack.DirectMembers...)
 		for index := range packInfo.DirectMembers {
 			packInfo.DirectMembers[index].DownloadRef = ""
 		}
+		slices.SortFunc(packInfo.DirectMembers, func(a, b domain.PackMemberRef) int {
+			left, _ := json.Marshal(a)
+			right, _ := json.Marshal(b)
+			return strings.Compare(string(left), string(right))
+		})
+		packInfo.DirectMembers = slices.Compact(packInfo.DirectMembers)
 		safe.Pack = &packInfo
 	}
 	payload, err := json.Marshal(safe)
 	if err != nil {
 		return "", fmt.Errorf("encode candidate signature: %w", err)
+	}
+	if len(media) > 0 && media[0].Ref.Kind == domain.MediaEpisode {
+		// Sonarr can correct selection evidence without replacing the physical file.
+		evidence, _ := json.Marshal(struct {
+			Season          int
+			Episode         int
+			AbsoluteEpisode int
+			EpisodeTitle    string
+		}{media[0].Season, media[0].Episode, media[0].AbsoluteEpisode, media[0].EpisodeTitle})
+		payload = append(payload, evidence...)
 	}
 	sum := sha256.Sum256(payload)
 	return fmt.Sprintf("%x", sum[:]), nil
@@ -945,7 +966,7 @@ func (s *Service) downloadAndSelect(ctx context.Context, request Request, candid
 			return "", nil, err
 		}
 	} else {
-		return "", nil, fmt.Errorf("movie candidate archive contains multiple subtitle files")
+		return "", nil, &pack.SelectionError{Reason: "movie candidate archive contains multiple subtitle files"}
 	}
 	if candidate.Pack != nil && s.PackCache != nil {
 		if err := s.PackCache.Put(ctx, manifest, s.Clock.Now().Add(s.packTTL())); err != nil {
@@ -1184,6 +1205,12 @@ func candidateRecord(candidate domain.Candidate, score domain.Score, eligible bo
 		for index := range packInfo.DirectMembers {
 			packInfo.DirectMembers[index].DownloadRef = ""
 		}
+		slices.SortFunc(packInfo.DirectMembers, func(a, b domain.PackMemberRef) int {
+			left, _ := json.Marshal(a)
+			right, _ := json.Marshal(b)
+			return strings.Compare(string(left), string(right))
+		})
+		packInfo.DirectMembers = slices.Compact(packInfo.DirectMembers)
 		safe.Pack = &packInfo
 	}
 	metadata, err := json.Marshal(safe)

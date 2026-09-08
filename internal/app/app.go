@@ -658,7 +658,7 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	}
 	fmt.Fprintf(&output, "candidate_rejections: %d\n", len(rejections))
 	for _, rejection := range rejections {
-		fmt.Fprintf(&output, "  rejection: provider=%s result=%s reason=%s artifact=%s expires=%s\n", rejection.ProviderID, rejection.ResultID, rejection.ReasonCode, rejection.ArtifactChecksum, rejection.ExpiresAt.Format(time.RFC3339Nano))
+		fmt.Fprintf(&output, "  rejection: provider=%s result=%s reason=%s artifact=%s expires=never\n", rejection.ProviderID, rejection.ResultID, rejection.ReasonCode, rejection.ArtifactChecksum)
 	}
 	installation, installed, err := a.Repository.GetInstallation(ctx, mediaID, language)
 	if err != nil {

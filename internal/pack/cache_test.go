@@ -159,6 +159,63 @@ func TestCacheSupportsConcurrentReaders(t *testing.T) {
 	}
 }
 
+func TestCacheFindEligibleSkipsRejectedPackWithoutTouchingIt(t *testing.T) {
+	ctx := context.Background()
+	repository := openRepository(t)
+	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	cache, err := NewCache(filepath.Join(t.TempDir(), "pack-cache"), repository, clock, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"viable", "rejected"} {
+		if err := cache.Put(ctx, extractedManifest(t, cacheCandidate(id)), time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		clock.Advance(time.Minute)
+	}
+	rejectedAccess := clock.Now().Add(-time.Minute)
+	var visited []string
+	member, found, err := cache.FindEligible(ctx, cacheMedia(), "en", func(member CachedMember) (bool, error) {
+		visited = append(visited, member.Candidate.ResultID)
+		return member.Candidate.ResultID != "rejected", nil
+	})
+	if err != nil || !found || member.Candidate.ResultID != "viable" || strings.Join(visited, ",") != "rejected,viable" {
+		t.Fatalf("FindEligible() = %#v/%v/%v, visited %v", member, found, err, visited)
+	}
+	entries, err := repository.ListPacksForEviction(ctx, clock.Now())
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("packs = %#v/%v", entries, err)
+	}
+	for _, entry := range entries {
+		want := clock.Now()
+		if entry.ResultID == "rejected" {
+			want = rejectedAccess
+		}
+		if !entry.LastAccessAt.Equal(want) {
+			t.Errorf("%s last access = %v, want %v", entry.ResultID, entry.LastAccessAt, want)
+		}
+	}
+	clock.Advance(time.Minute)
+	lookupErr := errors.New("rejection lookup failed")
+	_, found, err = cache.FindEligible(ctx, cacheMedia(), "en", func(CachedMember) (bool, error) { return false, lookupErr })
+	if found || !errors.Is(err, lookupErr) {
+		t.Fatalf("callback failure = %v/%v", found, err)
+	}
+	_, found, err = cache.FindEligible(ctx, cacheMedia(), "en", func(CachedMember) (bool, error) { return false, nil })
+	if found || err != nil {
+		t.Fatalf("all rejected = %v/%v, want clean miss", found, err)
+	}
+	after, err := repository.ListPacksForEviction(ctx, clock.Now())
+	if err != nil || len(after) != len(entries) {
+		t.Fatalf("packs after failure = %#v/%v", after, err)
+	}
+	for i := range entries {
+		if after[i].ID != entries[i].ID || !after[i].LastAccessAt.Equal(entries[i].LastAccessAt) {
+			t.Errorf("callback failure touched cache: before %#v, after %#v", entries[i], after[i])
+		}
+	}
+}
+
 func TestCacheFindRerunsStrictSelectionAndRejectsAmbiguousPack(t *testing.T) {
 	ctx := context.Background()
 	repository := openRepository(t)

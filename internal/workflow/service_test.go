@@ -213,7 +213,7 @@ func TestServiceSkipsARejectedCachedPackMember(t *testing.T) {
 	synchronizer := &fakeSynchronizer{}
 	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, cache, synchronizer, &fakeInstaller{})
 	service.Repository = repository
-	signature, err := candidateSignature(candidate)
+	signature, err := candidateSignature(candidate, request.Media)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestServiceExactCandidatesSkipIneligibleRejectedAndDeterministicFailures(t 
 		{
 			name: "already rejected",
 			prepare: func(t *testing.T, request Request, service *Service, repository *workflowRepository, _ *fakeProvider, candidate *domain.Candidate) {
-				signature, err := candidateSignature(*candidate)
+				signature, err := candidateSignature(*candidate, request.Media)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1242,7 +1242,7 @@ func TestServicePersistsDeterministicLapseRejectionsBeforeTheShortlist(t *testin
 	request := serviceRequest(t)
 
 	first, err := service.Run(context.Background(), request)
-	if err != nil || first.Outcome != OutcomeRejected || !slices.Equal(providerFake.downloaded, []string{"1-bad", "2-bad", "3-bad"}) || len(repository.rejections) != 3 || repository.rejections[0].ExpiresAt.Sub(repository.rejections[0].RejectedAt) != 30*24*time.Hour {
+	if err != nil || first.Outcome != OutcomeRejected || !slices.Equal(providerFake.downloaded, []string{"1-bad", "2-bad", "3-bad"}) || len(repository.rejections) != 3 || !repository.rejections[0].ExpiresAt.IsZero() {
 		t.Fatalf("first Run() = %#v/%v downloads=%#v rejections=%#v", first, err, providerFake.downloaded, repository.rejections)
 	}
 	providerFake.downloaded = nil
@@ -1653,7 +1653,7 @@ func (r *workflowRepository) PutCandidateRejection(_ context.Context, rejection 
 
 func (r *workflowRepository) GetCandidateRejection(_ context.Context, lookup store.CandidateRejectionLookup) (store.CandidateRejection, bool, error) {
 	for _, rejection := range r.rejections {
-		if rejection.MediaID == lookup.MediaID && rejection.Language == lookup.Language && rejection.ProviderID == lookup.ProviderID && rejection.ResultID == lookup.ResultID && rejection.CandidateSignature == lookup.CandidateSignature && rejection.ToolSignature == lookup.ToolSignature && rejection.MediaPath == lookup.MediaPath && rejection.MediaFileID == lookup.MediaFileID && rejection.MediaSize == lookup.MediaSize && rejection.MediaModTimeNS == lookup.MediaModTimeNS && rejection.ExpiresAt.After(lookup.Now) && (lookup.ArtifactChecksum == "" || rejection.ArtifactChecksum == lookup.ArtifactChecksum) {
+		if rejection.MediaID == lookup.MediaID && rejection.Language == lookup.Language && rejection.ProviderID == lookup.ProviderID && rejection.ResultID == lookup.ResultID && rejection.CandidateSignature == lookup.CandidateSignature && rejection.ToolSignature == lookup.ToolSignature && rejection.MediaPath == lookup.MediaPath && rejection.MediaFileID == lookup.MediaFileID && rejection.MediaSize == lookup.MediaSize && rejection.MediaModTimeNS == lookup.MediaModTimeNS && (lookup.ArtifactChecksum == "" || rejection.ArtifactChecksum == lookup.ArtifactChecksum) {
 			return rejection, true, nil
 		}
 	}

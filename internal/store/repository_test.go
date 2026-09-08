@@ -1105,6 +1105,11 @@ func TestCandidateRejectionMatchesTheSameCandidateArtifactAndMedia(t *testing.T)
 		t.Fatal(err)
 	}
 
+	// Simulate an existing row written by the old expiring implementation.
+	if _, err := repo.store.db.ExecContext(context.Background(), `UPDATE candidate_rejections SET expires_at_ns=?`, rejection.ExpiresAt.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+
 	lookup := CandidateRejectionLookup{
 		MediaID: mediaID, Language: "en", ProviderID: "opensubtitles", ResultID: "result-1",
 		CandidateSignature: "candidate-a", ArtifactChecksum: "member-a", ToolSignature: "lapse-2.0.5/policy-a",
@@ -1133,13 +1138,13 @@ func TestCandidateRejectionMatchesTheSameCandidateArtifactAndMedia(t *testing.T)
 		t.Fatalf("changed tool policy matched = %v/%v", found, err)
 	}
 	lookup.ToolSignature = "lapse-2.0.5/policy-a"
-	lookup.Now = rejection.ExpiresAt
-	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup); err != nil || found {
-		t.Fatalf("expired rejection matched = %v/%v", found, err)
+	lookup.Now = now.AddDate(10, 0, 0)
+	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup); err != nil || !found {
+		t.Fatalf("retained rejection missing = %v/%v", found, err)
 	}
 }
 
-func TestCandidateRejectionsExpireAndCanBeClearedForManualRetry(t *testing.T) {
+func TestCandidateRejectionsPersistAndCanBeClearedForManualRetry(t *testing.T) {
 	repo := openTestRepository(t)
 	media := testMedia()
 	mediaID, _, _ := repo.UpsertMedia(context.Background(), media)
@@ -1155,8 +1160,8 @@ func TestCandidateRejectionsExpireAndCanBeClearedForManualRetry(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].ResultID != "bad" {
 		t.Fatalf("ListCandidateRejections() = %#v/%v", listed, err)
 	}
-	if listed, err = repo.ListCandidateRejections(context.Background(), mediaID, "en", rejection.ExpiresAt); err != nil || len(listed) != 0 {
-		t.Fatalf("expired rejections = %#v/%v", listed, err)
+	if listed, err = repo.ListCandidateRejections(context.Background(), mediaID, "en", now.AddDate(10, 0, 0)); err != nil || len(listed) != 1 {
+		t.Fatalf("retained rejections = %#v/%v", listed, err)
 	}
 	if err := repo.ClearCandidateRejections(context.Background(), mediaID, "en"); err != nil {
 		t.Fatal(err)

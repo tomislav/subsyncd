@@ -173,7 +173,8 @@ type CandidateRejection struct {
 	MediaSize          int64
 	MediaModTimeNS     int64
 	RejectedAt         time.Time
-	ExpiresAt          time.Time
+	// Deprecated: retained for source compatibility; writes and reads ignore expiry.
+	ExpiresAt time.Time
 }
 
 type CandidateRejectionLookup struct {
@@ -1020,10 +1021,10 @@ func (r *Repository) RecordCandidates(ctx context.Context, mediaID int64, langua
 }
 
 func (r *Repository) PutCandidateRejection(ctx context.Context, rejection CandidateRejection) error {
-	if rejection.MediaID <= 0 || rejection.Language == "" || rejection.ProviderID == "" || rejection.ResultID == "" || rejection.CandidateSignature == "" || rejection.ReasonCode == "" || rejection.ToolSignature == "" || rejection.MediaPath == "" || rejection.RejectedAt.IsZero() || !rejection.ExpiresAt.After(rejection.RejectedAt) {
-		return fmt.Errorf("candidate rejection identity, reason, fingerprint, and expiry are required")
+	if rejection.MediaID <= 0 || rejection.Language == "" || rejection.ProviderID == "" || rejection.ResultID == "" || rejection.CandidateSignature == "" || rejection.ReasonCode == "" || rejection.ToolSignature == "" || rejection.MediaPath == "" || rejection.RejectedAt.IsZero() {
+		return fmt.Errorf("candidate rejection identity, reason, fingerprint, and timestamp are required")
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO candidate_rejections(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature) DO UPDATE SET reason_code=excluded.reason_code, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, rejected_at_ns=excluded.rejected_at_ns, expires_at_ns=excluded.expires_at_ns`, rejection.MediaID, rejection.Language, rejection.ProviderID, rejection.ResultID, rejection.CandidateSignature, rejection.ArtifactChecksum, rejection.ReasonCode, rejection.ToolSignature, rejection.MediaPath, rejection.MediaFileID, rejection.MediaSize, rejection.MediaModTimeNS, rejection.RejectedAt.UnixNano(), rejection.ExpiresAt.UnixNano())
+	_, err := r.store.db.ExecContext(ctx, `INSERT INTO candidate_rejections(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature) DO UPDATE SET reason_code=excluded.reason_code, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, rejected_at_ns=excluded.rejected_at_ns, expires_at_ns=excluded.expires_at_ns`, rejection.MediaID, rejection.Language, rejection.ProviderID, rejection.ResultID, rejection.CandidateSignature, rejection.ArtifactChecksum, rejection.ReasonCode, rejection.ToolSignature, rejection.MediaPath, rejection.MediaFileID, rejection.MediaSize, rejection.MediaModTimeNS, rejection.RejectedAt.UnixNano(), int64(0))
 	if err != nil {
 		return fmt.Errorf("put candidate rejection: %w", err)
 	}
@@ -1031,8 +1032,8 @@ func (r *Repository) PutCandidateRejection(ctx context.Context, rejection Candid
 }
 
 func (r *Repository) GetCandidateRejection(ctx context.Context, lookup CandidateRejectionLookup) (CandidateRejection, bool, error) {
-	query := `SELECT media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns FROM candidate_rejections WHERE media_id=? AND language=? AND provider_id=? AND result_id=? AND candidate_signature=? AND tool_signature=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=? AND expires_at_ns>?`
-	args := []any{lookup.MediaID, lookup.Language, lookup.ProviderID, lookup.ResultID, lookup.CandidateSignature, lookup.ToolSignature, lookup.MediaPath, lookup.MediaFileID, lookup.MediaSize, lookup.MediaModTimeNS, lookup.Now.UnixNano()}
+	query := `SELECT media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns FROM candidate_rejections WHERE media_id=? AND language=? AND provider_id=? AND result_id=? AND candidate_signature=? AND tool_signature=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=?`
+	args := []any{lookup.MediaID, lookup.Language, lookup.ProviderID, lookup.ResultID, lookup.CandidateSignature, lookup.ToolSignature, lookup.MediaPath, lookup.MediaFileID, lookup.MediaSize, lookup.MediaModTimeNS}
 	if lookup.ArtifactChecksum != "" {
 		query += ` AND artifact_checksum=?`
 		args = append(args, lookup.ArtifactChecksum)
@@ -1048,12 +1049,13 @@ func (r *Repository) GetCandidateRejection(ctx context.Context, lookup Candidate
 		return CandidateRejection{}, false, fmt.Errorf("get candidate rejection: %w", err)
 	}
 	rejection.RejectedAt = fromUnixNano(rejectedAt)
-	rejection.ExpiresAt = fromUnixNano(expiresAt)
+	// Legacy expiry is ignored: deterministic rejections have no time limit.
+	rejection.ExpiresAt = time.Time{}
 	return rejection, true, nil
 }
 
 func (r *Repository) ListCandidateRejections(ctx context.Context, mediaID int64, language domain.Language, now time.Time) ([]CandidateRejection, error) {
-	rows, err := r.store.db.QueryContext(ctx, `SELECT media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns FROM candidate_rejections WHERE media_id=? AND language=? AND expires_at_ns>? ORDER BY rejected_at_ns DESC`, mediaID, language.String(), now.UnixNano())
+	rows, err := r.store.db.QueryContext(ctx, `SELECT media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns FROM candidate_rejections WHERE media_id=? AND language=? ORDER BY rejected_at_ns DESC`, mediaID, language.String())
 	if err != nil {
 		return nil, fmt.Errorf("list candidate rejections: %w", err)
 	}
@@ -1066,7 +1068,8 @@ func (r *Repository) ListCandidateRejections(ctx context.Context, mediaID int64,
 			return nil, fmt.Errorf("scan candidate rejection: %w", err)
 		}
 		rejection.RejectedAt = fromUnixNano(rejectedAt)
-		rejection.ExpiresAt = fromUnixNano(expiresAt)
+		// Legacy expiry is ignored: deterministic rejections have no time limit.
+		rejection.ExpiresAt = time.Time{}
 		rejections = append(rejections, rejection)
 	}
 	if err := rows.Err(); err != nil {

@@ -72,7 +72,7 @@ After adding an instance, provider, or language, restart subsyncd. A new languag
 
 subsyncd checks embedded tracks and separate subtitle files before searching. A full matching subtitle can satisfy a language; forced-only tracks cannot. Hearing-impaired tracks count only when `allow_hearing_impaired: true` is enabled.
 
-When nothing suitable is found, searches continue automatically with longer intervals. Provider limits and outages can delay them. A scheduled check may reuse recent results rather than contact a provider again.
+When nothing suitable is found, searches continue automatically with longer intervals. Known deterministic rejections are retained without expiry; searches can try new candidates but do not periodically redownload rejected ones. Provider limits and outages can delay them. A scheduled check may reuse recent results rather than contact a provider again.
 
 subsyncd can upgrade subtitles it installed when a better match becomes available. Manually added or edited subtitles are protected. If you delete a managed subtitle, it can be downloaded again on a later search. TV files containing multiple episodes are currently skipped.
 
