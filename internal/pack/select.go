@@ -150,14 +150,24 @@ func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media do
 	return Member{}, err
 }
 
-// SelectSingleMovie permits only one archive member after applying the same
-// forced-subtitle policy used for every other selection shape.
+// SelectSingleMovie requires one distinct eligible normalized subtitle.
+// Unknown checksums remain distinct; policy filtering precedes deduplication.
 func SelectSingleMovie(manifest Manifest, candidate domain.Candidate, wantForced bool) (Member, error) {
 	members := eligibleMembers(manifest.Members, wantForced)
 	if candidate.Forced && !wantForced || len(members) == 0 {
 		return Member{}, selectionError(manifest, "forced_policy", 0, "no members satisfy the forced-subtitle policy")
 	}
-	if len(members) != 1 || len(manifest.Members) != 1 {
+	unique := make([]Member, 0, len(members))
+	seen := map[string]bool{}
+	for _, member := range members {
+		if member.Checksum != "" && seen[member.Checksum] {
+			continue
+		}
+		seen[member.Checksum] = true
+		unique = append(unique, member)
+	}
+	members = unique
+	if len(members) != 1 {
 		return Member{}, selectionError(manifest, "single_movie", len(members), "movie candidate must contain exactly one eligible subtitle member")
 	}
 	selected := members[0]

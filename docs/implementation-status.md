@@ -5,13 +5,31 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish download-aware provider acquisition
-- Next safe action: verify GitHub Actions publishes the cooldown fix; deployment is user-managed
-- Latest follow-up: persisted download cooldowns suppress provider searches and repeated candidate downloads while retaining local pack-cache and fallback acquisition
+- Current task: publish duplicate movie subtitle selection repair
+- Next safe action: verify GitHub Actions publishes the movie duplicate fix; deployment is user-managed
+- Latest follow-up: movie selection collapses identical eligible content; migration 009 reconsiders old movie selection rejections once
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Duplicate movie subtitle selection repair — 2026-09-09
+
+- Commit: this `fix: deduplicate movie subtitles and reconsider rejections` commit on `main`, based on `74f125c`. User authorized commit, merge to main and push; checkout already on main and fetched origin is aligned. No deployment or production mutation.
+- Movie archives now pass through the shared movie selector regardless of member count. Forced-policy filtering precedes normalized-content checksum deduplication; absent checksums remain distinct and distinct eligible content still fails closed. Existing exact/LAPSE and ownership gates remain unchanged.
+- Movie rejections now include selection rule, archive type and original/matching counts. Successful selection also includes archive type. No member filenames or absolute paths are logged.
+- Migration 009 clears only existing movie `pack_selection` rejections once. Older rows lack sufficient detail to distinguish duplicate and genuinely ambiguous content; fresh ambiguous/forced rejections persist normally. Episode and other deterministic rejections, schedules, leases, media and installations are preserved. Reconsideration follows normal search/upgrade scheduling, not an immediate replacement.
+- TDD reproduced duplicate rejection, missing diagnostics and retained movie rejection before implementation. Synthetic tests cover identical content, distinct content, mixed forced/full and forced-only archives; migration tests verify scope, retained state and one-time behavior. Updated the older ambiguity fixture to use genuinely distinct content. Independent review found no actionable issues.
+- Verification: full `go test ./... -race -count=1`, tagged e2e race suite, `go vet ./...`, and `git diff --check` passed using `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`. Local fake-server tests required loopback permission; no live provider tests during implementation.
+- Next: verify GitHub publication after push; deploy only when requested. Migration runs at next mutating startup on the updated build.
+
+### Movie archive duplicate rejection investigation — 2026-09-09
+
+- Reviewed deployed commit `74f125c`; investigation only, no runtime change, commit or deployment.
+- User-authorized authenticated inspection of Titlovi candidate `138388` returned a 61,154-byte ZIP with two differently named 79,755-byte SRT members whose SHA-256 hashes are identical. Movie acquisition rejects the raw multi-member count before content deduplication, producing a false ambiguity rejection. The multi-member error also omits the structured selection rule/archive counts. Credentials stayed in memory on the production host; no production database or media writes.
+- Production logs confirm continuation to candidate `380705`, LAPSE `solid`, and successful installation. The duplicate candidate itself was never timing-validated, so its synchronization suitability remains unknown.
+- Verification: inspected the deployed extraction/selection/logging paths and compared downloaded member bytes using SHA-256; no automated tests or runtime edits in this investigation.
+- Next: add a synthetic duplicate-movie regression, safely collapse identical eligible movie content before uniqueness checks, preserve forced-policy checks and rejection of distinct-content ambiguity, and include structured rejection diagnostics. Account for persisted old rejections when adopting the fix.
 
 ### Download-aware provider acquisition — 2026-09-09
 

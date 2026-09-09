@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestMigrationClearsExistingInvalidLapseOutputRejectionsOnce(t *testing.T) {
+func TestMigrationClearsMovieSelectionRejectionsOnce(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "subsyncd.db")
 	old, err := sql.Open("sqlite", path)
@@ -20,7 +20,7 @@ func TestMigrationClearsExistingInvalidLapseOutputRejectionsOnce(t *testing.T) {
 	if _, err := old.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"001_baseline.sql", "002_scrub_provider_credentials.sql", "003_inventory_probes.sql", "004_sonarr_series.sql", "005_library_discovery.sql", "006_fallback_installations.sql"} {
+	for _, name := range []string{"001_baseline.sql", "002_scrub_provider_credentials.sql", "003_inventory_probes.sql", "004_sonarr_series.sql", "005_library_discovery.sql", "006_fallback_installations.sql", "007_clear_lapse_invalid_output.sql", "008_forced_track_probe_refresh.sql"} {
 		contents, err := migrationFiles.ReadFile("migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -51,7 +51,7 @@ func TestMigrationClearsExistingInvalidLapseOutputRejectionsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for i, reason := range []string{"lapse_invalid_output", "lapse_invalid_output", "lapse_unsure", "lapse_nothing", "invalid_subtitle", "pack_selection", "oversized_payload"} {
+	for i, reason := range []string{"pack_selection", "pack_selection", "lapse_unsure", "lapse_nothing", "invalid_subtitle", "invalid_subtitle", "oversized_payload"} {
 		insertRejection(old, i, reason)
 	}
 	snapshot := func(db *sql.DB, query string) [][]any {
@@ -82,7 +82,7 @@ func TestMigrationClearsExistingInvalidLapseOutputRejectionsOnce(t *testing.T) {
 		}
 		return result
 	}
-	queries := []string{`SELECT * FROM candidate_rejections WHERE reason_code <> 'lapse_invalid_output' ORDER BY id`}
+	queries := []string{`SELECT * FROM candidate_rejections WHERE NOT (reason_code = 'pack_selection' AND media_id=1) ORDER BY id`}
 	for _, table := range []string{"media", "search_states", "installations", "provider_cache", "pack_cache", "pack_members", "notifications"} {
 		queries = append(queries, "SELECT * FROM "+table+" ORDER BY 1")
 	}
@@ -99,18 +99,18 @@ func TestMigrationClearsExistingInvalidLapseOutputRejectionsOnce(t *testing.T) {
 	}
 	defer func() { migrated.Close() }()
 	var count int
-	if err := migrated.db.QueryRow(`SELECT count(*) FROM candidate_rejections WHERE reason_code='lapse_invalid_output'`).Scan(&count); err != nil {
+	if err := migrated.db.QueryRow(`SELECT count(*) FROM candidate_rejections WHERE reason_code='pack_selection' AND media_id=1`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
-		t.Fatalf("existing invalid-output rejections = %d, want 0", count)
+		t.Fatalf("existing movie-selection rejections = %d, want 0", count)
 	}
 	for i, q := range queries {
 		if after := snapshot(migrated.db, q); !reflect.DeepEqual(before[i], after) {
 			t.Errorf("migration changed retained state for %s: before=%v after=%v", q, before[i], after)
 		}
 	}
-	insertRejection(migrated.db, 10, "lapse_invalid_output")
+	insertRejection(migrated.db, 10, "pack_selection")
 	retained := snapshot(migrated.db, `SELECT * FROM candidate_rejections ORDER BY id`)
 	if err := migrated.Close(); err != nil {
 		t.Fatal(err)

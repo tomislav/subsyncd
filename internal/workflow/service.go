@@ -1060,13 +1060,11 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 		if err != nil {
 			return nil, runtimePack, nil, err
 		}
-	} else if len(manifest.Members) == 1 {
+	} else {
 		member, err = pack.SelectSingleMovie(manifest, extractionCandidate, false)
 		if err != nil {
 			return nil, runtimePack, nil, err
 		}
-	} else {
-		return nil, runtimePack, nil, &pack.SelectionError{Reason: "movie candidate archive contains multiple subtitle files"}
 	}
 	cacheable := candidate.Pack != nil
 	if runtimePack {
@@ -1090,7 +1088,7 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 	if len(members) == 0 {
 		members = []pack.Member{member}
 	}
-	s.workflowEvents().Log(ctx, slog.LevelInfo, "archive.members_selected", "subtitle archive members selected", slog.String("provider", observability.SafeText(candidate.ProviderID)), slog.String("candidate_id", observability.SafeText(candidate.ResultID)), slog.String("selection_rule", members[0].SelectionRule), slog.Int("matching_member_count", len(members)), slog.Int("subtitle_member_count", len(manifest.Members)))
+	s.workflowEvents().Log(ctx, slog.LevelInfo, "archive.members_selected", "subtitle archive members selected", slog.String("provider", observability.SafeText(candidate.ProviderID)), slog.String("candidate_id", observability.SafeText(candidate.ResultID)), slog.String("selection_rule", members[0].SelectionRule), slog.String("archive_type", manifest.ArchiveType), slog.Int("matching_member_count", len(members)), slog.Int("subtitle_member_count", len(manifest.Members)))
 	for n, member := range members {
 		path := filepath.Join(workspace, fmt.Sprintf("selected-%d-%d%s", index, n, filepath.Ext(member.NormalizedPath)))
 		if err := os.Rename(member.NormalizedPath, path); err != nil {

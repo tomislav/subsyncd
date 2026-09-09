@@ -133,3 +133,15 @@ If credentials are rejected, correct them and clear the affected provider's save
 The exact point values, schedules, API handling, and cache rules are in the [developer provider reference](development/providers.md).
 
 LAPSE-generated cues with valid intervals but decreasing start times are stably reordered before final validation. Complete cue records retain their timestamps, text, styling and identifiers; equal-start cues retain their order. Negative or reversed intervals still reject. Migration `007_clear_lapse_invalid_output.sql` clears all existing `lapse_invalid_output` rejections once so these candidates can be reconsidered on normal search schedules. It preserves other rejection reasons and does not change schedules or bypass output validation; new invalid-output rejections remain retained.
+
+Movie archives may contain duplicate copies of one subtitle. After forced-subtitle
+filtering, identical normalized content counts as one choice; distinct eligible
+versions remain ambiguous and are rejected. Archive selection logs include the
+archive type, original subtitle count, selection rule, and selected or matching
+count, without member filenames.
+
+Migration 009 reconsiders existing movie `pack_selection` rejections once because
+older records did not distinguish duplicate content from genuine ambiguity.
+Episode rejections and other rejection reasons remain intact. Existing search and
+upgrade schedules and installation ownership checks still apply; this does not
+force an immediate replacement of an installed subtitle.
