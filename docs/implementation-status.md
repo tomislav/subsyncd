@@ -5,13 +5,18 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: keyless Gestdown TV-episode provider
+- Current task: Gestdown README follow-up
 - Next safe action: verify GitHub checks and image publication after the authorized Gestdown push; deploy only when requested
 - Latest follow-up: full race/e2e/vet, final affected-package race checks, independent review and real Gestdown download verification passed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Gestdown README follow-up — 2026-09-09
+
+- Commit: this `docs: add Gestdown to README` follow-up on `main`, based on `ce41767`. Added the omitted provider-table entry, TV-only/keyless description and route-enablement guidance; corrected setup wording so provider credentials are required only where applicable. Continues the authorized Gestdown commit/push scope.
+- Verification: reviewed the README against the shipped adapter and configuration example; `git diff --check` passed. Documentation only, so no runtime tests were rerun. Next: verify publication and deploy only when requested.
 
 ### Keyless Gestdown TV provider — 2026-09-09
 

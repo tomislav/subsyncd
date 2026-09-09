@@ -37,6 +37,7 @@ Sonarr or Radarr supplies the library: subsyncd does not scan a standalone folde
 | OpenSubtitles.com | Username and password (application key included in published images) | File-hash and title/episode searches across multiple languages |
 | SubDL | API key | Movie, episode, and season-pack searches across multiple languages |
 | Titlovi | API-enabled account username and password | Bosnian, Croatian, English, Macedonian, Serbian (Latin and Cyrillic), and Slovenian |
+| Gestdown | No account or API key | TV episodes across multiple languages; movies are skipped |
 
 Use one provider or combine several. Available languages depend on the provider; subsyncd checks your language/provider settings at startup. Provider account limits still apply.
 
@@ -50,11 +51,13 @@ languages:
     providers: [titlovi-main]
 ```
 
+To use Gestdown, uncomment `gestdown-main` in the example configuration and add it to a language’s `providers` or `fallback_providers` list. Keep a movie-capable provider in routes used by Radarr.
+
 Hearing-impaired subtitles (SDH/HI) are excluded by default. Set `allow_hearing_impaired: true` to include them. See [provider configuration](docs/providers.md) for more options.
 
 ## Install with Docker Compose
 
-You need Docker with the Compose plugin, a Sonarr or Radarr instance, and credentials for at least one subtitle provider. The image supports **Linux amd64 and arm64** and includes LAPSE and FFmpeg—no separate installation is needed.
+You need Docker with the Compose plugin, a Sonarr or Radarr instance, and at least one configured subtitle provider. Gestdown needs no account or API key; other providers require credentials. The image supports **Linux amd64 and arm64** and includes LAPSE and FFmpeg—no separate installation is needed.
 
 ### 1. Get the configuration files
 
@@ -83,7 +86,7 @@ Find the Sonarr and Radarr API keys in each application's settings. Choose a sep
 Edit `config/config.yaml` to:
 
 - Set the Sonarr and Radarr URLs to addresses reachable from the container. Remove any instance you do not use.
-- Keep only the providers you want, enter their usernames, passwords, and API keys directly in the quoted placeholders, and remove unused provider names from `languages` too.
+- Keep only the providers you want, enter any required usernames, passwords, and API keys in the quoted placeholders, and remove unused provider names from `languages` too. Gestdown requires no credentials.
 - If you use Silo, enable it and replace its API-key placeholder in the same file.
 - Choose your languages, using tags such as `en`, `hr`, or `pt-BR`.
 - Match each `path_mappings.remote` to the path reported by Sonarr or Radarr. The `local` path is where that same folder appears inside subsyncd.
