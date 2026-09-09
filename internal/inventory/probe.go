@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"unicode"
 
 	"subsyncd/internal/domain"
 )
@@ -78,12 +79,50 @@ func ParseProbeTracks(payload []byte) ([]Track, error) {
 			Language: language,
 			Codec:    stream.CodecName,
 			Embedded: true,
-			Forced:   stream.Disposition.Forced != 0,
+			Forced:   stream.Disposition.Forced != 0 || forcedTrackTitle(title),
 			Default:  stream.Disposition.Default != 0,
 			SDH:      sdh,
 		})
 	}
 	return tracks, nil
+}
+
+// Track titles are labels, not reliable prose. Require a complete marker and
+// honor explicit negation/removal; title evidence can never clear a disposition.
+func forcedTrackTitle(title string) bool {
+	clauses := strings.FieldsFunc(title, func(r rune) bool {
+		return strings.ContainsRune(";,\n()[]{}|", r)
+	})
+	for _, clause := range clauses {
+		words := strings.FieldsFunc(clause, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+		negative := false
+		for i, word := range words {
+			switch word {
+			case "but", "with":
+				negative = false
+			case "no", "not", "non", "without", "remove", "removed", "exclude", "excluded", "strip", "stripped":
+				negative = true
+			case "forced":
+				if negative {
+					continue
+				}
+				removed := false
+			suffix:
+				for _, suffix := range words[i+1:] {
+					switch suffix {
+					case "with", "without", "but", "and", "or", "no", "not", "non":
+						break suffix
+					case "removed", "excluded", "stripped", "free":
+						removed = true
+					}
+				}
+				if !removed {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 type OSCommandRunner struct{}

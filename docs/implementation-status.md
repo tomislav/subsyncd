@@ -5,13 +5,31 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: skip TV-only providers for movie searches
-- Next safe action: verify GitHub checks/image publication after the authorized push; deploy only when requested
-- Latest follow-up: Gestdown is skipped before movie-search logs/cache access; unsupported routes no longer mask movie-provider outages
+- Current task: forced-track title detection and minimal-ffprobe packaging experiment
+- Next safe action: verify GitHub checks/image publication after the authorized push; review packaging measurements before adopting changes to both release Dockerfiles
+- Latest follow-up: forced title labels no longer satisfy full coverage; old probe markers are invalidated once without changing schedules
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Minimal ffprobe packaging experiment — 2026-09-09
+
+- Included in this `fix: recognize forced subtitle track titles` commit on `main`, based on `7346420`. Experimental local images and documentation only; neither production Dockerfile changed and no deployment occurred. Report and reproduction recipe: `docs/ffprobe-packaging-experiment-2026-09-09.md`.
+- Replaced the distribution ffmpeg package in an experimental runtime with a static FFmpeg 8.1 ffprobe. Kept Debian 13.2 and the complete LAPSE v2.0.5 bundle, and explicitly retained ONNX Runtime's `libstdc++6` dependency. Source archive checksum is recorded in the recipe; LAPSE/ONNX/model checksums match the baseline.
+- Arm64 gzip layer bytes fell from 219,077,155 to 60,142,143 (72.5%); uncompressed layer tar bytes fell from 574,690,816 to 175,719,424 (69.4%). These are layer measurements, not RAM or exact filesystem allocation. Static probe sizes: arm64 1,905,136 bytes; amd64 1,966,320 bytes.
+- Both probe architectures match all inventory fields for eight synthetic container/codec fixtures and reject corrupt input. A Clang/LLD build inside an amd64 container succeeded after local legacy-builder metadata and emulated-GCC failures. Both arm64 runtime images passed offline read-only-root startup/readiness/doctor and real LAPSE's expected no-speech result on synthetic audio; Silero loads in both.
+- User-approved read-only production comparison: 12 individually mounted files, 230 subtitle tracks, HEVC/E-AC-3/SRT/PGS and an empty inventory; all inventory fields matched. Used an isolated network-disabled, rootless, resource-limited diagnostic container because the configured project had no container. No media/database/subtitle writes or application initialization. Temporary executable and diagnostic container removed; host details and media filenames remain outside tracked documentation.
+- Verification: experiment builds/probes, dependency and checksum inspection, production sample, release-Dockerfile parity script and `git diff --check`. Next: adopt the smaller packaging only after native amd64 runtime verification, remaining-format/real-speech checks, builder pinning and source-component SBOM integration.
+
+### Forced-track title detection — 2026-09-09
+
+- Commit: this `fix: recognize forced subtitle track titles` commit on `main`, based on `7346420`. User authorized committing and pushing to main; the checkout was already on main and origin was fetched. No deployment.
+- Embedded subtitle titles now supply forced evidence through complete tokens, with explicit negation/removal handling and separate bracket/parenthesis labels. Container disposition remains authoritative. HI policy is unchanged.
+- Migration `008_forced_track_probe_refresh.sql` clears completed-probe markers once because old tracks do not retain titles. Inventory records, media identity, installation ownership, schedules and leases remain intact. Reprobe occurs on the next scheduled/manual search; terminal work is not automatically reopened.
+- TDD reproduced incorrect full coverage, retained stale cache markers, and negation leaking across independent labels. All were fixed; independent review found no remaining actionable issues.
+- Verification: full `go test ./... -race -count=1`, tagged e2e race tests, `go vet ./...`, affected inventory/store race tests and `git diff --check` passed. Caches: `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`. Full suites use local fake servers with loopback permission; no Arr/provider traffic.
+- Next: verify GitHub checks/image publication after pushing; packaging remains an experiment described in `docs/ffprobe-packaging-experiment-2026-09-09.md`.
 
 ### LAPSE 2.1.0 upgrade assessment — 2026-09-09
 

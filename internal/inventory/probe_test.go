@@ -2,12 +2,56 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestForcedTrackTitleCannotSatisfyFullSubtitleCoverage(t *testing.T) {
+	for _, tt := range []struct {
+		title  string
+		flag   int
+		forced bool
+	}{
+		{"English [Forced]", 0, true},
+		{"FORCED ONLY", 0, true},
+		{"English.forced", 0, true},
+		{"English (forced narrative)", 0, true},
+		{"English", 0, false},
+		{"English reinforced", 0, false},
+		{"English unforced", 0, false},
+		{"English forced2", 0, false},
+		{"English non-forced", 0, false},
+		{"English not forced", 0, false},
+		{"English without forced subtitles", 0, false},
+		{"English forced subtitles removed", 0, false},
+		{"English forced-free", 0, false},
+		{"No SDH but forced", 0, true},
+		{"English not forced; French forced", 0, true},
+		{"English (No SDH) [Forced]", 0, true},
+		{"English forced (SDH removed)", 0, true},
+		{"English not forced", 1, true},
+	} {
+		t.Run(tt.title, func(t *testing.T) {
+			title, _ := json.Marshal(tt.title)
+			payload := `{"streams":[{"codec_type":"subtitle","tags":{"language":"en","title":` + string(title) + `},"disposition":{"forced":` + fmt.Sprint(tt.flag) + `}}]}`
+			tracks, err := ParseProbeTracks([]byte(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tracks) != 1 || tracks[0].Forced != tt.forced {
+				t.Fatalf("tracks = %#v, forced want %v", tracks, tt.forced)
+			}
+			if (Inventory{Tracks: tracks}).Satisfies("en", true) == tt.forced {
+				t.Fatalf("full coverage must exclude forced tracks: %#v", tracks)
+			}
+		})
+	}
+}
 
 func TestParseProbeTracksNormalizesLanguagesFlagsAndImageTracks(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join("testdata", "ffprobe_streams.json"))

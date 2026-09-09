@@ -74,6 +74,8 @@ After adding an instance, provider, or language, restart subsyncd. A new languag
 
 subsyncd checks embedded tracks and separate subtitle files before searching. A full matching subtitle can satisfy a language; forced-only tracks cannot. Hearing-impaired tracks count only when `allow_hearing_impaired: true` is enabled.
 
+Embedded tracks also count as forced when their title contains an explicit label such as `English [Forced]`, even if the container's forced disposition is absent. Negated labels such as `not forced` and `forced subtitles removed` do not add forced status; a container's explicit forced disposition always takes precedence. Migration `008_forced_track_probe_refresh.sql` invalidates old completed-probe markers once because stored tracks do not retain their original titles. Files are probed again on their next scheduled or manual search. This preserves installations, leases and schedules; already terminal searches are not reopened automatically.
+
 When nothing suitable is found, searches continue automatically with longer intervals. Known deterministic rejections are retained without expiry; searches can try new candidates but do not periodically redownload rejected ones. Provider limits and outages can delay them. A scheduled check may reuse recent results rather than contact a provider again.
 
 subsyncd can upgrade subtitles it installed when a better match becomes available. Manually added or edited subtitles are protected. If you delete a managed subtitle, it can be downloaded again on a later search. TV files containing multiple episodes are currently skipped.
