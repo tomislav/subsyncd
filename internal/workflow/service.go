@@ -347,6 +347,9 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if err := checkMediaAvailable(request.Media); err != nil {
+		return result, err
+	}
 	terminal, err := s.tryExactCandidates(ctx, request, workspace, existing, activeInstallation, exact, &result, &candidateFailures, &exactRecords)
 	*candidateCount = len(exactRecords)
 	if err != nil || terminal {
@@ -359,6 +362,9 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 		return result, err
 	}
 	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	if err := checkMediaAvailable(request.Media); err != nil {
 		return result, err
 	}
 	result.ProviderErrors = search.Errors
@@ -490,6 +496,9 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 		preparedTier := make([]preparedCandidate, 0, tierEnd-tierStart)
 		for index := tierStart; index < tierEnd; index++ {
 			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			if err := checkMediaAvailable(request.Media); err != nil {
 				return result, err
 			}
 			item := eligible[index]

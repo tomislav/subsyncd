@@ -24,6 +24,9 @@ func (s *Service) prepareMembers(ctx context.Context, request Request, item down
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if err := checkMediaAvailable(request.Media); err != nil {
+			return nil, err
+		}
 		current := item
 		current.path = path
 		scoped := request
@@ -56,6 +59,9 @@ func (s *Service) prepareMembers(ctx context.Context, request Request, item down
 			return nil, ctxErr
 		}
 		if err != nil {
+			if mediaErr := checkMediaAvailable(request.Media); mediaErr != nil {
+				return nil, mediaErr
+			}
 			if item.fromCache {
 				result.Decisions = append(result.Decisions, Decision{Stage: "pack_cache", ProviderID: item.candidate.ProviderID, ResultID: item.candidate.ResultID, Reason: lapseFailureDecision(err)})
 			}

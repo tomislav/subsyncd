@@ -44,6 +44,9 @@ func (s *Service) tryExactCandidates(
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
+		if err := checkMediaAvailable(request.Media); err != nil {
+			return false, err
+		}
 		if !candidate.ExactHash {
 			continue
 		}
@@ -88,6 +91,9 @@ func (s *Service) tryExactCandidates(
 		priority, found := priorities[candidate.ProviderID]
 		if !found {
 			priority = len(s.ProviderOrder)
+		}
+		if err := checkMediaAvailable(request.Media); err != nil {
+			return false, err
 		}
 		prepared, err := s.prepareCandidate(ctx, request, downloadedCandidate{candidate: candidate, score: score, priority: priority, path: path, runtimePack: runtimePack}, installed, existing, workspace, -index-2)
 		if err != nil {

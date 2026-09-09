@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: normalize valid LAPSE cue ordering and invalidate historical invalid-output rejections once
-- Next safe action: verify image publication before production rollout
+- Current task: stop acquisition when media disappears after inventory refresh
+- Next safe action: verify GitHub checks and image publication before production rollout
 - Latest follow-up: full race/e2e/vet and final affected-package race verification passed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Missing media during acquisition — 2026-09-09
+
+- Commit: this `fix: stop subtitle acquisition when media disappears` commit on `main`, based on `2124ffc`. User authorized the fix and its commit, integration into main and push to GitHub. Work was already on main, so no separate branch merge was needed. Inventory already checks live media; the gap was disappearance after refresh.
+- Recheck media after provider search, before exact/broad candidate processing and before cached/downloaded member preparation. Recheck after preparation failures before recording candidate rejection. Missing/nonregular/uninspectable media ends the current acquisition with a path-free technical error, prevents fallback-tier continuation and retains ordinary worker failure backoff. No rejection reset, provider cooldown, migration, media mutation or production deployment.
+- Focused test failed before implementation (search returned no error after simulated disappearance). Regressions verify no downloads/LAPSE calls after search-time disappearance, and one LAPSE call followed by immediate termination with no later candidates, fallback searches or rejections after disappearance during LAPSE.
+- Verification: full race suite, tagged e2e race suite and vet passed with fresh isolated `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod` caches; existing shared caches had missing dependency files. Final workflow race rerun covers moving the exact guard to the processing loop. All tests use local fixtures/fake services. Next: verify GitHub publication and separately deploy if requested.
 
 ### LAPSE ordering integration — 2026-09-08
 

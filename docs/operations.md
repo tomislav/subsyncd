@@ -163,6 +163,7 @@ Allow the container to stop fully before starting another process against the sa
 | Provider authentication rejected | Correct the credentials in `config/config.yaml`, restart the service, then clear the affected provider's state as shown below. |
 | Another mutation process is active | Stop the daemon before a manual search, scan, or retry. Do not delete the lock file. |
 | LAPSE takes a long time | Its first run may read much of the media file, especially noticeable on network storage. Results are cached for later use. |
+| Media file is missing | The file disappeared after inventory refresh. The search stops before further candidate work and retries with technical-failure backoff; check Arr renames/deletions and filesystem availability. |
 | LAPSE reports `unsure` or `nothing` | The candidate did not pass timing verification; subsyncd will consider other matches. |
 | Silo does not refresh | Check the API address, admin key, path mapping, and notification logs. |
 
