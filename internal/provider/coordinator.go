@@ -154,6 +154,9 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 	}
 
 	key := providerCacheKey(provider.ID(), query)
+	if version := searchCacheVersion(provider); version != "" {
+		key += ":" + version
+	}
 	now := c.Clock.Now()
 	if c.Cache != nil {
 		entry, found, err := c.Cache.GetProviderCache(ctx, key, now)
@@ -211,6 +214,8 @@ func DeduplicateCandidates(candidates []domain.Candidate) []domain.Candidate {
 		if !exists {
 			indices[key] = len(result)
 			candidate.ReleaseNames = append([]string(nil), candidate.ReleaseNames...)
+			candidate.ReleaseGroups = append([]string(nil), candidate.ReleaseGroups...)
+			candidate.Resolutions = append([]string(nil), candidate.Resolutions...)
 			result = append(result, candidate)
 			continue
 		}
@@ -246,6 +251,8 @@ func DeduplicateCandidates(candidates []domain.Candidate) []domain.Candidate {
 			merged.ExternalIDs.TVDB = candidate.ExternalIDs.TVDB
 		}
 		merged.ReleaseNames = appendUniqueStrings(merged.ReleaseNames, candidate.ReleaseNames...)
+		merged.ReleaseGroups = appendUniqueStrings(merged.ReleaseGroups, candidate.ReleaseGroups...)
+		merged.Resolutions = appendUniqueStrings(merged.Resolutions, candidate.Resolutions...)
 		merged.ExactHash = merged.ExactHash || candidate.ExactHash
 		merged.Forced = merged.Forced || candidate.Forced
 		merged.HearingImpaired = merged.HearingImpaired || candidate.HearingImpaired

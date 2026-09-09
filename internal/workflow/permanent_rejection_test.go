@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -202,5 +203,42 @@ func TestRejectedCachedPackDoesNotHideAnotherPack(t *testing.T) {
 	result, err := service.Run(ctx, request)
 	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "good" || searcher.calls != 0 || sync.synchronizeCalls != 1 {
 		t.Fatalf("cached alternative hidden: %+v err=%v provider searches=%d sync=%d", result, err, searcher.calls, sync.synchronizeCalls)
+	}
+}
+
+func TestRejectionSignatureTreatsProviderGroupsAndResolutionsAsSets(t *testing.T) {
+	first := broadCandidate("stable")
+	if err := json.Unmarshal([]byte(`{"release_groups":["b","a","a"],"resolutions":["1080p","720p","720p"]}`), &first); err != nil {
+		t.Fatal(err)
+	}
+	second := broadCandidate("stable")
+	if err := json.Unmarshal([]byte(`{"release_groups":["a","b"],"resolutions":["720p","1080p"]}`), &second); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(first)
+	a, _ := candidateSignature(first)
+	b, _ := candidateSignature(second)
+	after, _ := json.Marshal(first)
+	if string(before) != string(after) {
+		t.Fatal("signature mutated evidence")
+	}
+	if a != b {
+		t.Fatal("evidence order bypassed rejection")
+	}
+	changed := first
+	if err := json.Unmarshal([]byte(`{"release_groups":["different"]}`), &changed); err != nil {
+		t.Fatal(err)
+	}
+	diff, _ := candidateSignature(changed)
+	if a == diff {
+		t.Fatal("new group evidence did not invalidate rejection")
+	}
+	changed = first
+	if err := json.Unmarshal([]byte(`{"resolutions":["2160p"]}`), &changed); err != nil {
+		t.Fatal(err)
+	}
+	diff, _ = candidateSignature(changed)
+	if a == diff {
+		t.Fatal("new resolution evidence did not invalidate rejection")
 	}
 }

@@ -94,6 +94,9 @@ func TestSearchRejectsIncompleteOrConflictingEvidence(t *testing.T) {
 		{"null HI", showJSON, strings.Replace(episodeJSON, `"hearingImpaired":true`, `"hearingImpaired":null`, 1)},
 		{"wrong language", showJSON, strings.Replace(episodeJSON, `"English"`, `"Croatian"`, 1)},
 		{"bad subtitle ID", showJSON, strings.ReplaceAll(episodeJSON, subtitleID, "../escape?secret=value")},
+		{"malformed catalog entry", showJSON, strings.ReplaceAll(episodeJSON, subtitleID, "sp_"+showID+"_entry_bad")},
+		{"catalog entry trailing path", showJSON, strings.ReplaceAll(episodeJSON, subtitleID, "sp_"+showID+"_entry_"+subtitleID+"/escape")},
+		{"catalog entry chained suffix", showJSON, strings.ReplaceAll(episodeJSON, subtitleID, "sp_"+showID+"_entry_"+subtitleID+"_ep_2")},
 		{"whole season pack", showJSON, strings.ReplaceAll(episodeJSON, subtitleID, "sp_"+subtitleID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

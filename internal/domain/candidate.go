@@ -38,12 +38,15 @@ type Candidate struct {
 	AbsoluteEpisode int         `json:"absolute_episode,omitempty"`
 	ExternalIDs     ExternalIDs `json:"external_ids"`
 	ReleaseNames    []string    `json:"release_names,omitempty"`
-	ExactHash       bool        `json:"exact_hash"`
-	Forced          bool        `json:"forced,omitempty"`
-	HearingImpaired bool        `json:"hearing_impaired"`
-	Rating          float64     `json:"rating"`
-	Popularity      float64     `json:"popularity"`
-	DownloadCount   int64       `json:"download_count"`
-	DownloadRef     string      `json:"download_ref"`
-	Pack            *PackInfo   `json:"pack,omitempty"`
+	// Provider-supplied alternatives, independent of parsed release filenames.
+	ReleaseGroups   []string  `json:"release_groups,omitempty"`
+	Resolutions     []string  `json:"resolutions,omitempty"`
+	ExactHash       bool      `json:"exact_hash"`
+	Forced          bool      `json:"forced,omitempty"`
+	HearingImpaired bool      `json:"hearing_impaired"`
+	Rating          float64   `json:"rating"`
+	Popularity      float64   `json:"popularity"`
+	DownloadCount   int64     `json:"download_count"`
+	DownloadRef     string    `json:"download_ref"`
+	Pack            *PackInfo `json:"pack,omitempty"`
 }

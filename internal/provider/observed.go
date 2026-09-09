@@ -77,3 +77,5 @@ func (w *countingWriter) Write(data []byte) (int, error) {
 	w.bytes += int64(written)
 	return written, err
 }
+
+func (p *observedProvider) SearchCacheVersion() string { return searchCacheVersion(p.Provider) }

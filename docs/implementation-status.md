@@ -5,13 +5,31 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: Gestdown README follow-up
-- Next safe action: verify GitHub checks and image publication after the authorized Gestdown push; deploy only when requested
-- Latest follow-up: full race/e2e/vet, final affected-package race checks, independent review and real Gestdown download verification passed
+- Current task: Gestdown catalog-entry and matching repairs
+- Next safe action: verify GitHub checks/image publication after the authorized repair push; deploy only when requested
+- Latest follow-up: all four Gestdown regressions repaired; full race/e2e/vet, independent review and real download verification passed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Gestdown catalog-entry and matching repairs — 2026-09-09
+
+- Commit: this `fix: preserve Gestdown catalog and matching evidence` commit on `main`, based on `a141139`. User explicitly authorized repairing the four comparative-review findings and pushing. Includes the preceding review report and ledger. Remote main was fetched and aligned; no production installation access or deployment.
+- Added strict `sp_{packUuid}_entry_{entryUuid}` support to search and fixed-origin downloads, preserving returned episode/HI checks and rejecting malformed/chained IDs. Synthetic regular/HI entry downloads pass ordinary subtitle extraction and episode selection. Whole-season IDs remain excluded.
+- Split comma-delimited `version` alternatives without splitting the full `release` field. Bounded bare/source-prefixed group labels supply group evidence when the filename parser has none, using existing aliases without arbitrary substring matches. Explicit supported `qualities` become resolution alternatives; absent/unknown/HD-only values remain neutral.
+- Optional `release_groups`/`resolutions` JSON fields contribute only the existing 25/5-point signals, once each. No identity/year/episode/source/edition evidence is invented. Cache and duplicate merging retain both arrays, and rejection signatures clone/sort/deduplicate them. Changed evidence can reconsider an old Gestdown rejection once; unchanged/absent evidence retains its existing behavior. Policy tests preserve identity/episode anchors, always-sync, pack and upgrade LAPSE gates.
+- Added optional provider-specific search-cache versioning, forwarded through the telemetry wrapper. `gestdown-evidence-v2` refreshes old Gestdown results including cached empty searches; unrelated providers retain their keys. No schema migration, schedule reset or broad rejection clear.
+- TDD observed failing entry/alternative/group/resolution regressions plus cache-merge/version and rejection-signature regressions before their fixes. Independent final review found no actionable issues. Full `go test ./... -race -count=1`, affected provider/match/workflow race suites, `go test ./test/e2e -tags=e2e -race -count=1`, `go vet ./...` and `git diff --check` passed using `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`. Ordinary tests use synthetic local fake servers.
+- Authorized final live download check passed: six English Breaking Bad S01E01 candidates, one 45,970-byte download, successful extraction/content validation and episode selection. SHA-256 `cff95ff2ae47b5125f106b7f44ca01441cd5beda980ad4ed4b6b444360696504`. The new entry-ID path is covered by synthetic download/extraction; the live contract exercises a regular UUID subtitle.
+- Next task: verify GitHub checks/image publication after pushing, then deploy if requested. The cache refresh occurs on normal post-update searches and does not proactively reopen terminal searches.
+
+### Bazarr/Gestdown comparative review — 2026-09-09
+
+- Commit reviewed: `a141139`; documentation-only working-tree report, no runtime edits, commit, push or production access. Compared Bazarr's Gestdown adapter with current official Gestdown DTO/controller and our adapter/matcher. Full findings: `docs/gestdown-bazarr-review-2026-09-09.md`.
+- Reproduced four gaps: cataloged `sp_{packUuid}_entry_{entryUuid}` results silently skipped; comma-separated versions parsed as one release with order-dependent scores; informal/bare release groups lose 25 points; explicit `qualities` alternatives are discarded and lose five resolution points. The currently deployed API recognizes entry IDs despite its stale OpenAPI description.
+- Verification: temporary Go overlays with synthetic local fake servers and `-race` confirmed each gap. Public read-only checks fetched the current schema and requested an all-zero nonexistent entry (404 pack-not-found); no real download or installation occurred during this review. Existing returned-language/identity, persisted cooldown, and redirect policies remain appropriate. Serbian script parity with Bazarr is not established by its base-language lookup.
+- Next task: implement these four focused repairs with regression tests if requested, preserving candidate evidence, shortlist/LAPSE gates and fixed-origin bounded downloads. Prior single-file live download success remains valid but did not cover these cases.
 
 ### Gestdown README follow-up — 2026-09-09
 

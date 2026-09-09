@@ -31,7 +31,7 @@ func EvaluateSelectedPackMember(media domain.Media, candidate domain.Candidate, 
 }
 
 func evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage domain.Language, selectedMember bool) domain.Score {
-	releases := parseReleases(candidate.ReleaseNames)
+	releases := candidateReleases(candidate)
 	rejected := identityRejections(media, candidate, requestedLanguage, releases, selectedMember)
 	if len(rejected) != 0 {
 		return domain.Score{RejectedReasons: rejected}
@@ -74,8 +74,21 @@ func evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 	return domain.Score{Total: total, Contributions: contributions}
 }
 
-func HasEpisodeEvidence(media domain.Media, candidate domain.Candidate) bool {
+// Explicit provider evidence contributes only to its own signal. It must never
+// create title, year, season, source, or edition evidence.
+func candidateReleases(candidate domain.Candidate) []Release {
 	releases := parseReleases(candidate.ReleaseNames)
+	for _, group := range candidate.ReleaseGroups {
+		releases = append(releases, Release{Group: group})
+	}
+	for _, resolution := range candidate.Resolutions {
+		releases = append(releases, Release{Resolution: resolution})
+	}
+	return releases
+}
+
+func HasEpisodeEvidence(media domain.Media, candidate domain.Candidate) bool {
+	releases := candidateReleases(candidate)
 	return episodeEvidenceMatches(media, candidate, releases)
 }
 
@@ -177,7 +190,7 @@ func HasMatchingEdition(media domain.Media, candidate domain.Candidate) bool {
 	if strings.TrimSpace(media.Edition) == "" {
 		return true
 	}
-	releases := parseReleases(candidate.ReleaseNames)
+	releases := candidateReleases(candidate)
 	return editionMatches(releases, media.Edition)
 }
 

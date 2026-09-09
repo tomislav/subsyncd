@@ -894,6 +894,12 @@ func candidateSignature(candidate domain.Candidate, media ...domain.Media) (stri
 	safe.ReleaseNames = slices.Clone(safe.ReleaseNames)
 	slices.Sort(safe.ReleaseNames)
 	safe.ReleaseNames = slices.Compact(safe.ReleaseNames)
+	safe.ReleaseGroups = slices.Clone(safe.ReleaseGroups)
+	slices.Sort(safe.ReleaseGroups)
+	safe.ReleaseGroups = slices.Compact(safe.ReleaseGroups)
+	safe.Resolutions = slices.Clone(safe.Resolutions)
+	slices.Sort(safe.Resolutions)
+	safe.Resolutions = slices.Compact(safe.Resolutions)
 	if safe.Pack != nil {
 		packInfo := *safe.Pack
 		packInfo.DirectMembers = append([]domain.PackMemberRef(nil), safe.Pack.DirectMembers...)

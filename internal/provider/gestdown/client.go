@@ -13,7 +13,9 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+	"slices"
 	"subsyncd/internal/domain"
+	"subsyncd/internal/match"
 	base "subsyncd/internal/provider"
 )
 
@@ -67,7 +69,7 @@ var showIDPattern = regexp.MustCompile(`^` + uuidPattern + `$`)
 
 // Whole-season IDs are deliberately excluded from the episode adapter. Only
 // explicitly extracted episode IDs from the current API contract are accepted.
-var subtitleIDPattern = regexp.MustCompile(`^(?:` + uuidPattern + `|sp_` + uuidPattern + `_ep_[1-9][0-9]*)$`)
+var subtitleIDPattern = regexp.MustCompile(`^(?:` + uuidPattern + `|sp_` + uuidPattern + `(?:_ep_[1-9][0-9]*|_entry_` + uuidPattern + `))$`)
 
 type show struct {
 	ID   string `json:"id"`
@@ -84,13 +86,14 @@ type episode struct {
 	Show   string `json:"show"`
 }
 type subtitle struct {
-	ID              string `json:"subtitleId"`
-	Version         string `json:"version"`
-	Release         string `json:"release"`
-	Language        string `json:"language"`
-	Completed       bool   `json:"completed"`
-	HearingImpaired *bool  `json:"hearingImpaired"`
-	DownloadCount   int64  `json:"downloadCount"`
+	ID              string   `json:"subtitleId"`
+	Version         string   `json:"version"`
+	Release         string   `json:"release"`
+	Language        string   `json:"language"`
+	Completed       bool     `json:"completed"`
+	HearingImpaired *bool    `json:"hearingImpaired"`
+	Qualities       []string `json:"qualities"`
+	DownloadCount   int64    `json:"downloadCount"`
 }
 type episodeResponse struct {
 	Episode   *episode   `json:"episode"`
@@ -148,16 +151,21 @@ func (c *Client) Search(ctx context.Context, q base.SearchQuery) ([]domain.Candi
 			if !ok || language != q.Language || !item.Completed || item.HearingImpaired == nil || !subtitleIDPattern.MatchString(item.ID) {
 				continue
 			}
-			if strings.HasPrefix(item.ID, "sp_") && !strings.HasSuffix(item.ID, "_ep_"+strconv.Itoa(*ep.Number)) {
+			if strings.HasPrefix(item.ID, "sp_") && strings.Contains(item.ID, "_ep_") && !strings.HasSuffix(item.ID, "_ep_"+strconv.Itoa(*ep.Number)) {
 				continue
 			}
-			var releases []string
-			for _, raw := range []string{item.Release, item.Version} {
-				if v := strings.TrimSpace(raw); v != "" && (len(releases) == 0 || v != releases[0]) {
+			var releases, groups []string
+			for _, raw := range append([]string{item.Release}, strings.Split(item.Version, ",")...) {
+				if v := strings.TrimSpace(raw); v != "" && !slices.Contains(releases, v) {
 					releases = append(releases, v)
 				}
 			}
-			candidates = append(candidates, domain.Candidate{ProviderID: c.id, ResultID: item.ID, Kind: domain.MediaEpisode, Title: s.Name, Season: *ep.Season, Episode: *ep.Number, ExternalIDs: domain.ExternalIDs{TVDB: s.TVDB, TMDB: s.TMDB}, Language: language, ReleaseNames: releases, HearingImpaired: *item.HearingImpaired, DownloadCount: max(item.DownloadCount, 0), Popularity: base.NormalizePopularity(item.DownloadCount), DownloadRef: "/subtitles/download/" + item.ID})
+			for _, version := range strings.Split(item.Version, ",") {
+				if group := versionGroup(version); group != "" && !slices.Contains(groups, group) {
+					groups = append(groups, group)
+				}
+			}
+			candidates = append(candidates, domain.Candidate{ProviderID: c.id, ResultID: item.ID, Kind: domain.MediaEpisode, Title: s.Name, Season: *ep.Season, Episode: *ep.Number, ExternalIDs: domain.ExternalIDs{TVDB: s.TVDB, TMDB: s.TMDB}, Language: language, ReleaseNames: releases, ReleaseGroups: groups, Resolutions: supportedQualities(item.Qualities), HearingImpaired: *item.HearingImpaired, DownloadCount: max(item.DownloadCount, 0), Popularity: base.NormalizePopularity(item.DownloadCount), DownloadRef: "/subtitles/download/" + item.ID})
 		}
 	}
 	return candidates, nil
@@ -259,3 +267,38 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 	}
 	return base.DownloadMetadata{Filename: "subtitle.srt", ContentType: response.Header.Get("Content-Type")}, nil
 }
+
+// Bare scene-group labels and a source-prefixed label are common Addic7ed
+// versions. Extract a whole token; never search for the requested group inside
+// arbitrary text or manufacture a torrent filename from query identity.
+var versionSourcePrefix = regexp.MustCompile(`(?i)^(?:blu-ray|bluray|bdrip|brrip|dvdrip|hdtv|web-dl|webrip|webdl)[ ._-]*`)
+var groupLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$`)
+var technicalLabel = regexp.MustCompile(`(?i)^(?:[0-9]+[pi]?|[xh][ ._-]?26[45]|hevc|avc|av1|web|web-dl|webdl|webrip|hdtv|bluray|blu-ray|bdrip|brrip|dvdrip|dvd|proper|repack|internal|unknown|720p|1080p|2160p)$`)
+
+func versionGroup(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || technicalLabel.MatchString(raw) || match.ParseRelease(raw).Group != "" {
+		return ""
+	}
+	group := versionSourcePrefix.ReplaceAllString(raw, "")
+	if !groupLabel.MatchString(group) || technicalLabel.MatchString(group) {
+		return ""
+	}
+	return match.NormalizeIdentity(group)
+}
+
+func supportedQualities(values []string) []string {
+	var result []string
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		switch value {
+		case "360p", "480p", "576p", "720p", "1080i", "1080p", "2160p", "4320p":
+			if !slices.Contains(result, value) {
+				result = append(result, value)
+			}
+		}
+	}
+	return result
+}
+
+func (c *Client) SearchCacheVersion() string { return "gestdown-evidence-v2" }

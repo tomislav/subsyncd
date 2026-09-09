@@ -83,3 +83,15 @@ type SystemClock struct{}
 func (SystemClock) Now() time.Time { return time.Now().UTC() }
 
 type Factory func(id string, node yaml.Node, deps Dependencies) (Provider, error)
+
+// SearchCacheVersioner lets an adapter invalidate only its own normalized search
+// results when its response interpretation changes. Unversioned providers retain
+// their existing cache keys.
+type SearchCacheVersioner interface{ SearchCacheVersion() string }
+
+func searchCacheVersion(p Provider) string {
+	if versioned, ok := p.(SearchCacheVersioner); ok {
+		return versioned.SearchCacheVersion()
+	}
+	return ""
+}
