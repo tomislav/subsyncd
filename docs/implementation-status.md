@@ -5,13 +5,32 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: Gestdown catalog-entry and matching repairs
-- Next safe action: verify GitHub checks/image publication after the authorized repair push; deploy only when requested
-- Latest follow-up: all four Gestdown regressions repaired; full race/e2e/vet, independent review and real download verification passed
+- Current task: OpenSubtitles, SubDL and Titlovi comparative-review repairs
+- Next safe action: verify GitHub checks/image publication after the authorized push; deploy only when requested
+- Latest follow-up: all seven findings repaired, including review follow-ups for annotation negation and legacy pack evidence
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Provider discovery and subtitle evidence repairs — 2026-09-09
+
+- Commit: this `fix: repair provider discovery and subtitle evidence` commit on `main`, based on `9310c158`. User authorized repairing the comparative-review findings and pushing; includes the preceding report. Fetched origin and confirmed alignment. No production access or deployment.
+- OpenSubtitles ID lookups omit title/year filters, and episode title lookups omit series year. Canonicalized returned language aliases without adding script/region equivalences. Download requests ask for SRT while preserving signed-transfer credential isolation. `download_version: srt-v1` changes rejection evidence once for the altered payload contract; no fabricated FPS or remote conversion guarantee.
+- SubDL requests comments, retains explicit forced/SDH/HI annotations, scopes negation/removal and coordinated marker handling, and preserves parent policy flags for direct members. Empty IMDb movie lookups retry TMDB once when available. Explicit no-result classification prevents unrelated errors such as an unknown API key from triggering this fallback.
+- Titlovi retains returned AKA alternatives as title evidence, without inventing query identity/year. Allowed absolute download links keep their origin; existing cache sanitization still requires refresh for absolute/query-bearing references.
+- Optional alternate titles survive duplicate merging, cache serialization and canonical rejection signatures. Each repaired provider has its own search-cache version. SubDL stamps current policy evidence and rejects legacy pack manifests through an optional adapter validator forwarded by the telemetry wrapper. Workflow lookup skips incompatible members before use; fresh metadata receives a new immutable cache key, and normal cleanup removes the superseded directory. No schema migration, blanket cache/rejection deletion, or schedule reset.
+- TDD observed the focused regressions fail before fixes. Independent review caught filename/mixed/coordinated negation and legacy pack bypass; those were repaired with additional regressions, including fresh manifest publication and cleanup. Final review found no remaining actionable issues.
+- Verification: full `go test ./... -race -count=1`, tagged e2e race suite, `go vet ./...`, and final affected provider/pack/workflow/match race suites passed with `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`; `git diff --check` passed. Tests use sanitized fixtures and local transports/servers. No live subtitle downloads or credentials were used; frame-based remote SRT conversion remains unverified.
+- Next task: verify GitHub publication after pushing, then deploy only if requested. Updated evidence takes effect on normal subsequent searches; terminal installations are not proactively reopened.
+
+### Bazarr comparison: OpenSubtitles, SubDL and Titlovi — 2026-09-09
+
+- Commit reviewed: `9310c158628d62e2fb2e10f936442d81cc798414`; documentation-only report and ledger, no runtime changes, commit or push. Full findings and verification: `docs/bazarr-provider-review-2026-09-09.md`.
+- Reproduced SubDL forced/HI annotation loss and missing movie IMDb-to-TMDB fallback; OpenSubtitles conflicting title/series-year filters and omitted supported-format conversion; Titlovi discarded AKA titles and rewritten allowlisted download origins. Additional API-contract check reproduced case-sensitive OpenSubtitles language aliases. Remote conversion behavior and prevalence of alternate Titlovi origins remain unverified.
+- Retained strict identity/language/archive selection, persisted cooldowns, response-lifetime permits, and credential handling. Prior repaired provider findings were not repeated. Titlovi filter/script-bundle differences remain observations pending stronger contract evidence.
+- Verification: existing provider/matcher race suites passed; independent reviews plus controller reruns of temporary socket-free Go overlays produced expected failing assertions for the gaps. `git diff --check` passed. Public source/documentation reads only; no credentials, live provider downloads, Arr or production access.
+- Next task: repair selected findings with focused durable regression tests if requested; account for normalized-cache and rejection-evidence compatibility.
 
 ### Gestdown catalog-entry and matching repairs — 2026-09-09
 

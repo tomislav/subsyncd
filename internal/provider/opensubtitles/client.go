@@ -74,6 +74,9 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 
 func (c *Client) ID() string { return c.id }
 
+// SearchCacheVersion refreshes legacy filters, language aliases and download evidence.
+func (c *Client) SearchCacheVersion() string { return "opensubtitles-evidence-v2" }
+
 func (c *Client) Capabilities() baseprovider.Capabilities {
 	return baseprovider.Capabilities{ExactFileHash: true}
 }
@@ -157,10 +160,14 @@ func setBroadParameters(parameters url.Values, media domain.Media) {
 	} else if media.ExternalIDs.TMDB != 0 {
 		parameters.Set("tmdb_id", strconv.FormatInt(media.ExternalIDs.TMDB, 10))
 	}
+	if imdb != "" || media.ExternalIDs.TMDB != 0 {
+		return
+	}
 	if media.Title != "" {
 		parameters.Set("query", media.Title)
 	}
-	if media.Year > 0 {
+	// Arr stores the series premiere year, not the episode air year.
+	if media.Ref.Kind != domain.MediaEpisode && media.Year > 0 {
 		parameters.Set("year", strconv.Itoa(media.Year))
 	}
 }
@@ -188,15 +195,21 @@ func openSubtitlesLanguage(language domain.Language) string {
 }
 
 func fromOpenSubtitlesLanguage(raw string) (domain.Language, error) {
-	switch raw {
-	case "pt-PT":
-		raw = "pt"
-	case "zh-CN":
-		raw = "zh"
-	case "ea":
-		raw = "es-MX"
+	if strings.EqualFold(strings.TrimSpace(raw), "ea") {
+		return domain.ParseLanguage("es-MX")
 	}
-	return domain.ParseLanguage(raw)
+	language, err := domain.ParseLanguage(raw)
+	if err != nil {
+		return "", err
+	}
+	switch language.String() {
+	case "pt-PT":
+		return domain.Language("pt"), nil
+	case "zh-CN":
+		return domain.Language("zh"), nil
+	default:
+		return language, nil
+	}
 }
 
 type loginResponse struct {
@@ -386,7 +399,7 @@ func normalizeCandidates(providerID string, query baseprovider.SearchQuery, item
 					externalIDs.IMDb = fmt.Sprintf("tt%07d", item.Attributes.FeatureDetails.IMDbID)
 				}
 			}
-			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: externalIDs, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, Forced: item.Attributes.ForeignPartsOnly, HearingImpaired: item.Attributes.HearingImpaired, Rating: min(max(item.Attributes.Ratings/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.Attributes.DownloadCount), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10)}
+			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: externalIDs, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, Forced: item.Attributes.ForeignPartsOnly, HearingImpaired: item.Attributes.HearingImpaired, Rating: min(max(item.Attributes.Ratings/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.Attributes.DownloadCount), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10), DownloadVersion: "srt-v1"}
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -442,7 +455,10 @@ func (c *Client) requestDownloadLink(ctx context.Context, fileID int64, allowRef
 	if err := c.login(ctx, false); err != nil {
 		return downloadResponse{}, err
 	}
-	payload, _ := json.Marshal(map[string]int64{"file_id": fileID})
+	payload, _ := json.Marshal(struct {
+		FileID int64  `json:"file_id"`
+		Format string `json:"sub_format"`
+	}{FileID: fileID, Format: "srt"})
 	request, err := c.newRequest(ctx, http.MethodPost, "/download", bytes.NewReader(payload), true)
 	if err != nil {
 		return downloadResponse{}, err

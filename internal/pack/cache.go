@@ -447,6 +447,12 @@ func sanitizeCandidate(candidate domain.Candidate) domain.Candidate {
 }
 
 func cacheContentKey(manifest Manifest) string {
-	value := sha256.Sum256([]byte(manifest.ProviderID + "\x00" + manifest.ResultID + "\x00" + manifest.Language.String() + "\x00" + manifest.Checksum))
+	identity := manifest.ProviderID + "\x00" + manifest.ResultID + "\x00" + manifest.Language.String() + "\x00" + manifest.Checksum
+	if manifest.Candidate.EvidenceVersion != "" {
+		// A freshly interpreted pack needs its own immutable manifest. The
+		// existing orphan sweep removes the superseded directory after PutPack.
+		identity += "\x00" + manifest.Candidate.EvidenceVersion
+	}
+	value := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(value[:])
 }

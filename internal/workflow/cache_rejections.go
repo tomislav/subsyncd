@@ -6,6 +6,7 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/match"
 	"subsyncd/internal/pack"
+	"subsyncd/internal/provider"
 )
 
 // Keep ordinary cache failures best-effort, but never hide a failed rejection
@@ -16,11 +17,11 @@ func (s *Service) findUnrejectedPack(ctx context.Context, request Request, resul
 	})
 	if !ok {
 		member, found, cacheErr = s.PackCache.Find(ctx, request.Media, request.Language)
-		found = found && s.cacheProviderAllowed(member.Candidate.ProviderID)
+		found = found && s.cacheCandidateAllowed(member.Candidate)
 		return
 	}
 	member, found, cacheErr = filtered.FindEligible(ctx, request.Media, request.Language, func(candidate pack.CachedMember) (bool, error) {
-		if !s.cacheProviderAllowed(candidate.Candidate.ProviderID) {
+		if !s.cacheCandidateAllowed(candidate.Candidate) {
 			return false, nil
 		}
 		scoped := request
@@ -38,6 +39,10 @@ func (s *Service) findUnrejectedPack(ctx context.Context, request Request, resul
 		return !rejected, nil
 	})
 	return
+}
+
+func (s *Service) cacheCandidateAllowed(candidate domain.Candidate) bool {
+	return s.cacheProviderAllowed(candidate.ProviderID) && provider.CanReuseCachedCandidate(s.Providers[candidate.ProviderID], candidate)
 }
 
 // Cache lookup has already rerun strict episode selection and verified the

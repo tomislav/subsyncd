@@ -891,6 +891,9 @@ func candidateSignature(candidate domain.Candidate, media ...domain.Media) (stri
 	safe.Rating = 0
 	safe.Popularity = 0
 	safe.DownloadCount = 0
+	safe.AlternateTitles = slices.Clone(safe.AlternateTitles)
+	slices.Sort(safe.AlternateTitles)
+	safe.AlternateTitles = slices.Compact(safe.AlternateTitles)
 	safe.ReleaseNames = slices.Clone(safe.ReleaseNames)
 	slices.Sort(safe.ReleaseNames)
 	safe.ReleaseNames = slices.Compact(safe.ReleaseNames)

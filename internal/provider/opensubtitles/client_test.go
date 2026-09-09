@@ -91,6 +91,9 @@ func TestSearchAuthenticatesPaginatesAndNormalizesExactCandidates(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(candidates) == 2 && (candidates[0].DownloadVersion != "srt-v1" || candidates[1].DownloadVersion != "srt-v1") {
+		t.Fatalf("missing converted-download rejection version: %#v", candidates)
+	}
 	if len(candidates) != 2 || !candidates[0].ExactHash || candidates[0].ResultID != "501" || candidates[0].DownloadRef != "501" || candidates[0].Rating != 0.85 || candidates[0].ExternalIDs.IMDb != "tt1234567" || candidates[0].ExternalIDs.TMDB != 7654 || !candidates[1].HearingImpaired {
 		t.Fatalf("candidates = %#v", candidates)
 	}
@@ -199,7 +202,7 @@ func TestBroadSearchUsesStrongestExternalIDAndEpisodeIdentity(t *testing.T) {
 	if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}); err != nil {
 		t.Fatal(err)
 	}
-	if query.Get("parent_imdb_id") != "1234567" || query.Get("season_number") != "1" || query.Get("episode_number") != "2" || query.Get("query") != "Example Show" || query.Get("year") != "2024" {
+	if query.Get("parent_imdb_id") != "1234567" || query.Get("season_number") != "1" || query.Get("episode_number") != "2" || query.Get("query") != "" || query.Get("year") != "" {
 		t.Fatalf("broad query = %s", query.Encode())
 	}
 }

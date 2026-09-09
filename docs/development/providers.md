@@ -26,6 +26,8 @@ Hearing-impaired/SDH tracks and candidates are disallowed by default. Set `allow
 
 ### Titlovi
 
+Returned AKA titles are retained as alternate identity evidence without copying the query title. Allowed absolute download links retain their original origin during acquisition; relative links resolve against the configured base. Absolute and query-bearing references still require a fresh search after cache sanitization. Provider-specific cache versioning refreshes results normalized before these repairs.
+
 Titlovi uses the supported Kodi API with an API-enabled account. It supports `bs`, `en`, `hr`, `mk`, `sr`, `sr-Cyrl`, and `sl`. Search is broad-only and paginated (five pages by default). Token refresh preserves earlier result pages. The requested IMDb ID is a search filter only; it is never copied into candidate identity or awarded external-ID points. Episode-zero results become season-pack evidence only when the returned season matches; they are never treated as the requested episode automatically. Downloaded episode archives are checked independently of that search metadata: explicit wrong-episode filenames reject only that candidate, including a one-subtitle archive, while one generic filename remains usable for an exact episode result.
 
 ```yaml
@@ -40,6 +42,8 @@ titlovi-main:
 ```
 
 ### OpenSubtitles.com
+
+Broad searches with IMDb/TMDB IDs omit redundant title/year filters. Title-only episode searches also omit year because Sonarr's series premiere year is not an episode air year. Returned language codes are canonicalized before applying established provider aliases. Downloads request SRT conversion and retain normal signed-transfer credential isolation and bounded content validation. A stable `download_version` marks the changed payload contract so prior original-format rejections can be reconsidered once; existing installations and schedules are unchanged. Provider-specific cache versioning refreshes prior search results.
 
 Every exact-hash and broad search page explicitly sends `ai_translated=exclude` and `machine_translated=exclude`, using the [official search API parameters](https://opensubtitles.stoplight.io/docs/opensubtitles-api/a172317bd5ccc-search-for-subtitles). This excludes results marked by OpenSubtitles as AI or machine translated without relying on server defaults. There is no configuration opt-in. Normalized search-cache version `candidate-v6` prevents reuse of older entries that lack download-reference refresh metadata, as well as results predating translation exclusions and corrected provider identity/episode normalization; existing installed subtitles and downloaded pack caches are unchanged.
 
@@ -61,6 +65,8 @@ opensubtitles-main:
 ```
 
 ### SubDL
+
+Searches request author comments and retain explicit forced/SDH/hearing-impaired annotations, including HI filename tokens. Negation is scoped to annotation markers, including filename separators; it cannot erase a positive structured HI flag. Selected direct members retain parent policy evidence. Movie searches retry an available TMDB ID once after a genuinely empty IMDb lookup; technical, quota, authentication and cancellation failures do not trigger that fallback. Provider-specific cache versioning refreshes older normalized results. Cached packs must carry the current `evidence_version`; older manifests are skipped before acquisition and later compatible packs remain reachable. Fresh normalization publishes a separately keyed immutable manifest, with the existing managed-cache cleanup removing its superseded directory. No migration, schedule reset or blanket cache deletion is needed.
 
 SubDL is broad-only. For episodes it searches standard season/episode, an available absolute episode, and the season-pack form, merging normalized results by stable identity. Later duplicates fill missing identity fields, union release evidence, and retain the strongest rating/popularity signals before incomplete episode results are filtered. Missing response title/year remain unknown rather than being copied from the search request, so request defaults cannot earn identity points or qualify for LAPSE bypass. Absolute-numbered results retain explicit absolute episode/range fields for matching. Direct-member selection checks season as well as episode evidence, and release range parsing shares the conservative archive parser so resolution suffixes cannot create packs. It supports its published two-letter languages plus `pt-BR` and `zh-Hant`; configuration validation is the definitive capability check. API keys returned in download URL queries are discarded during normalization. The configured key is reconstructed only on the outbound download request and must never become a candidate ID, cache value, provenance record, or log field.
 

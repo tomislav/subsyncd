@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -59,6 +60,14 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 
 func (c *Client) ID() string { return c.id }
 
+func (c *Client) SearchCacheVersion() string { return "subdl-annotations-alternate-id-v2" }
+
+const annotationEvidenceVersion = "subdl-annotations-v1"
+
+func (c *Client) CanReuseCachedCandidate(candidate domain.Candidate) bool {
+	return candidate.EvidenceVersion == annotationEvidenceVersion
+}
+
 func (c *Client) Capabilities() baseprovider.Capabilities {
 	return baseprovider.Capabilities{SeasonPacks: true, DirectPackMember: true}
 }
@@ -103,6 +112,16 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 		}
 		items = append(items, found...)
 	}
+	if len(items) == 0 && query.Media.Ref.Kind == domain.MediaMovie && base.Get("imdb_id") != "" && query.Media.ExternalIDs.TMDB > 0 {
+		alternate := cloneValues(base)
+		alternate.Del("imdb_id")
+		alternate.Set("tmdb_id", strconv.FormatInt(query.Media.ExternalIDs.TMDB, 10))
+		found, err := c.searchOnce(ctx, alternate)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, found...)
+	}
 	if len(items) == 0 && query.Media.Ref.Kind == domain.MediaEpisode && query.Media.Title != "" {
 		titleOnly := cloneValues(base)
 		titleOnly.Del("imdb_id")
@@ -125,6 +144,7 @@ func (c *Client) searchParameters(media domain.Media, language string) url.Value
 		"languages":     {language},
 		"releases":      {"1"},
 		"hi":            {"1"},
+		"comment":       {"1"},
 		"unpack":        {"1"},
 		"subs_per_page": {"30"},
 		"client":        {"custom_integration"},
@@ -164,6 +184,7 @@ type mediaResult struct {
 }
 
 type searchItem struct {
+	Comment       string       `json:"comment"`
 	Name          string       `json:"name"`
 	URL           string       `json:"url"`
 	Language      string       `json:"language"`
@@ -182,6 +203,7 @@ type searchItem struct {
 }
 
 type unpackFile struct {
+	Comment     string `json:"comment"`
 	FileID      string `json:"file_n_id"`
 	Name        string `json:"name"`
 	URL         string `json:"url"`
@@ -251,7 +273,8 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 		}
 		releases := uniqueStrings(append(append([]string{}, item.Releases...), item.ReleaseName))
 		title, year := item.Identity.Name, item.Identity.Year
-		candidate := domain.Candidate{ProviderID: c.id, ResultID: downloadRef, DownloadRef: downloadRef, Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: year, ExternalIDs: domain.ExternalIDs{IMDb: item.Identity.IMDb, TMDB: item.Identity.TMDB}, Season: item.Season, Episode: item.Episode, ReleaseNames: releases, HearingImpaired: item.Hearing, Rating: min(max(item.Rating, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount}
+		candidate := domain.Candidate{EvidenceVersion: annotationEvidenceVersion, ProviderID: c.id, ResultID: downloadRef, DownloadRef: downloadRef, Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: year, ExternalIDs: domain.ExternalIDs{IMDb: item.Identity.IMDb, TMDB: item.Identity.TMDB}, Season: item.Season, Episode: item.Episode, ReleaseNames: releases, HearingImpaired: item.Hearing, Rating: min(max(item.Rating, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount}
+		candidate.Forced, candidate.HearingImpaired = annotations(item.Name, item.Comment, item.Hearing)
 		if query.Media.Ref.Kind == domain.MediaEpisode {
 			from, to := item.EpisodeFrom, item.EpisodeEnd
 			rangeSeason, releaseFrom, releaseTo, invalid := releaseRange(releases)
@@ -277,7 +300,9 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 				candidate.DownloadRef = ref
 				candidate.Season = direct.Season
 				candidate.Episode = direct.Episode
-				candidate.HearingImpaired = direct.Hearing
+				forced, hearing := annotations(direct.Name, direct.Comment, direct.Hearing)
+				candidate.Forced = candidate.Forced || forced
+				candidate.HearingImpaired = candidate.HearingImpaired || hearing
 				candidate.ReleaseNames = uniqueStrings(append(candidate.ReleaseNames, direct.ReleaseName))
 			} else if isPack {
 				candidate.Episode = 0
@@ -377,8 +402,12 @@ func cloneValues(source url.Values) url.Values {
 }
 
 func isNoResult(message string) bool {
-	lower := strings.ToLower(message)
-	return strings.Contains(lower, "can't find") || strings.Contains(lower, "not found") || strings.Contains(lower, "no subtitle")
+	switch strings.ToLower(strings.TrimSpace(message)) {
+	case "can't find film", "film not found", "no subtitles", "no subtitles found", "no subtitle found":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) decodeLimit(ctx context.Context, operation baseprovider.Operation, body io.Reader, fallback error) error {
@@ -506,4 +535,77 @@ func (c *Client) allowedDownloadURL(endpoint *url.URL) bool {
 		}
 	}
 	return false
+}
+
+// Interpret explicit annotation tokens only. Scope negation to each marker;
+// filename punctuation separates words, while prose punctuation separates clauses.
+// Neither negative prose nor absent member flags erase structured HI evidence.
+func annotations(name, comment string, structuredHI bool) (forced, hearing bool) {
+	hearing = structuredHI
+	for sourceIndex, source := range []string{name, comment} {
+		clauses := []string{strings.ToLower(source)}
+		if sourceIndex == 1 {
+			clauses = strings.FieldsFunc(clauses[0], func(r rune) bool { return r == ';' || r == '\n' || r == '.' || r == ',' })
+		}
+		for _, clause := range clauses {
+			words := strings.FieldsFunc(clause, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+			if strings.Contains(strings.Join(words, " "), "not sure") {
+				continue
+			}
+			type marker struct {
+				start, end int
+				forced     bool
+			}
+			var markers []marker
+			for i, word := range words {
+				switch {
+				case word == "forced":
+					markers = append(markers, marker{i, i + 1, true})
+				case word == "sdh" || sourceIndex == 0 && word == "hi":
+					markers = append(markers, marker{i, i + 1, false})
+				case word == "hearing" && i+1 < len(words) && words[i+1] == "impaired":
+					markers = append(markers, marker{i, i + 2, false})
+				}
+			}
+			previousEnd := 0
+			previousNegative := false
+			for index, m := range markers {
+				negative := false
+				inheritedNegative := previousNegative
+				for _, word := range words[previousEnd:m.start] {
+					switch word {
+					case "with", "but":
+						negative, inheritedNegative = false, false
+					case "and", "or":
+						negative = negative || inheritedNegative
+					case "no", "not", "non", "without", "remove", "exclude", "strip", "removed", "excluded", "stripped":
+						negative = true
+					}
+				}
+				nextStart := len(words)
+				if index+1 < len(markers) {
+					nextStart = markers[index+1].start
+				}
+			suffix:
+				for _, word := range words[m.end:nextStart] {
+					switch word {
+					case "with", "without", "but", "and", "or", "no", "not", "non":
+						break suffix
+					case "removed", "stripped", "excluded", "free":
+						negative = true
+					}
+				}
+				if !negative {
+					if m.forced {
+						forced = true
+					} else {
+						hearing = true
+					}
+				}
+				previousEnd = m.end
+				previousNegative = negative
+			}
+		}
+	}
+	return
 }

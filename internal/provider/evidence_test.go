@@ -35,6 +35,22 @@ func TestDeduplicationAndCacheRetainExplicitReleaseEvidence(t *testing.T) {
 	}
 }
 
+func TestDeduplicationAndCacheRetainProviderTitlesAndDownloadVersion(t *testing.T) {
+	var candidates []domain.Candidate
+	if err := json.Unmarshal([]byte(`[{"provider_id":"only","result_id":"one","language":"en","alternate_titles":["A"]},{"provider_id":"only","result_id":"one","language":"en","alternate_titles":["B","A"],"download_version":"srt-v1"}]`), &candidates); err != nil {
+		t.Fatal(err)
+	}
+	p := &fakeProvider{id: "only", candidates: map[SearchMode][]domain.Candidate{SearchBroad: candidates}}
+	c := newTestCoordinator(p)
+	q := SearchQuery{Mode: SearchBroad, Language: "en", Media: testQueryMedia()}
+	c.Search(context.Background(), q)
+	result := c.Search(context.Background(), q)
+	payload, _ := json.Marshal(result.Candidates)
+	if len(p.calls) != 1 || !strings.Contains(string(payload), `"alternate_titles":["A","B"]`) || !strings.Contains(string(payload), `"download_version":"srt-v1"`) {
+		t.Fatalf("cache lost provider evidence: %s", payload)
+	}
+}
+
 type versionedProvider struct {
 	Provider
 	version string

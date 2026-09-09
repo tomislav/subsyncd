@@ -89,6 +89,19 @@ type Factory func(id string, node yaml.Node, deps Dependencies) (Provider, error
 // their existing cache keys.
 type SearchCacheVersioner interface{ SearchCacheVersion() string }
 
+// CachedCandidateValidator lets an adapter reject stale policy evidence in an
+// immutable pack manifest without deleting cached content or resetting work.
+type CachedCandidateValidator interface {
+	CanReuseCachedCandidate(domain.Candidate) bool
+}
+
+func CanReuseCachedCandidate(p Provider, candidate domain.Candidate) bool {
+	if validator, ok := p.(CachedCandidateValidator); ok {
+		return validator.CanReuseCachedCandidate(candidate)
+	}
+	return true
+}
+
 func searchCacheVersion(p Provider) string {
 	if versioned, ok := p.(SearchCacheVersioner); ok {
 		return versioned.SearchCacheVersion()

@@ -79,3 +79,7 @@ func (w *countingWriter) Write(data []byte) (int, error) {
 }
 
 func (p *observedProvider) SearchCacheVersion() string { return searchCacheVersion(p.Provider) }
+
+func (p *observedProvider) CanReuseCachedCandidate(candidate domain.Candidate) bool {
+	return CanReuseCachedCandidate(p.Provider, candidate)
+}

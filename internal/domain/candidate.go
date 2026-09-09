@@ -32,6 +32,8 @@ type Candidate struct {
 	Language        Language    `json:"language"`
 	Kind            MediaKind   `json:"kind"`
 	Title           string      `json:"title"`
+	AlternateTitles []string    `json:"alternate_titles,omitempty"`
+	EvidenceVersion string      `json:"evidence_version,omitempty"`
 	Year            int         `json:"year,omitempty"`
 	Season          int         `json:"season,omitempty"`
 	Episode         int         `json:"episode,omitempty"`
@@ -39,14 +41,16 @@ type Candidate struct {
 	ExternalIDs     ExternalIDs `json:"external_ids"`
 	ReleaseNames    []string    `json:"release_names,omitempty"`
 	// Provider-supplied alternatives, independent of parsed release filenames.
-	ReleaseGroups   []string  `json:"release_groups,omitempty"`
-	Resolutions     []string  `json:"resolutions,omitempty"`
-	ExactHash       bool      `json:"exact_hash"`
-	Forced          bool      `json:"forced,omitempty"`
-	HearingImpaired bool      `json:"hearing_impaired"`
-	Rating          float64   `json:"rating"`
-	Popularity      float64   `json:"popularity"`
-	DownloadCount   int64     `json:"download_count"`
-	DownloadRef     string    `json:"download_ref"`
+	ReleaseGroups   []string `json:"release_groups,omitempty"`
+	Resolutions     []string `json:"resolutions,omitempty"`
+	ExactHash       bool     `json:"exact_hash"`
+	Forced          bool     `json:"forced,omitempty"`
+	HearingImpaired bool     `json:"hearing_impaired"`
+	Rating          float64  `json:"rating"`
+	Popularity      float64  `json:"popularity"`
+	DownloadCount   int64    `json:"download_count"`
+	DownloadRef     string   `json:"download_ref"`
+	// Version of provider-side payload conversion, independent of temporary URLs.
+	DownloadVersion string    `json:"download_version,omitempty"`
 	Pack            *PackInfo `json:"pack,omitempty"`
 }

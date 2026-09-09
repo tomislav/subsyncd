@@ -64,6 +64,8 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 
 func (c *Client) ID() string { return c.id }
 
+func (c *Client) SearchCacheVersion() string { return "titlovi-evidence-v2" }
+
 func (c *Client) Capabilities() baseprovider.Capabilities {
 	return baseprovider.Capabilities{SeasonPacks: true}
 }
@@ -256,8 +258,13 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 		if !ok {
 			continue
 		}
-		titles := akaPattern.Split(item.Title, 2)
+		titles := akaPattern.Split(item.Title, -1)
 		candidate := domain.Candidate{ProviderID: c.id, ResultID: strconv.FormatInt(item.ID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: strings.TrimSpace(titles[0]), Year: item.Year, Season: item.Season, Episode: item.Episode, ReleaseNames: []string{item.Release}, Rating: min(max(item.Rating/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.DownloadCount), DownloadCount: item.DownloadCount, DownloadRef: downloadRef}
+		for _, title := range titles[1:] {
+			if title = strings.TrimSpace(title); title != "" {
+				candidate.AlternateTitles = append(candidate.AlternateTitles, title)
+			}
+		}
 		if query.Media.Ref.Kind == domain.MediaEpisode && item.Episode == 0 {
 			candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: item.Season}
 		}
@@ -273,6 +280,11 @@ func (c *Client) downloadReference(raw string) (string, bool) {
 	}
 	if !strings.HasPrefix(parsed.Path, "/") {
 		parsed.Path = "/" + parsed.Path
+	}
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	if parsed.IsAbs() {
+		return parsed.String(), true
 	}
 	return parsed.EscapedPath() + querySuffix(parsed.RawQuery), true
 }

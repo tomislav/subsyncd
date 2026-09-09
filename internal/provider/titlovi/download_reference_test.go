@@ -70,9 +70,13 @@ func TestMalformedDownloadReferencesFailBeforeRequests(t *testing.T) {
 
 func TestDownloadReferencePreservesUsablePath(t *testing.T) {
 	client := &Client{config: Config{DownloadHosts: []string{"download.example"}}}
-	for _, ref := range []string{"/subtitle/42.zip", "subtitle/42.zip", "https://download.example/subtitle/42.zip"} {
-		got, ok := client.downloadReference(ref)
-		if !ok || got != "/subtitle/42.zip" {
+	for _, test := range []struct{ ref, want string }{
+		{"/subtitle/42.zip", "/subtitle/42.zip"},
+		{"subtitle/42.zip", "/subtitle/42.zip"},
+		{"https://download.example/subtitle/42.zip", "https://download.example/subtitle/42.zip"},
+	} {
+		got, ok := client.downloadReference(test.ref)
+		if !ok || got != test.want {
 			t.Fatalf("usable reference: got %q, accepted %v", got, ok)
 		}
 	}
@@ -82,7 +86,7 @@ func TestTitloviDownloadReferenceRetainsQueryIdentity(t *testing.T) {
 	client := &Client{config: Config{DownloadHosts: []string{"download.example"}}}
 	for _, ref := range []string{"/download/?id=42", "https://download.example/download/?id=42"} {
 		got, ok := client.downloadReference(ref)
-		if !ok || got != "/download/?id=42" {
+		if !ok || got != ref {
 			t.Fatalf("query identity lost: got %q, accepted %v", got, ok)
 		}
 	}

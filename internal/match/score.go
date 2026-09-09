@@ -244,6 +244,13 @@ func titleMatches(media domain.Media, candidate domain.Candidate, releases []Rel
 	if _, ok := wanted[NormalizeIdentity(candidate.Title)]; ok && NormalizeIdentity(candidate.Title) != "" {
 		return true
 	}
+	for _, title := range candidate.AlternateTitles {
+		if normalized := NormalizeIdentity(title); normalized != "" {
+			if _, ok := wanted[normalized]; ok {
+				return true
+			}
+		}
+	}
 	for _, release := range releases {
 		if _, ok := wanted[release.Title]; ok && release.Title != "" {
 			return true

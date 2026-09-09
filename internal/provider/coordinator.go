@@ -214,6 +214,7 @@ func DeduplicateCandidates(candidates []domain.Candidate) []domain.Candidate {
 		if !exists {
 			indices[key] = len(result)
 			candidate.ReleaseNames = append([]string(nil), candidate.ReleaseNames...)
+			candidate.AlternateTitles = append([]string(nil), candidate.AlternateTitles...)
 			candidate.ReleaseGroups = append([]string(nil), candidate.ReleaseGroups...)
 			candidate.Resolutions = append([]string(nil), candidate.Resolutions...)
 			result = append(result, candidate)
@@ -251,6 +252,13 @@ func DeduplicateCandidates(candidates []domain.Candidate) []domain.Candidate {
 			merged.ExternalIDs.TVDB = candidate.ExternalIDs.TVDB
 		}
 		merged.ReleaseNames = appendUniqueStrings(merged.ReleaseNames, candidate.ReleaseNames...)
+		merged.AlternateTitles = appendUniqueStrings(merged.AlternateTitles, candidate.AlternateTitles...)
+		if merged.DownloadVersion == "" {
+			merged.DownloadVersion = candidate.DownloadVersion
+		}
+		if merged.EvidenceVersion == "" {
+			merged.EvidenceVersion = candidate.EvidenceVersion
+		}
 		merged.ReleaseGroups = appendUniqueStrings(merged.ReleaseGroups, candidate.ReleaseGroups...)
 		merged.Resolutions = appendUniqueStrings(merged.Resolutions, candidate.Resolutions...)
 		merged.ExactHash = merged.ExactHash || candidate.ExactHash
