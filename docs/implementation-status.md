@@ -13,6 +13,15 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### LAPSE 2.1.0 upgrade assessment — 2026-09-09
+
+- Reviewed commit: `8532a69`; documentation-only assessment, no runtime changes, commit, push or production access.
+- Compared official `v2.0.5...v2.1.0` source diff, release metadata and PR #76. The functional addition is opt-in `--snap [ms]` (default window 120 ms), moving cue starts and ends together toward nearby keyframes after synchronization. Default alignment/verdict behavior is unchanged; no cue-ordering fix or core synchronization improvement appears in this diff.
+- A binary-only upgrade is incompatible: 2.1.0 unconditionally emits `snapped`, while our JSON decoder rejects unknown fields. Any future upgrade must explicitly validate this field, update sanitized protocol fixtures and compatibility version, and synchronize Docker version/checksum pins. Existing capability flags remain advertised.
+- Recommendation: retain 2.0.5 for now. Snapping is optional timing polish; keyframes are a heuristic for cuts, and the implementation walks packets rather than establishing universally cheap index-only access. Benchmark representative files before enabling it. Upstream reports synthetic snapping tests and byte-identical output without the flag; these were not independently executed here.
+- Verification: source comparison and local parser/invocation inspection; no runtime tests or media benchmarks performed. `git diff --check` passed. Next task: upgrade only if snapping or forward compatibility is desired, with focused protocol regressions and affected race tests; keep snapping off initially.
+- Sources: https://github.com/Schwponaco-org/lapse/releases/tag/v2.1.0 ; https://github.com/Schwponaco-org/lapse/compare/v2.0.5...v2.1.0 ; https://github.com/Schwponaco-org/lapse/pull/76
+
 ### Skip unsupported provider media kinds — 2026-09-09
 
 - Commit: this `fix: skip TV-only providers for movie searches` commit on `main`, based on `025f6e9`. User authorized the fix and push. Origin was fetched and aligned; no production access or deployment.
