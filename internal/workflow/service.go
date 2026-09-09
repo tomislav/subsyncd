@@ -368,9 +368,10 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 		return result, err
 	}
 	result.ProviderErrors = search.Errors
+	providerCount := s.applicableProviderCount(request)
 	if len(search.Candidates) == 0 {
 		*candidateCount = len(exactRecords)
-		if len(exactRecords) != 0 || len(s.ProviderOrder) == 0 || len(search.Errors) < len(s.ProviderOrder) {
+		if len(exactRecords) != 0 || providerCount == 0 || len(search.Errors) < providerCount {
 			if err := s.Repository.RecordCandidates(ctx, request.MediaID, request.Language, exactRecords); err != nil {
 				return result, err
 			}
@@ -380,13 +381,13 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 			result.Installation = existing
 			return result, nil
 		}
-		if retry, allUnavailable := allProvidersUnavailable(search.Errors, len(s.ProviderOrder)); allUnavailable {
+		if retry, allUnavailable := allProvidersUnavailable(search.Errors, providerCount); allUnavailable {
 			result.Outcome = OutcomeThrottled
 			result.RetryAt = retry
 			return result, nil
 		}
-		if len(s.ProviderOrder) > 0 && len(search.Errors) >= len(s.ProviderOrder) {
-			return result, &acquisitionExhaustedError{fmt.Errorf("all %d assigned subtitle providers failed", len(s.ProviderOrder))}
+		if providerCount > 0 && len(search.Errors) >= providerCount {
+			return result, &acquisitionExhaustedError{fmt.Errorf("all %d assigned subtitle providers failed", providerCount)}
 		}
 		if classified, failureErr, found := classifyCandidateFailures(result, candidateFailures); found {
 			return classified, failureErr
@@ -1375,6 +1376,18 @@ func (s *Service) priorities() map[string]int {
 		priorities[id] = index
 	}
 	return priorities
+}
+
+func (s *Service) applicableProviderCount(request Request) int {
+	count := 0
+	for _, id := range s.ProviderOrder {
+		p := s.Providers[id]
+		// Custom searchers may not expose adapters through the download map.
+		if p == nil || p.SupportsLanguage(request.Language) && provider.SupportsMediaKind(p, request.Media.Ref.Kind) {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Service) evaluate(media domain.Media, candidate domain.Candidate, language domain.Language) domain.Score {

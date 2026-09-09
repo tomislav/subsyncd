@@ -70,7 +70,7 @@ func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResul
 func (c *Coordinator) searchExact(ctx context.Context, query SearchQuery) SearchResult {
 	result := SearchResult{Errors: make(map[string]error)}
 	for _, item := range c.Providers {
-		if !item.Capabilities().ExactFileHash || !item.SupportsLanguage(query.Language) {
+		if !item.Capabilities().ExactFileHash || !item.SupportsLanguage(query.Language) || !SupportsMediaKind(item, query.Media.Ref.Kind) {
 			continue
 		}
 		candidates, err := c.searchProvider(ctx, item, query)
@@ -98,7 +98,7 @@ func (c *Coordinator) searchBroad(ctx context.Context, query SearchQuery) Search
 	channel := make(chan broadResult, len(c.Providers))
 	active := 0
 	for index, provider := range c.Providers {
-		if !provider.SupportsLanguage(query.Language) {
+		if !provider.SupportsLanguage(query.Language) || !SupportsMediaKind(provider, query.Media.Ref.Kind) {
 			continue
 		}
 		active++

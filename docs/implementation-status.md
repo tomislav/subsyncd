@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: OpenSubtitles, SubDL and Titlovi comparative-review repairs
+- Current task: skip TV-only providers for movie searches
 - Next safe action: verify GitHub checks/image publication after the authorized push; deploy only when requested
-- Latest follow-up: all seven findings repaired, including review follow-ups for annotation negation and legacy pack evidence
+- Latest follow-up: Gestdown is skipped before movie-search logs/cache access; unsupported routes no longer mask movie-provider outages
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Skip unsupported provider media kinds — 2026-09-09
+
+- Commit: this `fix: skip TV-only providers for movie searches` commit on `main`, based on `025f6e9`. User authorized the fix and push. Origin was fetched and aligned; no production access or deployment.
+- Added optional media-kind capability restrictions; an empty list retains existing unrestricted adapters. Gestdown declares episode support only. Both exact/broad coordinator paths filter before provider search events and normalized-cache reads/writes. Its adapter-level movie guard remains as defense for direct calls.
+- Workflow outage classification counts only applicable language/media routes in the active tier, so an unsupported Gestdown route cannot turn movie-provider throttles or technical failures into ordinary missing results. Configured priority/tier membership and upgrade provenance remain unchanged.
+- TDD reproduced unwanted search/cache/log activity and masked cooldown/technical outcomes before fixing them. Regressions cover both search phases through the observed wrapper, supported episode calls, and movie outage reset/error behavior. Independent review found no actionable issues.
+- Verification: focused race regressions, full `go test ./... -race -count=1`, tagged e2e race suite, `go vet ./...` and `git diff --check` passed using `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`. Local fakes only. Next: verify GitHub publication after pushing; deploy only when requested.
 
 ### Provider discovery and subtitle evidence repairs — 2026-09-09
 

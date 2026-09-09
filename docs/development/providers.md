@@ -81,7 +81,7 @@ subdl-main:
 
 ### Gestdown
 
-Gestdown uses the keyless public API at `https://api.gestdown.info`. The adapter is TV-only and broad-only: movie searches return no candidates without transport. Add a `type: gestdown` instance to either provider tier. No startup network request, credentials, migration, or new workflow policy is required.
+Gestdown uses the keyless public API at `https://api.gestdown.info`. The adapter is TV-only and broad-only: the coordinator skips it for movies before search logs, cache access or transport. Media-kind capabilities apply to both search phases; other adapters keep their existing movie/episode support. Unsupported routes do not count as available providers when classifying a tier's outages. Add a `type: gestdown` instance to either provider tier. No startup network request, credentials or migration is required.
 
 Resolve the series by TVDB ID first; an empty/not-found lookup falls back to title search. Accept returned matching external IDs or a normalized exact title/alternate-title match when IDs are unavailable; conflicting IDs reject. Episode results must return the requested season/number and a consistent series title. Candidate title, series IDs, episode coordinates and language come only from responses. Year/IMDb/hash evidence is never invented. Only completed results with an explicit hearing-impaired flag are accepted. They retain their version/full release, hearing-impaired flag and normalized download popularity. Explicit quality alternatives supply resolution evidence; the broad HD flag does not invent a resolution or rating.
 

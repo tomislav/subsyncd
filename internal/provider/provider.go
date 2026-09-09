@@ -21,9 +21,24 @@ const (
 )
 
 type Capabilities struct {
+	// Empty means the adapter supports every media kind.
+	MediaKinds       []domain.MediaKind
 	ExactFileHash    bool
 	SeasonPacks      bool
 	DirectPackMember bool
+}
+
+func SupportsMediaKind(p Provider, kind domain.MediaKind) bool {
+	kinds := p.Capabilities().MediaKinds
+	if len(kinds) == 0 {
+		return true
+	}
+	for _, supported := range kinds {
+		if supported == kind {
+			return true
+		}
+	}
+	return false
 }
 
 type Operation string
