@@ -5,13 +5,24 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: stop acquisition when media disappears after inventory refresh
-- Next safe action: verify GitHub checks and image publication before production rollout
-- Latest follow-up: full race/e2e/vet and final affected-package race verification passed
+- Current task: keyless Gestdown TV-episode provider
+- Next safe action: verify GitHub checks and image publication after the authorized Gestdown push; deploy only when requested
+- Latest follow-up: full race/e2e/vet, final affected-package race checks, independent review and real Gestdown download verification passed
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Keyless Gestdown TV provider — 2026-09-09
+
+- Commit: this `feat: add keyless Gestdown TV subtitle provider` commit on `main`, based on `1d99481`. User approved the design, live download verification, and commit/integration/push to GitHub. Work was already on `main`, so no separate branch merge was needed. No production installation access or deployment.
+- Added compiled-in `gestdown` registration and optional configuration examples for either preferred or fallback routes. TV broad searches use returned TVDB/series identity, with exact normalized title/alternate-title fallback when IDs are unavailable; movies skip transport. Returned episode season/number/show must agree. Candidate year/IMDb/hash evidence is never copied from the query. Languages use explicit BCP 47 mappings, keeping regional variants distinct. Incomplete results and missing/null HI flags are excluded.
+- Downloads use validated UUIDs or explicitly matching server-extracted episode IDs, reconstructing the fixed API path and ignoring returned URLs. Whole-season IDs are excluded; server-extracted single episodes follow existing SubDL direct-member semantics, while actual multi-member payloads retain runtime-pack policy. Redirects reject and downloads are capped at 20 MiB. Existing scoring, fallback, caching, extraction, LAPSE and publication behavior remains unchanged.
+- HTTP 404 searches are empty; 423/429 cooldowns persist with rate headers or a five-minute fallback, and common network/5xx/body failure circuits remain in use. Bodies close on all paths and retain response-lifetime permits. Startup stays offline and no API key is required.
+- TDD: application regression first failed because `gestdown` was unknown. Local fixtures cover returned identity, TV-only startup, language variants, completion/HI filtering, wrong episodes, invalid IDs, title fallback, cooldown persistence, cancellation, invalid JSON, download bounds and redirect rejection. Independent review identified missing/null HI defaulting to false; focused tests reproduced it, then pointer-based validation fixed it. Final review found no remaining important issues.
+- Verification: full `go test ./... -race -count=1`, tagged e2e race tests, `go vet ./...`, affected provider/app race suites, and final Gestdown race suite passed using `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`. Local fake servers required approved socket access. The tagged live test correctly skips without `GESTDOWN_LIVE_TEST=1`.
+- Authorized live contract passed twice, including after the HI fix: final adapter searched Breaking Bad S01E01 English (TVDB 81189), returned six candidates, downloaded 45,970 bytes, and passed normal extraction/content validation and episode selection in temporary storage. SHA-256: `cff95ff2ae47b5125f106b7f44ca01441cd5beda980ad4ed4b6b444360696504`. Live payloads are not committed; ordinary tests use synthetic fixtures. Current OpenAPI version checked: 5.2.0.
+- Final integration verification: fetched origin and confirmed `main` was aligned before committing; reran the full race suite on the final runtime tree. Next task: verify GitHub checks/image publication after pushing, then deploy if requested. Enable a `type: gestdown` instance in the chosen language routes after updating the application.
 
 ### Missing media during acquisition — 2026-09-09
 

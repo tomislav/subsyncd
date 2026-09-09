@@ -73,6 +73,24 @@ subdl-main:
   max_concurrent: 1
 ```
 
+### Gestdown
+
+Gestdown uses the keyless public API at `https://api.gestdown.info`. The adapter is TV-only and broad-only: movie searches return no candidates without transport. Add a `type: gestdown` instance to either provider tier. No startup network request, credentials, migration, or new workflow policy is required.
+
+Resolve the series by TVDB ID first; an empty/not-found lookup falls back to title search. Accept returned matching external IDs or a normalized exact title/alternate-title match when IDs are unavailable; conflicting IDs reject. Episode results must return the requested season/number and a consistent series title. Candidate title, series IDs, episode coordinates and language come only from responses. Year/IMDb/hash evidence is never invented. Only completed results with an explicit hearing-impaired flag are accepted. They retain their version/full release, hearing-impaired flag and normalized download popularity; quality lists and the broad HD flag do not invent a single resolution or a rating.
+
+Downloads reconstruct the fixed API path from a validated subtitle UUID or `sp_{uuid}_ep_{N}` episode-extraction ID. The latter must agree with the returned episode number. Server-extracted single-episode artifacts use the same ordinary-episode classification as SubDL direct members; actual multi-member downloads still trigger runtime-pack validation and LAPSE. Whole-season pack IDs are excluded; the adapter does not enumerate the separate season-pack endpoint. Returned download URLs are ignored, redirects are rejected, and both declared and streamed downloads are limited to 20 MiB (optionally lowered by `max_download_bytes`). Existing content extraction, scoring, HI policy, LAPSE and fallback handling remain authoritative. Safe stable references support normal six-hour search caching.
+
+Requests default to one per second, burst one, concurrency one, with the existing response-body lifetime permits. HTTP 404 searches are empty results. HTTP 423 refresh-in-progress and HTTP 429 responses persist operation cooldowns, honoring rate-limit headers/`Retry-After` or retrying in five minutes without headers. Network/5xx/body failures use the common persistent circuit; errors do not expose response bodies. An optional `base_url` must be an HTTPS origin.
+
+Supported routes use an explicit English-name-to-BCP-47 mapping, including separate Portuguese/Brazilian Portuguese and French/Canadian French. Unsupported regional/script variants fail startup rather than silently broadening the language. The mapping follows the official [culture parser](https://github.com/Belphemur/AddictedProxy/blob/main/AddictedProxy.Culture/Service/CultureParser.cs); API fields and IDs follow the [live OpenAPI specification](https://api.gestdown.info/api/v1/swagger.json), version 5.2.0 at implementation.
+
+Ordinary tests use synthetic local servers. The real search/download/extraction contract is separately gated by both `provider_contract` and `GESTDOWN_LIVE_TEST=1` because this provider has no credential gate:
+
+```bash
+GESTDOWN_LIVE_TEST=1 GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test/providercontract -tags=provider_contract -run '^TestGestdownLiveSearchDownload$' -v -count=1
+```
+
 ## Search order and caches
 
 Languages may add `fallback_providers` after their required `providers` list. Provider tier precedes cache/exact/broad preference: run the sequence below within the preferred tier first, then the fallback tier only after acquisition is exhausted. Each tier has its own three-result broad shortlist; persisted candidate evidence covers both attempted tiers. Cache selection filters provider membership before accepting/touching a cached entry. Terminal inventory, repository, cancellation, media/publication and rollback failures do not enter another tier.

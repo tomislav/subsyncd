@@ -30,6 +30,7 @@ import (
 	"subsyncd/internal/observability"
 	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
+	"subsyncd/internal/provider/gestdown"
 	"subsyncd/internal/provider/opensubtitles"
 	"subsyncd/internal/provider/subdl"
 	"subsyncd/internal/provider/titlovi"
@@ -367,7 +368,7 @@ func buildProviders(cfg config.Config, database *store.Store, repository *store.
 		spec := cfg.Providers[id]
 		specs = append(specs, provider.InstanceSpec{ID: id, Type: spec.Type, Settings: spec.Settings})
 	}
-	registry := provider.NewRegistry(map[string]provider.Factory{"titlovi": titlovi.Factory, "opensubtitles": opensubtitles.Factory, "subdl": subdl.Factory})
+	registry := provider.NewRegistry(map[string]provider.Factory{"gestdown": gestdown.Factory, "titlovi": titlovi.Factory, "opensubtitles": opensubtitles.Factory, "subdl": subdl.Factory})
 	gate := provider.NewGate(repository, clock, cfg.ProviderHTTP.SharedOriginMaxConcurrent, events)
 	return registry.Build(specs, provider.Dependencies{HTTPClient: client, Store: database, Clock: clock, Gate: gate, Events: events})
 }

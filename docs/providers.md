@@ -1,6 +1,6 @@
 # Subtitle providers
 
-Choose the providers you want to use, add their credentials, and assign them to your languages. You do not need every supported provider.
+Choose the providers you want to use, add credentials where required, and assign them to your languages. You do not need every supported provider.
 
 ## Supported providers
 
@@ -9,6 +9,7 @@ Choose the providers you want to use, add their credentials, and assign them to 
 | OpenSubtitles.com | Account username and password for published images | Exact file matches, movies, and episodes |
 | SubDL | API key | Movies, episodes, and season packs |
 | Titlovi | API-enabled account username and password | Movies, episodes, and season packs |
+| Gestdown | No account or API key | TV episodes |
 
 Provider account quotas still apply. OpenSubtitles results marked as AI or machine translated are excluded automatically.
 
@@ -28,6 +29,9 @@ providers:
     type: subdl
     api_key: 'your-subdl-api-key'
 
+  gestdown-main:
+    type: gestdown
+
   titlovi-main:
     type: titlovi
     username: 'your-titlovi-username'
@@ -35,6 +39,8 @@ providers:
 ```
 
 Published containers include the OpenSubtitles application key. Native builds and locally built images need an explicit `api_key` in that provider's configuration as well as the account credentials.
+
+Gestdown is a keyless TV-only provider using its [public API](https://gestdown.readme.io/reference/getting-started-1). Add `gestdown-main` to a language’s `providers` or `fallback_providers` list to enable it. Movie searches skip it without an API request; keep a movie-capable provider in routes used by Radarr. It supports multiple languages, including `en`, `hr`, `pt`, and `pt-BR`; unsupported language tags fail startup validation.
 
 The [complete configuration example](../config.example.yaml) includes optional request-rate and concurrency settings. Start with its defaults.
 
