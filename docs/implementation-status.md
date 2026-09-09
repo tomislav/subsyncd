@@ -5,13 +5,21 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: forced-track title detection and minimal-ffprobe packaging experiment
-- Next safe action: verify GitHub checks/image publication after the authorized push; review packaging measurements before adopting changes to both release Dockerfiles
+- Current task: publish minimal FFprobe packaging
+- Next safe action: verify GitHub Actions publishes the new amd64/arm64 image; deployment is user-managed
 - Latest follow-up: forced title labels no longer satisfy full coverage; old probe markers are invalidated once without changing schedules
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Adopt minimal FFprobe in release images — 2026-09-09
+
+- Commit: this `build: ship minimal static ffprobe` commit on `main`, based on `266f4ba`. User requested committing/pushing and GitHub Actions image publication only; no local image build or deployment for this adoption.
+- Both Dockerfiles replace the distribution ffmpeg package with static FFprobe 8.1 from the SHA-256-verified official source archive. The Alpine builder is digest-pinned, Clang/LLD support the previously tested architectures, and the build rejects a TARGETARCH/platform mismatch while retaining legacy native fallback.
+- Kept Debian 13.2, Go 1.27.1, the exact LAPSE v2.0.5 bundles and rootless runtime. Explicitly install libstdc++6 for ONNX Runtime. Ship FFmpeg and musl license notices and generated CycloneDX source-component inventory; source/version provenance matches the verified archive.
+- Image builds check the expected FFprobe version and require the bundled LAPSE to load Silero, so GitHub Actions checks runtime loading on each target architecture before publishing. The existing Go race/e2e/vet publication gates remain unchanged. Prior synthetic dual-architecture and read-only production inventory evidence is in the experiment report; LAPSE synchronization code/bundles are unchanged.
+- Local checks: release-Dockerfile parity, POSIX shell syntax and `git diff --check`. Independent packaging review completed; its musl inventory/attribution finding was addressed. GitHub Actions build/publication pending the authorized push. Next: confirm both published platforms; the user will deploy.
 
 ### Minimal ffprobe packaging experiment — 2026-09-09
 

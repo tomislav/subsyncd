@@ -208,3 +208,9 @@ If a user wants to take ownership of a subtitle, edit or replace the sidecar. It
 - repeated missing result: this is expected backoff, not a worker sleep. Use `search` for a deliberate manual attempt or `retry` only to clear provider throttle/auth state.
 - LAPSE rejection: inspect `candidate_rejections` with `explain`; `unsure`/`nothing` is intentionally not installable. Use `analyze-sync` for diagnosis or `search --retry-rejected` after changing the media, candidate source, LAPSE build, or policy.
 - Silo does not refresh: confirm the configured port reaches Silo's native API, the key is an admin API key, and the container-to-Silo path mapping is correct.
+
+## Minimal FFprobe packaging
+
+The image builds static FFprobe 8.1 from a checksummed FFmpeg source archive using a digest-pinned Alpine builder. Only local-file protocols and the container/parser/subtitle capabilities needed for inventory are enabled. The full `ffmpeg` command is not installed. LAPSE v2.0.5 retains its own linked FFmpeg libraries, ONNX Runtime and Silero model; `libstdc++6` remains an explicit runtime dependency.
+
+`scripts/build-ffprobe.sh` verifies the source digest and target architecture, builds the probe, and emits its license and a CycloneDX source-component inventory under `/usr/share/sbom/ffmpeg.cdx.json`. Both Dockerfiles run FFprobe version and LAPSE/Silero load checks during the image build, including both platforms built by GitHub Actions. Keep the version, source hash and runtime version label synchronized when upgrading.

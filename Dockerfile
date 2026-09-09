@@ -15,6 +15,14 @@ RUN target_arch="${TARGETARCH:-$(go env GOARCH)}"; \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${target_arch} \
     go build -trimpath -ldflags="-s -w -X subsyncd/internal/version.Value=${VERSION}" -o /out/subsyncd ./cmd/subsyncd
 
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS ffprobe-build
+ARG TARGETARCH
+ARG FFMPEG_VERSION=8.1
+ARG FFMPEG_SHA256=b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a
+RUN apk add --no-cache build-base clang lld nasm linux-headers pkgconf curl
+COPY scripts/build-ffprobe.sh /build-ffprobe.sh
+RUN sh /build-ffprobe.sh "${FFMPEG_VERSION}" "${FFMPEG_SHA256}" "${TARGETARCH}"
+
 FROM debian:${DEBIAN_VERSION} AS lapse-release
 ARG TARGETARCH
 ARG LAPSE_VERSION=2.0.5
@@ -35,18 +43,24 @@ RUN set -eux; \
     rm /tmp/lapse.tar.gz
 
 FROM debian:${DEBIAN_VERSION} AS runtime
+ARG FFMPEG_VERSION=8.1
 ARG VERSION=dev
 ARG LAPSE_VERSION=2.0.5
 LABEL org.opencontainers.image.title="subsyncd" \
       org.opencontainers.image.description="Focused, headless subtitle acquisition and synchronization service" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.lapse.version="${LAPSE_VERSION}"
+      org.opencontainers.image.lapse.version="${LAPSE_VERSION}" \
+      org.opencontainers.image.ffmpeg.version="${FFMPEG_VERSION}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl ffmpeg libfftw3-double3 tzdata \
+      ca-certificates curl libfftw3-double3 libstdc++6 tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 subsyncd \
     && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin subsyncd \
     && install -d -o 1000 -g 1000 -m 0750 /config /data /media
+COPY --from=ffprobe-build /out/ffprobe /usr/local/bin/ffprobe
+COPY --from=ffprobe-build /out/ffmpeg.cdx.json /usr/share/sbom/ffmpeg.cdx.json
+COPY --from=ffprobe-build /out/COPYING.LGPLv2.1 /usr/share/licenses/ffprobe/COPYING.LGPLv2.1
+COPY third_party/licenses/musl-COPYRIGHT /usr/share/licenses/ffprobe/musl-COPYRIGHT
 COPY --from=go-build /out/subsyncd /usr/local/bin/subsyncd
 COPY --from=lapse-release /out/lapse /opt/lapse
 RUN chmod 0755 /usr/local/bin/subsyncd /opt/lapse/lapse \
@@ -54,6 +68,11 @@ RUN chmod 0755 /usr/local/bin/subsyncd /opt/lapse/lapse \
     && cp /opt/lapse/LICENSE /usr/share/licenses/lapse/LICENSE
 COPY config.example.yaml /usr/share/doc/subsyncd/config.example.yaml
 ENV LD_LIBRARY_PATH=/opt/lapse
+RUN ffprobe -version > /tmp/ffprobe-version \
+    && grep -F "ffprobe version ${FFMPEG_VERSION} " /tmp/ffprobe-version \
+    && /opt/lapse/lapse --vad > /tmp/lapse-vad \
+    && grep -Fx silero /tmp/lapse-vad \
+    && rm /tmp/ffprobe-version /tmp/lapse-vad
 USER 1000:1000
 EXPOSE 8097
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

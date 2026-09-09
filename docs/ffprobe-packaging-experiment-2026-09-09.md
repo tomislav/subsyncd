@@ -2,7 +2,7 @@
 
 ## Result
 
-The local arm64 experiment replaces Debian's general-purpose ffmpeg package with a static FFmpeg 8.1 ffprobe executable. It retains Debian 13.2, the existing Go application and the complete checksummed LAPSE v2.0.5 release bundle. Production Dockerfiles and publication are unchanged.
+The local arm64 experiment replaces Debian's general-purpose ffmpeg package with a static FFmpeg 8.1 ffprobe executable. It retains Debian 13.2, the existing Go application and the complete checksummed LAPSE v2.0.5 release bundle. At the time of this experiment, production Dockerfiles and publication were unchanged.
 
 | Measurement | Baseline | Minimal ffprobe |
 | --- | ---: | ---: |

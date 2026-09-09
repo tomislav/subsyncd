@@ -57,7 +57,7 @@ Hearing-impaired subtitles (SDH/HI) are excluded by default. Set `allow_hearing_
 
 ## Install with Docker Compose
 
-You need Docker with the Compose plugin, a Sonarr or Radarr instance, and at least one configured subtitle provider. Gestdown needs no account or API key; other providers require credentials. The image supports **Linux amd64 and arm64** and includes LAPSE and FFmpeg—no separate installation is needed.
+You need Docker with the Compose plugin, a Sonarr or Radarr instance, and at least one configured subtitle provider. Gestdown needs no account or API key; other providers require credentials. The image supports **Linux amd64 and arm64** and includes LAPSE and a minimal FFprobe 8.1—no separate installation is needed. The general-purpose `ffmpeg` command is not included.
 
 ### 1. Get the configuration files
 
