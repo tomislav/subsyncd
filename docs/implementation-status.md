@@ -5,13 +5,22 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish minimal FFprobe packaging
-- Next safe action: verify GitHub Actions publishes the new amd64/arm64 image; deployment is user-managed
-- Latest follow-up: forced title labels no longer satisfy full coverage; old probe markers are invalidated once without changing schedules
+- Current task: publish download-aware provider acquisition
+- Next safe action: verify GitHub Actions publishes the cooldown fix; deployment is user-managed
+- Latest follow-up: persisted download cooldowns suppress provider searches and repeated candidate downloads while retaining local pack-cache and fallback acquisition
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Download-aware provider acquisition — 2026-09-09
+
+- Commit: this `fix: skip acquisition for download-limited providers` commit on `main`, based on `5228c97`. User authorized committing, merging to main and pushing; the checkout was already on main. No production mutation or deployment.
+- Added a read-only persisted download-availability preflight to all four compiled adapters, forwarded through provider observation. Exact/broad coordination checks it before normalized cache access or search, and candidate processing checks it again before scratch allocation and adapter download. Already-active cooldown skips emit debug events rather than duplicate warning download completions.
+- Preserved local pack-cache acquisition, other-provider/fallback processing, configured ordering, scored-candidate evidence, separate search/auth/download/issued-transfer quotas, and final transport permit/state checks. Within one provider, the latest applicable blocking reset wins. Download failures retain provider-unavailability evidence for fallback promotion scheduling, including partial outages. Availability-store failures remain terminal across tiers.
+- TDD reproduced search/cache calls during a download cooldown, repeated same-provider downloads, missing adapter preflights and state-read failures being hidden by fallback. Added coverage for both phases, mid-shortlist quota, other providers, cached packs, fallback reset, overlapping scopes, expiry, disabled authentication and cancellation. Independent review found no actionable issues.
+- Verification: full `go test ./... -race -count=1`, affected provider/workflow/app race suites, tagged `test/e2e` race suite, `go vet ./...`, and `git diff --check` passed. Used `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod` after the default cache contained missing module files; local fake-server tests ran with loopback permission. No live Arr/provider tests.
+- Next: verify GitHub Actions image publication after the authorized push; deploy only when requested.
 
 ### Adopt minimal FFprobe in release images — 2026-09-09
 

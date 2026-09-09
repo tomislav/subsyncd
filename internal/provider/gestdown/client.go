@@ -57,6 +57,11 @@ func Factory(id string, node yaml.Node, deps base.Dependencies) (base.Provider, 
 	return New(config, base.Client{HTTP: deps.HTTPClient, Gate: deps.Gate, Clock: deps.Clock, ProviderID: id, ProviderType: "gestdown"})
 }
 func (c *Client) ID() string { return c.id }
+
+func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
+	return c.transport.CheckDownloadAvailability(ctx)
+}
+
 func (c *Client) Capabilities() base.Capabilities {
 	return base.Capabilities{MediaKinds: []domain.MediaKind{domain.MediaEpisode}}
 }

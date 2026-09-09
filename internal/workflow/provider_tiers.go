@@ -183,7 +183,8 @@ func searchPersistenceFailure(failures map[string]error) error {
 	var found []error
 	for _, err := range failures {
 		var persistence *provider.SearchPersistenceError
-		if errors.As(err, &persistence) {
+		var availability *provider.AvailabilityError
+		if errors.As(err, &persistence) || errors.As(err, &availability) {
 			found = append(found, err)
 		}
 	}

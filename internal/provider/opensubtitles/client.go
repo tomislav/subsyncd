@@ -74,6 +74,10 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 
 func (c *Client) ID() string { return c.id }
 
+func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
+	return c.transport.CheckDownloadAvailability(ctx)
+}
+
 // SearchCacheVersion refreshes legacy filters, language aliases and download evidence.
 func (c *Client) SearchCacheVersion() string { return "opensubtitles-evidence-v2" }
 

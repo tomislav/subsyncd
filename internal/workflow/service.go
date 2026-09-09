@@ -509,6 +509,13 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 				if err := ctx.Err(); err != nil {
 					return result, err
 				}
+				var availability *provider.AvailabilityError
+				if errors.As(prepareErr, &availability) {
+					return result, prepareErr
+				}
+				if _, unavailable := unavailableErrors([]error{prepareErr}); unavailable {
+					result.ProviderErrors[item.Candidate.ProviderID] = prepareErr
+				}
 				recorded, rejectionErr := s.recordCandidateRejection(ctx, request, item.Candidate, "", prepareErr)
 				if rejectionErr != nil {
 					return result, rejectionErr
@@ -978,6 +985,11 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 	adapter := s.Providers[candidate.ProviderID]
 	if adapter == nil {
 		return nil, runtimePack, nil, fmt.Errorf("provider %q is not available for download", candidate.ProviderID)
+	}
+	if err := provider.CheckDownloadAvailability(ctx, adapter); err != nil {
+		s.workflowEvents().Log(ctx, slog.LevelDebug, "provider.download_skipped", "provider download skipped",
+			slog.String("provider", candidate.ProviderID), slog.String("reason", "download_unavailable"))
+		return nil, runtimePack, nil, err
 	}
 	payloadPath := filepath.Join(workspace, fmt.Sprintf("download-%d", index))
 	payload, err := os.OpenFile(payloadPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)

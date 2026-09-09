@@ -51,6 +51,8 @@ For a delayed or failed search, find its completion record and follow the same `
 
 A `provider.download_completed` success confirms only the transfer. `archive.members_selected` shows how many episode versions passed selection. `candidate.rejected` immediately reports deterministic preparation or content rejection through `reason_code`, with bounded selection rules/counts for archive failures. `candidate.skipped` identifies a remembered rejection. For multiple versions of the same provider candidate, use `member_index` and `member_count` to connect LAPSE results with the selected and installed version. These info events contain no archive filenames or paths.
 
+Already-active download cooldowns suppress provider searches and downloads. These skips appear only at debug as `provider.search_skipped` and `provider.download_skipped`; the workflow completion retains the throttled outcome and retry time when acquisition is blocked.
+
 Use [`explain`](operations.md#inspect-or-search-one-file) for the saved result and next search time. Successful health checks are deliberately quiet.
 
 At debug level, `archive.classified` reports archive type, subtitle-member count, and `single`, `provider_pack`, or `runtime_pack` classification. `pack_cache.publication` reports whether caching succeeded, failed, was disabled, or lacked safe identity; `pack_cache.lookup` reports a hit, miss, or error and whether the selected entry is a runtime pack. These events omit member filenames, paths, and download references.

@@ -60,6 +60,10 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 
 func (c *Client) ID() string { return c.id }
 
+func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
+	return c.transport.CheckDownloadAvailability(ctx)
+}
+
 func (c *Client) SearchCacheVersion() string { return "subdl-annotations-alternate-id-v2" }
 
 const annotationEvidenceVersion = "subdl-annotations-v1"

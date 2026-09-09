@@ -138,6 +138,10 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 		slog.String("search_mode", string(query.Mode)),
 		slog.String("language", string(query.Language)),
 	}
+	if err := CheckDownloadAvailability(ctx, provider); err != nil {
+		events.Log(ctx, slog.LevelDebug, "provider.search_skipped", "provider search skipped", append(base, slog.String("outcome", providerOutcome(err, 0)), slog.String("reason", "download_unavailable"))...)
+		return nil, err
+	}
 	events.Log(ctx, slog.LevelInfo, "provider.search_started", "provider search started", base...)
 	complete := func(candidates []domain.Candidate, cacheStatus string, err error) {
 		attrs := append([]slog.Attr(nil), base...)

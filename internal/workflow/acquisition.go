@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 
 	"subsyncd/internal/match"
 	"subsyncd/internal/provider"
@@ -77,6 +78,13 @@ func (s *Service) tryExactCandidates(
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return false, ctxErr
+			}
+			var availability *provider.AvailabilityError
+			if errors.As(err, &availability) {
+				return false, err
+			}
+			if _, unavailable := unavailableErrors([]error{err}); unavailable {
+				result.ProviderErrors[candidate.ProviderID] = err
 			}
 			recorded, rejectionErr := s.recordCandidateRejection(ctx, request, candidate, "", err)
 			if rejectionErr != nil {
