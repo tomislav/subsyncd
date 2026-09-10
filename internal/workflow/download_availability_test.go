@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"subsyncd/internal/observability"
 	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
+	"subsyncd/internal/store"
 )
 
 type availabilityProvider struct {
@@ -169,5 +171,71 @@ func TestDownloadCooldownKeepsOtherProviderCandidateUsable(t *testing.T) {
 	result, err := s.Run(t.Context(), serviceRequest(t))
 	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ProviderID != "active" || blocked.downloads != 1 || active.downloads != 1 {
 		t.Fatalf("result=%+v err=%v downloads=%d/%d", result, err, blocked.downloads, active.downloads)
+	}
+}
+
+type searchLimitedWorkflowProvider struct {
+	*availabilityProvider
+	searchUnavailable error
+}
+
+func (p *searchLimitedWorkflowProvider) CheckSearchAvailability(context.Context) error {
+	return p.searchUnavailable
+}
+
+func TestSearchCooldownUsesFallbackAndPreservesReset(t *testing.T) {
+	s, installer := tierService(t, &fakeSearcher{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{fallbackCandidate("fallback", true)}}})
+	reset := s.Clock.Now().Add(time.Hour)
+	p := &searchLimitedWorkflowProvider{availabilityProvider: &availabilityProvider{fakeProvider: &fakeProvider{id: "provider"}}, searchUnavailable: &provider.CooldownError{ProviderID: "provider", Scope: provider.OperationSearch, ResetAt: reset}}
+	useAvailabilityProviders(s, p)
+	result, err := s.Run(t.Context(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeInstalled || !installer.request.Fallback || !result.NextUpgrade.Equal(reset) || len(p.searches) != 0 || p.downloads != 0 {
+		t.Fatalf("result=%+v error=%v searches=%v downloads=%d", result, err, p.searches, p.downloads)
+	}
+}
+
+type unavailableStateStore struct{ err error }
+
+func (s unavailableStateStore) GetProviderState(context.Context, string, string) (store.ProviderState, error) {
+	return store.ProviderState{}, sql.ErrNoRows
+}
+func (s unavailableStateStore) PutProviderState(context.Context, store.ProviderState) error {
+	return s.err
+}
+
+func TestTransportStateWriteFailureCannotBeHiddenByFallback(t *testing.T) {
+	sentinel := errors.New("write provider state failed")
+	gate := provider.NewGate(unavailableStateStore{sentinel}, provider.SystemClock{}, 1)
+	_, stateErr := gate.RecordTransientFailure(t.Context(), "provider", provider.OperationSearch, "network_error", time.Time{})
+	for _, phase := range []string{"search", "exact_download", "broad_download"} {
+		t.Run(phase, func(t *testing.T) {
+			preferred := &fakeSearcher{}
+			fallback := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{fallbackCandidate("fallback", true)}}}
+			s, installer := tierService(t, preferred, fallback)
+			if phase == "search" {
+				preferred.result.Errors = map[string]error{"provider": stateErr}
+			} else {
+				candidate := broadCandidate("candidate")
+				candidate.ExactHash = phase == "exact_download"
+				preferred.result.Candidates = []domain.Candidate{candidate}
+				s.Providers["provider"].(*fakeProvider).downloadErr = stateErr
+			}
+			_, err := s.Run(t.Context(), serviceRequest(t))
+			if !errors.Is(err, sentinel) || fallback.calls != 0 || installer.calls != 0 {
+				t.Fatalf("error=%v fallback=%d installs=%d", err, fallback.calls, installer.calls)
+			}
+		})
+	}
+}
+
+func TestSearchAvailabilityReadFailureIsTerminal(t *testing.T) {
+	failure := errors.New("search state read failed")
+	fallback := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{fallbackCandidate("fallback", true)}}}
+	s, installer := tierService(t, &fakeSearcher{}, fallback)
+	p := &searchLimitedWorkflowProvider{availabilityProvider: &availabilityProvider{fakeProvider: &fakeProvider{id: "provider"}}, searchUnavailable: failure}
+	useAvailabilityProviders(s, p)
+	_, err := s.Run(t.Context(), serviceRequest(t))
+	if !errors.Is(err, failure) || fallback.calls != 0 || installer.calls != 0 {
+		t.Fatalf("error=%v fallback=%d installs=%d", err, fallback.calls, installer.calls)
 	}
 }

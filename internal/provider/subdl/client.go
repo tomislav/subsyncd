@@ -3,6 +3,7 @@ package subdl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"gopkg.in/yaml.v3"
@@ -59,6 +61,10 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 }
 
 func (c *Client) ID() string { return c.id }
+
+func (c *Client) CheckSearchAvailability(ctx context.Context) error {
+	return c.transport.CheckSearchAvailability(ctx)
+}
 
 func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
@@ -228,7 +234,7 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		if response != nil {
 			defer response.Body.Close()
 			if response.StatusCode == http.StatusTooManyRequests {
-				return nil, c.decodeLimit(ctx, baseprovider.OperationSearch, response.Body, err)
+				return nil, c.decodeLimit(ctx, baseprovider.OperationSearch, response.Body, response.Header, err)
 			}
 		}
 		return nil, err
@@ -251,7 +257,7 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		if isNoResult(decoded.Error) {
 			return nil, nil
 		}
-		if limitErr := c.payloadLimit(ctx, baseprovider.OperationSearch, decoded.Error); limitErr != nil {
+		if limitErr := c.payloadLimit(ctx, baseprovider.OperationSearch, decoded.Error, time.Time{}); limitErr != nil {
 			return nil, limitErr
 		}
 		return nil, fmt.Errorf("SubDL search was rejected")
@@ -414,34 +420,48 @@ func isNoResult(message string) bool {
 	}
 }
 
-func (c *Client) decodeLimit(ctx context.Context, operation baseprovider.Operation, body io.Reader, fallback error) error {
+func (c *Client) decodeLimit(ctx context.Context, operation baseprovider.Operation, body io.Reader, headers http.Header, fallback error) error {
+	var cooldown *baseprovider.CooldownError
+	if !errors.As(fallback, &cooldown) {
+		return fallback
+	}
 	var payload struct {
 		Error string `json:"error"`
 	}
 	if json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&payload) == nil {
-		if err := c.payloadLimit(ctx, operation, payload.Error); err != nil {
+		var reset time.Time
+		if window, found := baseprovider.ParseRateLimit(c.clock.Now(), headers); found && window.ResetAt.After(c.clock.Now()) {
+			reset = window.ResetAt
+		}
+		if err := c.payloadLimit(ctx, operation, payload.Error, reset); err != nil {
 			return err
 		}
 	}
 	return fallback
 }
 
-func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operation, code string) error {
+func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operation, code string, reset time.Time) error {
 	switch strings.ToLower(strings.TrimSpace(code)) {
 	case "daily_limit", "api_download_limit_exceeded":
-		reset := baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownDownloadQuota)
+		if reset.IsZero() {
+			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownDownloadQuota)
+		}
 		if err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownDownloadQuota, reset); err != nil {
 			return err
 		}
 		return &baseprovider.QuotaError{Scope: operation, ResetAt: reset, Message: "SubDL daily limit"}
 	case "service_busy":
-		reset := baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownServiceBusy)
+		if reset.IsZero() {
+			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownServiceBusy)
+		}
 		if err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownServiceBusy, reset); err != nil {
 			return err
 		}
 		return &baseprovider.CooldownError{ProviderID: c.id, Scope: operation, Reason: string(baseprovider.CooldownServiceBusy), ResetAt: reset}
 	case "rate_limit":
-		reset := baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownRateLimit)
+		if reset.IsZero() {
+			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownRateLimit)
+		}
 		if err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownRateLimit, reset); err != nil {
 			return err
 		}
@@ -501,7 +521,7 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 		if response != nil {
 			defer response.Body.Close()
 			if response.StatusCode == http.StatusTooManyRequests {
-				return baseprovider.DownloadMetadata{}, c.decodeLimit(ctx, baseprovider.OperationDownload, response.Body, err)
+				return baseprovider.DownloadMetadata{}, c.decodeLimit(ctx, baseprovider.OperationDownload, response.Body, response.Header, err)
 			}
 		}
 		return baseprovider.DownloadMetadata{}, err

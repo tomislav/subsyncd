@@ -142,8 +142,15 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 		events.Log(ctx, slog.LevelDebug, "provider.search_skipped", "provider search skipped", append(base, slog.String("outcome", providerOutcome(err, 0)), slog.String("reason", "download_unavailable"))...)
 		return nil, err
 	}
-	events.Log(ctx, slog.LevelInfo, "provider.search_started", "provider search started", base...)
+	started := false
+	start := func() {
+		if !started {
+			events.Log(ctx, slog.LevelInfo, "provider.search_started", "provider search started", base...)
+			started = true
+		}
+	}
 	complete := func(candidates []domain.Candidate, cacheStatus string, err error) {
+		start()
 		attrs := append([]slog.Attr(nil), base...)
 		attrs = append(attrs,
 			slog.String("outcome", providerOutcome(err, len(candidates))),
@@ -173,12 +180,18 @@ func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, que
 			var cached cachedSearchResults
 			if err := json.Unmarshal(entry.ResultsJSON, &cached); err == nil && cached.Version == 1 && !cached.RequiresRefresh {
 				candidates := DeduplicateCandidates(cached.Candidates)
+				start()
 				events.Log(ctx, slog.LevelDebug, "provider.cache_hit", "provider search cache hit", base...)
 				complete(candidates, "hit", nil)
 				return candidates, nil
 			}
 		}
 	}
+	if err := CheckSearchAvailability(ctx, provider); err != nil {
+		events.Log(ctx, slog.LevelDebug, "provider.search_skipped", "provider search skipped", append(base, slog.String("outcome", providerOutcome(err, 0)), slog.String("reason", "search_unavailable"))...)
+		return nil, err
+	}
+	start()
 	events.Log(ctx, slog.LevelDebug, "provider.cache_miss", "provider search cache miss", base...)
 	candidates, err := provider.Search(ctx, query)
 	if err != nil {
@@ -335,6 +348,9 @@ func searchLogLevel(err error) slog.Level {
 	var cooldown *CooldownError
 	var quota *QuotaError
 	var disabled *DisabledError
+	if errors.As(err, &cooldown) && cooldown.Suppressed || errors.As(err, &disabled) && disabled.Suppressed {
+		return slog.LevelDebug
+	}
 	if errors.As(err, &cooldown) || errors.As(err, &quota) || errors.As(err, &disabled) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return slog.LevelWarn
 	}

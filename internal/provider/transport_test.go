@@ -730,7 +730,9 @@ func TestQueuedRequestHonorsNewAuthenticationDisable(t *testing.T) {
 		t.Fatalf("queued request bypassed auth disable: %v", err)
 	}
 	// Rejection must release both semaphore permits.
-	if err := gate.Persist(ctx, Throttle{ProviderID: "p", Scope: OperationAuth}); err != nil {
+	// Explicit retry clears repository state directly; response persistence cannot
+	// clear a permanent authentication disable.
+	if err := state.PutProviderState(ctx, store.ProviderState{ProviderID: "p", Scope: string(OperationAuth)}); err != nil {
 		t.Fatal(err)
 	}
 	r, err := gate.Acquire(ctx, "p", "https://example.test", OperationSearch)

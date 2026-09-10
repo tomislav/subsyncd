@@ -132,9 +132,14 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		}
 		return response, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}
 	}
-	if response.StatusCode == http.StatusTooManyRequests && !found {
+	if response.StatusCode == http.StatusTooManyRequests && (!found || !window.ResetAt.After(now)) {
 		window = RateLimitWindow{Name: "fallback", Remaining: 0, ResetAt: FallbackReset(now, c.ProviderType, CooldownRateLimit), Source: "fallback"}
 		found = !window.ResetAt.IsZero()
+	}
+	if response.StatusCode == http.StatusTooManyRequests && found {
+		// The status establishes exhaustion even if headers describe a different
+		// quota window that still has capacity.
+		window.Remaining = 0
 	}
 	if found {
 		throttle := Throttle{ProviderID: c.ProviderID, Scope: operation, Reason: window.Source, Limit: window.Limit, Remaining: window.Remaining, ResetAt: window.ResetAt}

@@ -6,6 +6,8 @@ import (
 )
 
 type CooldownError struct {
+	// Suppressed means persisted state blocked the request before transport.
+	Suppressed bool
 	ProviderID string
 	Scope      Operation
 	Reason     string
@@ -17,6 +19,7 @@ func (e *CooldownError) Error() string {
 }
 
 type DisabledError struct {
+	Suppressed bool
 	ProviderID string
 	Reason     string
 }

@@ -53,6 +53,17 @@ func TestCompiledAdaptersExposePersistedDownloadAvailability(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, p := range []provider.Provider{p, provider.Observe(p, observability.Discard())} {
+				state.state.Scope = "search"
+				available, ok := p.(interface{ CheckSearchAvailability(context.Context) error })
+				if !ok {
+					t.Fatal("adapter does not expose search availability")
+				}
+				var searchCooldown *provider.CooldownError
+				if err := available.CheckSearchAvailability(t.Context()); !errors.As(err, &searchCooldown) {
+					t.Fatalf("search availability=%v", err)
+				}
+				state.state.Scope = "download"
+
 				err := provider.CheckDownloadAvailability(t.Context(), p)
 				var cooldown *provider.CooldownError
 				if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(state.state.ResetAt) {

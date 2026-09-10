@@ -21,6 +21,24 @@ type StateStore interface {
 	PutProviderState(context.Context, store.ProviderState) error
 }
 
+// Preserve state-store failures through adapter and workflow error handling.
+type stateErrorStore struct{ StateStore }
+
+func (s stateErrorStore) GetProviderState(ctx context.Context, id, scope string) (store.ProviderState, error) {
+	state, err := s.StateStore.GetProviderState(ctx, id, scope)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		err = &AvailabilityError{Err: err}
+	}
+	return state, err
+}
+
+func (s stateErrorStore) PutProviderState(ctx context.Context, state store.ProviderState) error {
+	if err := s.StateStore.PutProviderState(ctx, state); err != nil {
+		return &AvailabilityError{Err: err}
+	}
+	return nil
+}
+
 type instanceGate struct {
 	limiter   *rate.Limiter
 	semaphore chan struct{}
@@ -48,7 +66,7 @@ func NewGate(stateStore StateStore, clock Clock, sharedMax int, emitters ...*obs
 	if len(emitters) > 0 && emitters[0] != nil {
 		events = emitters[0]
 	}
-	return &Gate{store: stateStore, clock: clock, sharedMax: sharedMax, instances: make(map[string]*instanceGate), origins: make(map[string]chan struct{}), types: make(map[string]string), events: events.For("provider")}
+	return &Gate{store: stateErrorStore{stateStore}, clock: clock, sharedMax: sharedMax, instances: make(map[string]*instanceGate), origins: make(map[string]chan struct{}), types: make(map[string]string), events: events.For("provider")}
 }
 
 func (g *Gate) Configure(providerID string, requestsPerSecond float64, burst, maxConcurrent int, providerTypes ...string) {
@@ -113,25 +131,7 @@ func (g *Gate) Acquire(ctx context.Context, providerID, origin string, operation
 }
 
 func (g *Gate) checkState(ctx context.Context, providerID string, operation Operation) error {
-	for _, scope := range []Operation{OperationAll, OperationAuth, operation} {
-		state, err := g.store.GetProviderState(ctx, providerID, string(scope))
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("read provider %s throttle: %w", providerID, err)
-		}
-		if state.Disabled {
-			return &DisabledError{ProviderID: providerID, Reason: state.Reason}
-		}
-		if scope == OperationAuth && operation != OperationAuth {
-			continue
-		}
-		if state.Remaining <= 0 && state.ResetAt.After(g.clock.Now()) {
-			return &CooldownError{ProviderID: providerID, Scope: scope, Reason: state.Reason, ResetAt: state.ResetAt}
-		}
-	}
-	return nil
+	return g.checkAvailability(ctx, providerID, operation == OperationAuth, OperationAll, OperationAuth, operation)
 }
 
 func (g *Gate) Persist(ctx context.Context, throttle Throttle) error {
@@ -143,6 +143,11 @@ func (g *Gate) Persist(ctx context.Context, throttle Throttle) error {
 		return err
 	}
 	state.FailureAttempt = previous.FailureAttempt
+	// Only explicit provider retry may clear a permanent disable. Responses
+	// already in flight when authentication failed must not restore availability.
+	if previous.Disabled {
+		state = previous
+	}
 	if err := g.store.PutProviderState(ctx, state); err != nil {
 		return err
 	}
@@ -190,7 +195,10 @@ func (g *Gate) RecordTransientFailure(ctx context.Context, providerID string, op
 		ResetAt:        resetAt,
 		FailureAttempt: attempt,
 	}
-	if existing.Remaining <= 0 && existing.ResetAt.After(g.clock.Now()) && !strings.HasPrefix(existing.Reason, "transient_") {
+	if existing.Disabled {
+		state = existing
+		state.FailureAttempt = attempt
+	} else if existing.Remaining <= 0 && existing.ResetAt.After(g.clock.Now()) && !strings.HasPrefix(existing.Reason, "transient_") {
 		state.Reason, state.Limit, state.Remaining, state.Disabled = existing.Reason, existing.Limit, existing.Remaining, existing.Disabled
 		if existing.ResetAt.After(state.ResetAt) {
 			state.ResetAt = existing.ResetAt

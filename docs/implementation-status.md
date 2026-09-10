@@ -13,6 +13,17 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Search cooldown suppression and state review — 2026-09-10
+
+- Commit: this `fix: respect search cooldowns and preserve provider retry state` commit on `main`, based on `bfc3c19`. User requested the fix, a surrounding cooldown review, commit and push. Fetched origin/main matched the local baseline; no production mutation or deployment. Preserved the pre-existing split-movie investigation ledger edit outside this commit.
+- Added optional read-only search availability to all four adapters and the observed wrapper. The coordinator uses valid normalized cached results first, then checks search availability before fresh exact/broad calls and info lifecycle events. Expired, malformed and refresh-required cache entries do not bypass cooldowns. Search-only cooldowns retain usable cache downloads and fallback/reset handling.
+- Shared preflight/final-gate scope selection now returns the latest applicable reset. Final-gate cooldown/disabled errors carry local suppression provenance, so a cooldown established after preflight or during permit waits emits debug completion rather than a repeated warning. Real remote failures retain normal severity.
+- The review found and repaired state-read/write failures being hidden by fallback, permanent authentication disable being cleared by late successful/failed responses, and HTTP 429 headers with positive quota or non-future resets allowing repeated requests. Provider state errors now remain typed and terminal; permanent disable survives until explicit provider retry.
+- SubDL preserves future server resets (including contradictory positive quota headers) while classifying JSON rate/quota errors, and preserves terminal transport errors. OpenSubtitles quota handling resolves one future reset for persistence and the returned error; missing, malformed and expired values use the existing six-hour fallback. This prevents zero retry timestamps from parking quota-limited work indefinitely.
+- Focused regressions demonstrated each reported failure before its repair. Coverage includes both search modes, usable/unusable caches, late suppression, overlapping scopes, adapter reset agreement, permanent disable, state errors through fallback and 429 exhaustion. Independent reviews covered shared coordination/state paths and adapter handling; integration review repaired the positive-header interaction between SubDL and transport.
+- Verification: full `go test ./... -race -count=1`, tagged `go test ./test/e2e -tags=e2e -race -count=1`, affected package race tests, `go vet ./...`, and `git diff --check` passed using `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`. Local fake-server suites used loopback permission; no live Arr/provider requests.
+- Next: verify GitHub Actions publication after push; deployment remains user-managed.
+
 ### Duplicate movie subtitle selection repair — 2026-09-09
 
 - Commit: this `fix: deduplicate movie subtitles and reconsider rejections` commit on `main`, based on `74f125c`. User authorized commit, merge to main and push; checkout already on main and fetched origin is aligned. No deployment or production mutation.

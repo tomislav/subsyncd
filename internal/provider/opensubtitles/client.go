@@ -74,6 +74,10 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 
 func (c *Client) ID() string { return c.id }
 
+func (c *Client) CheckSearchAvailability(ctx context.Context) error {
+	return c.transport.CheckSearchAvailability(ctx)
+}
+
 func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
@@ -490,6 +494,13 @@ func (c *Client) requestDownloadLink(ctx context.Context, fileID int64, allowRef
 	if response.StatusCode == http.StatusNotAcceptable {
 		_ = decodeLimitedJSON(response.Body, &decoded)
 		resetAt, _ := time.Parse(time.RFC3339, decoded.ResetTimeUTC)
+		now := c.clock.Now()
+		if window, found := baseprovider.ParseRateLimit(now, response.Header); found && window.Remaining <= 0 && window.ResetAt.After(now) {
+			resetAt = window.ResetAt
+		}
+		if !resetAt.After(now) {
+			resetAt = baseprovider.FallbackReset(now, "opensubtitles", baseprovider.CooldownDownloadQuota)
+		}
 		if err := c.transport.PersistCooldown(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, resetAt); err != nil {
 			return downloadResponse{}, err
 		}

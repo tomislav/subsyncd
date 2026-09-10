@@ -58,6 +58,10 @@ func Factory(id string, node yaml.Node, deps base.Dependencies) (base.Provider, 
 }
 func (c *Client) ID() string { return c.id }
 
+func (c *Client) CheckSearchAvailability(ctx context.Context) error {
+	return c.transport.CheckSearchAvailability(ctx)
+}
+
 func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
