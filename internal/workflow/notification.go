@@ -31,7 +31,13 @@ func notificationRequests(media domain.Media, installation store.Installation, n
 	sort.Strings(names)
 	requests := make([]store.NotificationRequest, 0, len(names))
 	for _, name := range names {
-		raw := fmt.Sprintf("%s\x00%d\x00%s\x00%s", name, installation.MediaID, installation.Language, installation.Checksum)
+		// Identical subtitle bytes still need a scan after media replacement or
+		// publication at a different destination. Use the committed fingerprint;
+		// delivery time and mutable scoring metadata must not affect replay.
+		raw := fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d",
+			name, installation.MediaID, installation.Language, installation.Checksum,
+			installation.Path, installation.MediaPath, installation.MediaFileID,
+			installation.MediaSize, installation.MediaModTimeNS)
 		sum := sha256.Sum256([]byte(raw))
 		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: now})
 	}

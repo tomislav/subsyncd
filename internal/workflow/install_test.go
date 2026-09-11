@@ -269,8 +269,7 @@ func TestInstallerCreatesDeterministicNotificationIntents(t *testing.T) {
 		t.Fatalf("payload leaked: %s", logs.String())
 	}
 	first := repository.requests
-	// Time and destination changes must not defeat checksum deduplication.
-	installed.Path = filepath.Join(root, "Renamed.en.srt")
+	// Delivery time changes must not defeat installation deduplication.
 	again, err := notificationRequests(request.Media, installed, names, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)

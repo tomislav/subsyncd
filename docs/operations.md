@@ -139,6 +139,12 @@ Use Silo's reachable native API address and an admin API key. The mapping transl
 
 A failed Silo refresh does not undo an installed subtitle. This integration supports Silo's pre-1.0 API; check [compatibility](references/silo.md) before upgrading Silo.
 
+Replacing a movie or episode file queues a fresh refresh when subsyncd installs
+its subtitle, even when the subtitle bytes match the previous installation.
+Repeated notifications for the same media fingerprint, subtitle destination,
+language and content are deduplicated. This does not replay previously suppressed
+notifications; an already affected title needs a targeted Silo folder scan.
+
 ## Back up and update
 
 Stop subsyncd and back up the complete host `data/` folder, along with your configuration and `.env`. Keep credential backups private. Back up subtitle files through your normal media-library backup.

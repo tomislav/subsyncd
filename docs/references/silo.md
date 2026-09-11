@@ -33,6 +33,12 @@ The endpoint is available when Silo runs in `integrated` or `api` mode. It is no
 
 ## Local decisions
 
+Notification deduplication includes the committed media fingerprint and subtitle
+destination, as well as notifier, media row, language and subtitle checksum.
+Identical subtitle content installed for a replacement file must trigger a new
+scan. Retries of the same installation remain deduplicated. Existing outbox rows
+remain valid; changing the key does not automatically replay historical scans.
+
 | Observed behavior | Decision | Proof |
 |---|---|---|
 | Silo documents native, authenticated targeted scans through `POST /api/v1/scan`. | Use the native route instead of the legacy Jellyfin-compatible Autoscan route. | `internal/notifier/silo_test.go` validates method, route, bearer header, body, and accepted response. |

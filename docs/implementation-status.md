@@ -5,13 +5,28 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish duplicate movie subtitle selection repair
-- Next safe action: verify GitHub Actions publishes the movie duplicate fix; deployment is user-managed
-- Latest follow-up: movie selection collapses identical eligible content; migration 009 reconsiders old movie selection rejections once
+- Current task: publish replacement-aware subtitle notification deduplication
+- Next safe action: verify GitHub Actions publication; deployment and targeted Silo recovery require operator action
+- Latest follow-up: identical subtitle bytes installed for replacement media now queue a fresh notification
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Replacement-aware notification deduplication repair — 2026-09-11
+
+- Commit: this `fix: notify Silo after media replacement` commit, based on `27c0c06`. User authorized fixing, committing and pushing to main. The original checkout's Git metadata is read-only; publication uses a writable temporary clone at the identical origin/main baseline.
+- Tightened notification identity to include committed media path/file ID/size/mtime and subtitle destination alongside notifier/media row/language/checksum. Same-content replacement installations now enqueue a fresh scan; repeated requests for the same installation remain deduplicated regardless of delivery time. Atomic publication/outbox and delivery retry behavior are unchanged.
+- Focused SQLite regression reproduced suppression for each changed fingerprint component and destination before the fix, then passed with repeat-enqueue controls. Updated the prior test that incorrectly required destination-independent deduplication. Independent code review found no actionable issues.
+- Verification passed using `/tmp/subsyncd-fix-cache` and `/tmp/subsyncd-fix-mod`: affected workflow race suite, full `go test ./... -race -count=1`, tagged e2e race suite, `go vet ./...`, and `git diff --check`. Tests used local fixtures/fakes, with no production requests or mutations.
+- Existing outbox rows remain valid; no migration or automatic historical notification replay. Next: confirm publication, deploy when authorized, and recover the already affected title with an explicitly approved targeted Silo directory scan.
+
+### Upgraded movie missing in Silo investigation — 2026-09-11
+
+- Investigated local/deployed `27c0c06`; diagnosis only, no runtime change or production mutation. Rejected stale installation identity as the explanation for the reported 2160p Croatian subtitle: live media fingerprint, installed sidecar checksum, and refreshed inventory agree after replacement.
+- Silo ingested the replacement at 02:13 CEST; subsyncd installed its Croatian sidecar at 02:16. The current notification key exactly matches an already-successful outbox row carrying the previous file identity/path. Notification identity includes notifier, stable media row, language and subtitle checksum, but excludes replacement fingerprint and destination; `ON CONFLICT DO NOTHING` suppresses the required new scan when output bytes repeat.
+- Verification: bounded service/Silo logs, read-only SQLite queries, necessary file stat/checksum inspection, and exact recomputation of the production notification key. No automated tests run for this diagnostic-only task.
+- Next: repair notification deduplication with a focused replacement/same-content regression while retaining repeat-commit deduplication; separately obtain operator approval for a targeted Silo scan of this movie directory to recover current visibility.
 
 ### Search cooldown suppression and state review — 2026-09-10
 
