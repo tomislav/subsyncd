@@ -42,7 +42,24 @@ func TestMissingDelayAppliesTenPercentJitter(t *testing.T) {
 	}
 }
 
-func TestFailureDelayCapsAtOneHour(t *testing.T) {
+func TestWorkflowFailureDelayBacksOffToDailyRetries(t *testing.T) {
+	wants := []time.Duration{
+		time.Minute,
+		5 * time.Minute,
+		15 * time.Minute,
+		time.Hour,
+		6 * time.Hour,
+		24 * time.Hour,
+		24 * time.Hour,
+	}
+	for attempt, want := range wants {
+		if got := WorkflowFailureDelay(attempt); got != want {
+			t.Errorf("WorkflowFailureDelay(%d) = %s, want %s", attempt, got, want)
+		}
+	}
+}
+
+func TestFailureDelayRetainsHourlyCapForNotificationDelivery(t *testing.T) {
 	wants := []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, time.Hour}
 	for attempt, want := range wants {
 		if got := FailureDelay(attempt); got != want {

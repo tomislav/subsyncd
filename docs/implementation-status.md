@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish replacement-aware subtitle notification deduplication
-- Next safe action: verify GitHub Actions publication; deployment and targeted Silo recovery require operator action
-- Latest follow-up: identical subtitle bytes installed for replacement media now queue a fresh notification
+- Current task: publish daily-capped technical failure backoff
+- Next safe action: verify GitHub Actions publication; deployment remains user-managed
+- Latest follow-up: repeated workflow failures back off through 6h and 24h before daily retries
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Daily-capped technical failure backoff — 2026-09-11
+
+- Commit: this `fix: back off repeated workflow failures` commit, based on `250784a`. User approved changing every workflow technical-failure retry schedule and publishing to `main`.
+- Extended the independent workflow failure schedule from 1m/5m/15m/1h with an hourly cap to 1m/5m/15m/1h/6h/24h with a daily cap. Missing-result attempts, provider cooldowns, notification delivery retries, queue priority, and reconciliation backoff are unchanged. Existing import/replacement handling still resets the failure counter and makes work immediately due.
+- TDD verification: the focused scheduler regression failed against the hourly cap and passed after the minimal schedule change. Affected schedule/worker race tests, the full race suite, tagged e2e race suite, `go vet ./...`, and `git diff --check` passed using writable caches. Tests used local fixtures and fake servers; no production requests or mutations.
+- Next: verify GitHub Actions publication and deploy only with explicit operator approval.
 
 ### Replacement-aware notification deduplication repair — 2026-09-11
 

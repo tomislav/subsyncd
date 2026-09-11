@@ -21,6 +21,15 @@ var missingIntervals = [...]time.Duration{
 	336 * time.Hour,
 }
 
+var workflowFailureDelays = [...]time.Duration{
+	time.Minute,
+	5 * time.Minute,
+	15 * time.Minute,
+	time.Hour,
+	6 * time.Hour,
+	24 * time.Hour,
+}
+
 var failureDelays = [...]time.Duration{
 	time.Minute,
 	5 * time.Minute,
@@ -45,13 +54,21 @@ func MissingDelay(attempt int, randomUnit float64) time.Duration {
 }
 
 func FailureDelay(attempt int) time.Duration {
+	return delayAt(attempt, failureDelays[:])
+}
+
+func WorkflowFailureDelay(attempt int) time.Duration {
+	return delayAt(attempt, workflowFailureDelays[:])
+}
+
+func delayAt(attempt int, delays []time.Duration) time.Duration {
 	if attempt < 0 {
 		attempt = 0
 	}
-	if attempt >= len(failureDelays) {
-		attempt = len(failureDelays) - 1
+	if attempt >= len(delays) {
+		attempt = len(delays) - 1
 	}
-	return failureDelays[attempt]
+	return delays[attempt]
 }
 
 func RetryAfter(now time.Time, header string) (time.Time, bool) {

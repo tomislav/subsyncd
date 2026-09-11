@@ -37,7 +37,7 @@ func (s Scheduler) Failure(jobID string, failureAttempt int, outcome string) sto
 	return store.SearchCompletion{
 		JobID:                 jobID,
 		Outcome:               outcome,
-		NextAttemptAt:         s.Clock.Now().Add(FailureDelay(failureAttempt)),
+		NextAttemptAt:         s.Clock.Now().Add(WorkflowFailureDelay(failureAttempt)),
 		AdvanceFailureAttempt: true,
 	}
 }
