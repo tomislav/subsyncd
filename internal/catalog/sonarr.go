@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -285,6 +286,8 @@ func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]H
 	hydrated := make(map[int64]hydratedFile)
 	present := make(map[int64]HistoryChange)
 	finalized := make([]HistoryChange, 0, len(changes))
+	var deferred error
+nextChange:
 	for _, change := range changes {
 		episode, err := s.entity.EpisodeByID(ctx, int(change.EntityID))
 		if err != nil {
@@ -296,30 +299,95 @@ func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]H
 			}
 			return nil, safeArrAPIError(s.client.instance, "episode_current", err)
 		}
-		if !episode.HasFile || episode.EpisodeFile == nil {
-			change.Type = EventDelete
-			change.State = HistoryAbsent
-			finalized = append(finalized, change)
-			continue
-		}
-		fileID := int64(episode.EpisodeFile.ID)
-		if fileID <= 0 {
-			return nil, fmt.Errorf("Sonarr episode %d has invalid current file identity", change.EntityID)
-		}
-		if _, err := MapPath(episode.EpisodeFile.Path, s.mappings, s.mediaRoots); err != nil {
-			if IsOutsideScope(err) {
+		var fileID int64
+		for currentRead := 0; currentRead < 2; currentRead++ {
+			if !episode.HasFile || episode.EpisodeFile == nil {
 				change.Type = EventDelete
-				change.State = HistoryOutsideScope
+				change.State = HistoryAbsent
 				finalized = append(finalized, change)
-				continue
+				continue nextChange
 			}
-			return nil, fmt.Errorf("map current Sonarr episode %d: %w", change.EntityID, err)
+			fileID = int64(episode.EpisodeFile.ID)
+			if fileID <= 0 {
+				return nil, fmt.Errorf("Sonarr episode %d has invalid current file identity", change.EntityID)
+			}
+			if _, err := MapPath(episode.EpisodeFile.Path, s.mappings, s.mediaRoots); err != nil {
+				if IsOutsideScope(err) {
+					change.Type = EventDelete
+					change.State = HistoryOutsideScope
+					finalized = append(finalized, change)
+					continue nextChange
+				}
+				if errors.Is(err, errMappedPathUnavailable) {
+					if currentRead == 0 {
+						episode, err = s.entity.EpisodeByID(ctx, int(change.EntityID))
+						if err != nil {
+							if arrapi.IsNotFound(err) {
+								change.Type = EventDelete
+								change.State = HistoryAbsent
+								finalized = append(finalized, change)
+								continue nextChange
+							}
+							return nil, safeArrAPIError(s.client.instance, "episode_current_recheck", err)
+						}
+						continue
+					}
+					deferred = errors.Join(deferred, fmt.Errorf("%w: Sonarr episode %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+					continue nextChange
+				}
+				return nil, fmt.Errorf("map current Sonarr episode %d: %w", change.EntityID, err)
+			}
+			break
 		}
 		item, ok := hydrated[fileID]
 		if !ok {
 			media, episodeIDs, err := s.hydrateMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: fileID})
 			if err != nil {
-				return nil, fmt.Errorf("hydrate Sonarr history entity %d: %w", change.EntityID, err)
+				if errors.Is(err, errMappedPathUnavailable) {
+					rechecked, recheckErr := s.entity.EpisodeByID(ctx, int(change.EntityID))
+					if recheckErr != nil {
+						if arrapi.IsNotFound(recheckErr) {
+							change.Type = EventDelete
+							change.State = HistoryAbsent
+							finalized = append(finalized, change)
+							continue
+						}
+						return nil, safeArrAPIError(s.client.instance, "episode_current_recheck", recheckErr)
+					}
+					if !rechecked.HasFile || rechecked.EpisodeFile == nil {
+						change.Type = EventDelete
+						change.State = HistoryAbsent
+						finalized = append(finalized, change)
+						continue
+					}
+					fileID = int64(rechecked.EpisodeFile.ID)
+					if fileID <= 0 {
+						return nil, fmt.Errorf("Sonarr episode %d has invalid current file identity", change.EntityID)
+					}
+					if _, mapErr := MapPath(rechecked.EpisodeFile.Path, s.mappings, s.mediaRoots); mapErr != nil {
+						if IsOutsideScope(mapErr) {
+							change.Type = EventDelete
+							change.State = HistoryOutsideScope
+							finalized = append(finalized, change)
+							continue
+						}
+						if errors.Is(mapErr, errMappedPathUnavailable) {
+							deferred = errors.Join(deferred, fmt.Errorf("%w: Sonarr episode %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+							continue
+						}
+						return nil, fmt.Errorf("map rechecked Sonarr episode %d: %w", change.EntityID, mapErr)
+					}
+					media, episodeIDs, err = s.hydrateMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: fileID})
+					if err != nil {
+						if errors.Is(err, errMappedPathUnavailable) {
+							deferred = errors.Join(deferred, fmt.Errorf("%w: Sonarr episode %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+							continue
+						}
+						return nil, fmt.Errorf("hydrate rechecked Sonarr history entity %d: %w", change.EntityID, err)
+					}
+				} else {
+					return nil, fmt.Errorf("hydrate Sonarr history entity %d: %w", change.EntityID, err)
+				}
 			}
 			item = hydratedFile{media: media, episodeIDs: episodeIDs}
 			hydrated[fileID] = item
@@ -346,7 +414,7 @@ func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]H
 		finalized = append(finalized, change)
 	}
 	sortHistoryChanges(finalized)
-	return finalized, nil
+	return finalized, deferred
 }
 
 func alternateTitleStrings(titles []arrAlternateTitle) []string {

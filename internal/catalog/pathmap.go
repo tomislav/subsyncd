@@ -13,6 +13,8 @@ import (
 
 var ErrOutsideScope = errors.New("media is outside configured scope")
 
+var errMappedPathUnavailable = errors.New("mapped media path is unavailable")
+
 func IsOutsideScope(err error) bool {
 	return errors.Is(err, ErrOutsideScope)
 }
@@ -89,6 +91,9 @@ func resolveExistingParents(path string) (string, error) {
 		if err == nil {
 			resolved, err := filepath.EvalSymlinks(current)
 			if err != nil {
+				if os.IsNotExist(err) {
+					return "", fmt.Errorf("%w: resolve mapped path %q: %v", errMappedPathUnavailable, path, err)
+				}
 				return "", fmt.Errorf("resolve mapped path %q: %w", path, err)
 			}
 			for i := len(missing) - 1; i >= 0; i-- {

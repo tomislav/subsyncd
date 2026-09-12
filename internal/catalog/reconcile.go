@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,9 +34,9 @@ func (r Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("read %s reconciliation state: %w", r.Instance, err)
 	}
 	pageEnd := r.Now().UTC()
-	changes, err := r.Catalog.ListChanges(ctx, snapshot.Cursor, pageEnd)
-	if err != nil {
-		return fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, err)
+	changes, listErr := r.Catalog.ListChanges(ctx, snapshot.Cursor, pageEnd)
+	if listErr != nil && !errors.Is(listErr, ErrHistoryDeferred) {
+		return fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, listErr)
 	}
 	mutations := make([]store.MediaEventMutation, 0, len(changes))
 	for _, change := range changes {
@@ -70,11 +71,18 @@ func (r Reconciler) Run(ctx context.Context) error {
 			Priority:  store.SearchPriorityMissing,
 		})
 	}
-	if err := r.Store.CommitReconciliation(ctx, r.Instance, snapshot, pageEnd, mutations); err != nil {
+	commitCursor := pageEnd
+	if listErr != nil {
+		commitCursor = snapshot.Cursor
+	}
+	if err := r.Store.CommitReconciliation(ctx, r.Instance, snapshot, commitCursor, mutations); err != nil {
 		return fmt.Errorf("commit %s reconciliation page: %w", r.Instance, err)
 	}
 	if r.OnCommitted != nil {
 		r.OnCommitted()
+	}
+	if listErr != nil {
+		return fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, listErr)
 	}
 	return nil
 }

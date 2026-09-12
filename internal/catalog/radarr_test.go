@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -210,6 +211,95 @@ func TestRadarrHistoryReturnsAbsentWithoutDetailHydration(t *testing.T) {
 	}
 	if fileRequests != 0 {
 		t.Fatalf("hydration requests = %d, want 0", fileRequests)
+	}
+}
+
+func TestRadarrHistoryDefersBrokenSymlinkAfterCurrentStateRecheck(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(filepath.Join(root, "missing", "movie.mkv"), filepath.Join(root, "movie.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	movieRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/history":
+			writeHistoryRecords(t, w, []map[string]any{
+				{"id": 40, "movieId": 402, "eventType": "downloadFolderImported", "date": "2026-09-05T10:00:00Z", "data": map[string]string{"fileId": "1700"}},
+				{"id": 41, "movieId": 403, "eventType": "movieFileDeleted", "date": "2026-09-05T11:00:00Z", "data": map[string]string{}},
+			})
+		case "/api/v3/movie/402":
+			movieRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 402, "hasFile": true, "movieFile": map[string]any{"id": 1700, "movieId": 402, "path": "/remote/movies/movie.mkv"}})
+		case "/api/v3/movie/403":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 403, "hasFile": false})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	catalog, err := NewRadarr("radarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	if !errors.Is(err, ErrHistoryDeferred) {
+		t.Fatalf("ListChanges() error = %v, want ErrHistoryDeferred", err)
+	}
+	if movieRequests != 2 {
+		t.Fatalf("current movie requests = %d, want 2", movieRequests)
+	}
+	if len(changes) != 1 || changes[0].HistoryID != 41 || changes[0].EntityID != 403 || changes[0].State != HistoryAbsent {
+		t.Fatalf("nondeferred changes = %#v", changes)
+	}
+}
+
+func TestRadarrHistoryUsesReplacementWhenSymlinkBreaksDuringHydration(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target.mkv")
+	if err := os.WriteFile(target, []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "movie.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "replacement.mkv")
+	if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	movieRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/history":
+			writeHistoryRecords(t, w, []map[string]any{{"id": 40, "movieId": 402, "eventType": "downloadFolderImported", "date": "2026-09-05T10:00:00Z", "data": map[string]string{"fileId": "1700"}}})
+		case "/api/v3/movie/402":
+			movieRequests++
+			fileID, path := 1700, "/remote/movies/movie.mkv"
+			if movieRequests == 3 {
+				fileID, path = 1701, "/remote/movies/replacement.mkv"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 402, "title": "Movie", "hasFile": true, "movieFile": map[string]any{"id": fileID, "movieId": 402, "path": path}})
+		case "/api/v3/moviefile/1700":
+			_ = os.Remove(target)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1700, "movieId": 402, "path": "/remote/movies/movie.mkv", "size": 5})
+		case "/api/v3/moviefile/1701":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1701, "movieId": 402, "path": "/remote/movies/replacement.mkv", "size": 11})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	catalog, err := NewRadarr("radarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/movies", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil || len(changes) != 1 || changes[0].State != HistoryPresent || changes[0].Media.Ref.FileID != 1701 {
+		t.Fatalf("ListChanges() = %#v, %v; want present replacement file 1701", changes, err)
+	}
+	if movieRequests != 4 {
+		t.Fatalf("current movie requests = %d, want current, old detail, recheck, and replacement detail", movieRequests)
 	}
 }
 

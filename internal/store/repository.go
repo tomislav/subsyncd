@@ -1711,10 +1711,11 @@ func (r *Repository) GetReconciliationCursor(ctx context.Context, instance strin
 	return state.Cursor, err
 }
 
-// CommitReconciliation applies a complete history page and advances its cursor
-// in one transaction. A failed media mutation therefore cannot create a gap in
-// the next history request. The required pre-hydration state fences events and
-// concurrent reconciliation pages, including empty pages that insert no events.
+// CommitReconciliation applies history mutations and advances its cursor in one
+// transaction. Passing the expected cursor retains it while committing an
+// incomplete page, allowing idempotent replay after a deferred entity resolves.
+// The required pre-hydration state fences events and concurrent reconciliation
+// pages, including empty pages that insert no events.
 func (r *Repository) CommitReconciliation(ctx context.Context, instance string, expected ReconciliationState, cursor time.Time, mutations []MediaEventMutation) error {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1728,12 +1729,34 @@ func (r *Repository) CommitReconciliation(ctx context.Context, instance string, 
 	if current.Revision != expected.Revision || !current.Cursor.Equal(expected.Cursor) {
 		return ErrReconciliationStale
 	}
+	retainCursor := cursor.Equal(expected.Cursor)
 	for _, mutation := range mutations {
 		if mutation.Ref.Instance != instance {
 			return fmt.Errorf("reconciliation mutation instance %q does not match %q", mutation.Ref.Instance, instance)
 		}
 		if mutation.Priority == 0 {
 			mutation.Priority = SearchPriorityMissing
+		}
+		if retainCursor {
+			result, err := tx.ExecContext(ctx, `INSERT INTO reconciliation_replays(event_id, instance) VALUES (?, ?) ON CONFLICT DO NOTHING`, mutation.EventID, instance)
+			if err != nil {
+				return fmt.Errorf("record deferred reconciliation replay: %w", err)
+			}
+			inserted, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("count deferred reconciliation replay: %w", err)
+			}
+			if inserted == 0 {
+				continue
+			}
+		} else {
+			var replayed int
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM reconciliation_replays WHERE event_id=? AND instance=?`, mutation.EventID, instance).Scan(&replayed); err != nil {
+				return fmt.Errorf("check deferred reconciliation replay: %w", err)
+			}
+			if replayed != 0 {
+				continue
+			}
 		}
 		if _, err := applyMediaMutationTx(ctx, tx, mutation); err != nil {
 			return err
@@ -1742,16 +1765,21 @@ func (r *Repository) CommitReconciliation(ctx context.Context, instance string, 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY created_at_ns DESC, id DESC LIMIT -1 OFFSET 10000)`); err != nil {
 		return fmt.Errorf("bound media audit log: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE instances SET reconciliation_cursor=?, updated_at_ns=? WHERE name=?`, cursor.UTC().Format(time.RFC3339Nano), cursor.UnixNano(), instance)
-	if err != nil {
-		return fmt.Errorf("advance reconciliation cursor: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count reconciliation update: %w", err)
-	}
-	if count != 1 {
-		return fmt.Errorf("Arr instance %q not found", instance)
+	if !retainCursor {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM reconciliation_replays WHERE instance=?`, instance); err != nil {
+			return fmt.Errorf("clear deferred reconciliation replays: %w", err)
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE instances SET reconciliation_cursor=?, updated_at_ns=? WHERE name=?`, cursor.UTC().Format(time.RFC3339Nano), cursor.UnixNano(), instance)
+		if err != nil {
+			return fmt.Errorf("advance reconciliation cursor: %w", err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count reconciliation update: %w", err)
+		}
+		if count != 1 {
+			return fmt.Errorf("Arr instance %q not found", instance)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit reconciliation page: %w", err)

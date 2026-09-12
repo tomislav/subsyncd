@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -299,6 +300,99 @@ func TestSonarrHistoryAbsentDoesNotHydrateDetail(t *testing.T) {
 	}
 	if fileRequests != 0 {
 		t.Fatalf("hydration requests = %d, want 0", fileRequests)
+	}
+}
+
+func TestSonarrHistoryDefersBrokenSymlinkAfterCurrentStateRecheck(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(filepath.Join(root, "missing", "show.mkv"), filepath.Join(root, "show.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	currentRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v3/history":
+			writeHistoryRecords(t, w, []map[string]any{
+				{"id": 30, "seriesId": 10, "episodeId": 101, "eventType": "downloadFolderImported", "date": "2026-09-05T10:00:00Z", "data": map[string]string{"fileId": "1001"}},
+				{"id": 31, "seriesId": 10, "episodeId": 102, "eventType": "episodeFileDeleted", "date": "2026-09-05T11:00:00Z", "data": map[string]string{}},
+			})
+		case r.URL.Path == "/api/v3/episode/101":
+			currentRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 101, "seriesId": 10, "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
+		case r.URL.Path == "/api/v3/episode/102":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 102, "seriesId": 10, "hasFile": false})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	if !errors.Is(err, ErrHistoryDeferred) {
+		t.Fatalf("ListChanges() error = %v, want ErrHistoryDeferred", err)
+	}
+	if currentRequests != 2 {
+		t.Fatalf("current episode requests = %d, want 2", currentRequests)
+	}
+	if len(changes) != 1 || changes[0].HistoryID != 31 || changes[0].EntityID != 102 || changes[0].State != HistoryAbsent {
+		t.Fatalf("nondeferred changes = %#v", changes)
+	}
+}
+
+func TestSonarrHistoryUsesReplacementWhenSymlinkBreaksDuringHydration(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target.mkv")
+	if err := os.WriteFile(target, []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "show.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "replacement.mkv")
+	if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	currentRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v3/history":
+			writeHistoryRecords(t, w, []map[string]any{{"id": 30, "seriesId": 10, "episodeId": 101, "eventType": "downloadFolderImported", "date": "2026-09-05T10:00:00Z", "data": map[string]string{"fileId": "1001"}}})
+		case r.URL.Path == "/api/v3/episode/101":
+			currentRequests++
+			fileID, path := 1001, "/remote/tv/show.mkv"
+			if currentRequests == 2 {
+				fileID, path = 1002, "/remote/tv/replacement.mkv"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 101, "seriesId": 10, "hasFile": true, "episodeFile": map[string]any{"id": fileID, "seriesId": 10, "path": path}})
+		case r.URL.Path == "/api/v3/episodefile/1001":
+			_ = os.Remove(target)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 5})
+		case r.URL.Path == "/api/v3/episodefile/1002":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1002, "seriesId": 10, "path": "/remote/tv/replacement.mkv", "size": 11})
+		case r.URL.Path == "/api/v3/episode":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1}})
+		case r.URL.Path == "/api/v3/series/10":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Show"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil || len(changes) != 1 || changes[0].State != HistoryPresent || changes[0].Media.Ref.FileID != 1002 {
+		t.Fatalf("ListChanges() = %#v, %v; want present replacement file 1002", changes, err)
+	}
+	if currentRequests != 2 {
+		t.Fatalf("current episode requests = %d, want initial plus recheck", currentRequests)
 	}
 }
 

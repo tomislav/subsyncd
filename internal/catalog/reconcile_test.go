@@ -101,6 +101,29 @@ func TestReconcilerConvertsEntityHistoryStates(t *testing.T) {
 	}
 }
 
+func TestReconcilerCommitsNondeferredChangesWithoutAdvancingCursor(t *testing.T) {
+	start := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	pageEnd := start.Add(time.Hour)
+	change := HistoryChange{HistoryID: 42, EntityID: 102, Kind: domain.MediaEpisode, Type: EventDelete, State: HistoryAbsent, OccurredAt: start.Add(20 * time.Minute)}
+	catalog := &fakeReconcileCatalog{changes: []HistoryChange{change}, err: ErrHistoryDeferred}
+	backend := &fakeReconcileStore{cursor: start}
+	wakes := 0
+	reconciler := Reconciler{Instance: "sonarr-main", Catalog: catalog, Store: backend, Languages: []domain.Language{"hr"}, Now: func() time.Time { return pageEnd }, OnCommitted: func() { wakes++ }}
+
+	if err := reconciler.Run(context.Background()); !errors.Is(err, ErrHistoryDeferred) {
+		t.Fatalf("Reconciler.Run() error = %v, want ErrHistoryDeferred", err)
+	}
+	if !backend.committed.Equal(start) {
+		t.Fatalf("cursor = %s, want retained %s", backend.committed, start)
+	}
+	if len(backend.mutations) != 1 || backend.mutations[0].EventID != "reconcile:sonarr-main:42" {
+		t.Fatalf("committed mutations = %#v", backend.mutations)
+	}
+	if wakes != 1 {
+		t.Fatalf("commit callbacks = %d, want 1", wakes)
+	}
+}
+
 func TestReconcilerRejectsInvalidEntityHistoryStateBeforeCommit(t *testing.T) {
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	catalog := &fakeReconcileCatalog{changes: []HistoryChange{{HistoryID: 44, EntityID: 104, Kind: domain.MediaEpisode, Type: EventDelete, State: HistoryState("uncertain"), OccurredAt: now}}}

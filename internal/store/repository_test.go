@@ -1405,6 +1405,52 @@ func TestReconciliationCursorAdvancesOnlyWithCommittedPage(t *testing.T) {
 	}
 }
 
+func TestDeferredReconciliationReplaySurvivesAuditPruning(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := db.Repository()
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://arr.invalid", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<10000) INSERT INTO events(event_type,instance,outcome,created_at_ns) SELECT 'delete','other','applied',?+n FROM seq`, now.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	oldMedia := domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001}, SeriesID: 10, Title: "Old", Fingerprint: domain.MediaFingerprint{Path: "/media/old.mkv", FileID: 1001, Size: 1, ModTime: now.Add(-2 * time.Hour)}}
+	oldMutation := MediaEventMutation{EventID: "reconcile:sonarr-main:41", Type: "import", EntityID: 101, Ref: oldMedia.Ref, Media: oldMedia, Languages: []domain.Language{"hr"}, At: now.Add(-2 * time.Hour)}
+	snapshot, err := repo.GetReconciliationState(ctx, "sonarr-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", snapshot, snapshot.Cursor, []MediaEventMutation{oldMutation}); err != nil {
+		t.Fatal(err)
+	}
+	newMedia := oldMedia
+	newMedia.Ref.FileID = 1002
+	newMedia.Fingerprint = domain.MediaFingerprint{Path: "/media/new.mkv", FileID: 1002, Size: 2, ModTime: now}
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "webhook:new", Type: "import", EntityID: 101, Ref: newMedia.Ref, Media: newMedia, Languages: []domain.Language{"hr"}, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = repo.GetReconciliationState(ctx, "sonarr-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", snapshot, snapshot.Cursor, []MediaEventMutation{oldMutation}); err != nil {
+		t.Fatal(err)
+	}
+	_, got, found, err := repo.FindMediaByEntity(ctx, "sonarr-main", domain.MediaEpisode, 101)
+	if err != nil || !found {
+		t.Fatalf("FindMediaByEntity() = found %v, error %v", found, err)
+	}
+	if got.Ref.FileID != 1002 || got.Fingerprint.Path != "/media/new.mkv" {
+		t.Fatalf("replayed deferred mutation overwrote newer media: %#v", got)
+	}
+}
+
 func TestCommitReconciliationSchedulesMissingPriority(t *testing.T) {
 	repo := openTestRepository(t)
 	ctx := context.Background()

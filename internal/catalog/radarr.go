@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -195,45 +196,117 @@ func (r *Radarr) ListChanges(ctx context.Context, since, through time.Time) ([]H
 	if err != nil {
 		return nil, err
 	}
+	finalized := make([]HistoryChange, 0, len(changes))
+	var deferred error
+nextChange:
 	for index := range changes {
-		movie, err := r.entity.MovieByID(ctx, int(changes[index].EntityID))
+		change := changes[index]
+		movie, err := r.entity.MovieByID(ctx, int(change.EntityID))
 		if err != nil {
 			if arrapi.IsNotFound(err) {
-				changes[index].Type = EventDelete
-				changes[index].State = HistoryAbsent
+				change.Type = EventDelete
+				change.State = HistoryAbsent
+				finalized = append(finalized, change)
 				continue
 			}
 			return nil, safeArrAPIError(r.client.instance, "movie_current", err)
 		}
-		if !movie.HasFile || movie.MovieFile == nil {
-			changes[index].Type = EventDelete
-			changes[index].State = HistoryAbsent
-			continue
-		}
-		if movie.MovieFile.ID <= 0 {
-			return nil, fmt.Errorf("Radarr movie %d has invalid current file identity", changes[index].EntityID)
-		}
-		if _, err := MapPath(movie.MovieFile.Path, r.mappings, r.mediaRoots); err != nil {
-			if IsOutsideScope(err) {
-				changes[index].Type = EventDelete
-				changes[index].State = HistoryOutsideScope
-				continue
+		for currentRead := 0; currentRead < 2; currentRead++ {
+			if !movie.HasFile || movie.MovieFile == nil {
+				change.Type = EventDelete
+				change.State = HistoryAbsent
+				finalized = append(finalized, change)
+				continue nextChange
 			}
-			return nil, fmt.Errorf("map current Radarr movie %d: %w", changes[index].EntityID, err)
+			if movie.MovieFile.ID <= 0 {
+				return nil, fmt.Errorf("Radarr movie %d has invalid current file identity", change.EntityID)
+			}
+			if _, err := MapPath(movie.MovieFile.Path, r.mappings, r.mediaRoots); err != nil {
+				if IsOutsideScope(err) {
+					change.Type = EventDelete
+					change.State = HistoryOutsideScope
+					finalized = append(finalized, change)
+					continue nextChange
+				}
+				if errors.Is(err, errMappedPathUnavailable) {
+					if currentRead == 0 {
+						movie, err = r.entity.MovieByID(ctx, int(change.EntityID))
+						if err != nil {
+							if arrapi.IsNotFound(err) {
+								change.Type = EventDelete
+								change.State = HistoryAbsent
+								finalized = append(finalized, change)
+								continue nextChange
+							}
+							return nil, safeArrAPIError(r.client.instance, "movie_current_recheck", err)
+						}
+						continue
+					}
+					deferred = errors.Join(deferred, fmt.Errorf("%w: Radarr movie %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+					continue nextChange
+				}
+				return nil, fmt.Errorf("map current Radarr movie %d: %w", change.EntityID, err)
+			}
+			break
 		}
 		ref := domain.MediaRef{Instance: r.client.instance, Kind: domain.MediaMovie, FileID: int64(movie.MovieFile.ID)}
 		item, err := r.GetMedia(ctx, ref)
 		if err != nil {
-			return nil, fmt.Errorf("hydrate Radarr history entity %d: %w", changes[index].EntityID, err)
+			if errors.Is(err, errMappedPathUnavailable) {
+				rechecked, recheckErr := r.entity.MovieByID(ctx, int(change.EntityID))
+				if recheckErr != nil {
+					if arrapi.IsNotFound(recheckErr) {
+						change.Type = EventDelete
+						change.State = HistoryAbsent
+						finalized = append(finalized, change)
+						continue
+					}
+					return nil, safeArrAPIError(r.client.instance, "movie_current_recheck", recheckErr)
+				}
+				if !rechecked.HasFile || rechecked.MovieFile == nil {
+					change.Type = EventDelete
+					change.State = HistoryAbsent
+					finalized = append(finalized, change)
+					continue
+				}
+				if rechecked.MovieFile.ID <= 0 {
+					return nil, fmt.Errorf("Radarr movie %d has invalid current file identity", change.EntityID)
+				}
+				if _, mapErr := MapPath(rechecked.MovieFile.Path, r.mappings, r.mediaRoots); mapErr != nil {
+					if IsOutsideScope(mapErr) {
+						change.Type = EventDelete
+						change.State = HistoryOutsideScope
+						finalized = append(finalized, change)
+						continue
+					}
+					if errors.Is(mapErr, errMappedPathUnavailable) {
+						deferred = errors.Join(deferred, fmt.Errorf("%w: Radarr movie %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+						continue
+					}
+					return nil, fmt.Errorf("map rechecked Radarr movie %d: %w", change.EntityID, mapErr)
+				}
+				ref = domain.MediaRef{Instance: r.client.instance, Kind: domain.MediaMovie, FileID: int64(rechecked.MovieFile.ID)}
+				item, err = r.GetMedia(ctx, ref)
+				if err != nil {
+					if errors.Is(err, errMappedPathUnavailable) {
+						deferred = errors.Join(deferred, fmt.Errorf("%w: Radarr movie %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+						continue
+					}
+					return nil, fmt.Errorf("hydrate rechecked Radarr history entity %d: %w", change.EntityID, err)
+				}
+			} else {
+				return nil, fmt.Errorf("hydrate Radarr history entity %d: %w", change.EntityID, err)
+			}
 		}
-		if item.EntityID != changes[index].EntityID {
-			return nil, fmt.Errorf("Radarr history entity %d resolved to entity %d", changes[index].EntityID, item.EntityID)
+		if item.EntityID != change.EntityID {
+			return nil, fmt.Errorf("Radarr history entity %d resolved to entity %d", change.EntityID, item.EntityID)
 		}
-		if changes[index].Type != EventRename {
-			changes[index].Type = EventImport
+		if change.Type != EventRename {
+			change.Type = EventImport
 		}
-		changes[index].State = HistoryPresent
-		changes[index].Media = item
+		change.State = HistoryPresent
+		change.Media = item
+		finalized = append(finalized, change)
 	}
-	return changes, nil
+	return finalized, deferred
 }

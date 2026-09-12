@@ -2,10 +2,16 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"subsyncd/internal/domain"
 )
+
+// ErrHistoryDeferred means a history page contained one or more current Arr
+// entities whose media could not yet be resolved. Nondelayed changes may be
+// committed, but the cursor must remain unchanged so the page is retried.
+var ErrHistoryDeferred = errors.New("reconciliation history deferred")
 
 type Catalog interface {
 	GetMedia(context.Context, domain.MediaRef) (domain.Media, error)

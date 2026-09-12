@@ -1,5 +1,11 @@
 # Release verification
 
+## Deferred reconciliation for stale Arr symlinks — 2026-09-12
+
+Sonarr and Radarr reconciliation no longer let one stale current-file record with a dangling media symlink prevent unrelated history changes from committing. The adapter re-reads the current Arr entity once; a completed Arr removal becomes the normal absent-entity deletion, while a still-inconsistent entity is deferred. Other history mutations commit idempotently, but the durable cursor remains unchanged so the incomplete page is retried through the existing reconciliation backoff without losing the deferred entity.
+
+Unmatched mappings, traversal, inaccessible paths, media-root failures, and other unsafe filesystem errors remain page-terminal. Migration `010_reconciliation_replays.sql` preserves deferred-page idempotency independently of the bounded audit log; no configuration option is added.
+
 ## Per-language fallback providers — 2026-09-08
 
 Languages can configure optional `fallback_providers`. Preferred cache/exact/broad results are exhausted before fallback acquisition. Fallback subtitles keep their actual scores and receive weekly promotion checks, even for exact hashes. Safe preferred replacements bypass the ordinary score delta; user-owned subtitles remain protected. Migration `006_fallback_installations.sql` records installation-time fallback provenance without rewriting existing scores. Existing configurations retain their single-tier behavior.

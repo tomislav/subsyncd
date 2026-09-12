@@ -5,13 +5,29 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish the three September 12 review repairs
-- Next safe action: verify GitHub Actions publication after the authorized push; deployment remains user-managed
-- Latest follow-up: reconciliation snapshot fencing, identical-content provenance refresh, and cached upgrade-policy filtering
+- Current task: publish deferred Arr reconciliation recovery
+- Next safe action: commit and push the verified authorized change to GitHub `main`, then observe GitHub Actions; production deployment remains user-managed
+- Latest follow-up: stale Sonarr/Radarr current-file records with dangling symlinks defer only their entity while valid page mutations commit without cursor advancement
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Deferred stale-file reconciliation recovery — 2026-09-13
+
+- Commit: this `fix: defer stale Arr reconciliation entries` commit on `main`, based on `2755457`; user authorized the repair, direct commit to `main`, and GitHub push. No production deployment or mutation is included.
+- Sonarr and Radarr re-read a current entity once when its mapped media entry is a dangling symlink, including a link that becomes dangling during detail hydration. A completed Arr removal becomes an absent deletion; a still-inconsistent entity is deferred while other page mutations commit idempotently behind the existing event-revision fence. The reconciliation cursor remains unchanged and worker failure backoff retries the complete page, so no deferred history is lost.
+- Migration `010_reconciliation_replays.sql` records already-applied partial-page event IDs outside the bounded audit log. Replays cannot overwrite newer webhook state even if the corresponding audit row is pruned; markers clear atomically when the complete page advances.
+- Only dangling mapped-media resolution is deferrable. Outside-scope mappings retain their managed-set deletion behavior, while traversal, permission, media-root, malformed identity, membership, transport, and other filesystem failures remain terminal for the page.
+- Focused Sonarr/Radarr deferral, hydration-race replacement, cursor-retention, and audit-pruning replay regressions passed with `-race`. The full `go test ./... -race -count=1`, tagged E2E race suite, `go vet ./...`, gofmt, and `git diff --check` passed with writable caches and local fake services only.
+- Independent review found two rounds of correctness issues around hydration-time path races, unsafe recheck classification, and audit-pruning idempotency; all were repaired and final re-review found no actionable findings. Next: push and observe GitHub Actions. Deployment remains operator-managed.
+
+### Sonarr LQ reconciliation failure diagnosis — 2026-09-12
+
+- Diagnosed deployed `2755457` on production Hades; read-only inspection only, with no service, configuration, database, Sonarr, or media mutation.
+- Sonarr episode `5456` still reports `hasFile=true` and physical file `7611`, but its library entry is a broken symlink: the expected backing file under the read-only `/mnt/altmount/tv-lq` mount is absent. The configured `/media/tv-lq` mapping, both media mounts, and sibling Picard symlinks are otherwise present, rejecting a subsyncd mapping or Docker mount failure.
+- Reconciliation correctly fails the complete Sonarr LQ page on the unsafe filesystem inconsistency and retains the cursor at `2026-09-12T13:50:54.713085515Z`; retries progress through the configured 5m/15m/1h/6h schedule. Other Arr instances continue reconciling, and webhook handling remains available.
+- No tests were run for this diagnostic-only task. Next: restore the missing backing file or make Sonarr rescan/forget the absent episode file, then allow the scheduled reconciliation retry (or perform an explicitly approved scan).
 
 ### Review repairs final verification and publication — 2026-09-12
 
