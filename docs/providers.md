@@ -69,6 +69,8 @@ The preferred tier is tried first, including cached packs, exact matches and bro
 
 Fallback installations retain their real score and normal filename. `explain` shows `fallback=true`, and installation logs include a boolean `fallback` field. They are checked weekly for a preferred replacement, including exact-hash fallback installations. A preferred replacement may have a lower score, but must satisfy the minimum score, identity and timing requirements; nonexact promotions use LAPSE by default. Same-tier upgrades retain the normal score-delta rules, and a preferred installation is never downgraded to fallback. Edited and manually supplied subtitles stay protected.
 
+If an eligible upgrade supplies exactly the same subtitle bytes, subsyncd refreshes its provider, score and timing provenance without rewriting the file. Same-media provenance refreshes do not queue another Silo scan; a changed media fingerprint still does.
+
 After installing fallback during a preferred-provider cooldown, the next check uses the earlier future cooldown reset or weekly check. Failed searches keep ordinary technical-error/cooldown handling; successful searches without a replacement retain the fallback and its weekly check.
 
 Provider tier membership is evaluated from current configuration. The stored flag records the tier at installation time. Moving a provider into fallback does not automatically wake previously terminal exact installations; use a manual search to reconsider one and persist any resulting promotion check. Restart after configuration changes. The preferred list must remain nonempty, and provider names cannot repeat within or across tiers.

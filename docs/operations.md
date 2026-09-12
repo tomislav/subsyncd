@@ -68,6 +68,8 @@ After starting the daemon, subsyncd imports the existing Sonarr and Radarr libra
 
 Completed discovery is remembered across restarts. Changed path mappings or media roots trigger another discovery pass. A failed or interrupted pass is retried with reconciliation backoff. If a webhook commits during enumeration, the snapshot is discarded and retried to avoid importing stale state. Startup validation and readiness stay local/offline; library API requests happen only during background work or an explicit scan. After discovery, retained Arr history is reconciled normally every six hours, with webhooks providing immediate updates.
 
+If a webhook updates the catalog while history is being fetched, subsyncd discards the stale history snapshot and retries later. Newer deletions, replacements and renames remain intact, and the saved history position advances only after a successful reconciliation.
+
 After adding an instance, provider, or language, restart subsyncd. A new language schedules checks for media already indexed under your configured instances. Existing subtitles may satisfy those checks without a download.
 
 ## Missing subtitles and upgrades

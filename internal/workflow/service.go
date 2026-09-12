@@ -298,41 +298,50 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 					s.setReassessmentResult(&result, existing, cached.Candidate, score, s.Clock.Now())
 					result.Decisions = append(result.Decisions, Decision{Stage: "upgrade", ProviderID: cached.Candidate.ProviderID, ResultID: cached.Candidate.ResultID, Reason: "refreshed assessment for installed provider candidate"})
 				} else {
-					downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, runtimePack: cached.RuntimePack, fromCache: true}
-					if cached.MemberScoped {
-						downloaded.memberScope = "versions"
-					}
-					paths := []string{cached.Path}
-					for _, alternative := range cached.Alternatives {
-						paths = append(paths, alternative.Path)
-					}
-					prepared, prepareErr := s.prepareMembers(ctx, request, downloaded, paths, activeInstallation, existing, workspace, -100, &candidateFailures, &result)
-					if prepareErr != nil {
-						return result, prepareErr
-					}
-					sortPrepared(prepared)
-					for _, item := range prepared {
-						result, err = s.install(ctx, request, item, existing, activeInstallation, result)
+					allowed := true
+					if activeInstallation {
+						allowed, err = s.shouldUpgrade(existing, request.Media, cached.Candidate, score)
 						if err != nil {
-							if _, rejected := err.(*subtitleValidationError); !rejected {
-								return result, err
-							}
-							if ctxErr := ctx.Err(); ctxErr != nil {
-								return result, ctxErr
-							}
-							if handleErr := s.handleCandidateFailure(ctx, memberRequest(request, item.memberScope), item.candidate, item.path, err, &candidateFailures); handleErr != nil {
-								return result, handleErr
-							}
-						} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
-							return result, nil
+							return result, err
 						}
-						if cleanupErr := removeWorkflowArtifact(workspace, item.output); cleanupErr != nil {
-							return result, cleanupErr
-						}
-						result.Outcome = ""
 					}
-					if err := s.rejectExhaustedVersions(ctx, request, prepared); err != nil {
-						return result, err
+					if allowed {
+						downloaded := downloadedCandidate{candidate: cached.Candidate, score: score, runtimePack: cached.RuntimePack, fromCache: true}
+						if cached.MemberScoped {
+							downloaded.memberScope = "versions"
+						}
+						paths := []string{cached.Path}
+						for _, alternative := range cached.Alternatives {
+							paths = append(paths, alternative.Path)
+						}
+						prepared, prepareErr := s.prepareMembers(ctx, request, downloaded, paths, activeInstallation, existing, workspace, -100, &candidateFailures, &result)
+						if prepareErr != nil {
+							return result, prepareErr
+						}
+						sortPrepared(prepared)
+						for _, item := range prepared {
+							result, err = s.install(ctx, request, item, existing, activeInstallation, result)
+							if err != nil {
+								if _, rejected := err.(*subtitleValidationError); !rejected {
+									return result, err
+								}
+								if ctxErr := ctx.Err(); ctxErr != nil {
+									return result, ctxErr
+								}
+								if handleErr := s.handleCandidateFailure(ctx, memberRequest(request, item.memberScope), item.candidate, item.path, err, &candidateFailures); handleErr != nil {
+									return result, handleErr
+								}
+							} else if result.Outcome == OutcomeInstalled || result.Outcome == OutcomeSatisfied {
+								return result, nil
+							}
+							if cleanupErr := removeWorkflowArtifact(workspace, item.output); cleanupErr != nil {
+								return result, cleanupErr
+							}
+							result.Outcome = ""
+						}
+						if err := s.rejectExhaustedVersions(ctx, request, prepared); err != nil {
+							return result, err
+						}
 					}
 				}
 			}

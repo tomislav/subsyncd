@@ -1397,7 +1397,7 @@ func TestReconciliationCursorAdvancesOnlyWithCommittedPage(t *testing.T) {
 	if got, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !got.IsZero() {
 		t.Fatalf("initial cursor = %s, %v", got, err)
 	}
-	if err := repo.CommitReconciliationCursor(ctx, "sonarr-main", end); err != nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), end, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !got.Equal(end) {
@@ -1414,7 +1414,7 @@ func TestCommitReconciliationSchedulesMissingPriority(t *testing.T) {
 	}
 	media := testMedia()
 	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:1", Type: "import", EntityID: media.EntityID, Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now, Priority: SearchPriorityMissing}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", now, []MediaEventMutation{mutation}); err != nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), now, []MediaEventMutation{mutation}); err != nil {
 		t.Fatal(err)
 	}
 	var priority SearchPriority
@@ -1443,7 +1443,7 @@ func TestCommitReconciliationPreservesActiveLeaseAndRequestsOneRerun(t *testing.
 		t.Fatalf("initial lease = %#v, %v", leases, err)
 	}
 	mutation := MediaEventMutation{EventID: "reconcile:sonarr-main:51", Type: "rename", EntityID: media.EntityID, Ref: media.Ref, Media: media, Languages: []domain.Language{"hr"}, At: now.Add(time.Minute), Priority: SearchPriorityMissing}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", now.Add(2*time.Minute), []MediaEventMutation{mutation}); err != nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), now.Add(2*time.Minute), []MediaEventMutation{mutation}); err != nil {
 		t.Fatal(err)
 	}
 	var owner string
@@ -1481,7 +1481,7 @@ func TestCommitReconciliationAppliesDeletesAndCursorAtomically(t *testing.T) {
 		{EventID: "reconcile:sonarr-main:61", Type: "delete", Ref: media.Ref, At: now.Add(time.Minute), Priority: SearchPriorityMissing},
 		{EventID: "reconcile:sonarr-main:62", Type: "delete", Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 999}, At: now.Add(2 * time.Minute), Priority: SearchPriorityMissing},
 	}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", pageEnd, mutations); err != nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), pageEnd, mutations); err != nil {
 		t.Fatal(err)
 	}
 	mediaID, _, err := repo.FindMedia(ctx, media.Ref)
@@ -1507,7 +1507,7 @@ func TestCommitReconciliationAppliesDeletesAndCursorAtomically(t *testing.T) {
 	newMedia.Fingerprint.Path = "/media/new.mkv"
 	valid := MediaEventMutation{EventID: "reconcile:sonarr-main:63", Type: "import", EntityID: newMedia.EntityID, Ref: newMedia.Ref, Media: newMedia, Languages: []domain.Language{"hr"}, At: pageEnd, Priority: SearchPriorityMissing}
 	bad := MediaEventMutation{EventID: "reconcile:other:64", Type: "delete", Ref: domain.MediaRef{Instance: "other", Kind: domain.MediaEpisode, FileID: 5}, At: pageEnd.Add(time.Minute), Priority: SearchPriorityMissing}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", pageEnd.Add(time.Hour), []MediaEventMutation{valid, bad}); err == nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), pageEnd.Add(time.Hour), []MediaEventMutation{valid, bad}); err == nil {
 		t.Fatal("mismatched instance reconciliation error = nil")
 	}
 	if cursor, err := repo.GetReconciliationCursor(ctx, "sonarr-main"); err != nil || !cursor.Equal(pageEnd) {
@@ -1544,7 +1544,7 @@ func TestCommitReconciliationResolvesKnownAndUnknownEntityDeletes(t *testing.T) 
 		{EventID: "reconcile:sonarr-main:42", Type: "delete", EntityID: 101, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode}, At: now, Priority: SearchPriorityMissing},
 		{EventID: "reconcile:sonarr-main:43", Type: "delete", EntityID: 999, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode}, At: now.Add(time.Minute), Priority: SearchPriorityMissing},
 	}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", now.Add(2*time.Minute), mutations); err != nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), now.Add(2*time.Minute), mutations); err != nil {
 		t.Fatal(err)
 	}
 	status, err := repo.GetSearchStatus(ctx, mediaID, "hr")
@@ -1567,7 +1567,7 @@ func TestCommitReconciliationResolvesKnownAndUnknownEntityDeletes(t *testing.T) 
 	if unknownEntity != 999 || unknownFile != 0 || unknownMedia.Valid {
 		t.Fatalf("unknown audit = entity:%d file:%d media:%#v", unknownEntity, unknownFile, unknownMedia)
 	}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", now.Add(3*time.Minute), mutations); err != nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), now.Add(3*time.Minute), mutations); err != nil {
 		t.Fatal(err)
 	}
 	var audits int
@@ -1595,7 +1595,7 @@ func TestCommitReconciliationEntityDeleteRollsBackWithLaterMismatch(t *testing.T
 		{EventID: "reconcile:sonarr-main:50", Type: "delete", EntityID: media.EntityID, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode}, At: now, Priority: SearchPriorityMissing},
 		{EventID: "reconcile:other:51", Type: "delete", EntityID: 999, Ref: domain.MediaRef{Instance: "other", Kind: domain.MediaEpisode}, At: now, Priority: SearchPriorityMissing},
 	}
-	if err := repo.CommitReconciliation(ctx, "sonarr-main", now.Add(time.Hour), mutations); err == nil {
+	if err := repo.CommitReconciliation(ctx, "sonarr-main", reconciliationState(t, repo, "sonarr-main"), now.Add(time.Hour), mutations); err == nil {
 		t.Fatal("CommitReconciliation() error = nil")
 	}
 	status, err := repo.GetSearchStatus(ctx, mediaID, "hr")

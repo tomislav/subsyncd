@@ -92,9 +92,13 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err != nil {
 		return store.Installation{}, fmt.Errorf("read existing installation: %w", err)
 	}
-	replacing, err := replacementState(destination, payload, existing, found)
+	replacing, err := replacementState(destination, existing, found)
 	if err != nil {
 		return store.Installation{}, err
+	}
+
+	if replacing && checksumBytes(payload) == existing.Checksum {
+		return i.refreshIdenticalInstallation(ctx, request, existing)
 	}
 
 	if err := i.inject(StageCreate); err != nil {
@@ -235,16 +239,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err != nil {
 		return restore(fmt.Errorf("record installed subtitle: %w", err))
 	}
-	for _, result := range enqueued {
-		if result.Inserted {
-			key := result.DedupeKey
-			if len(key) > 12 {
-				key = key[:12]
-			}
-			i.Events.For("workflow").Log(ctx, slog.LevelInfo, "notification.queued", "subtitle notification queued",
-				slog.String("notifier", result.Notifier), slog.String("notification_key", key))
-		}
-	}
+	i.logEnqueuedNotifications(ctx, enqueued)
 	if found && existing.RollbackPath != "" && filepath.Clean(existing.RollbackPath) != filepath.Clean(rollbackPath) {
 		if err := i.inject(StageCleanup); err == nil {
 			_ = removeContainedFile(existing.RollbackPath, parent)
@@ -278,7 +273,7 @@ func verifyMediaUnchanged(fingerprint domain.MediaFingerprint, roots []string) e
 	return nil
 }
 
-func replacementState(destination string, newPayload []byte, existing store.Installation, found bool) (bool, error) {
+func replacementState(destination string, existing store.Installation, found bool) (bool, error) {
 	info, err := os.Lstat(destination)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -298,9 +293,6 @@ func replacementState(destination string, newPayload []byte, existing store.Inst
 	}
 	if checksumBytes(payload) != existing.Checksum {
 		return false, ErrProtectedSubtitle
-	}
-	if bytes.Equal(payload, newPayload) {
-		return false, fmt.Errorf("candidate subtitle is identical to installed file")
 	}
 	return true, nil
 }
@@ -485,4 +477,17 @@ func removeContainedFile(path, parent string) error {
 		return fmt.Errorf("cleanup path is not a regular file")
 	}
 	return os.Remove(absolute)
+}
+
+func (i Installer) logEnqueuedNotifications(ctx context.Context, enqueued []store.NotificationEnqueueResult) {
+	for _, result := range enqueued {
+		if result.Inserted {
+			key := result.DedupeKey
+			if len(key) > 12 {
+				key = key[:12]
+			}
+			i.Events.For("workflow").Log(ctx, slog.LevelInfo, "notification.queued", "subtitle notification queued",
+				slog.String("notifier", result.Notifier), slog.String("notification_key", key))
+		}
+	}
 }

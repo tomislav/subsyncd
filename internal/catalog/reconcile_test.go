@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -11,10 +13,11 @@ import (
 )
 
 type fakeReconcileCatalog struct {
-	changes []HistoryChange
-	err     error
-	since   time.Time
-	through time.Time
+	changes        []HistoryChange
+	err            error
+	since          time.Time
+	through        time.Time
+	afterHydration func()
 }
 
 func (f *fakeReconcileCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
@@ -24,6 +27,9 @@ func (f *fakeReconcileCatalog) GetMedia(context.Context, domain.MediaRef) (domai
 func (f *fakeReconcileCatalog) ListChanges(_ context.Context, since, through time.Time) ([]HistoryChange, error) {
 	f.since = since
 	f.through = through
+	if f.afterHydration != nil {
+		f.afterHydration()
+	}
 	return f.changes, f.err
 }
 
@@ -34,11 +40,11 @@ type fakeReconcileStore struct {
 	commitErr error
 }
 
-func (f *fakeReconcileStore) GetReconciliationCursor(context.Context, string) (time.Time, error) {
-	return f.cursor, nil
+func (f *fakeReconcileStore) GetReconciliationState(context.Context, string) (store.ReconciliationState, error) {
+	return store.ReconciliationState{Cursor: f.cursor}, nil
 }
 
-func (f *fakeReconcileStore) CommitReconciliation(_ context.Context, _ string, cursor time.Time, mutations []store.MediaEventMutation) error {
+func (f *fakeReconcileStore) CommitReconciliation(_ context.Context, _ string, _ store.ReconciliationState, cursor time.Time, mutations []store.MediaEventMutation) error {
 	if f.commitErr != nil {
 		return f.commitErr
 	}
@@ -125,5 +131,151 @@ func TestReconcilerCallsOnCommittedOnlyAfterSuccessfulCommit(t *testing.T) {
 	}
 	if wakes != 1 {
 		t.Fatalf("failed reconciliation changed callbacks to %d", wakes)
+	}
+}
+
+// A webhook committed after history hydration must win over the stale page.
+// Removing the reconciliation fence resurrects deletions and restores old files.
+func TestReconcilerRejectsHistoryHydratedBeforeConcurrentWebhook(t *testing.T) {
+	for _, event := range []string{"movie_delete", "series_delete", "replacement", "rename"} {
+		t.Run(event, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+			db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			repo := db.Repository()
+			instance, instanceType, kind := "sonarr-main", "sonarr", domain.MediaEpisode
+			if event == "movie_delete" {
+				instance, instanceType, kind = "radarr-main", "radarr", domain.MediaMovie
+			}
+			if err := repo.EnsureInstance(ctx, instance, instanceType, "http://arr.invalid", now); err != nil {
+				t.Fatal(err)
+			}
+			media := domain.Media{
+				Ref: domain.MediaRef{Instance: instance, Kind: kind, FileID: 1001}, EntityID: 101, SeriesID: 10,
+				Title: "Example", Fingerprint: domain.MediaFingerprint{Path: "/media/example.mkv", FileID: 1001, Size: 100, ModTime: now.Add(-time.Hour)},
+			}
+			seed := store.MediaEventMutation{EventID: "seed", Type: "import", Ref: media.Ref, EntityID: media.EntityID, Media: media, Languages: []domain.Language{"hr"}, At: now.Add(-time.Hour)}
+			if _, err := repo.ApplyMediaEvent(ctx, seed); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := repo.GetReconciliationState(ctx, instance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.CommitReconciliation(ctx, instance, snapshot, now.Add(-30*time.Minute), nil); err != nil {
+				t.Fatal(err)
+			}
+			mediaID, _, err := repo.FindMedia(ctx, media.Ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			change := HistoryChange{HistoryID: 41, EntityID: 101, Kind: kind, Type: EventImport, State: HistoryPresent, Media: media, OccurredAt: now.Add(-time.Minute)}
+			cat := &fakeReconcileCatalog{changes: []HistoryChange{change}}
+			var expectedMedia domain.Media
+			var expectedStatus store.SearchStatus
+			var expectedInventory store.InventoryRecord
+			var expectedRevision int64
+			cat.afterHydration = func() {
+				mutation := seed
+				mutation.EventID, mutation.At = "newer-webhook", now
+				switch event {
+				case "movie_delete":
+					mutation.Type, mutation.Ref.FileID = "delete", 0
+				case "series_delete":
+					mutation.Type, mutation.Ref.FileID, mutation.EntityID, mutation.SeriesID = "delete", 0, 0, 10
+				case "replacement":
+					mutation.Ref.FileID, mutation.Media.Ref.FileID, mutation.Media.Fingerprint.FileID = 2002, 2002, 2002
+					mutation.Media.Fingerprint.Path, mutation.Media.Fingerprint.Size = "/media/replacement.mkv", 200
+				case "rename":
+					mutation.Type, mutation.Media.Fingerprint.Path = "rename", "/media/renamed.mkv"
+				}
+				if _, err := repo.ApplyMediaEvent(ctx, mutation); err != nil {
+					t.Fatal(err)
+				}
+				expectedMedia, err = repo.GetMedia(ctx, mediaID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expectedInventory, err = repo.GetTrackInventory(ctx, mediaID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expectedStatus, err = repo.GetSearchStatus(ctx, mediaID, "hr")
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, expectedRevision, err = repo.LibraryDiscoveryState(ctx, instance)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			wakes := 0
+			r := Reconciler{Instance: instance, Catalog: cat, Store: repo, Languages: []domain.Language{"hr"}, Now: func() time.Time { return now.Add(time.Minute) }, OnCommitted: func() { wakes++ }}
+			if err := r.Run(ctx); !errors.Is(err, store.ErrReconciliationStale) {
+				t.Errorf("stale reconciliation error = %v", err)
+			}
+			gotMedia, err := repo.GetMedia(ctx, mediaID)
+			if err != nil || !reflect.DeepEqual(gotMedia, expectedMedia) {
+				t.Errorf("stale page changed media: got %#v, want %#v, err %v", gotMedia, expectedMedia, err)
+			}
+			gotInventory, err := repo.GetTrackInventory(ctx, mediaID)
+			if err != nil || !reflect.DeepEqual(gotInventory, expectedInventory) {
+				t.Errorf("stale page changed inventory: got %#v, want %#v, err %v", gotInventory, expectedInventory, err)
+			}
+			gotStatus, err := repo.GetSearchStatus(ctx, mediaID, "hr")
+			if err != nil || !reflect.DeepEqual(gotStatus, expectedStatus) {
+				t.Errorf("stale page changed search: got %#v, want %#v, err %v", gotStatus, expectedStatus, err)
+			}
+			cursor, err := repo.GetReconciliationCursor(ctx, instance)
+			if err != nil || !cursor.Equal(now.Add(-30*time.Minute)) {
+				t.Errorf("stale page advanced cursor: %s, %v", cursor, err)
+			}
+			if applied, err := repo.HasAppliedMediaEvent(ctx, "reconcile:"+instance+":41"); err != nil || applied {
+				t.Errorf("stale page persisted event: %v, %v", applied, err)
+			}
+			_, revision, err := repo.LibraryDiscoveryState(ctx, instance)
+			if err != nil || revision != expectedRevision || wakes != 0 {
+				t.Errorf("stale page changed revision/wakes: %d/%d, %v", revision, wakes, err)
+			}
+			if t.Failed() {
+				return
+			}
+
+			// Retry rehydrates the current entity from the same cursor. Replay remains idempotent.
+			cat.afterHydration = nil
+			change.Media = expectedMedia
+			if expectedInventory.Deleted {
+				change.State, change.Type, change.Media = HistoryAbsent, EventDelete, domain.Media{}
+			}
+			cat.changes = []HistoryChange{change}
+			if err := r.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if !cat.since.Equal(now.Add(-30 * time.Minute)) {
+				t.Fatalf("retry cursor = %s", cat.since)
+			}
+			if applied, err := repo.HasAppliedMediaEvent(ctx, "reconcile:"+instance+":41"); err != nil || !applied {
+				t.Fatalf("retry event = %v, %v", applied, err)
+			}
+			_, afterRetry, err := repo.LibraryDiscoveryState(ctx, instance)
+			if err != nil || afterRetry != expectedRevision+1 {
+				t.Fatalf("retry revision = %d, %v", afterRetry, err)
+			}
+			if err := r.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			_, afterReplay, err := repo.LibraryDiscoveryState(ctx, instance)
+			if err != nil || afterReplay != afterRetry || wakes != 2 {
+				t.Fatalf("replay revision/wakes = %d/%d, %v", afterReplay, wakes, err)
+			}
+			gotMedia, err = repo.GetMedia(ctx, mediaID)
+			if err != nil || !reflect.DeepEqual(gotMedia, expectedMedia) {
+				t.Fatalf("retry/replay media = %#v, want %#v, %v", gotMedia, expectedMedia, err)
+			}
+		})
 	}
 }

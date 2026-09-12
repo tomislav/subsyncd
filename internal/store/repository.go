@@ -1674,45 +1674,60 @@ func (r *Repository) EnsureConfiguredLanguageSearches(ctx context.Context, insta
 	return inserted, nil
 }
 
-func (r *Repository) GetReconciliationCursor(ctx context.Context, instance string) (time.Time, error) {
-	var raw string
-	if err := r.store.db.QueryRowContext(ctx, `SELECT reconciliation_cursor FROM instances WHERE name=?`, instance).Scan(&raw); err != nil {
-		return time.Time{}, fmt.Errorf("get reconciliation cursor: %w", err)
-	}
-	if raw == "" {
-		return time.Time{}, nil
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("parse reconciliation cursor: %w", err)
-	}
-	return parsed, nil
+// ReconciliationState is the cursor and event fence captured before hydration.
+type ReconciliationState struct {
+	Cursor   time.Time
+	Revision int64
 }
 
-func (r *Repository) CommitReconciliationCursor(ctx context.Context, instance string, cursor time.Time) error {
-	result, err := r.store.db.ExecContext(ctx, `UPDATE instances SET reconciliation_cursor=?, updated_at_ns=? WHERE name=?`, cursor.UTC().Format(time.RFC3339Nano), time.Now().UTC().UnixNano(), instance)
-	if err != nil {
-		return fmt.Errorf("commit reconciliation cursor: %w", err)
+// ErrReconciliationStale means the instance changed while history was fetched.
+var ErrReconciliationStale = errors.New("instance changed during reconciliation")
+
+// GetReconciliationState reads the cursor and event revision from one snapshot.
+func (r *Repository) GetReconciliationState(ctx context.Context, instance string) (ReconciliationState, error) {
+	return readReconciliationState(ctx, r.store.db, instance)
+}
+
+func readReconciliationState(ctx context.Context, reader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, instance string) (ReconciliationState, error) {
+	var state ReconciliationState
+	var raw string
+	if err := reader.QueryRowContext(ctx, `SELECT reconciliation_cursor, event_revision FROM instances WHERE name=?`, instance).Scan(&raw, &state.Revision); err != nil {
+		return ReconciliationState{}, fmt.Errorf("read reconciliation state: %w", err)
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count reconciliation cursor update: %w", err)
+	if raw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			return ReconciliationState{}, fmt.Errorf("parse reconciliation cursor: %w", err)
+		}
+		state.Cursor = parsed
 	}
-	if count != 1 {
-		return fmt.Errorf("Arr instance %q not found", instance)
-	}
-	return nil
+	return state, nil
+}
+
+func (r *Repository) GetReconciliationCursor(ctx context.Context, instance string) (time.Time, error) {
+	state, err := r.GetReconciliationState(ctx, instance)
+	return state.Cursor, err
 }
 
 // CommitReconciliation applies a complete history page and advances its cursor
 // in one transaction. A failed media mutation therefore cannot create a gap in
-// the next history request.
-func (r *Repository) CommitReconciliation(ctx context.Context, instance string, cursor time.Time, mutations []MediaEventMutation) error {
+// the next history request. The required pre-hydration state fences events and
+// concurrent reconciliation pages, including empty pages that insert no events.
+func (r *Repository) CommitReconciliation(ctx context.Context, instance string, expected ReconciliationState, cursor time.Time, mutations []MediaEventMutation) error {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin reconciliation commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	current, err := readReconciliationState(ctx, tx, instance)
+	if err != nil {
+		return err
+	}
+	if current.Revision != expected.Revision || !current.Cursor.Equal(expected.Cursor) {
+		return ErrReconciliationStale
+	}
 	for _, mutation := range mutations {
 		if mutation.Ref.Instance != instance {
 			return fmt.Errorf("reconciliation mutation instance %q does not match %q", mutation.Ref.Instance, instance)

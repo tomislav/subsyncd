@@ -5,13 +5,42 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish daily-capped technical failure backoff
-- Next safe action: verify GitHub Actions publication; deployment remains user-managed
-- Latest follow-up: repeated workflow failures back off through 6h and 24h before daily retries
+- Current task: publish the three September 12 review repairs
+- Next safe action: verify GitHub Actions publication after the authorized push; deployment remains user-managed
+- Latest follow-up: reconciliation snapshot fencing, identical-content provenance refresh, and cached upgrade-policy filtering
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Review repairs final verification and publication — 2026-09-12
+
+- Commit: this `fix: preserve reconciliation and upgrade state` commit, based on fetched `6c1c105`. Resolves all three findings in `docs/code-review-2026-09-12.md`; user authorized commit and push to GitHub main. No migration, configuration change, provider/scoring policy change, or production deployment.
+- Permanent regressions reproduced stale reconciliation, identical-content upgrade failure, and cached upgrade-policy technical failure before their production changes. Every task passed independent spec/quality review; final combined review approved with no actionable findings.
+- Final verification passed with explicit installed Go 1.27.1 and writable caches: `go test ./... -race -count=1`, `go test ./test/e2e -tags=e2e -race -count=1`, `go vet ./...`, gofmt and `git diff --check`. Local synthetic files and fake services only. The inherited GOROOT referenced missing Go 1.27.0 and was overridden for verification.
+- Reconciliation requires an event-stable hydration window; sustained webhook activity can delay it through existing failure backoff. Stale snapshots preserve newer catalog state and the history cursor. No automatic recovery of historically overwritten catalog state is introduced.
+- Publication uses a writable temporary clone because the original checkout's Git metadata is read-only. Reviewed file contents are synchronized back without changing the unrelated extraction-proposal ledger entry; that entry is excluded from this commit. Next: push the verified commit, observe GitHub Actions, and leave deployment to the operator.
+
+### Review repair R3 — 2026-09-12
+
+- Based on `6c1c105`, included with the R1/R2 repair publication. Cached candidates now pass the normal upgrade-policy gate before preparation. A policy denial continues to provider acquisition without recording a deterministic rejection or technical failure; actual provenance errors remain terminal.
+- Focused RED reproduced `candidate does not satisfy upgrade policy` as an acquisition error. GREEN covers normal empty-provider outcome, later eligible provider installation, and malformed-provenance terminal handling. Full workflow race suite and diff checks passed. Independent spec and quality review approved; only local fixtures/fakes were used.
+- Next: final combined review, full race/vet/tagged E2E verification, then authorized commit and push to GitHub main. No production access or deployment.
+
+### Review repairs R1/R2 — 2026-09-12
+
+- Based on `6c1c105`; working changes in the isolated publication checkout. User authorized all three fixes, commit and GitHub push. Original Git metadata is read-only; unrelated extraction-proposal ledger text remains preserved in the original checkout and excluded from this publication.
+- R1 captures a required cursor/event-revision snapshot before history hydration and checks both transactionally before writes. Concurrent deletion, replacement, rename, and even empty reconciliation pages cannot be overwritten; stale pages preserve the cursor and retry through existing backoff. Removed the unused unfenced cursor setter; no migration.
+- R2 accepts validated identical bytes from an eligible upgrade as a provenance refresh. The owned file's inode/mtime and rollback reference stay unchanged; live sidecar/media checks, the active-media SQLite transaction guard and atomic audit/persistence remain. Same-media refreshes omit notification; a changed fingerprint retains fresh replacement notification. Ordinary score/LAPSE/promotion eligibility is unchanged.
+- Focused regressions demonstrated both bugs before their repairs. Catalog/store race tests and workflow race tests passed; exact/nonexact real-installer promotion, cancellation, modified/symlink/missing sidecars, media changes/deletion, transaction failure, retained rollback, and changed-media notifications are covered. Independent spec and quality reviews approved both tasks. Local fixtures/fakes only; no production access.
+- Next: complete R3 cached upgrade-policy classification, combined review, full race/vet/tagged E2E verification, then the authorized commit and push.
+
+### Codebase correctness review — 2026-09-12
+
+- Reviewed runtime commit `6c1c105`; no runtime changes, commit, publication, or production access. Preserved the pre-existing ledger edit.
+- Recorded three findings in `docs/code-review-2026-09-12.md`: stale reconciliation can undo newer webhook mutations; identical owned subtitle content prevents preferred-provider promotion and becomes a technical failure; cached candidates failing upgrade policy also become technical failures. Proposed fixes remain unimplemented.
+- Full `go test ./... -race` and `go vet ./...` passed with explicit installed Go 1.27.1 and writable caches. Temporary focused regressions reproduced reconciliation resurrection and identical-content rejection, then were removed. Cached upgrade classification was validated by call-path inspection. Local fixtures/fakes only.
+- Next task: repair the reconciliation event-revision fence first, then identical-content promotion and cached upgrade-policy classification, each with a focused failing regression.
 
 ### Daily-capped technical failure backoff — 2026-09-11
 

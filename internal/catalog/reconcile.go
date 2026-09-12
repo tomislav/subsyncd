@@ -10,8 +10,8 @@ import (
 )
 
 type ReconciliationStore interface {
-	GetReconciliationCursor(context.Context, string) (time.Time, error)
-	CommitReconciliation(context.Context, string, time.Time, []store.MediaEventMutation) error
+	GetReconciliationState(context.Context, string) (store.ReconciliationState, error)
+	CommitReconciliation(context.Context, string, store.ReconciliationState, time.Time, []store.MediaEventMutation) error
 }
 
 type Reconciler struct {
@@ -28,14 +28,14 @@ func (r Reconciler) Run(ctx context.Context) error {
 	if err := r.DiscoverLibrary(ctx, false); err != nil {
 		return err
 	}
-	cursor, err := r.Store.GetReconciliationCursor(ctx, r.Instance)
+	snapshot, err := r.Store.GetReconciliationState(ctx, r.Instance)
 	if err != nil {
-		return fmt.Errorf("read %s reconciliation cursor: %w", r.Instance, err)
+		return fmt.Errorf("read %s reconciliation state: %w", r.Instance, err)
 	}
 	pageEnd := r.Now().UTC()
-	changes, err := r.Catalog.ListChanges(ctx, cursor, pageEnd)
+	changes, err := r.Catalog.ListChanges(ctx, snapshot.Cursor, pageEnd)
 	if err != nil {
-		return fmt.Errorf("list %s history since %s: %w", r.Instance, cursor, err)
+		return fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, err)
 	}
 	mutations := make([]store.MediaEventMutation, 0, len(changes))
 	for _, change := range changes {
@@ -70,7 +70,7 @@ func (r Reconciler) Run(ctx context.Context) error {
 			Priority:  store.SearchPriorityMissing,
 		})
 	}
-	if err := r.Store.CommitReconciliation(ctx, r.Instance, pageEnd, mutations); err != nil {
+	if err := r.Store.CommitReconciliation(ctx, r.Instance, snapshot, pageEnd, mutations); err != nil {
 		return fmt.Errorf("commit %s reconciliation page: %w", r.Instance, err)
 	}
 	if r.OnCommitted != nil {
