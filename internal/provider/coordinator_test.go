@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -324,6 +325,69 @@ func TestCoordinatorClassifiesCanceledSearchAsWarning(t *testing.T) {
 	completed := providerEvents(providerLogRecords(t, logs.String()), "provider.search_completed")
 	if len(completed) != 1 || completed[0]["outcome"] != "canceled" || completed[0]["level"] != "warn" {
 		t.Fatalf("canceled completion = %#v", completed)
+	}
+}
+
+func TestCoordinatorReportsCleanEmptyProviders(t *testing.T) {
+	for _, mode := range []SearchMode{SearchExactHash, SearchBroad} {
+		t.Run(string(mode), func(t *testing.T) {
+			query := SearchQuery{Media: testQueryMedia(), Language: "en", Mode: mode}
+			emptyRemote := &fakeProvider{id: "empty-remote", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{}}
+			emptyCache := &fakeProvider{id: "empty-cache", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{}}
+			candidate := &fakeProvider{id: "candidate", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{
+				mode: {{ProviderID: "candidate", ResultID: "candidate", ExactHash: true}},
+			}}
+			cooldown := &CooldownError{ProviderID: "cooldown", Scope: OperationSearch, ResetAt: time.Now().Add(time.Hour)}
+			unavailable := &unavailableDownloadProvider{
+				fakeProvider: &fakeProvider{id: "cooldown", capabilities: Capabilities{ExactFileHash: true}},
+				unavailable:  cooldown,
+			}
+			coordinator := newTestCoordinator(emptyRemote, emptyCache, candidate, unavailable)
+			payload, err := json.Marshal(cachedSearchResults{Version: 1, Candidates: []domain.Candidate{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := coordinator.Cache.PutProviderCache(t.Context(), store.ProviderCacheEntry{
+				Key:         providerCacheKey(emptyCache.ID(), query),
+				ProviderID:  emptyCache.ID(),
+				ResultsJSON: payload,
+				ExpiresAt:   coordinator.Clock.Now().Add(time.Hour),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			result := coordinator.Search(t.Context(), query)
+			if got := result.ApplicableProviders; !slices.Equal(got, []string{"empty-remote", "empty-cache", "candidate", "cooldown"}) {
+				t.Fatalf("applicable providers = %v", got)
+			}
+			if got := result.EmptyProviders; !slices.Equal(got, []string{"empty-remote", "empty-cache"}) {
+				t.Fatalf("empty providers = %v", got)
+			}
+			if got := candidateIDs(result.Candidates); !slices.Equal(got, []string{"candidate"}) {
+				t.Fatalf("candidate IDs = %v", got)
+			}
+			if !errors.Is(result.Errors["cooldown"], cooldown) {
+				t.Fatalf("cooldown error = %v", result.Errors["cooldown"])
+			}
+			if len(emptyRemote.calls) != 1 || len(emptyCache.calls) != 0 || len(candidate.calls) != 1 || len(unavailable.calls) != 0 {
+				t.Fatalf("calls = %v/%v/%v/%v", emptyRemote.calls, emptyCache.calls, candidate.calls, unavailable.calls)
+			}
+		})
+	}
+}
+
+func TestCoordinatorNonExactCandidateIsNotCleanEmpty(t *testing.T) {
+	provider := &fakeProvider{id: "non-exact", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{
+		SearchExactHash: {{ProviderID: "non-exact", ResultID: "candidate"}},
+	}}
+	result := newTestCoordinator(provider).Search(t.Context(), SearchQuery{
+		Media: testQueryMedia(), Language: "en", Mode: SearchExactHash,
+	})
+	if got := result.ApplicableProviders; !slices.Equal(got, []string{"non-exact"}) {
+		t.Fatalf("applicable providers = %v", got)
+	}
+	if len(result.Candidates) != 0 || len(result.EmptyProviders) != 0 || len(result.Errors) != 0 {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

@@ -13,6 +13,13 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Provider-specific cooldown resume — coordinator phase progress — 2026-09-13
+
+- Commit: this Task 1 `feat: expose resumable provider search progress` commit, based on `be32333`. Provider searches now accept a coordinator-only exclusion set and report configured-order applicable and clean-empty providers for each exact or broad phase.
+- Exclusions are applied after local phase/language/media-kind applicability checks and before cache access, persisted availability checks, lifecycle logging, or remote search. A successful empty cache hit is clean-empty; candidate-bearing, cooldown, cancellation, disabled, and other error results are not. Exact non-exact candidates remain candidate-bearing rather than clean-empty.
+- TDD: exclusion and phase-accounting regressions failed before the interface/coordination changes and passed afterward. `go test ./internal/provider/... -race -count=1` passed with sanitized fixtures and local loopback fake servers only; no production access or mutation occurred.
+- Next: persist bounded resume progress on first-install search states and carry it through the worker lease lifecycle.
+
 ### Provider-reset scheduling for unfinished initial backfill — 2026-09-13
 
 - Commit: this task, based on `6068d13`. Initial first-install work now remains throttled when at least one applicable provider was skipped by a persisted search/download cooldown and the providers that did run found no installation. The worker retries at the earliest known reset with its existing jitter and does not advance missing-result or technical-failure counters.

@@ -63,9 +63,10 @@ type Throttle struct {
 }
 
 type SearchQuery struct {
-	Media    domain.Media
-	Language domain.Language
-	Mode     SearchMode
+	Media         domain.Media
+	Language      domain.Language
+	Mode          SearchMode
+	SkipProviders []string
 }
 
 type DownloadMetadata struct {

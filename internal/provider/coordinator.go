@@ -52,8 +52,10 @@ type Coordinator struct {
 }
 
 type SearchResult struct {
-	Candidates []domain.Candidate
-	Errors     map[string]error
+	Candidates          []domain.Candidate
+	Errors              map[string]error
+	ApplicableProviders []string
+	EmptyProviders      []string
 }
 
 func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResult {
@@ -69,14 +71,22 @@ func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResul
 
 func (c *Coordinator) searchExact(ctx context.Context, query SearchQuery) SearchResult {
 	result := SearchResult{Errors: make(map[string]error)}
+	skipped := normalizedProviderMembership(query.SkipProviders)
 	for _, item := range c.Providers {
 		if !item.Capabilities().ExactFileHash || !item.SupportsLanguage(query.Language) || !SupportsMediaKind(item, query.Media.Ref.Kind) {
 			continue
 		}
+		if skipped.has(item.ID()) {
+			continue
+		}
+		result.ApplicableProviders = append(result.ApplicableProviders, item.ID())
 		candidates, err := c.searchProvider(ctx, item, query)
 		if err != nil {
 			result.Errors[item.ID()] = err
 			continue
+		}
+		if len(candidates) == 0 {
+			result.EmptyProviders = append(result.EmptyProviders, item.ID())
 		}
 		for _, candidate := range candidates {
 			if candidate.ExactHash {
@@ -89,6 +99,7 @@ func (c *Coordinator) searchExact(ctx context.Context, query SearchQuery) Search
 
 func (c *Coordinator) searchBroad(ctx context.Context, query SearchQuery) SearchResult {
 	result := SearchResult{Errors: make(map[string]error)}
+	skipped := normalizedProviderMembership(query.SkipProviders)
 	type broadResult struct {
 		index      int
 		providerID string
@@ -101,6 +112,10 @@ func (c *Coordinator) searchBroad(ctx context.Context, query SearchQuery) Search
 		if !provider.SupportsLanguage(query.Language) || !SupportsMediaKind(provider, query.Media.Ref.Kind) {
 			continue
 		}
+		if skipped.has(provider.ID()) {
+			continue
+		}
+		result.ApplicableProviders = append(result.ApplicableProviders, provider.ID())
 		active++
 		go func(index int, provider Provider) {
 			candidates, err := c.searchProvider(ctx, provider, query)
@@ -121,9 +136,29 @@ func (c *Coordinator) searchBroad(ctx context.Context, query SearchQuery) Search
 			continue
 		}
 		delete(result.Errors, item.providerID)
+		if len(item.candidates) == 0 {
+			result.EmptyProviders = append(result.EmptyProviders, item.providerID)
+		}
 		result.Candidates = append(result.Candidates, item.candidates...)
 	}
 	return result
+}
+
+type providerMembership map[string]struct{}
+
+func (m providerMembership) has(providerID string) bool {
+	_, found := m[providerID]
+	return found
+}
+
+func normalizedProviderMembership(providerIDs []string) providerMembership {
+	membership := make(providerMembership, len(providerIDs))
+	for _, providerID := range providerIDs {
+		if providerID = strings.TrimSpace(providerID); providerID != "" {
+			membership[providerID] = struct{}{}
+		}
+	}
+	return membership
 }
 
 func (c *Coordinator) searchProvider(ctx context.Context, provider Provider, query SearchQuery) ([]domain.Candidate, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -20,6 +21,85 @@ type unavailableDownloadProvider struct {
 
 func (p *unavailableDownloadProvider) CheckDownloadAvailability(context.Context) error {
 	return p.unavailable
+}
+
+type skippedProviderAccessProbe struct {
+	*fakeProvider
+	t *testing.T
+}
+
+func (p *skippedProviderAccessProbe) CheckDownloadAvailability(context.Context) error {
+	p.t.Error("skipped provider reached download availability")
+	return nil
+}
+
+func (p *skippedProviderAccessProbe) CheckSearchAvailability(context.Context) error {
+	p.t.Error("skipped provider reached search availability")
+	return nil
+}
+
+func (p *skippedProviderAccessProbe) Search(context.Context, SearchQuery) ([]domain.Candidate, error) {
+	p.t.Error("skipped provider reached remote search")
+	return nil, nil
+}
+
+type skipAccessCache struct {
+	*memoryCache
+	t            *testing.T
+	forbiddenKey string
+}
+
+func (c *skipAccessCache) GetProviderCache(ctx context.Context, key string, now time.Time) (store.ProviderCacheEntry, bool, error) {
+	if key == c.forbiddenKey {
+		c.t.Error("skipped provider reached cache read")
+	}
+	return c.memoryCache.GetProviderCache(ctx, key, now)
+}
+
+func (c *skipAccessCache) PutProviderCache(ctx context.Context, entry store.ProviderCacheEntry) error {
+	if entry.Key == c.forbiddenKey {
+		c.t.Error("skipped provider reached cache write")
+	}
+	return c.memoryCache.PutProviderCache(ctx, entry)
+}
+
+func TestCoordinatorSkippedProviderHasNoObservableAccess(t *testing.T) {
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "debug", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := &skippedProviderAccessProbe{
+		fakeProvider: &fakeProvider{id: "skipped"},
+		t:            t,
+	}
+	active := &fakeProvider{id: "active", candidates: map[SearchMode][]domain.Candidate{
+		SearchBroad: {{ProviderID: "active", ResultID: "candidate"}},
+	}}
+	coordinator := newTestCoordinator(skipped, active)
+	coordinator.Events = events
+	query := SearchQuery{
+		Media: testQueryMedia(), Language: "en", Mode: SearchBroad,
+		SkipProviders: []string{"skipped"},
+	}
+	coordinator.Cache = &skipAccessCache{
+		memoryCache:  &memoryCache{entries: map[string]store.ProviderCacheEntry{}},
+		t:            t,
+		forbiddenKey: providerCacheKey("skipped", query),
+	}
+
+	result := coordinator.Search(t.Context(), query)
+	if got := result.ApplicableProviders; !slices.Equal(got, []string{"active"}) {
+		t.Fatalf("applicable providers = %v", got)
+	}
+	if got := candidateIDs(result.Candidates); !slices.Equal(got, []string{"candidate"}) {
+		t.Fatalf("candidate IDs = %v", got)
+	}
+	for _, record := range providerLogRecords(t, logs.String()) {
+		if record["provider"] == "skipped" {
+			t.Fatalf("skipped provider emitted lifecycle log: %#v", record)
+		}
+	}
 }
 
 func TestCoordinatorSkipsDownloadCooldownBeforeSearchAndCache(t *testing.T) {
