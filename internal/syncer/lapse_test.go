@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -139,6 +140,46 @@ func TestAnalyzeRejectsTimeoutNonzeroAndTruncatedOutput(t *testing.T) {
 	}
 }
 
+func TestSynchronizeClassifiesUndecodableNonzeroExit(t *testing.T) {
+	media, subtitle := testFiles(t)
+	const stdoutToken = "private stdout fixture /private/path/token"
+	const stderrToken = "private stderr fixture /private/path/token"
+	tests := []struct {
+		name        string
+		exitCode    int
+		stdout      []byte
+		stderr      []byte
+		stdoutEmpty bool
+		stderrEmpty bool
+	}{
+		{name: "empty buffers", exitCode: 2, stdoutEmpty: true, stderrEmpty: true},
+		{name: "stdout only", exitCode: 2, stdout: []byte(stdoutToken), stderrEmpty: true},
+		{name: "stderr only", exitCode: 2, stdoutEmpty: true, stderr: []byte(stderrToken)},
+		{name: "another nonzero exit", exitCode: 17, stdoutEmpty: true, stderrEmpty: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+				return Execution{ExitCode: test.exitCode, Stdout: test.stdout, Stderr: test.stderr}, nil
+			}), filepath.Dir(media))
+			_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+			var processExit *ProcessExitError
+			if !errors.As(err, &processExit) {
+				t.Fatalf("Synchronize() error = %T %v, want ProcessExitError", err, err)
+			}
+			if processExit.ExitCode != test.exitCode || processExit.StdoutEmpty != test.stdoutEmpty || processExit.StderrEmpty != test.stderrEmpty {
+				t.Fatalf("ProcessExitError = %#v", processExit)
+			}
+			if message := processExit.Error(); strings.Contains(message, stdoutToken) || strings.Contains(message, stderrToken) || strings.Contains(message, media) || strings.Contains(message, subtitle) {
+				t.Fatalf("ProcessExitError leaked private data: %q", message)
+			}
+			if !strings.Contains(processExit.Error(), fmt.Sprintf("%d", test.exitCode)) {
+				t.Fatalf("ProcessExitError = %q, want exit code", processExit.Error())
+			}
+		})
+	}
+}
+
 func TestSynchronizeRequiresSolidReportAndValidatedOutput(t *testing.T) {
 	media, subtitle := testFiles(t)
 	output := filepath.Join(t.TempDir(), "synced.srt")
@@ -249,7 +290,8 @@ func TestLapseFailuresDoNotExposeRawProcessOutput(t *testing.T) {
 				}
 				var noSpeech *NoSpeechError
 				var verdict *VerdictError
-				if errors.As(err, &noSpeech) != test.noSpeech || errors.As(err, &verdict) != (test.verdict != "") || verdict != nil && verdict.Verdict != test.verdict {
+				var processExit *ProcessExitError
+				if errors.As(err, &noSpeech) != test.noSpeech || test.noSpeech && errors.As(err, &processExit) || errors.As(err, &verdict) != (test.verdict != "") || verdict != nil && verdict.Verdict != test.verdict {
 					t.Fatalf("wrong failure classification: %T %v", err, err)
 				}
 			}

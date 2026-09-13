@@ -60,6 +60,19 @@ func (e *InvalidOutputError) Error() string {
 	return e.reason
 }
 
+// ProcessExitError identifies an undecodable nonzero LAPSE process exit.
+// Process output is intentionally not retained because it may contain private
+// subtitle text, paths, or URLs.
+type ProcessExitError struct {
+	ExitCode    int
+	StdoutEmpty bool
+	StderrEmpty bool
+}
+
+func (e *ProcessExitError) Error() string {
+	return fmt.Sprintf("LAPSE exited with code %d", e.ExitCode)
+}
+
 type VerdictError struct {
 	Verdict string
 	Reason  string
@@ -218,7 +231,11 @@ func (l *Lapse) interpret(execution Execution) (domain.SyncResult, lapseReport, 
 			return domain.SyncResult{}, lapseReport{}, &NoSpeechError{}
 		}
 		if execution.ExitCode != 0 {
-			return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE exited with code %d", execution.ExitCode)
+			return domain.SyncResult{}, lapseReport{}, &ProcessExitError{
+				ExitCode:    execution.ExitCode,
+				StdoutEmpty: len(execution.Stdout) == 0,
+				StderrEmpty: len(execution.Stderr) == 0,
+			}
 		}
 		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE returned invalid JSON protocol data")
 	}

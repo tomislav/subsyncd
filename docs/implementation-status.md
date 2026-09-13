@@ -13,6 +13,13 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Repeated silent LAPSE failure quarantine — Task 1 — 2026-09-13
+
+- Commit: this Task 1 `feat: classify silent LAPSE process exits` commit. The syncer now exposes a credential-free `ProcessExitError` for undecodable nonzero exits, carrying only the exit code and stdout/stderr emptiness flags; no process buffers, paths, or tokens are retained. No-speech diagnostics remain `NoSpeechError`, and verdict, validation, timeout, cancellation, and runner failure behavior is unchanged.
+- TDD evidence: the focused synchronization regression first failed to compile because `ProcessExitError` was undefined; after implementation and formatting, the package race suite passed. The accidental over-tight legacy assertion was corrected to reject `ProcessExitError` only for no-speech classification, then the suite passed again.
+- Verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/syncer -race -count=1` passed with sanitized local fixtures and no provider, Arr, Silo, or production requests. No deployment or production mutation occurred.
+- Next task: persist and atomically promote repeated eligible silent exit-2 failures in SQLite.
+
 ### Provider-specific cooldown resume — final-review repairs — 2026-09-13
 
 - Commit: this final-review repair boundary, based on `dc5f5c6`; exact runtime commit is recorded in the final-fix report and follow-up metadata after commit. The final whole-diff review did not approve the previous boundary: it found three important runtime defects (live replacement retaining exclusions, a fixed eight-provider persistence limit incompatible with larger accepted routes, and trimmed provider IDs) plus missing fallback-reorder coverage, inaccurate deletion-race count logs, and overstated review status.
