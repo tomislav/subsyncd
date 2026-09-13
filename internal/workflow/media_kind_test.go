@@ -3,11 +3,13 @@ package workflow
 import (
 	"context"
 	"errors"
+	"slices"
+	"testing"
+	"time"
+
 	"subsyncd/internal/inventory"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/provider/gestdown"
-	"testing"
-	"time"
 )
 
 func TestMovieProviderFailuresExcludeTVOnlyRoutes(t *testing.T) {
@@ -34,5 +36,33 @@ func TestMovieProviderFailuresExcludeTVOnlyRoutes(t *testing.T) {
 				t.Fatal("lost provider reset")
 			}
 		})
+	}
+}
+
+func TestMovieProviderResumeValidatesAgainstConfiguredRoute(t *testing.T) {
+	reset := time.Now().Add(time.Hour)
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchBroad: {
+			ApplicableProviders: []string{"provider"},
+			Errors: map[string]error{"provider": &provider.CooldownError{
+				ProviderID: "provider", Scope: provider.OperationSearch, ResetAt: reset,
+			}},
+		},
+	}}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.ProviderOrder = []string{"gestdown", "provider"}
+	service.Providers["gestdown"] = &gestdown.Client{}
+	request := serviceRequest(t)
+	request.ResumeProviders = []string{"gestdown"}
+	request.ResumeRouteSignature = service.RouteSignature(request.Language)
+
+	result, err := service.Run(t.Context(), request)
+	if err != nil || result.Outcome != OutcomeThrottled || !slices.Equal(result.ResumeProviders, []string{"gestdown"}) {
+		t.Fatalf("Run() = %+v, %v", result, err)
+	}
+	for _, query := range searcher.queries {
+		if !slices.Equal(query.SkipProviders, []string{"gestdown"}) {
+			t.Fatalf("resume exclusions = %v", query.SkipProviders)
+		}
 	}
 }

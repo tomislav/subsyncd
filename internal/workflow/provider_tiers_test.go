@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -269,6 +270,77 @@ func TestProviderTierFallbackRetriesPartiallyUnavailablePreferredAtReset(t *test
 	result, err := s.Run(t.Context(), serviceRequest(t))
 	if err != nil || result.Outcome != OutcomeInstalled || !result.NextUpgrade.Equal(reset) {
 		t.Fatalf("outcome=%s next=%v err=%v", result.Outcome, result.NextUpgrade, err)
+	}
+}
+
+func TestProviderTierResumeSkipsCleanFallbackOnPreferredRetry(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	preferred := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Errors: map[string]error{}},
+		provider.SearchBroad: {
+			ApplicableProviders: []string{"provider"},
+			Errors: map[string]error{"provider": &provider.CooldownError{
+				ProviderID: "provider", Scope: provider.OperationSearch, ResetAt: reset,
+			}},
+		},
+	}}
+	fallback := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Errors: map[string]error{}},
+		provider.SearchBroad: {
+			ApplicableProviders: []string{"fallback"},
+			EmptyProviders:      []string{"fallback"},
+			Errors:              map[string]error{},
+		},
+	}}
+	service, _ := tierService(t, preferred, fallback)
+	request := serviceRequest(t)
+
+	first, err := service.Run(t.Context(), request)
+	if err != nil || first.Outcome != OutcomeThrottled || !slices.Equal(first.ResumeProviders, []string{"fallback"}) {
+		t.Fatalf("first Run() = %+v, %v", first, err)
+	}
+	request.ResumeProviders = slices.Clone(first.ResumeProviders)
+	request.ResumeRouteSignature = first.ResumeRouteSignature
+	second, err := service.Run(t.Context(), request)
+	if err != nil || second.Outcome != OutcomeThrottled || !slices.Equal(second.ResumeProviders, []string{"fallback"}) {
+		t.Fatalf("second Run() = %+v, %v", second, err)
+	}
+	for _, query := range fallback.queries[2:] {
+		if !slices.Equal(query.SkipProviders, []string{"fallback"}) {
+			t.Fatalf("fallback exclusions = %v", query.SkipProviders)
+		}
+	}
+}
+
+func TestProviderTierFallbackInstallClearsProviderResume(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	preferred := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Errors: map[string]error{}},
+		provider.SearchBroad: {
+			ApplicableProviders: []string{"provider", "other"},
+			EmptyProviders:      []string{"other"},
+			Errors: map[string]error{"provider": &provider.CooldownError{
+				ProviderID: "provider", Scope: provider.OperationSearch, ResetAt: reset,
+			}},
+		},
+	}}
+	fallback := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {
+			ApplicableProviders: []string{"fallback"},
+			Candidates:          []domain.Candidate{fallbackCandidate("exact", true)},
+			Errors:              map[string]error{},
+		},
+	}}
+	service, _ := tierService(t, preferred, fallback)
+	service.ProviderOrder = []string{"provider", "other"}
+	service.Providers["other"] = &fakeProvider{id: "other"}
+
+	result, err := service.Run(t.Context(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeInstalled {
+		t.Fatalf("Run() = %+v, %v", result, err)
+	}
+	if len(result.ResumeProviders) != 0 || result.ResumeRouteSignature != "" {
+		t.Fatalf("installed resume = %v/%q", result.ResumeProviders, result.ResumeRouteSignature)
 	}
 }
 

@@ -36,12 +36,14 @@ const (
 )
 
 type Request struct {
-	memberScope string
-	MediaID     int64
-	Media       domain.Media
-	Language    domain.Language
-	Manual      bool
-	ForceProbe  bool
+	memberScope          string
+	MediaID              int64
+	Media                domain.Media
+	Language             domain.Language
+	Manual               bool
+	ForceProbe           bool
+	ResumeProviders      []string
+	ResumeRouteSignature string
 }
 
 type Decision struct {
@@ -57,15 +59,18 @@ type Decision struct {
 }
 
 type Result struct {
-	Outcome        Outcome
-	Candidate      domain.Candidate
-	Score          domain.Score
-	SyncResult     domain.SyncResult
-	Installation   store.Installation
-	RetryAt        time.Time
-	NextUpgrade    time.Time
-	Decisions      []Decision
-	ProviderErrors map[string]error
+	Outcome              Outcome
+	Candidate            domain.Candidate
+	Score                domain.Score
+	SyncResult           domain.SyncResult
+	Installation         store.Installation
+	RetryAt              time.Time
+	NextUpgrade          time.Time
+	Decisions            []Decision
+	ProviderErrors       map[string]error
+	ResumeProviders      []string
+	ResumeRouteSignature string
+	cleanEmptyProviders  []string
 }
 
 type InventoryRefresher interface {
@@ -205,18 +210,23 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	if err := s.validate(request); err != nil {
 		return Result{}, err
 	}
+	request, runErr = s.validatedResumeRequest(request)
+	if runErr != nil {
+		return Result{}, runErr
+	}
 	result = Result{ProviderErrors: map[string]error{}}
 	current, err := s.Inventory.Refresh(ctx, request.MediaID, request.Media, request.ForceProbe)
 	if err != nil {
 		events.Log(ctx, slog.LevelError, "inventory.refresh_failed", "subtitle inventory refresh failed", events.ErrorAttrs("inventory", err)...)
-		return result, fmt.Errorf("refresh subtitle inventory: %w", err)
+		runErr = fmt.Errorf("refresh subtitle inventory: %w", err)
+		return s.finishProviderResume(request, false, result, runErr), runErr
 	}
 	if current.Fingerprint.Path != "" {
 		request.Media.Fingerprint = current.Fingerprint
 	}
 	existing, installed, err := s.Repository.GetInstallation(ctx, request.MediaID, request.Language)
 	if err != nil {
-		return result, err
+		return s.finishProviderResume(request, false, result, err), err
 	}
 	activeInstallation := installed && managedInstallationPresent(current, existing)
 	inventorySatisfied := inventoryStopsSearch(current, request.Language, s.AllowHearingImpaired, activeInstallation, existing)
@@ -248,6 +258,10 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 // acquire performs one provider tier after inventory has been checked once.
 func (s *Service) acquire(ctx context.Context, request Request, existing store.Installation, activeInstallation bool, candidateCount *int) (result Result, runErr error) {
 	result = Result{ProviderErrors: map[string]error{}}
+	var resume providerResumeAccumulator
+	defer func() {
+		result.cleanEmptyProviders = resume.cleanEmpty(s.ProviderOrder)
+	}()
 	var candidateFailures []error
 	var exactRecords []store.CandidateRecord
 	sameCandidateAssessed := false
@@ -348,7 +362,8 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 		}
 	}
 
-	exact := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchExactHash})
+	exact := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchExactHash, SkipProviders: request.ResumeProviders})
+	resume.consume(provider.SearchExactHash, exact)
 	s.logSearchPhase(ctx, provider.SearchExactHash, exact)
 	if err := searchPersistenceFailure(exact.Errors); err != nil {
 		return result, err
@@ -365,7 +380,8 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 		return result, err
 	}
 
-	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchBroad})
+	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchBroad, SkipProviders: request.ResumeProviders})
+	resume.consume(provider.SearchBroad, search)
 	s.logSearchPhase(ctx, provider.SearchBroad, search)
 	if err := searchPersistenceFailure(search.Errors); err != nil {
 		return result, err
@@ -377,7 +393,7 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 		return result, err
 	}
 	result.ProviderErrors = search.Errors
-	providerCount := s.applicableProviderCount(request)
+	providerCount := s.applicableProviderCount(request, search)
 	if len(search.Candidates) == 0 {
 		*candidateCount = len(exactRecords)
 		if len(exactRecords) != 0 || providerCount == 0 || len(search.Errors) < providerCount {
@@ -1404,9 +1420,15 @@ func (s *Service) priorities() map[string]int {
 	return priorities
 }
 
-func (s *Service) applicableProviderCount(request Request) int {
+func (s *Service) applicableProviderCount(request Request, search provider.SearchResult) int {
+	if search.ApplicableProviders != nil {
+		return len(search.ApplicableProviders)
+	}
 	count := 0
 	for _, id := range s.ProviderOrder {
+		if slices.Contains(request.ResumeProviders, id) {
+			continue
+		}
 		p := s.Providers[id]
 		// Custom searchers may not expose adapters through the download map.
 		if p == nil || p.SupportsLanguage(request.Language) && provider.SupportsMediaKind(p, request.Media.Ref.Kind) {

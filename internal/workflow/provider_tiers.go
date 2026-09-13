@@ -35,7 +35,14 @@ func (r *tierRepository) RecordCandidates(ctx context.Context, mediaID int64, la
 	return nil
 }
 
-func (s *Service) runProviderTiers(ctx context.Context, request Request, existing store.Installation, installed bool, count *int) (Result, error) {
+func (s *Service) runProviderTiers(ctx context.Context, request Request, existing store.Installation, installed bool, count *int) (result Result, runErr error) {
+	defer func() {
+		result = s.finishProviderResume(request, installed, result, runErr)
+	}()
+	if installed {
+		request.ResumeProviders = nil
+		request.ResumeRouteSignature = ""
+	}
 	preferred := *s
 	preferred.preferredProviderOrder = s.ProviderOrder
 	repository := &tierRepository{WorkflowRepository: s.Repository, count: count}
@@ -74,6 +81,7 @@ func (s *Service) runProviderTiers(ctx context.Context, request Request, existin
 	fallback.ProviderOrder = s.FallbackProviderOrder
 	fallback.fallbackTier = true
 	second, secondErr := fallback.acquire(ctx, request, existing, installed, count)
+	second.cleanEmptyProviders = s.mergeResumeProviders(first.cleanEmptyProviders, second.cleanEmptyProviders)
 	second.Decisions = append(first.Decisions, second.Decisions...)
 	for id, err := range first.ProviderErrors {
 		second.ProviderErrors[id] = err

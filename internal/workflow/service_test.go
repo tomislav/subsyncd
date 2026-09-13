@@ -1380,6 +1380,157 @@ func TestServiceRetriesInitialSearchAfterPartialProviderThrottle(t *testing.T) {
 	}
 }
 
+func TestServiceProviderResumeRequiresCleanExactAndBroadPhases(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name        string
+		exact       provider.SearchResult
+		wantResume  []string
+		invalidBody bool
+	}{
+		{
+			name: "exact and broad clean-empty",
+			exact: provider.SearchResult{
+				ApplicableProviders: []string{"candidate"},
+				EmptyProviders:      []string{"candidate"},
+				Errors:              map[string]error{},
+			},
+			wantResume: []string{"candidate"},
+		},
+		{
+			name: "exact candidate was deterministically rejected",
+			exact: provider.SearchResult{
+				ApplicableProviders: []string{"candidate"},
+				Candidates:          []domain.Candidate{providerCandidate("candidate", "rejected", true)},
+				Errors:              map[string]error{},
+			},
+			invalidBody: true,
+		},
+		{
+			name: "exact phase failed",
+			exact: provider.SearchResult{
+				ApplicableProviders: []string{"candidate"},
+				Errors:              map[string]error{"candidate": errors.New("exact search failed")},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+				provider.SearchExactHash: test.exact,
+				provider.SearchBroad: {
+					ApplicableProviders: []string{"candidate", "down"},
+					EmptyProviders:      []string{"candidate"},
+					Errors: map[string]error{"down": &provider.CooldownError{
+						ProviderID: "down", Scope: provider.OperationSearch, ResetAt: reset,
+					}},
+				},
+			}}
+			candidateProvider := &fakeProvider{id: "candidate"}
+			if test.invalidBody {
+				candidateProvider.payloads = map[string][]byte{"rejected": []byte("not a subtitle")}
+			}
+			service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+			service.ProviderOrder = []string{"candidate", "down"}
+			service.Providers = map[string]provider.Provider{
+				"candidate": candidateProvider,
+				"down":      &fakeProvider{id: "down"},
+			}
+
+			result, err := service.Run(t.Context(), serviceRequest(t))
+			if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) {
+				t.Fatalf("Run() = %+v, %v", result, err)
+			}
+			if !slices.Equal(result.ResumeProviders, test.wantResume) {
+				t.Fatalf("resume providers = %v, want %v", result.ResumeProviders, test.wantResume)
+			}
+			if len(test.wantResume) == 0 && result.ResumeRouteSignature != "" {
+				t.Fatalf("resume signature = %q, want empty", result.ResumeRouteSignature)
+			}
+		})
+	}
+}
+
+func TestServiceProviderResumeRetainsCleanPeerForCandidateRetry(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name        string
+		downloadErr error
+		wantOutcome Outcome
+		wantErr     bool
+	}{
+		{"download cooldown", &provider.CooldownError{ProviderID: "candidate", Scope: provider.OperationDownload, ResetAt: reset}, OutcomeThrottled, false},
+		{"download technical failure", errors.New("download failed"), "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := providerCandidate("candidate", "candidate", false)
+			searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+				provider.SearchExactHash: {Errors: map[string]error{}},
+				provider.SearchBroad: {
+					ApplicableProviders: []string{"peer", "candidate"},
+					EmptyProviders:      []string{"peer"},
+					Candidates:          []domain.Candidate{candidate},
+					Errors:              map[string]error{},
+				},
+			}}
+			service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+			service.ProviderOrder = []string{"peer", "candidate"}
+			service.Providers = map[string]provider.Provider{
+				"peer":      &fakeProvider{id: "peer"},
+				"candidate": &fakeProvider{id: "candidate", downloadErr: test.downloadErr},
+			}
+
+			result, err := service.Run(t.Context(), serviceRequest(t))
+			if (err != nil) != test.wantErr || result.Outcome != test.wantOutcome {
+				t.Fatalf("Run() = %+v, %v", result, err)
+			}
+			if !slices.Equal(result.ResumeProviders, []string{"peer"}) || result.ResumeRouteSignature != service.RouteSignature("en") {
+				t.Fatalf("resume = %v/%q", result.ResumeProviders, result.ResumeRouteSignature)
+			}
+		})
+	}
+}
+
+func TestServiceUpgradeClearsProviderResumeAndRunsFullRoute(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	request := serviceRequest(t)
+	existing := matchingInstallation(request, broadCandidate("installed"), []byte(`{"total":35}`))
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Errors: map[string]error{}},
+		provider.SearchBroad: {
+			ApplicableProviders: []string{"down", "healthy"},
+			EmptyProviders:      []string{"healthy"},
+			Errors: map[string]error{"down": &provider.CooldownError{
+				ProviderID: "down", Scope: provider.OperationSearch, ResetAt: reset,
+			}},
+		},
+	}}
+	service := testService(t, managedSidecarInventory(existing), searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = &workflowRepository{found: true, installation: existing}
+	service.ProviderOrder = []string{"down", "healthy"}
+	request.ResumeProviders = []string{"healthy"}
+	request.ResumeRouteSignature = service.RouteSignature(request.Language)
+
+	result, err := service.Run(t.Context(), request)
+	if err != nil || result.Outcome != OutcomeNoResult || !result.RetryAt.IsZero() {
+		t.Fatalf("Run() = %+v, %v", result, err)
+	}
+	if len(result.ResumeProviders) != 0 || result.ResumeRouteSignature != "" {
+		t.Fatalf("upgrade resume = %v/%q", result.ResumeProviders, result.ResumeRouteSignature)
+	}
+	for _, query := range searcher.queries {
+		if len(query.SkipProviders) != 0 {
+			t.Fatalf("upgrade exclusions = %v, want none", query.SkipProviders)
+		}
+	}
+}
+
+func providerCandidate(providerID, resultID string, exact bool) domain.Candidate {
+	candidate := broadCandidate(resultID)
+	candidate.ProviderID = providerID
+	candidate.ExactHash = exact
+	return candidate
+}
+
 func TestServiceDoesNotAccelerateUpgradeAfterPartialProviderThrottle(t *testing.T) {
 	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
 	request := serviceRequest(t)
@@ -1472,11 +1623,12 @@ func managedSidecarInventory(installation store.Installation) inventory.Inventor
 type fakeInventory struct {
 	current inventory.Inventory
 	calls   int
+	err     error
 }
 
 func (f *fakeInventory) Refresh(context.Context, int64, domain.Media, bool) (inventory.Inventory, error) {
 	f.calls++
-	return f.current, nil
+	return f.current, f.err
 }
 
 type fakeSearcher struct {
