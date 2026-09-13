@@ -32,7 +32,8 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, filename), make([]byte, 196608), 0600); err != nil {
 				t.Fatal(err)
 			}
-			var listings atomic.Int64
+			var enumerations atomic.Int64
+			var hydrations atomic.Int64
 			arr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("X-Api-Key") != "arr-key" {
 					w.WriteHeader(http.StatusUnauthorized)
@@ -42,18 +43,20 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 				case "/api/v3/history":
 					io.WriteString(w, `{"records":[],"totalRecords":0,"page":1,"pageSize":100}`)
 				case "/api/v3/movie":
-					listings.Add(1)
+					enumerations.Add(1)
 					io.WriteString(w, `[{"id":9,"hasFile":true,"movieFile":{"id":42,"path":"/remote/library/Movie.2024.mkv"}}]`)
 				case "/api/v3/moviefile/42":
+					hydrations.Add(1)
 					io.WriteString(w, `{"id":42,"movieId":9,"path":"/remote/library/Movie.2024.mkv","size":196608,"dateAdded":"2026-09-08T10:00:00Z"}`)
 				case "/api/v3/movie/9":
 					io.WriteString(w, `{"id":9,"title":"Movie","year":2024,"imdbId":"tt1234567","tmdbId":9}`)
 				case "/api/v3/series":
-					listings.Add(1)
+					enumerations.Add(1)
 					io.WriteString(w, `[{"id":10,"title":"Show"}]`)
 				case "/api/v3/episodefile":
 					io.WriteString(w, `[{"id":42,"seriesId":10,"path":"/remote/library/Show.S01E02.mkv"}]`)
 				case "/api/v3/episodefile/42":
+					hydrations.Add(1)
 					io.WriteString(w, `{"id":42,"seriesId":10,"path":"/remote/library/Show.S01E02.mkv","size":196608,"dateAdded":"2026-09-08T10:00:00Z"}`)
 				case "/api/v3/episode":
 					io.WriteString(w, `[{"id":102,"seriesId":10,"seasonNumber":1,"episodeNumber":2,"title":"An Episode"}]`)
@@ -78,11 +81,14 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 			}
 			a := build()
 			defer a.Close()
-			if listings.Load() != 0 {
+			if enumerations.Load() != 0 || hydrations.Load() != 0 {
 				t.Fatal("constructor enumerated Arr library")
 			}
 			if err := a.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 				t.Fatal(err)
+			}
+			if enumerations.Load() != 2 || hydrations.Load() != 1 {
+				t.Fatalf("initial discovery/snapshot calls = %d/%d, want 2/1", enumerations.Load(), hydrations.Load())
 			}
 			id, _, err := a.Repository.FindMedia(context.Background(), domain.MediaRef{Instance: "library", Kind: mediaKind, FileID: 42})
 			if err != nil {
@@ -104,8 +110,8 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 			if err := b.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if listings.Load() != 1 || calls.download.Load() != 1 {
-				t.Fatalf("restart repeated discovery/download: %d/%d", listings.Load(), calls.download.Load())
+			if enumerations.Load() != 3 || hydrations.Load() != 1 || calls.download.Load() != 1 {
+				t.Fatalf("restart enumeration/hydration/download calls = %d/%d/%d, want 3/1/1", enumerations.Load(), hydrations.Load(), calls.download.Load())
 			}
 		})
 	}
