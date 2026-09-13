@@ -23,6 +23,38 @@ type Sonarr struct {
 	mediaRoots []string
 }
 
+func (s *Sonarr) ListIdentitySnapshot(ctx context.Context) (CatalogIdentitySnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return CatalogIdentitySnapshot{}, err
+	}
+	library, ok := s.entity.(sonarrLibraryClient)
+	if !ok {
+		return CatalogIdentitySnapshot{}, fmt.Errorf("Sonarr catalog does not support identity enumeration")
+	}
+	series, err := library.Series(ctx)
+	if err != nil {
+		return CatalogIdentitySnapshot{}, safeArrAPIError(s.client.instance, "series_identity_snapshot", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return CatalogIdentitySnapshot{}, err
+	}
+	if series == nil {
+		return CatalogIdentitySnapshot{}, fmt.Errorf("Sonarr identity snapshot returned an incomplete series collection")
+	}
+	ids := make(map[int64]struct{}, len(series))
+	for _, show := range series {
+		if err := ctx.Err(); err != nil {
+			return CatalogIdentitySnapshot{}, err
+		}
+		id := int64(show.ID)
+		if id <= 0 {
+			return CatalogIdentitySnapshot{}, fmt.Errorf("Sonarr identity snapshot has invalid series identity")
+		}
+		ids[id] = struct{}{}
+	}
+	return CatalogIdentitySnapshot{Kind: domain.MediaEpisode, IDs: ids}, nil
+}
+
 func (s *Sonarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

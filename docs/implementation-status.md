@@ -13,6 +13,27 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Missed Arr Delete Reconciliation — Task 1 — 2026-09-13
+
+- Commit: this Task 1 commit, based on `69cb0ba`. Catalogs now optionally
+  expose one complete identity snapshot containing their media kind and a
+  non-nil set of positive top-level Arr IDs. Sonarr enumerates series and
+  Radarr enumerates movies through the existing arrapi v2.0.5 clients.
+- Adopted behavior: valid duplicate positive IDs collapse; a completed empty
+  collection is authoritative; nil/incomplete collections, non-positive IDs,
+  cancellation, unsupported enumeration, and Arr adapter failures return no
+  snapshot. Adapter failures use the existing bounded, credential-free
+  `safeArrAPIError` boundary. Reconciliation has not changed in this task.
+- TDD: focused tests first failed to compile because
+  `IdentitySnapshotCatalog` did not exist, then passed after the minimal
+  contract and adapters were added. Coverage includes positive enumeration,
+  media kind, duplicate collapse, empty snapshots, invalid IDs, and safe
+  adapter errors.
+- Verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./internal/catalog -run 'IdentitySnapshot' -race -count=1` and the complete `./internal/catalog` race suite passed; `git diff --check` passed. Tests used only sanitized local fixtures and loopback fake servers. No production inspection, Arr request, provider request, filesystem mutation, deployment, or push occurred.
+- Next task: add the active tracked top-level identity store query, then
+  combine it with this complete snapshot under the existing reconciliation
+  revision fence.
+
 ### Repeated silent LAPSE failure quarantine — final-review repairs — 2026-09-13
 
 - Commit: this final-fix boundary, based on `dd81fea`; the exact commit is recorded in `.superpowers/sdd/2026-09-13-repeated-silent-lapse-failure/final-fix-report.md` after commit. The final whole-branch review found that pack-cache/provider duplication could supply both durable observations in one `Service.Run`, while process-bearing composites joined with deterministic errors could still create an immediate rejection or lose technical classification.

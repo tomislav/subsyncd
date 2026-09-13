@@ -107,6 +107,38 @@ type Radarr struct {
 	mediaRoots []string
 }
 
+func (r *Radarr) ListIdentitySnapshot(ctx context.Context) (CatalogIdentitySnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return CatalogIdentitySnapshot{}, err
+	}
+	library, ok := r.entity.(radarrLibraryClient)
+	if !ok {
+		return CatalogIdentitySnapshot{}, fmt.Errorf("Radarr catalog does not support identity enumeration")
+	}
+	movies, err := library.Movies(ctx)
+	if err != nil {
+		return CatalogIdentitySnapshot{}, safeArrAPIError(r.client.instance, "movie_identity_snapshot", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return CatalogIdentitySnapshot{}, err
+	}
+	if movies == nil {
+		return CatalogIdentitySnapshot{}, fmt.Errorf("Radarr identity snapshot returned an incomplete movie collection")
+	}
+	ids := make(map[int64]struct{}, len(movies))
+	for _, movie := range movies {
+		if err := ctx.Err(); err != nil {
+			return CatalogIdentitySnapshot{}, err
+		}
+		id := int64(movie.ID)
+		if id <= 0 {
+			return CatalogIdentitySnapshot{}, fmt.Errorf("Radarr identity snapshot has invalid movie identity")
+		}
+		ids[id] = struct{}{}
+	}
+	return CatalogIdentitySnapshot{Kind: domain.MediaMovie, IDs: ids}, nil
+}
+
 func NewRadarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string, events *observability.Emitter) (*Radarr, error) {
 	client, err := newArrClient(instance, rawURL, apiKey, nil)
 	if err != nil {

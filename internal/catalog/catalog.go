@@ -24,6 +24,21 @@ type LibraryCatalog interface {
 	ListLibrary(context.Context) ([]domain.Media, error)
 }
 
+// CatalogIdentitySnapshot is a complete, validated set of current top-level
+// Arr identities for one media kind. IDs are always positive and duplicates
+// are collapsed.
+type CatalogIdentitySnapshot struct {
+	Kind domain.MediaKind
+	IDs  map[int64]struct{}
+}
+
+// IdentitySnapshotCatalog is an optional capability implemented by catalogs
+// that can enumerate current top-level Arr identities independently of
+// retained history.
+type IdentitySnapshotCatalog interface {
+	ListIdentitySnapshot(context.Context) (CatalogIdentitySnapshot, error)
+}
+
 type HistoryState string
 
 const (

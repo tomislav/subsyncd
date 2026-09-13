@@ -2,19 +2,23 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/cplieger/arrapi/v2"
 
 	"subsyncd/internal/config"
+	"subsyncd/internal/domain"
 )
 
 type radarrLibraryFake struct {
 	movies []arrapi.Movie
 	cancel context.CancelFunc
+	err    error
 }
 
 func (f radarrLibraryFake) History(context.Context, arrapi.HistoryOptions) (arrapi.HistoryPage, error) {
@@ -29,13 +33,14 @@ func (f radarrLibraryFake) Movies(context.Context) ([]arrapi.Movie, error) {
 	if f.cancel != nil {
 		f.cancel()
 	}
-	return f.movies, nil
+	return f.movies, f.err
 }
 
 type sonarrLibraryFake struct {
 	series []arrapi.Series
 	files  map[int][]arrapi.EpisodeFile
 	cancel context.CancelFunc
+	err    error
 }
 
 func (f sonarrLibraryFake) History(context.Context, arrapi.HistoryOptions) (arrapi.HistoryPage, error) {
@@ -50,11 +55,87 @@ func (f sonarrLibraryFake) Series(context.Context) ([]arrapi.Series, error) {
 	if f.cancel != nil {
 		f.cancel()
 	}
-	return f.series, nil
+	return f.series, f.err
 }
 
 func (f sonarrLibraryFake) EpisodeFiles(_ context.Context, seriesID int) ([]arrapi.EpisodeFile, error) {
 	return f.files[seriesID], nil
+}
+
+func TestListIdentitySnapshotEnumeratesPositiveIDsAndCollapsesDuplicates(t *testing.T) {
+	for name, catalog := range map[string]IdentitySnapshotCatalog{
+		"sonarr": &Sonarr{
+			client: &arrClient{instance: "sonarr-main"},
+			entity: sonarrLibraryFake{series: []arrapi.Series{{ID: 12}, {ID: 4}, {ID: 12}}},
+		},
+		"radarr": &Radarr{
+			client: &arrClient{instance: "radarr-main"},
+			entity: radarrLibraryFake{movies: []arrapi.Movie{{ID: 12}, {ID: 4}, {ID: 12}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			snapshot, err := catalog.ListIdentitySnapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantKind := domain.MediaEpisode
+			if name == "radarr" {
+				wantKind = domain.MediaMovie
+			}
+			if snapshot.Kind != wantKind {
+				t.Fatalf("snapshot kind = %q, want %q", snapshot.Kind, wantKind)
+			}
+			if want := map[int64]struct{}{4: {}, 12: {}}; !reflect.DeepEqual(snapshot.IDs, want) {
+				t.Fatalf("snapshot IDs = %#v, want %#v", snapshot.IDs, want)
+			}
+		})
+	}
+}
+
+func TestListIdentitySnapshotReturnsCompleteEmptySet(t *testing.T) {
+	for name, catalog := range map[string]IdentitySnapshotCatalog{
+		"sonarr": &Sonarr{client: &arrClient{instance: "sonarr-main"}, entity: sonarrLibraryFake{series: []arrapi.Series{}}},
+		"radarr": &Radarr{client: &arrClient{instance: "radarr-main"}, entity: radarrLibraryFake{movies: []arrapi.Movie{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			snapshot, err := catalog.ListIdentitySnapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.IDs == nil || len(snapshot.IDs) != 0 {
+				t.Fatalf("snapshot IDs = %#v, want non-nil empty set", snapshot.IDs)
+			}
+		})
+	}
+}
+
+func TestListIdentitySnapshotRejectsNonPositiveIDs(t *testing.T) {
+	for name, catalog := range map[string]IdentitySnapshotCatalog{
+		"sonarr zero":     &Sonarr{client: &arrClient{instance: "sonarr-main"}, entity: sonarrLibraryFake{series: []arrapi.Series{{ID: 0}}}},
+		"sonarr negative": &Sonarr{client: &arrClient{instance: "sonarr-main"}, entity: sonarrLibraryFake{series: []arrapi.Series{{ID: -1}}}},
+		"radarr zero":     &Radarr{client: &arrClient{instance: "radarr-main"}, entity: radarrLibraryFake{movies: []arrapi.Movie{{ID: 0}}}},
+		"radarr negative": &Radarr{client: &arrClient{instance: "radarr-main"}, entity: radarrLibraryFake{movies: []arrapi.Movie{{ID: -1}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := catalog.ListIdentitySnapshot(context.Background()); err == nil {
+				t.Fatal("ListIdentitySnapshot() error = nil")
+			}
+		})
+	}
+}
+
+func TestListIdentitySnapshotWrapsAdapterErrorsSafely(t *testing.T) {
+	const sensitive = "secret /media/private"
+	for name, catalog := range map[string]IdentitySnapshotCatalog{
+		"sonarr": &Sonarr{client: &arrClient{instance: "sonarr-main"}, entity: sonarrLibraryFake{err: errors.New(sensitive)}},
+		"radarr": &Radarr{client: &arrClient{instance: "radarr-main"}, entity: radarrLibraryFake{err: errors.New(sensitive)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := catalog.ListIdentitySnapshot(context.Background()); err == nil || strings.Contains(err.Error(), sensitive) {
+				t.Fatalf("ListIdentitySnapshot() error = %v, want bounded safe error", err)
+			}
+		})
+	}
 }
 
 func TestRadarrListLibraryRejectsMalformedAndConflictingEntries(t *testing.T) {
