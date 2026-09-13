@@ -37,6 +37,7 @@ const (
 
 type Request struct {
 	memberScope          string
+	attemptedArtifacts   map[candidateArtifactIdentity]struct{}
 	MediaID              int64
 	Media                domain.Media
 	Language             domain.Language
@@ -171,6 +172,20 @@ type preparedCandidate struct {
 	bypass bool
 }
 
+type candidateArtifactIdentity struct {
+	mediaID            int64
+	language           string
+	providerID         string
+	resultID           string
+	candidateSignature string
+	artifactChecksum   string
+	toolSignature      string
+	mediaPath          string
+	mediaFileID        int64
+	mediaSize          int64
+	mediaModTimeNS     int64
+}
+
 func (s *Service) Run(ctx context.Context, request Request) (result Result, runErr error) {
 	events := s.workflowEvents()
 	ctx = observability.WithAttrs(ctx, slog.String("media_title", observability.MediaTitle(request.Media)))
@@ -258,6 +273,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 			return result, nil
 		}
 	}
+	request.attemptedArtifacts = make(map[candidateArtifactIdentity]struct{})
 
 	return s.runProviderTiers(ctx, request, existing, activeInstallation, &candidateCount)
 }
@@ -807,7 +823,7 @@ func (s *Service) logLapseFailure(ctx context.Context, phase string, candidate d
 	result := domain.SyncResult{}
 	level := slog.LevelError
 	var verdict *syncer.VerdictError
-	if errors.As(err, &verdict) {
+	if !hasProcessExitError(err) && errors.As(err, &verdict) {
 		result.Verdict = observability.SafeText(verdict.Verdict)
 		level = slog.LevelWarn
 	}
@@ -847,6 +863,9 @@ func lapseCompatibilityVersion(s *Service) string {
 }
 
 func lapseFailureDecision(failure error) string {
+	if hasProcessExitError(failure) {
+		return "error"
+	}
 	var verdict *syncer.VerdictError
 	if errors.As(failure, &verdict) {
 		return "non-solid"
@@ -860,7 +879,11 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 		return checksumErr
 	}
 	processExit, eligibleProcessExit := singleProcessExitError(failure)
-	if ctx.Err() == nil && eligibleProcessExit && processExit.ExitCode == 2 && processExit.StdoutEmpty && processExit.StderrEmpty {
+	if hasProcessExitError(failure) {
+		if ctx.Err() != nil || !eligibleProcessExit || processExit.ExitCode != 2 || !processExit.StdoutEmpty || !processExit.StderrEmpty {
+			*candidateFailures = append(*candidateFailures, failure)
+			return nil
+		}
 		rejection, err := s.candidateRejectionIdentity(request, candidate, checksum)
 		if err != nil {
 			return err
@@ -902,6 +925,32 @@ func singleProcessExitError(failure error) (*syncer.ProcessExitError, bool) {
 		}
 	}
 	return nil, false
+}
+
+func hasProcessExitError(failure error) bool {
+	var processExit *syncer.ProcessExitError
+	return errors.As(failure, &processExit)
+}
+
+func (s *Service) beginCandidatePreparation(request Request, candidate domain.Candidate, path string) (bool, error) {
+	checksum, err := fileChecksum(path)
+	if err != nil {
+		return false, err
+	}
+	identity, err := s.candidateRejectionIdentity(request, candidate, checksum)
+	if err != nil {
+		return false, err
+	}
+	key := candidateArtifactIdentity{
+		mediaID: identity.MediaID, language: identity.Language, providerID: identity.ProviderID, resultID: identity.ResultID,
+		candidateSignature: identity.CandidateSignature, artifactChecksum: identity.ArtifactChecksum, toolSignature: identity.ToolSignature,
+		mediaPath: identity.MediaPath, mediaFileID: identity.MediaFileID, mediaSize: identity.MediaSize, mediaModTimeNS: identity.MediaModTimeNS,
+	}
+	if _, attempted := request.attemptedArtifacts[key]; attempted {
+		return false, nil
+	}
+	request.attemptedArtifacts[key] = struct{}{}
+	return true, nil
 }
 
 func (s *Service) candidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, bool, error) {

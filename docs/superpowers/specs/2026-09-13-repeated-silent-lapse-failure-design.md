@@ -19,7 +19,8 @@ remain technical.
 
 - Keep the first silent exit-2 failure retryable as a technical failure.
 - Quarantine only an identical candidate artifact after the same silent exit-2
-  failure is observed on a second workflow attempt.
+  failure is observed on a second workflow attempt. The same immutable identity
+  is invoked and counted at most once within any one attempt.
 - Continue the current acquisition after confirmation so other candidates and
   providers remain eligible.
 - Survive daemon and host restarts without broadening the rejection identity.
@@ -95,7 +96,15 @@ occurrence before classifying the outcome:
 Persisting the second strike and rejection must be one SQLite transaction. A
 repository failure remains technical and must not pretend that the candidate
 was quarantined. The workflow performs no immediate confirmation invocation;
-the two observations must come from separate candidate preparations.
+the two observations must come from separate workflow attempts. A request-local
+identity fence prevents pack cache, exact, broad, preferred, or fallback
+acquisition from invoking LAPSE or recording another strike for the same
+candidate/artifact/rejection identity within one attempt.
+
+Any composite failure containing a process-exit error remains technical as a
+whole, including when another cause is a verdict, archive selection, content,
+no-speech, cancellation, filesystem, or protocol error. It must be classified
+before the established deterministic candidate-rejection cases.
 
 Successful synchronization and other deterministic outcomes may delete a
 matching stale strike best-effort only as part of an explicit repository
@@ -140,6 +149,10 @@ Focused red/green tests will cover:
 - fingerprint changes preventing strike inheritance;
 - second-strike persistence failure remaining technical;
 - confirmed rejection advancing to another candidate/provider;
+- pack-cache/provider duplication producing only one invocation and strike per
+  workflow attempt;
+- process-bearing composite failures remaining technical before deterministic
+  classification;
 - manual rejected-candidate retry clearing both durable states; and
 - migration preservation of all pre-existing durable tables.
 

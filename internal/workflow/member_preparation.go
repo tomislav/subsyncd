@@ -54,6 +54,18 @@ func (s *Service) prepareMembers(ctx context.Context, request Request, item down
 			}
 			current.runtimePack = true
 		}
+		attempt, err := s.beginCandidatePreparation(scoped, item.candidate, path)
+		if err != nil {
+			return nil, err
+		}
+		if !attempt {
+			allRejected = false
+			groupMayReject = false
+			if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {
+				return nil, cleanupErr
+			}
+			continue
+		}
 		prepared, err := s.prepareCandidate(memberCtx, scoped, current, installed, existing, workspace, index+n)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr

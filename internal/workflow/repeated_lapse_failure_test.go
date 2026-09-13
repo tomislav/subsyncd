@@ -14,6 +14,7 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
 	"subsyncd/internal/observability"
+	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
@@ -91,6 +92,89 @@ func TestRepeatedSilentLapseFailureSurvivesRestartAndAdvancesCandidate(t *testin
 	}
 }
 
+func TestRepeatedSilentLapseFailureCountsPackCacheAndBroadDuplicateOncePerRun(t *testing.T) {
+	ctx := t.Context()
+	request := serviceRequest(t)
+	request.Media.EntityID = 1
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Title = "Show"
+	request.Media.Season = 1
+	request.Media.Episode = 2
+	request.Media.EpisodeTitle = "Pilot"
+	request.Media.ReleaseGroup = "GROUP"
+	candidate := broadCandidate("silent")
+	candidate.Kind = domain.MediaEpisode
+	candidate.Title = "Show"
+	candidate.Season = 1
+	candidate.Episode = 2
+	candidate.ReleaseNames = []string{"Show.S01E02-GROUP"}
+	candidate.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: 1}
+	good := candidate
+	good.ResultID = "good"
+	good.DownloadRef = "/secret/good"
+	good.ReleaseNames = nil
+	good.Pack = nil
+
+	cachePath := writeInstallFile(t, filepath.Join(t.TempDir(), "cached.srt"), installSRT)
+	checksum, err := fileChecksum(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakePackCache{found: true, member: pack.CachedMember{Candidate: candidate, Path: cachePath, Checksum: checksum, RuntimePack: true}}
+	synchronizer := &fakeSynchronizer{synchronizeErrors: map[string]error{"silent": &syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}}}
+	providerFake := &fakeProvider{
+		id:        "provider",
+		payloads:  map[string][]byte{"silent": []byte(installSRT)},
+		filenames: map[string]string{"silent": "Show.S01E02.srt"},
+	}
+	databasePath := filepath.Join(t.TempDir(), "state.db")
+	database, err := store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.MediaID, _, err = database.Repository().UpsertMedia(ctx, request.Media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := repeatedLapseCacheTestService(t, database.Repository(), synchronizer, providerFake, cache, []domain.Candidate{candidate})
+	first, err := service.Run(ctx, request)
+	var exhausted *acquisitionExhaustedError
+	if err == nil || !errors.As(err, &exhausted) || first.Outcome != "" {
+		t.Fatalf("first Run() = %+v/%T %v, want technical failure", first, err, err)
+	}
+	if !slices.Equal(synchronizer.synchronized, []string{"silent"}) {
+		t.Fatalf("first-run LAPSE invocations = %v, want one cached artifact attempt", synchronizer.synchronized)
+	}
+	if !slices.Equal(providerFake.downloaded, []string{"silent"}) {
+		t.Fatalf("first-run broad encounters = %v, want duplicate encountered once", providerFake.downloaded)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if strikes, rejections := repeatedLapseCounts(t, databasePath); strikes != 1 || rejections != 0 {
+		t.Fatalf("first-run strikes/rejections = %d/%d, want 1/0", strikes, rejections)
+	}
+
+	database, err = store.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service = repeatedLapseCacheTestService(t, database.Repository(), synchronizer, providerFake, cache, []domain.Candidate{candidate, good})
+	second, err := service.Run(ctx, request)
+	if err != nil || second.Outcome != OutcomeInstalled || second.Candidate.ResultID != "good" {
+		t.Fatalf("second Run() = %+v/%v, want later candidate installed", second, err)
+	}
+	if !slices.Equal(synchronizer.synchronized, []string{"silent", "silent", "good"}) {
+		t.Fatalf("cross-run LAPSE invocations = %v, want one silent attempt per run then good", synchronizer.synchronized)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if strikes, rejections := repeatedLapseCounts(t, databasePath); strikes != 0 || rejections != 1 {
+		t.Fatalf("second-run strikes/rejections = %d/%d, want 0/1", strikes, rejections)
+	}
+}
+
 func TestRepeatedSilentLapseFailureEligibilityControls(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -102,9 +186,6 @@ func TestRepeatedSilentLapseFailureEligibilityControls(t *testing.T) {
 		{name: "different exit", failure: &syncer.ProcessExitError{ExitCode: 1, StdoutEmpty: true, StderrEmpty: true}},
 		{name: "timeout", failure: context.DeadlineExceeded},
 		{name: "canceled typed exit", ctx: func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }, failure: &syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}},
-		{name: "joined cancellation", failure: errors.Join(&syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}, context.Canceled)},
-		{name: "joined filesystem failure", failure: errors.Join(&syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}, errors.New("read synchronized artifact"))},
-		{name: "joined protocol failure", failure: errors.Join(&syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}, errors.New("decode LAP protocol"))},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -122,6 +203,64 @@ func TestRepeatedSilentLapseFailureEligibilityControls(t *testing.T) {
 			}
 			if len(repository.lapseFailures) != 0 || len(failures) != 1 || !errors.Is(failures[0], test.failure) {
 				t.Fatalf("strike/failures = %#v/%#v, want no strike and original technical failure", repository.lapseFailures, failures)
+			}
+		})
+	}
+}
+
+func TestProcessBearingCompositeFailuresRemainTechnical(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		cause error
+	}{
+		{name: "verdict", cause: &syncer.VerdictError{Verdict: "unsure"}},
+		{name: "selection", cause: &pack.SelectionError{Rule: "none", Reason: "ambiguous"}},
+		{name: "content", cause: &pack.ContentError{Err: errors.New("invalid archive")}},
+		{name: "no speech", cause: &syncer.NoSpeechError{}},
+		{name: "cancellation", cause: context.Canceled},
+		{name: "filesystem", cause: errors.New("read synchronized artifact")},
+		{name: "protocol", cause: errors.New("decode LAPSE protocol")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := serviceRequest(t)
+			artifact := writeInstallFile(t, filepath.Join(t.TempDir(), "selected.srt"), installSRT)
+			repository := &workflowRepository{}
+			service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+			service.Repository = repository
+			failure := errors.Join(&syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}, test.cause)
+			failures := []error{}
+			if err := service.handleCandidateFailure(t.Context(), request, broadCandidate("silent"), artifact, failure, &failures); err != nil {
+				t.Fatal(err)
+			}
+			if len(repository.lapseFailures) != 0 || len(repository.rejections) != 0 || len(failures) != 1 || failures[0] != failure || lapseFailureDecision(failure) != "error" {
+				t.Fatalf("strikes/rejections/failures = %#v/%#v/%#v, want compound technical failure only", repository.lapseFailures, repository.rejections, failures)
+			}
+		})
+	}
+}
+
+func TestRepeatedSilentLapseFailurePreservesDirectDeterministicOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		failure    error
+		wantReason string
+	}{
+		{name: "verdict", failure: &syncer.VerdictError{Verdict: "unsure"}, wantReason: "lapse_unsure"},
+		{name: "selection", failure: &pack.SelectionError{Rule: "none", Reason: "ambiguous"}, wantReason: "pack_selection"},
+		{name: "content", failure: &pack.ContentError{Err: errors.New("invalid archive")}, wantReason: "invalid_subtitle"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := serviceRequest(t)
+			artifact := writeInstallFile(t, filepath.Join(t.TempDir(), "selected.srt"), installSRT)
+			repository := &workflowRepository{}
+			service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+			service.Repository = repository
+			failures := []error{}
+			if err := service.handleCandidateFailure(t.Context(), request, broadCandidate("candidate"), artifact, test.failure, &failures); err != nil {
+				t.Fatal(err)
+			}
+			if len(repository.lapseFailures) != 0 || len(repository.rejections) != 1 || repository.rejections[0].ReasonCode != test.wantReason || len(failures) != 0 {
+				t.Fatalf("strikes/rejections/failures = %#v/%#v/%#v", repository.lapseFailures, repository.rejections, failures)
 			}
 		})
 	}
@@ -254,6 +393,19 @@ func repeatedLapseTestService(t *testing.T, request Request, repository Workflow
 		provider.SearchBroad:     {Candidates: candidates},
 	}}
 	service := testService(t, inventory.Inventory{}, searcher, nil, synchronizer, &fakeInstaller{})
+	service.Repository = repository
+	service.Providers = map[string]provider.Provider{"provider": providerFake}
+	service.LapsePolicy.Mode = "always"
+	return service
+}
+
+func repeatedLapseCacheTestService(t *testing.T, repository WorkflowRepository, synchronizer CandidateSynchronizer, providerFake *fakeProvider, cache PackCache, candidates []domain.Candidate) *Service {
+	t.Helper()
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {},
+		provider.SearchBroad:     {Candidates: candidates},
+	}}
+	service := testService(t, inventory.Inventory{}, searcher, cache, synchronizer, &fakeInstaller{})
 	service.Repository = repository
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
 	service.LapsePolicy.Mode = "always"

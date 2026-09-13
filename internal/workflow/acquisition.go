@@ -103,6 +103,16 @@ func (s *Service) tryExactCandidates(
 		if err := checkMediaAvailable(request.Media); err != nil {
 			return false, err
 		}
+		attempt, err := s.beginCandidatePreparation(request, candidate, path)
+		if err != nil {
+			return false, err
+		}
+		if !attempt {
+			if cleanupErr := removeWorkflowArtifact(workspace, path); cleanupErr != nil {
+				return false, cleanupErr
+			}
+			continue
+		}
 		prepared, err := s.prepareCandidate(ctx, request, downloadedCandidate{candidate: candidate, score: score, priority: priority, path: path, runtimePack: runtimePack}, installed, existing, workspace, -index-2)
 		if err != nil {
 			if handleErr := s.handleCandidateFailure(ctx, request, candidate, path, err, candidateFailures); handleErr != nil {
