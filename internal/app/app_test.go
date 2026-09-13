@@ -594,6 +594,14 @@ func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 	if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "bad", CandidateSignature: "candidate", ReasonCode: "lapse_unsure", ToolSignature: "tool", MediaPath: mediaPath, MediaFileID: 7, MediaSize: info.Size(), MediaModTimeNS: info.ModTime().UnixNano(), RejectedAt: now, ExpiresAt: now.Add(24 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
+	strike := store.CandidateLapseFailure{
+		Rejection:        store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "silent", CandidateSignature: "candidate-strike", ArtifactChecksum: "artifact-strike", ToolSignature: "tool-strike", MediaPath: mediaPath, MediaFileID: 7, MediaSize: info.Size(), MediaModTimeNS: info.ModTime().UnixNano()},
+		FailureSignature: "exit_2_empty_output",
+		ObservedAt:       now,
+	}
+	if confirmed, err := application.Repository.RecordCandidateLapseFailure(context.Background(), strike); err != nil || confirmed {
+		t.Fatalf("initial strike = %v/%v", confirmed, err)
+	}
 
 	if _, err := application.Search(context.Background(), "tv", "movie", 7, "en", true); err != nil {
 		t.Fatal(err)
@@ -601,6 +609,9 @@ func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 	rejections, err := application.Repository.ListCandidateRejections(context.Background(), mediaID, "en", now)
 	if err != nil || len(rejections) != 0 {
 		t.Fatalf("rejections after manual retry = %#v/%v", rejections, err)
+	}
+	if confirmed, err := application.Repository.RecordCandidateLapseFailure(context.Background(), strike); err != nil || confirmed {
+		t.Fatalf("strike after manual retry = %v/%v, want fresh first strike", confirmed, err)
 	}
 }
 

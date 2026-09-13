@@ -1803,10 +1803,13 @@ func (f *fakeInstaller) Install(_ context.Context, request InstallRequest) (stor
 }
 
 type workflowRepository struct {
-	installation store.Installation
-	found        bool
-	candidates   []store.CandidateRecord
-	rejections   []store.CandidateRejection
+	installation   store.Installation
+	found          bool
+	candidates     []store.CandidateRecord
+	rejections     []store.CandidateRejection
+	lapseFailures  []store.CandidateLapseFailure
+	lapseConfirmed bool
+	lapseErr       error
 }
 
 func (r *workflowRepository) GetInstallation(context.Context, int64, domain.Language) (store.Installation, bool, error) {
@@ -1826,6 +1829,11 @@ func (r *workflowRepository) RecordCandidates(_ context.Context, _ int64, _ doma
 func (r *workflowRepository) PutCandidateRejection(_ context.Context, rejection store.CandidateRejection) error {
 	r.rejections = append(r.rejections, rejection)
 	return nil
+}
+
+func (r *workflowRepository) RecordCandidateLapseFailure(_ context.Context, failure store.CandidateLapseFailure) (bool, error) {
+	r.lapseFailures = append(r.lapseFailures, failure)
+	return r.lapseConfirmed, r.lapseErr
 }
 
 func (r *workflowRepository) GetCandidateRejection(_ context.Context, lookup store.CandidateRejectionLookup) (store.CandidateRejection, bool, error) {

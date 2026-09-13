@@ -100,6 +100,7 @@ type WorkflowRepository interface {
 	RecordCandidates(context.Context, int64, domain.Language, []store.CandidateRecord) error
 	GetCandidateRejection(context.Context, store.CandidateRejectionLookup) (store.CandidateRejection, bool, error)
 	PutCandidateRejection(context.Context, store.CandidateRejection) error
+	RecordCandidateLapseFailure(context.Context, store.CandidateLapseFailure) (bool, error)
 }
 
 type WorkflowClock interface{ Now() time.Time }
@@ -858,6 +859,29 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 	if checksumErr != nil {
 		return checksumErr
 	}
+	var processExit *syncer.ProcessExitError
+	if ctx.Err() == nil && errors.As(failure, &processExit) && processExit.ExitCode == 2 && processExit.StdoutEmpty && processExit.StderrEmpty {
+		rejection, err := s.candidateRejectionIdentity(request, candidate, checksum)
+		if err != nil {
+			return err
+		}
+		confirmed, err := s.Repository.RecordCandidateLapseFailure(ctx, store.CandidateLapseFailure{
+			Rejection:        rejection,
+			FailureSignature: "exit_2_empty_output",
+			ObservedAt:       s.Clock.Now(),
+		})
+		if err != nil {
+			return err
+		}
+		if confirmed {
+			decision := candidateFailureDecision("candidate", candidate, failure)
+			decision.ReasonCode = "lapse_repeated_empty_exit"
+			s.logCandidateRejection(ctx, decision)
+			return nil
+		}
+		*candidateFailures = append(*candidateFailures, failure)
+		return nil
+	}
 	recorded, rejectionErr := s.recordCandidateRejection(ctx, request, candidate, checksum, failure)
 	if rejectionErr != nil {
 		return rejectionErr
@@ -869,19 +893,31 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 }
 
 func (s *Service) candidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, bool, error) {
-	signature, err := candidateSignature(candidate, request.Media)
-	if request.memberScope != "" {
-		signature += "/member-" + request.memberScope
-	}
+	identity, err := s.candidateRejectionIdentity(request, candidate, artifactChecksum)
 	if err != nil {
 		return store.CandidateRejection{}, false, err
 	}
-	fingerprint := request.Media.Fingerprint
 	return s.Repository.GetCandidateRejection(ctx, store.CandidateRejectionLookup{
+		MediaID: identity.MediaID, Language: identity.Language, ProviderID: identity.ProviderID, ResultID: identity.ResultID,
+		CandidateSignature: identity.CandidateSignature, ArtifactChecksum: identity.ArtifactChecksum, ToolSignature: identity.ToolSignature,
+		MediaPath: identity.MediaPath, MediaFileID: identity.MediaFileID, MediaSize: identity.MediaSize, MediaModTimeNS: identity.MediaModTimeNS, Now: s.Clock.Now(),
+	})
+}
+
+func (s *Service) candidateRejectionIdentity(request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, error) {
+	signature, err := candidateSignature(candidate, request.Media)
+	if err != nil {
+		return store.CandidateRejection{}, err
+	}
+	if request.memberScope != "" {
+		signature += "/member-" + request.memberScope
+	}
+	fingerprint := request.Media.Fingerprint
+	return store.CandidateRejection{
 		MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
 		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ToolSignature: s.rejectionToolSignature(),
-		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), Now: s.Clock.Now(),
-	})
+		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(),
+	}, nil
 }
 
 func (s *Service) recordCandidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string, failure error) (bool, error) {
