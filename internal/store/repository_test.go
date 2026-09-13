@@ -144,7 +144,7 @@ func TestBaselineRequiresPositiveMediaEntityID(t *testing.T) {
 
 func TestBaselineHasCompleteCurrentSurface(t *testing.T) {
 	repo := openTestRepository(t)
-	wantTables := []string{"instances", "media", "tracks", "search_states", "provider_states", "provider_cache", "pack_cache", "pack_members", "candidates", "installations", "notifications", "events", "media_hashes", "candidate_rejections"}
+	wantTables := []string{"instances", "media", "tracks", "search_states", "provider_states", "provider_cache", "pack_cache", "pack_members", "candidates", "installations", "notifications", "events", "media_hashes", "candidate_rejections", "candidate_lapse_failures"}
 	for _, name := range wantTables {
 		var count int
 		if err := repo.store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count); err != nil || count != 1 {
@@ -180,14 +180,14 @@ func TestBaselineHasCompleteCurrentSurface(t *testing.T) {
 			}
 		}
 	}
-	wantIndexes := []string{"tracks_media_language_idx", "search_due_idx", "provider_cache_expiry_idx", "pack_lookup_idx", "pack_lru_idx", "notifications_dedupe_idx", "notifications_due_idx", "events_event_id_idx", "events_created_idx", "candidate_rejections_lookup_idx", "media_entity_identity_idx"}
+	wantIndexes := []string{"tracks_media_language_idx", "search_due_idx", "provider_cache_expiry_idx", "pack_lookup_idx", "pack_lru_idx", "notifications_dedupe_idx", "notifications_due_idx", "events_event_id_idx", "events_created_idx", "candidate_rejections_lookup_idx", "candidate_lapse_failures_media_language_idx", "media_entity_identity_idx"}
 	for _, name := range wantIndexes {
 		var count int
 		if err := repo.store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("index %s count/error = %d/%v", name, count, err)
 		}
 	}
-	wantForeignKeys := map[string]string{"tracks": "media", "search_states": "media", "pack_members": "pack_cache", "candidates": "media", "installations": "media", "events": "media", "media_hashes": "media", "candidate_rejections": "media"}
+	wantForeignKeys := map[string]string{"tracks": "media", "search_states": "media", "pack_members": "pack_cache", "candidates": "media", "installations": "media", "events": "media", "media_hashes": "media", "candidate_rejections": "media", "candidate_lapse_failures": "media"}
 	for table, parent := range wantForeignKeys {
 		rows, err := repo.store.db.Query(`PRAGMA foreign_key_list(` + table + `)`)
 		if err != nil {
@@ -1314,6 +1314,213 @@ func TestCandidateRejectionsPersistAndCanBeClearedForManualRetry(t *testing.T) {
 	}
 	if listed, err = repo.ListCandidateRejections(context.Background(), mediaID, "en", now); err != nil || len(listed) != 0 {
 		t.Fatalf("cleared rejections = %#v/%v", listed, err)
+	}
+}
+
+func TestRecordCandidateLapseFailurePromotesOnlyTheSecondIdenticalObservation(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := database.Repository()
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := testCandidateLapseFailure(mediaID, media)
+
+	confirmed, err := repo.RecordCandidateLapseFailure(ctx, failure)
+	if err != nil || confirmed {
+		t.Fatalf("first failure confirmed/error = %v/%v, want false/nil", confirmed, err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo = database.Repository()
+	var strikes, rejections, count int
+	if err := database.db.QueryRow(`SELECT occurrence_count FROM candidate_lapse_failures`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("reopened strike count/error = %d/%v, want 1/nil", count, err)
+	}
+	confirmed, err = repo.RecordCandidateLapseFailure(ctx, failure)
+	if err != nil || !confirmed {
+		t.Fatalf("second failure confirmed/error = %v/%v, want true/nil", confirmed, err)
+	}
+	if err := database.db.QueryRow(`SELECT count(*) FROM candidate_lapse_failures`).Scan(&strikes); err != nil || strikes != 0 {
+		t.Fatalf("remaining strikes/error = %d/%v, want 0/nil", strikes, err)
+	}
+	if err := database.db.QueryRow(`SELECT count(*) FROM candidate_rejections`).Scan(&rejections); err != nil || rejections != 1 {
+		t.Fatalf("confirmed rejections/error = %d/%v, want 1/nil", rejections, err)
+	}
+	lookup := CandidateRejectionLookup{
+		MediaID: mediaID, Language: failure.Rejection.Language, ProviderID: failure.Rejection.ProviderID, ResultID: failure.Rejection.ResultID,
+		CandidateSignature: failure.Rejection.CandidateSignature, ArtifactChecksum: failure.Rejection.ArtifactChecksum, ToolSignature: failure.Rejection.ToolSignature,
+		MediaPath: failure.Rejection.MediaPath, MediaFileID: failure.Rejection.MediaFileID, MediaSize: failure.Rejection.MediaSize, MediaModTimeNS: failure.Rejection.MediaModTimeNS,
+	}
+	rejection, found, err := repo.GetCandidateRejection(ctx, lookup)
+	if err != nil || !found || rejection.ReasonCode != "lapse_repeated_empty_exit" {
+		t.Fatalf("confirmed rejection = %#v/%v/%v", rejection, found, err)
+	}
+}
+
+func TestRecordCandidateLapseFailureKeepsStrikesScopedToCompleteIdentity(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := testCandidateLapseFailure(mediaID, media)
+	if confirmed, err := repo.RecordCandidateLapseFailure(ctx, base); err != nil || confirmed {
+		t.Fatalf("base strike = %v/%v", confirmed, err)
+	}
+
+	changes := []struct {
+		name string
+		edit func(*CandidateLapseFailure)
+	}{
+		{"candidate signature", func(f *CandidateLapseFailure) { f.Rejection.CandidateSignature = "candidate-other" }},
+		{"artifact checksum", func(f *CandidateLapseFailure) { f.Rejection.ArtifactChecksum = "artifact-other" }},
+		{"tool signature", func(f *CandidateLapseFailure) { f.Rejection.ToolSignature = "lapse-v3/policy" }},
+		{"media path", func(f *CandidateLapseFailure) { f.Rejection.MediaPath = "/media/renamed.mkv" }},
+		{"media file id", func(f *CandidateLapseFailure) { f.Rejection.MediaFileID++ }},
+		{"media size", func(f *CandidateLapseFailure) { f.Rejection.MediaSize++ }},
+		{"media modification time", func(f *CandidateLapseFailure) { f.Rejection.MediaModTimeNS++ }},
+		{"failure signature", func(f *CandidateLapseFailure) { f.FailureSignature = "exit_2_empty_output_other" }},
+	}
+	for _, change := range changes {
+		t.Run(change.name, func(t *testing.T) {
+			failure := base
+			change.edit(&failure)
+			confirmed, err := repo.RecordCandidateLapseFailure(ctx, failure)
+			if err != nil || confirmed {
+				t.Fatalf("changed identity confirmed/error = %v/%v, want false/nil", confirmed, err)
+			}
+		})
+	}
+}
+
+func TestRecordCandidateLapseFailureRollsBackSecondStrikeWhenRejectionCannotPersist(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := testCandidateLapseFailure(mediaID, media)
+	if confirmed, err := repo.RecordCandidateLapseFailure(ctx, failure); err != nil || confirmed {
+		t.Fatalf("first strike = %v/%v", confirmed, err)
+	}
+	if _, err := repo.store.db.Exec(`CREATE TRIGGER reject_repeated_lapse_rejection BEFORE INSERT ON candidate_rejections BEGIN SELECT RAISE(ABORT, 'rejection blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := repo.RecordCandidateLapseFailure(ctx, failure)
+	if err == nil || confirmed {
+		t.Fatalf("blocked confirmation = %v/%v, want false/error", confirmed, err)
+	}
+	var count int
+	if err := repo.store.db.QueryRow(`SELECT occurrence_count FROM candidate_lapse_failures`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("rolled-back strike count/error = %d/%v, want 1/nil", count, err)
+	}
+}
+
+func TestClearCandidateRejectionsAlsoClearsLapseFailureStrikes(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := testCandidateLapseFailure(mediaID, media)
+	if confirmed, err := repo.RecordCandidateLapseFailure(ctx, failure); err != nil || confirmed {
+		t.Fatalf("record strike = %v/%v", confirmed, err)
+	}
+	if err := repo.PutCandidateRejection(ctx, failure.Rejection); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ClearCandidateRejections(ctx, mediaID, "en"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"candidate_rejections", "candidate_lapse_failures"} {
+		var count int
+		if err := repo.store.db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s count/error = %d/%v, want 0/nil", table, count, err)
+		}
+	}
+	if confirmed, err := repo.RecordCandidateLapseFailure(ctx, failure); err != nil || confirmed {
+		t.Fatalf("cleared identity restarted at strike one = %v/%v", confirmed, err)
+	}
+}
+
+func TestCandidateLapseFailuresCascadeWhenMediaIsDeleted(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmed, err := repo.RecordCandidateLapseFailure(ctx, testCandidateLapseFailure(mediaID, media)); err != nil || confirmed {
+		t.Fatalf("record strike = %v/%v", confirmed, err)
+	}
+	if _, err := repo.store.db.Exec(`DELETE FROM media WHERE id=?`, mediaID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM candidate_lapse_failures`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("cascaded strikes/error = %d/%v, want 0/nil", count, err)
+	}
+}
+
+func TestRecordCandidateLapseFailureRejectsIncompleteStableIdentity(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []struct {
+		name string
+		edit func(*CandidateLapseFailure)
+	}{
+		{"artifact", func(f *CandidateLapseFailure) { f.Rejection.ArtifactChecksum = "" }},
+		{"failure signature", func(f *CandidateLapseFailure) { f.FailureSignature = "" }},
+		{"observation", func(f *CandidateLapseFailure) { f.ObservedAt = time.Time{} }},
+		{"candidate", func(f *CandidateLapseFailure) { f.Rejection.CandidateSignature = "" }},
+		{"file id", func(f *CandidateLapseFailure) { f.Rejection.MediaFileID = 0 }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			failure := testCandidateLapseFailure(mediaID, media)
+			change.edit(&failure)
+			confirmed, err := repo.RecordCandidateLapseFailure(ctx, failure)
+			if err == nil || confirmed {
+				t.Fatalf("incomplete identity confirmed/error = %v/%v, want false/error", confirmed, err)
+			}
+		})
+	}
+}
+
+func testCandidateLapseFailure(mediaID int64, media domain.Media) CandidateLapseFailure {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	return CandidateLapseFailure{
+		Rejection: CandidateRejection{
+			MediaID: mediaID, Language: "en", ProviderID: "titlovi", ResultID: "result-1", CandidateSignature: "candidate-a", ArtifactChecksum: "artifact-a",
+			ReasonCode: "ignored", ToolSignature: "lapse-v2.0.5/policy", MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID,
+			MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(), RejectedAt: now,
+		},
+		FailureSignature: "exit_2_empty_output", ObservedAt: now,
 	}
 }
 

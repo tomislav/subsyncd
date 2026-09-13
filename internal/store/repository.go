@@ -199,6 +199,16 @@ type CandidateRejectionLookup struct {
 	Now                time.Time
 }
 
+// CandidateLapseFailure records one sanitized, strike-eligible LAPSE failure.
+// The embedded rejection supplies the complete candidate and media identity;
+// confirmation always writes the fixed repeated-empty-exit reason instead of
+// its ReasonCode.
+type CandidateLapseFailure struct {
+	Rejection        CandidateRejection
+	FailureSignature string
+	ObservedAt       time.Time
+}
+
 type SearchStatus struct {
 	State          string
 	Attempt        int
@@ -1114,14 +1124,90 @@ func (r *Repository) RecordCandidates(ctx context.Context, mediaID int64, langua
 }
 
 func (r *Repository) PutCandidateRejection(ctx context.Context, rejection CandidateRejection) error {
-	if rejection.MediaID <= 0 || rejection.Language == "" || rejection.ProviderID == "" || rejection.ResultID == "" || rejection.CandidateSignature == "" || rejection.ReasonCode == "" || rejection.ToolSignature == "" || rejection.MediaPath == "" || rejection.RejectedAt.IsZero() {
+	if err := validateCandidateRejection(rejection); err != nil {
+		return err
+	}
+	if err := putCandidateRejection(ctx, r.store.db, rejection); err != nil {
+		return err
+	}
+	return nil
+}
+
+type candidateRejectionWriter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func validateCandidateRejection(rejection CandidateRejection) error {
+	if err := validateCandidateRejectionIdentity(rejection); err != nil || rejection.ReasonCode == "" || rejection.RejectedAt.IsZero() {
 		return fmt.Errorf("candidate rejection identity, reason, fingerprint, and timestamp are required")
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO candidate_rejections(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature) DO UPDATE SET reason_code=excluded.reason_code, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, rejected_at_ns=excluded.rejected_at_ns, expires_at_ns=excluded.expires_at_ns`, rejection.MediaID, rejection.Language, rejection.ProviderID, rejection.ResultID, rejection.CandidateSignature, rejection.ArtifactChecksum, rejection.ReasonCode, rejection.ToolSignature, rejection.MediaPath, rejection.MediaFileID, rejection.MediaSize, rejection.MediaModTimeNS, rejection.RejectedAt.UnixNano(), int64(0))
+	return nil
+}
+
+func validateCandidateRejectionIdentity(rejection CandidateRejection) error {
+	if rejection.MediaID <= 0 || rejection.Language == "" || rejection.ProviderID == "" || rejection.ResultID == "" || rejection.CandidateSignature == "" || rejection.ToolSignature == "" || rejection.MediaPath == "" {
+		return fmt.Errorf("candidate rejection identity and fingerprint are required")
+	}
+	return nil
+}
+
+func putCandidateRejection(ctx context.Context, writer candidateRejectionWriter, rejection CandidateRejection) error {
+	_, err := writer.ExecContext(ctx, `INSERT INTO candidate_rejections(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature) DO UPDATE SET reason_code=excluded.reason_code, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, rejected_at_ns=excluded.rejected_at_ns, expires_at_ns=excluded.expires_at_ns`, rejection.MediaID, rejection.Language, rejection.ProviderID, rejection.ResultID, rejection.CandidateSignature, rejection.ArtifactChecksum, rejection.ReasonCode, rejection.ToolSignature, rejection.MediaPath, rejection.MediaFileID, rejection.MediaSize, rejection.MediaModTimeNS, rejection.RejectedAt.UnixNano(), int64(0))
 	if err != nil {
 		return fmt.Errorf("put candidate rejection: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) RecordCandidateLapseFailure(ctx context.Context, failure CandidateLapseFailure) (bool, error) {
+	if err := validateCandidateLapseFailure(failure); err != nil {
+		return false, err
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin candidate LAPSE failure: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	args := candidateLapseFailureIdentityArgs(failure)
+	var occurrences int
+	if err := tx.QueryRowContext(ctx, `INSERT INTO candidate_lapse_failures(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, failure_signature, occurrence_count, first_observed_at_ns, last_observed_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, failure_signature) DO UPDATE SET occurrence_count=MIN(2, candidate_lapse_failures.occurrence_count + 1), last_observed_at_ns=excluded.last_observed_at_ns RETURNING occurrence_count`, append(args, failure.ObservedAt.UnixNano(), failure.ObservedAt.UnixNano())...).Scan(&occurrences); err != nil {
+		return false, fmt.Errorf("record candidate LAPSE failure: %w", err)
+	}
+	if occurrences < 2 {
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit candidate LAPSE failure: %w", err)
+		}
+		return false, nil
+	}
+	confirmed := failure.Rejection
+	confirmed.ReasonCode = "lapse_repeated_empty_exit"
+	confirmed.RejectedAt = failure.ObservedAt
+	if err := putCandidateRejection(ctx, tx, confirmed); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM candidate_lapse_failures WHERE media_id=? AND language=? AND provider_id=? AND result_id=? AND candidate_signature=? AND artifact_checksum=? AND tool_signature=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=? AND failure_signature=?`, args...); err != nil {
+		return false, fmt.Errorf("clear confirmed candidate LAPSE failure: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit confirmed candidate LAPSE failure: %w", err)
+	}
+	return true, nil
+}
+
+func validateCandidateLapseFailure(failure CandidateLapseFailure) error {
+	if failure.Rejection.ArtifactChecksum == "" || failure.FailureSignature == "" || failure.ObservedAt.IsZero() {
+		return fmt.Errorf("candidate LAPSE failure artifact, signature, and observation timestamp are required")
+	}
+	if failure.Rejection.MediaFileID <= 0 || failure.Rejection.MediaSize < 0 {
+		return fmt.Errorf("candidate LAPSE failure fingerprint is required")
+	}
+	return validateCandidateRejectionIdentity(failure.Rejection)
+}
+
+func candidateLapseFailureIdentityArgs(failure CandidateLapseFailure) []any {
+	rejection := failure.Rejection
+	return []any{rejection.MediaID, rejection.Language, rejection.ProviderID, rejection.ResultID, rejection.CandidateSignature, rejection.ArtifactChecksum, rejection.ToolSignature, rejection.MediaPath, rejection.MediaFileID, rejection.MediaSize, rejection.MediaModTimeNS, failure.FailureSignature}
 }
 
 func (r *Repository) GetCandidateRejection(ctx context.Context, lookup CandidateRejectionLookup) (CandidateRejection, bool, error) {
@@ -1172,8 +1258,19 @@ func (r *Repository) ListCandidateRejections(ctx context.Context, mediaID int64,
 }
 
 func (r *Repository) ClearCandidateRejections(ctx context.Context, mediaID int64, language domain.Language) error {
-	if _, err := r.store.db.ExecContext(ctx, `DELETE FROM candidate_rejections WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin clear candidate rejections: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM candidate_rejections WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
 		return fmt.Errorf("clear candidate rejections: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM candidate_lapse_failures WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
+		return fmt.Errorf("clear candidate LAPSE failures: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit clear candidate rejections: %w", err)
 	}
 	return nil
 }

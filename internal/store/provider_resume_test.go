@@ -467,6 +467,12 @@ func TestProviderResumeMigrationPreservesStateAndReschedulesThrottle(t *testing.
 	if migrationCount != 1 {
 		t.Fatalf("migration ledger count = %d, want 1", migrationCount)
 	}
+	if err := migrated.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version='013_repeated_lapse_failures.sql'`).Scan(&migrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("repeated LAPSE migration ledger count = %d, want 1", migrationCount)
+	}
 	rows, err := migrated.db.Query(`SELECT resume_providers_json,resume_route_signature FROM search_states ORDER BY media_id`)
 	if err != nil {
 		t.Fatal(err)
@@ -508,6 +514,128 @@ func TestProviderResumeMigrationPreservesStateAndReschedulesThrottle(t *testing.
 	if migrationCount != 1 {
 		t.Fatalf("migration ledger count after reopen = %d, want 1", migrationCount)
 	}
+	if err := reopened.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version='013_repeated_lapse_failures.sql'`).Scan(&migrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("repeated LAPSE migration ledger count after reopen = %d, want 1", migrationCount)
+	}
+}
+
+func TestRepeatedLapseFailureMigrationPreservesProviderResumeState(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"001_baseline.sql", "002_scrub_provider_credentials.sql", "003_inventory_probes.sql", "004_sonarr_series.sql", "005_library_discovery.sql", "006_fallback_installations.sql", "007_clear_lapse_invalid_output.sql", "008_forced_track_probe_refresh.sql", "009_movie_duplicate_rejections.sql", "010_reconciliation_replays.sql", "011_reschedule_unfinished_backfill.sql", "012_provider_resume.sql",
+	} {
+		contents, err := migrationFiles.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.Exec(string(contents)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.Exec(`INSERT INTO schema_migrations(version) VALUES (?)`, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := old.Exec(`
+		INSERT INTO media(id,instance,kind,entity_id,file_id,path,size,mod_time_ns,title,updated_at_ns,deleted)
+		VALUES (1,'sonarr','episode',1,11,'/media/one.mkv',101,11,'One',1011,0);
+		INSERT INTO search_states(media_id,language,state,attempt,failure_attempt,next_attempt_at_ns,last_outcome,priority,rerun_requested,resume_providers_json,resume_route_signature)
+		VALUES (1,'en','pending',11,21,901,'throttled',200,0,'["preferred","fallback"]','opaque-route-signature');
+		INSERT INTO candidate_rejections(media_id,language,provider_id,result_id,candidate_signature,artifact_checksum,reason_code,tool_signature,media_path,media_file_id,media_size,media_mod_time_ns,rejected_at_ns,expires_at_ns)
+		VALUES (1,'en','provider-main','result-1','signature-1','artifact-1','lapse_unsure','lapse-v2','/media/one.mkv',11,101,11,401,0);
+		INSERT INTO provider_states(provider_id,scope,reason,quota_limit,quota_remaining,reset_at_ns,disabled,failure_attempt,quota_json)
+		VALUES ('provider-main','search','rate_limit',500,3,501,0,4,'{}');
+		INSERT INTO provider_cache(cache_key,provider_id,results_json,expires_at_ns)
+		VALUES ('cache-key','provider-main','[]',601);
+		INSERT INTO instances(name,type,base_url,reconciliation_cursor,status,updated_at_ns,library_scope,event_revision)
+		VALUES ('sonarr','sonarr','http://sonarr','cursor','healthy',701,'scope',0);
+		INSERT INTO tracks(media_id,language,embedded,forced,is_default,sdh,protected)
+		VALUES (1,'en',1,0,0,0,0);
+		INSERT INTO inventory_probes(media_id,path,file_id,size,mod_time_ns)
+		VALUES (1,'/media/one.mkv',11,101,11);
+		INSERT INTO pack_cache(provider_id,result_id,series_key,season,language,content_checksum,manifest_path,candidate_json,byte_size,expires_at_ns,last_access_at_ns)
+		VALUES ('provider-main','pack-1','series',1,'en','pack-checksum','/cache/manifest','{}',10,801,802);
+		INSERT INTO pack_members(pack_id,safe_name,cache_path,checksum)
+		VALUES (1,'episode.srt','/cache/episode.srt','member-checksum');
+		INSERT INTO candidates(media_id,language,provider_id,result_id,metadata_json,score_json,validation_json,created_at_ns)
+		VALUES (1,'en','provider-main','candidate-1','{}','{}','{}',901);
+		INSERT INTO installations(media_id,language,path,checksum,installed_at_ns,fallback)
+		VALUES (1,'hr','/media/one.hr.srt','installed-checksum',1001,0);
+		INSERT INTO notifications(notifier,payload_json,next_attempt_at_ns)
+		VALUES ('silo','{}',1101);
+		INSERT INTO events(event_type,media_id,created_at_ns,event_id,instance,kind,file_id,entity_id,series_id)
+		VALUES ('import',1,1201,'event-1','sonarr','episode',11,1,0);
+		INSERT INTO media_hashes(media_id,algorithm,hash_value,byte_size,fingerprint_path,fingerprint_file_id,fingerprint_size,fingerprint_mod_time_ns,updated_at_ns)
+		VALUES (1,'opensubtitles','hash',101,'/media/one.mkv',11,101,11,1301);
+		INSERT INTO reconciliation_replays(event_id,instance)
+		VALUES ('replay-1','sonarr');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	before, err := providerResumeMigrationSnapshot(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beforeProviders, beforeSignature string
+	if err := old.QueryRow(`SELECT resume_providers_json,resume_route_signature FROM search_states WHERE media_id=1 AND language='en'`).Scan(&beforeProviders, &beforeSignature); err != nil {
+		t.Fatal(err)
+	}
+	beforeCounts, err := durableTableCounts(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	after, err := providerResumeMigrationSnapshot(migrated.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("migration changed durable state:\nbefore: %#v\nafter: %#v", before, after)
+	}
+	afterCounts, err := durableTableCounts(migrated.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterCounts, beforeCounts) {
+		t.Fatalf("migration changed durable table rows:\nbefore: %#v\nafter: %#v", beforeCounts, afterCounts)
+	}
+	var afterProviders, afterSignature string
+	if err := migrated.db.QueryRow(`SELECT resume_providers_json,resume_route_signature FROM search_states WHERE media_id=1 AND language='en'`).Scan(&afterProviders, &afterSignature); err != nil || afterProviders != beforeProviders || afterSignature != beforeSignature {
+		t.Fatalf("provider resume changed = %q/%q (%v), want %q/%q", afterProviders, afterSignature, err, beforeProviders, beforeSignature)
+	}
+	var count int
+	if err := migrated.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version='013_repeated_lapse_failures.sql'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("migration ledger count/error = %d/%v, want 1/nil", count, err)
+	}
+}
+
+func durableTableCounts(db *sql.DB) (map[string]int, error) {
+	counts := make(map[string]int)
+	for _, table := range []string{"instances", "media", "tracks", "inventory_probes", "search_states", "provider_states", "provider_cache", "pack_cache", "pack_members", "candidates", "installations", "notifications", "events", "media_hashes", "candidate_rejections", "reconciliation_replays"} {
+		var count int
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil {
+			return nil, err
+		}
+		counts[table] = count
+	}
+	return counts, nil
 }
 
 type providerResumeMigrationState struct {
