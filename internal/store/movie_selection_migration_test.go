@@ -82,8 +82,11 @@ func TestMigrationClearsMovieSelectionRejectionsOnce(t *testing.T) {
 		}
 		return result
 	}
-	queries := []string{`SELECT * FROM candidate_rejections WHERE NOT (reason_code = 'pack_selection' AND media_id=1) ORDER BY id`}
-	for _, table := range []string{"media", "search_states", "installations", "provider_cache", "pack_cache", "pack_members", "notifications"} {
+	queries := []string{
+		`SELECT * FROM candidate_rejections WHERE NOT (reason_code = 'pack_selection' AND media_id=1) ORDER BY id`,
+		`SELECT id,media_id,language,state,attempt,failure_attempt,next_attempt_at_ns,last_outcome,lease_owner,lease_until_ns,priority,rerun_requested FROM search_states ORDER BY id`,
+	}
+	for _, table := range []string{"media", "installations", "provider_cache", "pack_cache", "pack_members", "notifications"} {
 		queries = append(queries, "SELECT * FROM "+table+" ORDER BY 1")
 	}
 	before := make([][][]any, len(queries))

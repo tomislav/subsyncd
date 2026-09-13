@@ -24,7 +24,9 @@ func (r *Repository) EnsureUpgradeSearch(ctx context.Context, mediaID int64, lan
  attempt=CASE WHEN search_states.state='complete' THEN 0 ELSE search_states.attempt END,
  failure_attempt=CASE WHEN search_states.state='complete' THEN 0 ELSE search_states.failure_attempt END,
  last_outcome=CASE WHEN search_states.state='complete' THEN '' ELSE search_states.last_outcome END,
- rerun_requested=CASE WHEN search_states.state='complete' THEN 0 ELSE search_states.rerun_requested END
+ rerun_requested=CASE WHEN search_states.state='complete' THEN 0 ELSE search_states.rerun_requested END,
+ resume_providers_json='[]',
+ resume_route_signature=''
  WHERE search_states.lease_owner IS NULL AND search_states.lease_until_ns IS NULL
  AND (search_states.state='complete' OR (search_states.state='pending' AND search_states.next_attempt_at_ns>excluded.next_attempt_at_ns))`, language.String(), next.UnixNano(), SearchPriorityUpgrade, mediaID)
 	if err != nil {

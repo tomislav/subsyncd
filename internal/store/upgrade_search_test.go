@@ -50,6 +50,9 @@ func TestEnsureUpgradeSearchPreservesDurableQueue(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json='["provider-main"]',resume_route_signature='route'`); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if kind == "deleted" {
 				if _, err := db.db.Exec(`UPDATE media SET deleted=1`); err != nil {
@@ -115,8 +118,10 @@ func TestEnsureUpgradeSearchPreservesDurableQueue(t *testing.T) {
 				if !reflect.DeepEqual(got, before) {
 					t.Fatalf("queue changed: before %#v after %#v", before, got)
 				}
+				requireSearchResume(t, repo, id, "en", `["provider-main"]`, "route")
 				return
 			}
+			requireSearchResume(t, repo, id, "en", "[]", "")
 			if got.State != "pending" || !got.NextAttemptAt.Equal(next) {
 				t.Fatalf("schedule = %#v", got)
 			}

@@ -507,6 +507,152 @@ func TestUpsertSearchStateKeepsOneRowPerMediaLanguage(t *testing.T) {
 	}
 }
 
+func TestClearSearchResumeClearsOnlyRequestedMediaLanguage(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	for _, language := range []domain.Language{"en", "hr"} {
+		if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, language, now, SearchPriorityMissing); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.store.db.Exec(`UPDATE search_states SET resume_providers_json='["provider-main"]',resume_route_signature='route' WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.ClearSearchResume(ctx, mediaID, "en"); err != nil {
+		t.Fatal(err)
+	}
+	requireSearchResume(t, repo, mediaID, "en", "[]", "")
+	requireSearchResume(t, repo, mediaID, "hr", `["provider-main"]`, "route")
+}
+
+func TestUpsertSearchStateClearsProviderResume(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 13, 12, 30, 0, 0, time.UTC)
+	if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.db.Exec(`UPDATE search_states SET resume_providers_json='["provider-main"]',resume_route_signature='route' WHERE media_id=? AND language='en'`, mediaID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now.Add(time.Hour), SearchPriorityImport); err != nil {
+		t.Fatal(err)
+	}
+	requireSearchResume(t, repo, mediaID, "en", "[]", "")
+}
+
+func TestMediaEventsClearProviderResumeWithoutStealingLease(t *testing.T) {
+	for _, eventType := range []string{"import", "rename", "unsupported"} {
+		t.Run(eventType, func(t *testing.T) {
+			ctx := context.Background()
+			repo := openTestRepository(t)
+			now := time.Date(2026, 9, 13, 13, 0, 0, 0, time.UTC)
+			media := testMedia()
+			first := MediaEventMutation{EventID: "initial", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now}
+			if applied, err := repo.ApplyMediaEvent(ctx, first); err != nil || !applied {
+				t.Fatalf("initial event = %v/%v", applied, err)
+			}
+			leases, err := repo.LeaseDueSearches(ctx, now, 1, 5*time.Minute)
+			if err != nil || len(leases) != 1 {
+				t.Fatalf("initial lease = %#v/%v", leases, err)
+			}
+			lease := leases[0]
+			if _, err := repo.store.db.Exec(`UPDATE search_states SET resume_providers_json='["provider-main"]',resume_route_signature='route' WHERE media_id=? AND language='en'`, lease.MediaID); err != nil {
+				t.Fatal(err)
+			}
+
+			second := first
+			second.EventID = "second"
+			second.At = now.Add(time.Minute)
+			if eventType == "rename" {
+				second.Type = "rename"
+				second.Media.Fingerprint.Path = "/media/renamed-show.mkv"
+			}
+			if eventType == "unsupported" {
+				second.Media.UnsupportedReason = domain.UnsupportedMultiEpisode
+			}
+			if applied, err := repo.ApplyMediaEvent(ctx, second); err != nil || !applied {
+				t.Fatalf("reset event = %v/%v", applied, err)
+			}
+			var owner string
+			var leaseUntil int64
+			var rerun bool
+			if err := repo.store.db.QueryRow(`SELECT lease_owner,lease_until_ns,rerun_requested FROM search_states WHERE media_id=? AND language='en'`, lease.MediaID).Scan(&owner, &leaseUntil, &rerun); err != nil {
+				t.Fatal(err)
+			}
+			if owner != lease.JobID || leaseUntil != lease.LeaseUntil.UnixNano() || !rerun {
+				t.Fatalf("lease/rerun changed = %q/%d/%v", owner, leaseUntil, rerun)
+			}
+			requireSearchResume(t, repo, lease.MediaID, "en", "[]", "")
+
+			result, err := repo.CompleteSearch(ctx, SearchCompletion{
+				JobID:                lease.JobID,
+				Outcome:              "throttled",
+				NextAttemptAt:        now.Add(24 * time.Hour),
+				ResumeProviders:      []string{"stale-provider"},
+				ResumeRouteSignature: "stale-route",
+				PreserveResume:       true,
+			})
+			if err != nil || !result.RerunScheduled {
+				t.Fatalf("stale completion = %#v/%v", result, err)
+			}
+			requireSearchResume(t, repo, lease.MediaID, "en", "[]", "")
+		})
+	}
+}
+
+func TestDeleteAndCompletionClearProviderResumeWithoutStealingLease(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	media := testMedia()
+	first := MediaEventMutation{EventID: "initial", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now}
+	if applied, err := repo.ApplyMediaEvent(ctx, first); err != nil || !applied {
+		t.Fatalf("initial event = %v/%v", applied, err)
+	}
+	leases, err := repo.LeaseDueSearches(ctx, now, 1, 5*time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("initial lease = %#v/%v", leases, err)
+	}
+	lease := leases[0]
+	if _, err := repo.store.db.Exec(`UPDATE search_states SET resume_providers_json='["provider-main"]',resume_route_signature='route' WHERE media_id=? AND language='en'`, lease.MediaID); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "deleted", Type: "delete", Ref: media.Ref, At: now.Add(time.Minute)}); err != nil || !applied {
+		t.Fatalf("delete event = %v/%v", applied, err)
+	}
+	var owner string
+	var leaseUntil int64
+	if err := repo.store.db.QueryRow(`SELECT lease_owner,lease_until_ns FROM search_states WHERE media_id=? AND language='en'`, lease.MediaID).Scan(&owner, &leaseUntil); err != nil {
+		t.Fatal(err)
+	}
+	if owner != lease.JobID || leaseUntil != lease.LeaseUntil.UnixNano() {
+		t.Fatalf("delete changed lease = %q/%d", owner, leaseUntil)
+	}
+	requireSearchResume(t, repo, lease.MediaID, "en", "[]", "")
+	result, err := repo.CompleteSearch(ctx, SearchCompletion{
+		JobID:                lease.JobID,
+		Outcome:              "throttled",
+		NextAttemptAt:        now.Add(24 * time.Hour),
+		ResumeProviders:      []string{"stale-provider"},
+		ResumeRouteSignature: "stale-route",
+		PreserveResume:       true,
+	})
+	if err != nil || result.RerunScheduled {
+		t.Fatalf("deleted completion = %#v/%v", result, err)
+	}
+	requireSearchResume(t, repo, lease.MediaID, "en", "[]", "")
+}
+
 func TestLeaseDueSearchesOrdersByPriorityBeforeDueTime(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repo := openTestRepository(t)
@@ -1709,6 +1855,17 @@ func requireSearchState(t *testing.T, repo *Repository, mediaID int64, language 
 	t.Helper()
 	if err := repo.UpsertSearchStateWithPriority(context.Background(), mediaID, language, next, priority); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func requireSearchResume(t *testing.T, repo *Repository, mediaID int64, language domain.Language, wantProviders, wantSignature string) {
+	t.Helper()
+	var providers, signature string
+	if err := repo.store.db.QueryRow(`SELECT resume_providers_json,resume_route_signature FROM search_states WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&providers, &signature); err != nil {
+		t.Fatal(err)
+	}
+	if providers != wantProviders || signature != wantSignature {
+		t.Fatalf("search resume = %q/%q, want %q/%q", providers, signature, wantProviders, wantSignature)
 	}
 }
 

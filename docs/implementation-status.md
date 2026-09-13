@@ -13,6 +13,14 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Provider-specific cooldown resume — durable queue state — 2026-09-13
+
+- Commit: this Task 2 `feat: persist provider cooldown resume state` commit, based on `96959e9`. Search leases and owner-guarded completions now round-trip a strictly decoded, maximum-eight provider resume list plus its route signature; malformed persisted state fails with a bounded generic repository error before any due row is claimed.
+- Migration `012_provider_resume.sql` adds the resume columns to the exact current 011 lineage and immediately reschedules only active, uninstalled, missing-priority throttled rows. It preserves counters, priorities, durable leases, installations and rollback metadata, candidate rejections, provider state, and provider-cache expiry, and the migration ledger prevents reapplication on reopen.
+- Authoritative ordinary upserts, imports, renames, unsupported/deleted media transitions, rerun completion, explicit resume clearing, and actual upgrade-schedule transitions clear stale resume state without changing the established lease/rerun and priority behavior. No-op and leased upgrade scheduling remains untouched.
+- TDD: the migration, repository round-trip/validation, clear/reset, event/lease, and upgrade-transition regressions each failed before their production change and passed afterward. `go test ./internal/store -race -count=1` passed using sanitized local SQLite fixtures only; no production access or mutation occurred.
+- Next: combine exact/broad clean-empty phase evidence across preferred/fallback workflow tiers and return resumable progress only for unfinished first-install cycles.
+
 ### Provider-specific cooldown resume — coordinator phase progress — 2026-09-13
 
 - Commit: this Task 1 `feat: expose resumable provider search progress` commit, based on `be32333`. Provider searches now accept a coordinator-only exclusion set and report configured-order applicable and clean-empty providers for each exact or broad phase.
