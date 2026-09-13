@@ -43,6 +43,7 @@ type Request struct {
 	Language             domain.Language
 	Manual               bool
 	ForceProbe           bool
+	UpgradeAttempt       int
 	ResumeProviders      []string
 	ResumeRouteSignature string
 }
@@ -72,6 +73,8 @@ type Result struct {
 	ResumeProviders      []string
 	ResumeRouteSignature string
 	cleanEmptyProviders  []string
+	upgradeRecovery      bool
+	retainedInstallation bool
 }
 
 type InventoryRefresher interface {
@@ -147,6 +150,7 @@ type Service struct {
 	LapsePolicy            LapsePolicy
 	AllowHearingImpaired   bool
 	Clock                  WorkflowClock
+	RandomUnit             func() float64
 	Events                 *observability.Emitter
 }
 
@@ -275,7 +279,21 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	}
 	request.attemptedArtifacts = make(map[candidateArtifactIdentity]struct{})
 
-	return s.runProviderTiers(ctx, request, existing, activeInstallation, &candidateCount)
+	result, runErr = s.runProviderTiers(ctx, request, existing, activeInstallation, &candidateCount)
+	if runErr == nil && activeInstallation && InstallationMatchesMedia(existing, request.Media) &&
+		(result.Outcome == OutcomeNoResult || result.Outcome == OutcomeRejected) {
+		score, exact, err := installedScore(existing)
+		if err != nil {
+			return result, err
+		}
+		result.Outcome = OutcomeSatisfied
+		result.retainedInstallation = true
+		s.setReassessmentResult(&result, existing, domain.Candidate{ProviderID: existing.ProviderID, ResultID: existing.CandidateID, ExactHash: exact}, score, s.Clock.Now())
+	}
+	if runErr == nil {
+		s.scheduleUpgrade(&result, request.UpgradeAttempt)
+	}
+	return result, runErr
 }
 
 // acquire performs one provider tier after inventory has been checked once.
@@ -655,7 +673,7 @@ func workflowCompletion(result Result, err error) (string, string, slog.Level) {
 	}
 	switch result.Outcome {
 	case OutcomeSatisfied:
-		if result.Candidate.ResultID != "" {
+		if result.Candidate.ResultID != "" && !result.retainedInstallation {
 			return string(result.Outcome), "provenance_refreshed", slog.LevelInfo
 		}
 		return string(result.Outcome), "existing_subtitle", slog.LevelInfo

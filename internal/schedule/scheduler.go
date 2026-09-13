@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"math/rand/v2"
 	"time"
 
 	"subsyncd/internal/store"
@@ -19,7 +20,7 @@ type Scheduler struct {
 }
 
 func (s Scheduler) Missing(jobID string, attempt int) store.SearchCompletion {
-	randomUnit := 0.5
+	randomUnit := rand.Float64()
 	if s.RandomUnit != nil {
 		randomUnit = s.RandomUnit()
 	}

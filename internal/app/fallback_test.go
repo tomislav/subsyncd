@@ -199,7 +199,7 @@ func TestManualFallbackSearchPersistsPromotionCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			status, err := a.Repository.GetSearchStatus(t.Context(), id, "en")
-			if err != nil || status.State != "pending" || status.Priority != store.SearchPriorityUpgrade || !status.NextAttemptAt.Equal(now.Add(7*24*time.Hour)) {
+			if err != nil || status.State != "pending" || status.Priority != store.SearchPriorityUpgrade || status.NextAttemptAt.Before(now.Add(7*24*time.Hour-7*24*time.Hour/10)) || status.NextAttemptAt.After(now.Add(7*24*time.Hour+7*24*time.Hour/10)) {
 				t.Fatalf("status=%+v err=%v", status, err)
 			}
 		})

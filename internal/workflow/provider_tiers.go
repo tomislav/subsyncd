@@ -94,7 +94,9 @@ func (s *Service) runProviderTiers(ctx context.Context, request Request, existin
 	}
 	if secondErr == nil && second.Outcome == OutcomeInstalled {
 		// Retry a temporarily unavailable preferred tier promptly after its reset.
-		second.NextUpgrade = preferredRetryAt(first, s.Clock.Now(), second.NextUpgrade)
+		next := preferredRetryAt(first, s.Clock.Now(), second.NextUpgrade)
+		second.upgradeRecovery = next.Before(second.NextUpgrade)
+		second.NextUpgrade = next
 		return second, nil
 	}
 	if firstErr != nil || secondErr != nil {

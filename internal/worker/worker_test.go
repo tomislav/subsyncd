@@ -1262,3 +1262,67 @@ func findWorkerEvent(t *testing.T, records []map[string]any, event string) map[s
 	t.Fatalf("event %q not found in %#v", event, records)
 	return nil
 }
+
+func TestUpgradeCompletionAdvancesOnlyUnchangedChecks(t *testing.T) {
+	now := time.Now()
+	w := &Worker{Clock: testutil.NewClock(now), RandomUnit: func() float64 { return 0.5 }}
+	lease := store.SearchLease{JobID: "upgrade", Priority: store.SearchPriorityUpgrade, Attempt: 3}
+	retained, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeSatisfied, NextUpgrade: now.Add(90 * 24 * time.Hour)})
+	if err != nil || !retained.AdvanceUpgradeAttempt || retained.ResetMissingAttempt || retained.Priority != store.SearchPriorityUpgrade {
+		t.Fatalf("retained=%#v err=%v", retained, err)
+	}
+	missing, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeNoResult})
+	if err != nil || !missing.ResetMissingAttempt || !missing.NextAttemptAt.Equal(now.Add(30*time.Minute)) {
+		t.Fatalf("missing=%#v err=%v", missing, err)
+	}
+	installed, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeInstalled, NextUpgrade: now.Add(7 * 24 * time.Hour)})
+	if err != nil || !installed.ResetMissingAttempt || installed.AdvanceUpgradeAttempt {
+		t.Fatalf("installed=%#v err=%v", installed, err)
+	}
+}
+
+func TestUpgradeLeasePassesPersistedAttemptToWorkflow(t *testing.T) {
+	now := time.Now()
+	repo := newWorkerRepository(1, now)
+	repo.searches[0].Priority = store.SearchPriorityUpgrade
+	repo.searches[0].Attempt = 2
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeSatisfied, NextUpgrade: now.Add(60 * 24 * time.Hour)}}
+	w := testWorker(repo, service, testutil.NewClock(now))
+	if err := w.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.requests) != 1 || service.requests[0].UpgradeAttempt != 3 {
+		t.Fatalf("requests=%#v", service.requests)
+	}
+}
+
+func TestProviderSearchRetriesUseRandomJitterByDefault(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	w := &Worker{Clock: testutil.NewClock(now)}
+	for _, tc := range []struct {
+		name             string
+		result           workflow.Result
+		minimum, maximum time.Duration
+	}{
+		{"missing", workflow.Result{Outcome: workflow.OutcomeNoResult}, 27 * time.Minute, 33 * time.Minute},
+		{"cooldown", workflow.Result{Outcome: workflow.OutcomeThrottled, RetryAt: now.Add(10 * time.Minute)}, 10 * time.Minute, 11 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := map[time.Time]bool{}
+			for i := 0; i < 32; i++ {
+				completion, err := w.workflowCompletion(store.SearchLease{JobID: "job", Priority: store.SearchPriorityMissing}, tc.result)
+				if err != nil {
+					t.Fatal(err)
+				}
+				delay := completion.NextAttemptAt.Sub(now)
+				if delay < tc.minimum || delay > tc.maximum {
+					t.Fatalf("retry delay %s outside [%s, %s]", delay, tc.minimum, tc.maximum)
+				}
+				seen[completion.NextAttemptAt] = true
+			}
+			if len(seen) == 1 {
+				t.Fatal("default provider retry times are fixed, not jittered")
+			}
+		})
+	}
+}

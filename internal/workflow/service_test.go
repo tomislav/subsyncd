@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1350,7 +1351,7 @@ func TestServiceAppliesUpgradeDeltaAndPersistsCandidatesWithoutDownloadReference
 	service.Repository = repository
 	service.Providers = map[string]provider.Provider{"provider": providerFake}
 	result, err := service.Run(context.Background(), request)
-	if err != nil || result.Outcome != OutcomeRejected || providerFake.downloads != 0 || len(repository.candidates) != 1 {
+	if err != nil || result.Outcome != OutcomeSatisfied || providerFake.downloads != 0 || len(repository.candidates) != 1 {
 		t.Fatalf("Run() = %#v, %v, downloads=%d candidates=%d", result, err, providerFake.downloads, len(repository.candidates))
 	}
 	if strings.Contains(string(repository.candidates[0].MetadataJSON), "/secret/") {
@@ -1512,7 +1513,7 @@ func TestServiceUpgradeClearsProviderResumeAndRunsFullRoute(t *testing.T) {
 	request.ResumeRouteSignature = service.ResumeSignature(request.Language, request.Media.Fingerprint)
 
 	result, err := service.Run(t.Context(), request)
-	if err != nil || result.Outcome != OutcomeNoResult || !result.RetryAt.IsZero() {
+	if err != nil || result.Outcome != OutcomeSatisfied || !result.RetryAt.IsZero() {
 		t.Fatalf("Run() = %+v, %v", result, err)
 	}
 	if len(result.ResumeProviders) != 0 || result.ResumeRouteSignature != "" {
@@ -1542,7 +1543,7 @@ func TestServiceDoesNotAccelerateUpgradeAfterPartialProviderThrottle(t *testing.
 	service.ProviderOrder = []string{"down", "healthy"}
 
 	result, err := service.Run(context.Background(), request)
-	if err != nil || result.Outcome != OutcomeNoResult || !result.RetryAt.IsZero() {
+	if err != nil || result.Outcome != OutcomeSatisfied || !result.RetryAt.IsZero() {
 		t.Fatalf("Run() = %#v, %v", result, err)
 	}
 }
@@ -1580,7 +1581,7 @@ func testService(t *testing.T, current inventory.Inventory, searcher *fakeSearch
 	if installer == nil {
 		installer = &fakeInstaller{}
 	}
-	return &Service{Inventory: &fakeInventory{current: current}, Searcher: searcher, PackCache: cache, Synchronizer: sync, Installer: installer, Repository: &workflowRepository{}, Providers: map[string]provider.Provider{}, ProviderOrder: []string{"provider"}, MinimumScore: 35, PackTTL: 24 * time.Hour, LapsePolicy: DefaultLapsePolicy(), Clock: fixedWorkflowClock{at: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)}}
+	return &Service{RandomUnit: func() float64 { return 0.5 }, Inventory: &fakeInventory{current: current}, Searcher: searcher, PackCache: cache, Synchronizer: sync, Installer: installer, Repository: &workflowRepository{}, Providers: map[string]provider.Provider{}, ProviderOrder: []string{"provider"}, MinimumScore: 35, PackTTL: 24 * time.Hour, LapsePolicy: DefaultLapsePolicy(), Clock: fixedWorkflowClock{at: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)}}
 }
 
 func serviceRequest(t *testing.T) Request {
@@ -1902,5 +1903,43 @@ func TestServiceStaleInventoryIsTechnicalWithoutCandidateRejection(t *testing.T)
 	}
 	if searcher.calls != 0 {
 		t.Fatal("stale inventory reached providers")
+	}
+}
+
+func TestServiceRetainsManagedSubtitleAfterEmptyUpgrade(t *testing.T) {
+	request := serviceRequest(t)
+	existing := matchingInstallation(request, broadCandidate("installed"), []byte(`{"total":70}`))
+	service := testService(t, managedSidecarInventory(existing), &fakeSearcher{}, nil, nil, &fakeInstaller{})
+	service.Repository = &workflowRepository{found: true, installation: existing}
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeSatisfied || !result.NextUpgrade.Equal(service.Clock.Now().Add(30*24*time.Hour)) {
+		t.Fatalf("retained upgrade = %#v, %v", result, err)
+	}
+}
+
+func TestServiceBacksOffRetainedUpgradeButReacquiresMissingSidecar(t *testing.T) {
+	for _, present := range []bool{true, false} {
+		t.Run(fmt.Sprint(present), func(t *testing.T) {
+			request := serviceRequest(t)
+			request.UpgradeAttempt = 2
+			existing := matchingInstallation(request, broadCandidate("installed"), []byte(`{"total":35}`))
+			current := inventory.Inventory{}
+			if present {
+				current = managedSidecarInventory(existing)
+			}
+			service := testService(t, current, &fakeSearcher{}, nil, nil, &fakeInstaller{})
+			service.Repository = &workflowRepository{found: true, installation: existing}
+			result, err := service.Run(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if present {
+				if result.Outcome != OutcomeSatisfied || !result.NextUpgrade.Equal(service.Clock.Now().Add(30*24*time.Hour)) {
+					t.Fatalf("retained=%#v", result)
+				}
+			} else if result.Outcome != OutcomeNoResult || !result.NextUpgrade.IsZero() {
+				t.Fatalf("missing=%#v", result)
+			}
+		})
 	}
 }

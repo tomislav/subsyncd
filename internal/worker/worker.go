@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sort"
 	"sync"
 	"time"
@@ -291,6 +292,9 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			return nil
 		}
 		request := workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)}
+		if lease.Priority == store.SearchPriorityUpgrade {
+			request.UpgradeAttempt = lease.Attempt + 1
+		}
 		if lease.Priority != store.SearchPriorityUpgrade {
 			request.ResumeProviders = append([]string(nil), lease.ResumeProviders...)
 			request.ResumeRouteSignature = lease.ResumeRouteSignature
@@ -345,7 +349,8 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		if !result.NextUpgrade.IsZero() {
 			completion.Priority = store.SearchPriorityUpgrade
 		}
-		completion.ResetMissingAttempt = true
+		completion.AdvanceUpgradeAttempt = lease.Priority == store.SearchPriorityUpgrade && !result.NextUpgrade.IsZero()
+		completion.ResetMissingAttempt = !completion.AdvanceUpgradeAttempt
 		completion.ResetFailureAttempt = true
 	case workflow.OutcomeInstalled:
 		completion.NextAttemptAt = result.NextUpgrade
@@ -355,7 +360,12 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		completion.ResetMissingAttempt = true
 		completion.ResetFailureAttempt = true
 	case workflow.OutcomeNoResult, workflow.OutcomeRejected:
-		completion = schedule.Scheduler{Clock: w.Clock, RandomUnit: w.RandomUnit}.Missing(lease.JobID, lease.Attempt+1)
+		attempt := lease.Attempt + 1
+		if lease.Priority == store.SearchPriorityUpgrade {
+			attempt = 1
+		}
+		completion = schedule.Scheduler{Clock: w.Clock, RandomUnit: w.RandomUnit}.Missing(lease.JobID, attempt)
+		completion.ResetMissingAttempt = lease.Priority == store.SearchPriorityUpgrade
 		completion.Outcome = string(result.Outcome)
 		completion.Priority = store.SearchPriorityMissing
 	case workflow.OutcomeThrottled:
@@ -573,7 +583,7 @@ func (w *Worker) throttleRetryAt(reset time.Time) time.Time {
 	if delay <= 0 {
 		return w.Clock.Now()
 	}
-	unit := 0.5
+	unit := rand.Float64()
 	if w.RandomUnit != nil {
 		unit = w.RandomUnit()
 	}

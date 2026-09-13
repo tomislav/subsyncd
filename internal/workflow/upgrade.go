@@ -3,6 +3,7 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"path/filepath"
 	"time"
 
@@ -72,4 +73,34 @@ func installedScore(installation store.Installation) (domain.Score, bool, error)
 		}
 	}
 	return score, false, nil
+}
+
+// scheduleUpgrade spreads ordinary checks and lengthens repeated unchanged
+// assessments. A preferred-provider reset earlier than the base interval remains
+// authoritative, without jitter or backoff delaying its recovery check.
+func (s *Service) scheduleUpgrade(result *Result, attempt int) {
+	if result.NextUpgrade.IsZero() {
+		return
+	}
+	now := s.Clock.Now()
+	base := s.nextUpgradeAt(now, result.Score, result.Candidate).Sub(now)
+	if result.upgradeRecovery {
+		return
+	}
+	if result.Outcome != OutcomeSatisfied {
+		attempt = 0
+	}
+	for _, days := range []int{14, 30, 60, 90} {
+		delay := time.Duration(days) * 24 * time.Hour
+		if attempt > 0 && delay > base {
+			base = delay
+			attempt--
+		}
+	}
+	unit := rand.Float64()
+	if s.RandomUnit != nil {
+		unit = s.RandomUnit()
+	}
+	unit = max(0, min(1, unit))
+	result.NextUpgrade = now.Add(base + time.Duration(float64(base)*0.1*(2*unit-1)))
 }

@@ -85,7 +85,7 @@ type SearchLease struct {
 	MediaID              int64
 	Language             string
 	JobID                string
-	Attempt              int
+	Attempt              int // Missing retries or unchanged upgrade checks, by Priority.
 	FailureAttempt       int
 	LeaseUntil           time.Time
 	Priority             SearchPriority
@@ -98,8 +98,9 @@ type SearchCompletion struct {
 	Outcome               string
 	NextAttemptAt         time.Time
 	AdvanceMissingAttempt bool
+	AdvanceUpgradeAttempt bool
 	AdvanceFailureAttempt bool
-	ResetMissingAttempt   bool
+	ResetMissingAttempt   bool // Reset the shared phase counter before advancing it.
 	ResetFailureAttempt   bool
 	Priority              SearchPriority
 	ResumeProviders       []string
@@ -884,7 +885,7 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		next = completion.NextAttemptAt.UnixNano()
 	}
 	advanceMissing := 0
-	if completion.AdvanceMissingAttempt {
+	if completion.AdvanceMissingAttempt || completion.AdvanceUpgradeAttempt {
 		advanceMissing = 1
 	}
 	advanceFailure := 0
@@ -931,7 +932,7 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 	} else {
 		result, err = tx.ExecContext(ctx, `UPDATE search_states SET
 		state=CASE WHEN rerun_requested=1 THEN 'pending' ELSE ? END,
-		attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN 0 ELSE attempt+? END,
+		attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN ? ELSE attempt+? END,
 		failure_attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN 0 ELSE failure_attempt+? END,
 		next_attempt_at_ns=CASE WHEN rerun_requested=1 THEN next_attempt_at_ns ELSE ? END,
 		last_outcome=CASE WHEN rerun_requested=1 THEN '' ELSE ? END,
@@ -939,7 +940,7 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		resume_providers_json=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '[]' END,
 		resume_route_signature=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '' END,
 		rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL
-		WHERE lease_owner=?`, state, completion.ResetMissingAttempt, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.JobID)
+		WHERE lease_owner=?`, state, completion.ResetMissingAttempt, advanceMissing, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.JobID)
 	}
 	if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("complete search: %w", err)

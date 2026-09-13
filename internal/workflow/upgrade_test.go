@@ -92,3 +92,47 @@ func installationWithScore(t *testing.T, total int, exact bool) store.Installati
 	}
 	return store.Installation{ScoreJSON: payload}
 }
+
+func TestUpgradeSchedulingBackoffJitterAndRecovery(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name               string
+		score, attempt     int
+		unit               float64
+		outcome            Outcome
+		fallback, recovery bool
+		days               float64
+	}{
+		{"first low", 35, 0, 0.5, OutcomeInstalled, false, false, 7},
+		{"first unchanged", 35, 1, 0.5, OutcomeSatisfied, false, false, 14},
+		{"second unchanged", 35, 2, 0.5, OutcomeSatisfied, false, false, 30},
+		{"third unchanged", 35, 3, 0.5, OutcomeSatisfied, false, false, 60},
+		{"capped", 35, 99, 0.5, OutcomeSatisfied, false, false, 90},
+		{"medium", 70, 1, 0.5, OutcomeSatisfied, false, false, 60},
+		{"high jitter", 90, 9, 1, OutcomeSatisfied, false, false, 99},
+		{"low jitter", 35, 1, 0, OutcomeSatisfied, false, false, 12.6},
+		{"replacement resets", 35, 4, 0.5, OutcomeInstalled, false, false, 7},
+		{"fallback exact", 100, 2, 0.5, OutcomeSatisfied, true, false, 30},
+		{"recovery", 35, 4, 1, OutcomeInstalled, true, true, 0.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Service{Clock: fixedWorkflowClock{at: now}, RandomUnit: func() float64 { return tc.unit }, FallbackProviderOrder: []string{"fallback"}}
+			c := domain.Candidate{ProviderID: "preferred"}
+			if tc.fallback {
+				c.ProviderID = "fallback"
+				c.ExactHash = tc.score == 100
+			}
+			result := Result{Outcome: tc.outcome, Score: domain.Score{Total: tc.score}, Candidate: c}
+			result.NextUpgrade = s.nextUpgradeAt(now, result.Score, c)
+			if tc.recovery {
+				result.NextUpgrade = now.Add(12 * time.Hour)
+				result.upgradeRecovery = true
+			}
+			s.scheduleUpgrade(&result, tc.attempt)
+			want := now.Add(time.Duration(tc.days * float64(24*time.Hour)))
+			if !result.NextUpgrade.Equal(want) {
+				t.Fatalf("next=%v want=%v", result.NextUpgrade, want)
+			}
+		})
+	}
+}

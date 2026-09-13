@@ -14,7 +14,8 @@ import (
 
 // This fails if an upgrade-policy denial is sent to prepareCandidate: that path
 // treats the denial as a technical candidate failure and advances failure backoff.
-func TestCachedUpgradeBelowDeltaKeepsNormalNoResultOutcome(t *testing.T) {
+// The existing subtitle instead remains satisfied with its upgrade schedule.
+func TestCachedUpgradeBelowDeltaRetainsUpgradeSchedule(t *testing.T) {
 	request, cached, repository := cachedUpgradeFixture(t, []byte(`{"total":100}`))
 	cachedPath := writeInstallFile(t, filepath.Join(t.TempDir(), "cached.srt"), installSRT)
 	cache := &fakePackCache{member: pack.CachedMember{Path: cachedPath, Candidate: cached}, found: true}
@@ -25,7 +26,7 @@ func TestCachedUpgradeBelowDeltaKeepsNormalNoResultOutcome(t *testing.T) {
 	service.Repository = repository
 
 	result, err := service.Run(context.Background(), request)
-	if err != nil || result.Outcome != OutcomeNoResult || !result.NextUpgrade.IsZero() {
+	if err != nil || result.Outcome != OutcomeSatisfied || result.NextUpgrade.IsZero() {
 		t.Fatalf("Run() = %+v, %v", result, err)
 	}
 	if synchronizer.synchronizeCalls != 0 || installer.calls != 0 || len(repository.rejections) != 0 {

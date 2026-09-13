@@ -2475,3 +2475,33 @@ func TestInventoryMigrationPreservesKnownHistoricalDeletions(t *testing.T) {
 		}
 	}
 }
+
+func TestUpgradeAttemptPersistsAndResetsForMissingSubtitle(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	repo := openTestRepository(t)
+	id := insertTestMedia(t, repo, 1, now)
+	requireSearchState(t, repo, id, "en", now, SearchPriorityUpgrade)
+	for i := 0; i < 3; i++ {
+		leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute)
+		if err != nil || len(leases) != 1 || leases[0].Attempt != i {
+			t.Fatalf("lease=%#v err=%v", leases, err)
+		}
+		_, err = repo.CompleteSearch(ctx, SearchCompletion{JobID: leases[0].JobID, Outcome: "satisfied", NextAttemptAt: now, Priority: SearchPriorityUpgrade, AdvanceUpgradeAttempt: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("leases=%v err=%v", leases, err)
+	}
+	_, err = repo.CompleteSearch(ctx, SearchCompletion{JobID: leases[0].JobID, Outcome: "no_result", NextAttemptAt: now, Priority: SearchPriorityMissing, ResetMissingAttempt: true, AdvanceMissingAttempt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases, err = repo.LeaseDueSearches(ctx, now, 1, time.Minute)
+	if err != nil || len(leases) != 1 || leases[0].Attempt != 1 || leases[0].Priority != SearchPriorityMissing {
+		t.Fatalf("missing leases=%#v err=%v", leases, err)
+	}
+}
