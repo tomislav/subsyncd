@@ -13,6 +13,14 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Completed tasks
 
+### Missed Arr whole-delete reconciliation recovery — 2026-09-13
+
+- Commits: `1c4e1d0` snapshots current Arr identities, `a59af1f` lists active stored identities, `681b9eb` reconciles missing identities atomically, and `ddc6fcb` keeps restart E2E discovery accounting precise.
+- Complete validated top-level snapshots now recover whole-delete webhooks missed while subsyncd was offline. Missing positive Sonarr series IDs retire all stored episodes/searches for that series; missing positive Radarr movie IDs retire that movie/search work. Individual file/episode omissions are not inferred, and legacy Sonarr rows with unknown series identity remain unchanged.
+- Snapshot failures delete nothing and retain the cursor. Snapshot and history mutations share the existing cursor/event-revision transaction fence, so concurrent events invalidate the stale snapshot before mutation.
+- Verification: affected catalog/store/app race suites, full `go test ./... -race -count=1`, `go vet ./...`, full tagged E2E race suite, formatting, and diff checks passed. Independent task and scoped fix reviews found no actionable issues. Tests used sanitized fixtures and local fake servers only. No production mutation or deployment occurred.
+- Next task: merge and push the verified branch; deployment remains separate.
+
 ### Missed Arr Delete Reconciliation — Task 1 — 2026-09-13
 
 - Commit: this Task 1 commit, based on `69cb0ba`. Catalogs now optionally
