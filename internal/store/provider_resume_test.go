@@ -3,13 +3,96 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestLeaseDueSearchesRejectsIterationErrorBeforeClaim(t *testing.T) {
+	claims := &atomic.Int32{}
+	driverName := fmt.Sprintf("provider-resume-iteration-%d", time.Now().UnixNano())
+	sql.Register(driverName, &resumeIterationErrorDriver{claims: claims})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	repo := (&Store{db: db}).Repository()
+
+	leases, err := repo.LeaseDueSearches(context.Background(), time.Unix(100, 0).UTC(), 2, 5*time.Minute)
+	if err == nil {
+		t.Errorf("iteration failure returned leases %#v", leases)
+	}
+	if got := claims.Load(); got != 0 {
+		t.Errorf("iteration failure allowed %d claim updates", got)
+	}
+}
+
+type resumeIterationErrorDriver struct {
+	claims *atomic.Int32
+}
+
+func (d *resumeIterationErrorDriver) Open(string) (driver.Conn, error) {
+	return &resumeIterationErrorConn{claims: d.claims}, nil
+}
+
+type resumeIterationErrorConn struct {
+	claims *atomic.Int32
+}
+
+func (*resumeIterationErrorConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare unsupported")
+}
+
+func (*resumeIterationErrorConn) Close() error { return nil }
+
+func (*resumeIterationErrorConn) Begin() (driver.Tx, error) {
+	return resumeIterationErrorTx{}, nil
+}
+
+func (*resumeIterationErrorConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return resumeIterationErrorTx{}, nil
+}
+
+func (*resumeIterationErrorConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return &resumeIterationErrorRows{}, nil
+}
+
+func (c *resumeIterationErrorConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+	c.claims.Add(1)
+	return driver.RowsAffected(1), nil
+}
+
+type resumeIterationErrorTx struct{}
+
+func (resumeIterationErrorTx) Commit() error   { return nil }
+func (resumeIterationErrorTx) Rollback() error { return nil }
+
+type resumeIterationErrorRows struct {
+	returned bool
+}
+
+func (*resumeIterationErrorRows) Columns() []string {
+	return []string{"media_id", "language", "attempt", "failure_attempt", "priority", "resume_providers_json", "resume_route_signature"}
+}
+
+func (*resumeIterationErrorRows) Close() error { return nil }
+
+func (r *resumeIterationErrorRows) Next(destination []driver.Value) error {
+	if r.returned {
+		return errors.New("injected due-search iteration failure")
+	}
+	r.returned = true
+	copy(destination, []driver.Value{int64(1), "en", int64(0), int64(0), int64(SearchPriorityMissing), "[]", "route"})
+	return nil
+}
 
 func TestSearchResumeRoundTrip(t *testing.T) {
 	ctx := context.Background()

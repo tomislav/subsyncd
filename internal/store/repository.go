@@ -775,6 +775,9 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 		}
 		dueRows = append(dueRows, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate due searches: %w", errors.Join(err, rows.Close()))
+	}
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("close due searches: %w", err)
 	}
