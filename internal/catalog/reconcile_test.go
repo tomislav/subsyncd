@@ -273,29 +273,81 @@ func TestReconcilerConvertsEntityHistoryStates(t *testing.T) {
 	}
 }
 
-func TestReconcilerCommitsNondeferredChangesWithoutAdvancingCursor(t *testing.T) {
-	start := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
-	pageEnd := start.Add(time.Hour)
-	change := HistoryChange{HistoryID: 42, EntityID: 102, Kind: domain.MediaEpisode, Type: EventDelete, State: HistoryAbsent, OccurredAt: start.Add(20 * time.Minute)}
-	catalog := &fakeReconcileCatalog{changes: []HistoryChange{change}, err: ErrHistoryDeferred}
-	backend := &fakeReconcileStore{cursor: start}
-	wakes := 0
-	reconciler := Reconciler{Instance: "sonarr-main", Kind: domain.MediaEpisode, Catalog: catalog, Store: backend, Languages: []domain.Language{"hr"}, Now: func() time.Time { return pageEnd }, OnCommitted: func() { wakes++ }}
+func TestReconcilerCommitsHistoryAndSnapshotDeletesWithoutAdvancingDeferredCursor(t *testing.T) {
+	for _, kind := range []domain.MediaKind{domain.MediaEpisode, domain.MediaMovie} {
+		t.Run(string(kind), func(t *testing.T) {
+			ctx := context.Background()
+			start := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+			pageEnd := start.Add(time.Hour)
+			instance, instanceType := "sonarr-main", "sonarr"
+			if kind == domain.MediaMovie {
+				instance, instanceType = "radarr-main", "radarr"
+			}
+			db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			repo := db.Repository()
+			if err := repo.EnsureInstance(ctx, instance, instanceType, "http://arr.invalid", start.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			media := domain.Media{
+				EntityID: 77,
+				Ref:      domain.MediaRef{Instance: instance, Kind: kind, FileID: 1001},
+				Fingerprint: domain.MediaFingerprint{
+					Path: "/media/missing.mkv", FileID: 1001, Size: 100, ModTime: start.Add(-time.Hour),
+				},
+			}
+			if kind == domain.MediaEpisode {
+				media.EntityID = 101
+				media.SeriesID = 77
+			}
+			if _, err := repo.ApplyMediaEvent(ctx, store.MediaEventMutation{
+				EventID: "seed", Type: "import", EntityID: media.EntityID, Ref: media.Ref, Media: media,
+				Languages: []domain.Language{"hr"}, At: start.Add(-time.Hour),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mediaID, _, err := repo.FindMedia(ctx, media.Ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := repo.GetReconciliationState(ctx, instance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.CommitReconciliation(ctx, instance, state, start, nil); err != nil {
+				t.Fatal(err)
+			}
+			change := HistoryChange{HistoryID: 42, EntityID: 102, Kind: kind, Type: EventDelete, State: HistoryAbsent, OccurredAt: start.Add(20 * time.Minute)}
+			catalog := &fakeReconcileCatalog{changes: []HistoryChange{change}, err: ErrHistoryDeferred, snapshot: completeSnapshot(kind)}
+			wakes := 0
+			reconciler := Reconciler{Instance: instance, Kind: kind, Catalog: catalog, Store: repo, Languages: []domain.Language{"hr"}, Now: func() time.Time { return pageEnd }, OnCommitted: func() { wakes++ }}
 
-	if err := reconciler.Run(context.Background()); !errors.Is(err, ErrHistoryDeferred) {
-		t.Fatalf("Reconciler.Run() error = %v, want ErrHistoryDeferred", err)
-	}
-	if !backend.committed.Equal(start) {
-		t.Fatalf("cursor = %s, want retained %s", backend.committed, start)
-	}
-	if len(backend.mutations) != 1 || backend.mutations[0].EventID != "reconcile:sonarr-main:42" {
-		t.Fatalf("committed mutations = %#v", backend.mutations)
-	}
-	if wakes != 1 {
-		t.Fatalf("commit callbacks = %d, want 1", wakes)
-	}
-	if catalog.snapshotCalls != 0 || backend.listCalls != 0 {
-		t.Fatalf("deferred page used incomplete snapshot view: snapshot calls=%d store calls=%d", catalog.snapshotCalls, backend.listCalls)
+			if err := reconciler.Run(ctx); !errors.Is(err, ErrHistoryDeferred) {
+				t.Fatalf("Reconciler.Run() error = %v, want ErrHistoryDeferred", err)
+			}
+			cursor, err := repo.GetReconciliationCursor(ctx, instance)
+			if err != nil || !cursor.Equal(start) {
+				t.Fatalf("cursor = %s, %v; want retained %s", cursor, err, start)
+			}
+			status, err := repo.GetSearchStatus(ctx, mediaID, "hr")
+			if err != nil || status.State != "complete" || status.LastOutcome != "deleted" {
+				t.Fatalf("missing top-level identity status = %#v, %v", status, err)
+			}
+			if active, err := repo.ListActiveCatalogIdentities(ctx, instance, kind); err != nil || len(active) != 0 {
+				t.Fatalf("active identities = %v, %v", active, err)
+			}
+			for _, eventID := range []string{"reconcile:" + instance + ":42", snapshotDeleteEventID(instance, kind, 77, pageEnd)} {
+				if applied, err := repo.HasAppliedMediaEvent(ctx, eventID); err != nil || !applied {
+					t.Fatalf("event %q applied = %t, %v", eventID, applied, err)
+				}
+			}
+			if wakes != 1 || catalog.snapshotCalls != 1 {
+				t.Fatalf("commit/snapshot calls = %d/%d, want 1/1", wakes, catalog.snapshotCalls)
+			}
+		})
 	}
 }
 
