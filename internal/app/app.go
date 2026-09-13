@@ -591,6 +591,9 @@ func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, l
 	if err != nil {
 		return "", err
 	}
+	if err := a.Repository.ClearSearchResume(ctx, mediaID, language); err != nil {
+		return "", err
+	}
 	if retryRejected {
 		if err := a.Repository.ClearCandidateRejections(ctx, mediaID, language); err != nil {
 			return "", err

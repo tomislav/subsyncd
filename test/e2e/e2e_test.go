@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
+	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
 	"subsyncd/internal/worker"
@@ -69,9 +71,157 @@ func TestWebhookWakeDispatchesPersistedSearch(t *testing.T) {
 	}
 }
 
+func TestProviderResumeSurvivesRestart(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	mediaPath := filepath.Join(root, "Movie.2026.mkv")
+	if err := os.WriteFile(mediaPath, []byte("media"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC)
+	reset := now.Add(8 * time.Hour)
+	var providerNow atomic.Int64
+	providerNow.Store(now.UnixNano())
+	providers := map[string]*providerResumeFake{
+		"open":    {id: "open", nowNS: &providerNow, cooldownUntil: reset},
+		"titlovi": {id: "titlovi", nowNS: &providerNow},
+		"subdl":   {id: "subdl", nowNS: &providerNow},
+	}
+	supplied := make(map[string]provider.Provider, len(providers))
+	for id, item := range providers {
+		supplied[id] = item
+	}
+	cfg := e2eConfig(t, root, "http://arr.invalid", "http://provider.invalid", "")
+	cfg.Silo.Enabled = false
+	spec := cfg.Providers["opensubtitles-main"]
+	cfg.Providers = map[string]config.ProviderSpec{"open": spec, "titlovi": spec, "subdl": spec}
+	cfg.Languages["en"] = config.LanguageConfig{Providers: []string{"open", "titlovi", "subdl"}}
+	media := domain.Media{
+		EntityID: 9,
+		Ref:      domain.MediaRef{Instance: "radarr-main", Kind: domain.MediaMovie, FileID: 42},
+		Fingerprint: domain.MediaFingerprint{
+			Path: mediaPath, FileID: 42, Size: info.Size(), ModTime: info.ModTime(),
+		},
+		Title: "Movie", Year: 2026,
+	}
+	build := func(at time.Time) *app.App {
+		t.Helper()
+		application, err := app.New(ctx, cfg, app.Options{
+			Clock:          fixedE2EClock{now: at},
+			SkipLapseCheck: true,
+			SkipProbeCheck: true,
+			ProbeRunner:    probeRunner{},
+			Providers:      supplied,
+			Catalogs:       map[string]catalog.Catalog{"radarr-main": wakeCatalog{now: at}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		application.Worker.(*worker.Worker).RandomUnit = func() float64 { return 0 }
+		return application
+	}
+	readResume := func(mediaID int64) (string, string) {
+		t.Helper()
+		database, err := sql.Open("sqlite", filepath.Join(cfg.DataDir, "subsyncd.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer database.Close()
+		var encoded, signature string
+		if err := database.QueryRow(`SELECT resume_providers_json,resume_route_signature FROM search_states WHERE media_id=? AND language='en'`, mediaID).Scan(&encoded, &signature); err != nil {
+			t.Fatal(err)
+		}
+		return encoded, signature
+	}
+
+	first := build(now)
+	mediaID, _, err := first.Repository.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Repository.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, store.SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Worker.(*worker.Worker).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	firstStatus, err := first.Repository.GetSearchStatus(ctx, mediaID, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstStatus.LastOutcome != string(workflow.OutcomeThrottled) || firstStatus.Attempt != 0 || firstStatus.FailureAttempt != 0 || !firstStatus.NextAttemptAt.Equal(reset) {
+		t.Fatalf("first status = %+v", firstStatus)
+	}
+	for id, item := range providers {
+		if calls := item.calls.Load(); calls != 1 {
+			t.Fatalf("first %s calls = %d, want 1", id, calls)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	encoded, signature := readResume(mediaID)
+	if encoded != `["titlovi","subdl"]` || signature == "" {
+		t.Fatalf("persisted first resume = %s/%q", encoded, signature)
+	}
+
+	providerNow.Store(reset.UnixNano())
+	second := build(reset)
+	if err := second.Worker.(*worker.Worker).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	secondStatus, err := second.Repository.GetSearchStatus(ctx, mediaID, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondStatus.LastOutcome != string(workflow.OutcomeNoResult) || secondStatus.Attempt != 1 || secondStatus.FailureAttempt != 0 || secondStatus.Priority != store.SearchPriorityMissing || !secondStatus.NextAttemptAt.After(reset) {
+		t.Fatalf("second status = %+v", secondStatus)
+	}
+	if providers["open"].calls.Load() != 2 || providers["titlovi"].calls.Load() != 1 || providers["subdl"].calls.Load() != 1 {
+		t.Fatalf("restart provider calls = open:%d titlovi:%d subdl:%d", providers["open"].calls.Load(), providers["titlovi"].calls.Load(), providers["subdl"].calls.Load())
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	encoded, signature = readResume(mediaID)
+	if encoded != `[]` || signature != "" {
+		t.Fatalf("final resume = %s/%q", encoded, signature)
+	}
+}
+
 type fixedE2EClock struct{ now time.Time }
 
 func (c fixedE2EClock) Now() time.Time { return c.now }
+
+type providerResumeFake struct {
+	id            string
+	nowNS         *atomic.Int64
+	cooldownUntil time.Time
+	calls         atomic.Int64
+}
+
+func (p *providerResumeFake) ID() string { return p.id }
+
+func (*providerResumeFake) Capabilities() provider.Capabilities { return provider.Capabilities{} }
+
+func (*providerResumeFake) SupportsLanguage(domain.Language) bool { return true }
+
+func (p *providerResumeFake) Search(context.Context, provider.SearchQuery) ([]domain.Candidate, error) {
+	p.calls.Add(1)
+	now := time.Unix(0, p.nowNS.Load()).UTC()
+	if !p.cooldownUntil.IsZero() && now.Before(p.cooldownUntil) {
+		return nil, &provider.CooldownError{ProviderID: p.id, Scope: provider.OperationSearch, Reason: "test cooldown", ResetAt: p.cooldownUntil}
+	}
+	return nil, nil
+}
+
+func (*providerResumeFake) Download(context.Context, domain.Candidate, io.Writer) (provider.DownloadMetadata, error) {
+	return provider.DownloadMetadata{}, errors.New("unexpected provider download")
+}
 
 type wakeCatalog struct{ now time.Time }
 

@@ -277,34 +277,40 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 				return renewErr
 			}
 			if jobCtx.Err() != nil {
-				w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, nil)
+				w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, len(lease.ResumeProviders), nil)
 				return jobCtx.Err()
 			}
 			completion := store.SearchCompletion{JobID: lease.JobID, Outcome: string(media.UnsupportedReason)}
 			completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
 			if completionErr != nil {
-				w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, completionErr)
+				w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, len(lease.ResumeProviders), completionErr)
 				return completionErr
 			}
 			w.logRerun(jobCtx, completionResult)
-			w.logJobCompleted(jobCtx, slog.LevelInfo, string(media.UnsupportedReason), string(media.UnsupportedReason), time.Time{}, started, nil)
+			w.logJobCompleted(jobCtx, slog.LevelInfo, string(media.UnsupportedReason), string(media.UnsupportedReason), time.Time{}, started, 0, nil)
 			return nil
 		}
-		result, err = w.Workflow.Run(workflowCtx, workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)})
+		request := workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)}
+		if lease.Priority != store.SearchPriorityUpgrade {
+			request.ResumeProviders = append([]string(nil), lease.ResumeProviders...)
+			request.ResumeRouteSignature = lease.ResumeRouteSignature
+		}
+		result, err = w.Workflow.Run(workflowCtx, request)
 	}
 	if renewErr := renewal.finish(); renewErr != nil {
 		events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
 		return renewErr
 	}
 	if jobCtx.Err() != nil {
-		w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, nil)
+		w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, len(lease.ResumeProviders), nil)
 		return jobCtx.Err()
 	}
 	if err != nil {
 		completion := schedule.Scheduler{Clock: w.Clock}.Failure(lease.JobID, lease.FailureAttempt, "workflow_error")
+		preserveProviderResume(lease, result, &completion)
 		completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
 		if completionErr != nil {
-			w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, completionErr)
+			w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, len(lease.ResumeProviders), completionErr)
 			return errors.Join(err, completionErr)
 		}
 		events.Log(jobCtx, slog.LevelWarn, "job.retry_scheduled", "subtitle job retry scheduled",
@@ -313,21 +319,21 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			slog.Int("next_failure_attempt", lease.FailureAttempt+1),
 		)
 		w.logRerun(jobCtx, completionResult)
-		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow", completion.NextAttemptAt, started, err)
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow", completion.NextAttemptAt, started, completedResumeProviderCount(completion, completionResult), err)
 		return err
 	}
 	completion, err := w.workflowCompletion(lease, result)
 	if err != nil {
-		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow_outcome", time.Time{}, started, err)
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow_outcome", time.Time{}, started, len(lease.ResumeProviders), err)
 		return err
 	}
 	completionResult, err := w.Repository.CompleteSearch(jobCtx, completion)
 	if err != nil {
-		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, err)
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, len(lease.ResumeProviders), err)
 		return err
 	}
 	w.logRerun(jobCtx, completionResult)
-	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, nil)
+	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, completedResumeProviderCount(completion, completionResult), nil)
 	return nil
 }
 
@@ -354,10 +360,27 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		completion.Priority = store.SearchPriorityMissing
 	case workflow.OutcomeThrottled:
 		completion.NextAttemptAt = w.throttleRetryAt(result.RetryAt)
+		preserveProviderResume(lease, result, &completion)
 	default:
 		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
 	}
 	return completion, nil
+}
+
+func preserveProviderResume(lease store.SearchLease, result workflow.Result, completion *store.SearchCompletion) {
+	if lease.Priority == store.SearchPriorityUpgrade || len(result.ResumeProviders) == 0 || result.ResumeRouteSignature == "" {
+		return
+	}
+	completion.ResumeProviders = append([]string(nil), result.ResumeProviders...)
+	completion.ResumeRouteSignature = result.ResumeRouteSignature
+	completion.PreserveResume = true
+}
+
+func completedResumeProviderCount(completion store.SearchCompletion, result store.SearchCompletionResult) int {
+	if result.RerunScheduled {
+		return 0
+	}
+	return len(completion.ResumeProviders)
 }
 
 func (w *Worker) processNotifications(ctx context.Context, leases []store.NotificationLease) error {
@@ -697,6 +720,7 @@ func (w *Worker) logLease(ctx context.Context, lease store.SearchLease) {
 		slog.String("priority", lease.Priority.String()),
 		slog.Int("attempt", lease.Attempt),
 		slog.Int("failure_attempt", lease.FailureAttempt),
+		slog.Int("resume_provider_count", len(lease.ResumeProviders)),
 	)
 }
 
@@ -708,11 +732,12 @@ func (w *Worker) logRerun(ctx context.Context, result store.SearchCompletionResu
 		slog.String("priority", store.SearchPriorityImport.String()))
 }
 
-func (w *Worker) logJobCompleted(ctx context.Context, level slog.Level, outcome, reason string, next time.Time, started time.Time, err error) {
+func (w *Worker) logJobCompleted(ctx context.Context, level slog.Level, outcome, reason string, next time.Time, started time.Time, resumeProviderCount int, err error) {
 	attrs := []slog.Attr{
 		slog.String("outcome", outcome),
 		slog.String("reason", reason),
 		slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+		slog.Int("resume_provider_count", resumeProviderCount),
 	}
 	if !next.IsZero() {
 		attrs = append(attrs, slog.Time("next_attempt_at", next))

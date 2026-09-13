@@ -76,6 +76,35 @@ func TestFallbackCoordinatorsPreserveLanguageTiers(t *testing.T) {
 	}
 }
 
+func TestLanguageWorkflowRouteSignatures(t *testing.T) {
+	cfg := fallbackAppConfig(t)
+	cfg.Languages["en"] = config.LanguageConfig{Providers: []string{"english"}, FallbackProviders: []string{"backup", "third"}}
+	cfg.Languages["hr"] = config.LanguageConfig{Providers: []string{"third", "backup"}, FallbackProviders: []string{"english"}}
+	cfg.Languages["de"] = config.LanguageConfig{Providers: []string{"english"}}
+	a, err := New(t.Context(), cfg, fallbackAppOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	want := map[domain.Language]string{
+		"en": "6560467b334fd9ce4023c34f37fede1ec7d1bba3a4b02e0d0f18091d14b09051",
+		"hr": "5bb69ad557d73f8cf1d2c4ba29f015ccc570dbd24536c02bb6cd69f3cfce1f90",
+		"de": "1abb957e23df3d4abc65e3220cd8a424d86b7933d3db07f09d4e19a1e2cbb0fa",
+	}
+	seen := make(map[string]domain.Language, len(want))
+	for language, signature := range want {
+		got := a.Workflows[language].RouteSignature(language)
+		if got != signature {
+			t.Fatalf("%s route signature = %q, want %q", language, got, signature)
+		}
+		if prior, duplicate := seen[got]; duplicate {
+			t.Fatalf("languages %s and %s share route signature %q", prior, language, got)
+		}
+		seen[got] = language
+	}
+}
+
 func TestUnsupportedFallbackLanguageFailsAssembly(t *testing.T) {
 	cfg := fallbackAppConfig(t)
 	cfg.Languages["en"] = config.LanguageConfig{Providers: []string{"english"}, FallbackProviders: []string{"backup"}}

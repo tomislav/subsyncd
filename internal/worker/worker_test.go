@@ -3,10 +3,12 @@ package worker
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -62,6 +64,234 @@ func TestRunSearchLeaseCompletesUnsupportedMediaWithoutWorkflow(t *testing.T) {
 	}
 }
 
+func TestWorkerPassesProviderResume(t *testing.T) {
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	repository.searches[0].Priority = store.SearchPriorityMissing
+	repository.searches[0].ResumeProviders = []string{"titlovi-main", "subdl-main"}
+	repository.searches[0].ResumeRouteSignature = "route-v1"
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeNoResult}}
+	w := testWorker(repository, service, testutil.NewClock(now))
+
+	if err := w.runSearchLease(t.Context(), repository.searches[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.requests) != 1 {
+		t.Fatalf("workflow requests = %d, want 1", len(service.requests))
+	}
+	request := service.requests[0]
+	if !slices.Equal(request.ResumeProviders, []string{"titlovi-main", "subdl-main"}) || request.ResumeRouteSignature != "route-v1" {
+		t.Fatalf("workflow resume request = %v/%q", request.ResumeProviders, request.ResumeRouteSignature)
+	}
+}
+
+func TestWorkerPersistsProviderResume(t *testing.T) {
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	resumeProviders := []string{"titlovi-main", "subdl-main"}
+
+	for _, test := range []struct {
+		name         string
+		result       workflow.Result
+		workflowErr  error
+		wantErr      bool
+		wantPreserve bool
+	}{
+		{
+			name:         "throttled",
+			result:       workflow.Result{Outcome: workflow.OutcomeThrottled, RetryAt: now.Add(8 * time.Hour), ResumeProviders: resumeProviders, ResumeRouteSignature: "route-v2"},
+			wantPreserve: true,
+		},
+		{
+			name:         "technical failure",
+			result:       workflow.Result{ResumeProviders: resumeProviders, ResumeRouteSignature: "route-v2"},
+			workflowErr:  errors.New("temporary workflow failure"),
+			wantErr:      true,
+			wantPreserve: true,
+		},
+		{
+			name:        "technical providers without signature",
+			result:      workflow.Result{ResumeProviders: resumeProviders},
+			workflowErr: errors.New("temporary workflow failure"),
+			wantErr:     true,
+		},
+		{
+			name:        "technical signature without providers",
+			result:      workflow.Result{ResumeRouteSignature: "route-v2"},
+			workflowErr: errors.New("temporary workflow failure"),
+			wantErr:     true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newWorkerRepository(1, now)
+			repository.searches[0].Priority = store.SearchPriorityMissing
+			service := &workerWorkflow{outcome: test.result, err: test.workflowErr}
+			w := testWorker(repository, service, testutil.NewClock(now))
+			w.RandomUnit = func() float64 { return 0 }
+
+			err := w.runSearchLease(t.Context(), repository.searches[0])
+			if test.wantErr && !errors.Is(err, test.workflowErr) {
+				t.Fatalf("runSearchLease() error = %v, want %v", err, test.workflowErr)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatal(err)
+			}
+			if len(repository.searchCompletions) != 1 {
+				t.Fatalf("search completions = %d, want 1", len(repository.searchCompletions))
+			}
+			completion := repository.searchCompletions[0]
+			if completion.PreserveResume != test.wantPreserve {
+				t.Fatalf("persisted resume completion = %+v", completion)
+			}
+			if test.wantPreserve && (!slices.Equal(completion.ResumeProviders, resumeProviders) || completion.ResumeRouteSignature != "route-v2") {
+				t.Fatalf("persisted resume completion = %+v", completion)
+			}
+			if !test.wantPreserve && (len(completion.ResumeProviders) != 0 || completion.ResumeRouteSignature != "") {
+				t.Fatalf("incomplete resume completion = %+v", completion)
+			}
+			if test.result.Outcome == workflow.OutcomeThrottled {
+				if !completion.NextAttemptAt.Equal(test.result.RetryAt) || completion.AdvanceMissingAttempt || completion.AdvanceFailureAttempt || completion.Priority != 0 {
+					t.Fatalf("throttled scheduling changed = %+v", completion)
+				}
+			} else if !completion.NextAttemptAt.Equal(now.Add(time.Minute)) || !completion.AdvanceFailureAttempt || completion.AdvanceMissingAttempt || completion.Priority != 0 {
+				t.Fatalf("technical scheduling changed = %+v", completion)
+			}
+		})
+	}
+}
+
+func TestWorkerClearsProviderResume(t *testing.T) {
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	resumeResult := workflow.Result{ResumeProviders: []string{"titlovi-main"}, ResumeRouteSignature: "route-v2"}
+	for _, test := range []struct {
+		name     string
+		priority store.SearchPriority
+		result   workflow.Result
+	}{
+		{name: "installed", priority: store.SearchPriorityMissing, result: workflow.Result{Outcome: workflow.OutcomeInstalled, ResumeProviders: resumeResult.ResumeProviders, ResumeRouteSignature: resumeResult.ResumeRouteSignature}},
+		{name: "satisfied", priority: store.SearchPriorityMissing, result: workflow.Result{Outcome: workflow.OutcomeSatisfied, ResumeProviders: resumeResult.ResumeProviders, ResumeRouteSignature: resumeResult.ResumeRouteSignature}},
+		{name: "no result", priority: store.SearchPriorityMissing, result: workflow.Result{Outcome: workflow.OutcomeNoResult, ResumeProviders: resumeResult.ResumeProviders, ResumeRouteSignature: resumeResult.ResumeRouteSignature}},
+		{name: "rejected", priority: store.SearchPriorityMissing, result: workflow.Result{Outcome: workflow.OutcomeRejected, ResumeProviders: resumeResult.ResumeProviders, ResumeRouteSignature: resumeResult.ResumeRouteSignature}},
+		{name: "upgrade priority", priority: store.SearchPriorityUpgrade, result: workflow.Result{Outcome: workflow.OutcomeThrottled, RetryAt: now.Add(time.Hour), ResumeProviders: resumeResult.ResumeProviders, ResumeRouteSignature: resumeResult.ResumeRouteSignature}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newWorkerRepository(1, now)
+			lease := repository.searches[0]
+			lease.Priority = test.priority
+			lease.ResumeProviders = []string{"stale-provider"}
+			lease.ResumeRouteSignature = "stale-route"
+			service := &workerWorkflow{outcome: test.result}
+			w := testWorker(repository, service, testutil.NewClock(now))
+
+			if err := w.runSearchLease(t.Context(), lease); err != nil {
+				t.Fatal(err)
+			}
+			completion := repository.searchCompletions[0]
+			if completion.PreserveResume || len(completion.ResumeProviders) != 0 || completion.ResumeRouteSignature != "" {
+				t.Fatalf("terminal completion retained resume state: %+v", completion)
+			}
+			if test.priority == store.SearchPriorityUpgrade {
+				request := service.requests[0]
+				if len(request.ResumeProviders) != 0 || request.ResumeRouteSignature != "" {
+					t.Fatalf("upgrade request retained resume state: %v/%q", request.ResumeProviders, request.ResumeRouteSignature)
+				}
+			}
+		})
+	}
+
+	t.Run("unsupported", func(t *testing.T) {
+		repository := newWorkerRepository(1, now)
+		lease := repository.searches[0]
+		lease.ResumeProviders = []string{"stale-provider"}
+		lease.ResumeRouteSignature = "stale-route"
+		media := repository.media[lease.MediaID]
+		media.UnsupportedReason = domain.UnsupportedMultiEpisode
+		repository.media[lease.MediaID] = media
+		service := &workerWorkflow{}
+		w := testWorker(repository, service, testutil.NewClock(now))
+
+		if err := w.runSearchLease(t.Context(), lease); err != nil {
+			t.Fatal(err)
+		}
+		completion := repository.searchCompletions[0]
+		if completion.PreserveResume || len(completion.ResumeProviders) != 0 || completion.ResumeRouteSignature != "" {
+			t.Fatalf("unsupported completion retained resume state: %+v", completion)
+		}
+	})
+
+	t.Run("deleted", func(t *testing.T) {
+		databasePath := filepath.Join(t.TempDir(), "subsyncd.db")
+		database, err := store.Open(t.Context(), databasePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer database.Close()
+		repository := database.Repository()
+		media := domain.Media{
+			EntityID: 1,
+			Ref:      domain.MediaRef{Instance: "sonarr", Kind: domain.MediaMovie, FileID: 1},
+			Fingerprint: domain.MediaFingerprint{
+				Path: "/media/movie.mkv", FileID: 1, Size: 100, ModTime: now,
+			},
+			Title: "Movie",
+		}
+		mediaID, _, err := repository.UpsertMedia(t.Context(), media)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.UpsertSearchStateWithPriority(t.Context(), mediaID, "en", now, store.SearchPriorityMissing); err != nil {
+			t.Fatal(err)
+		}
+		leases, err := repository.LeaseDueSearches(t.Context(), now, 1, time.Minute)
+		if err != nil || len(leases) != 1 {
+			t.Fatalf("initial lease = %+v/%v", leases, err)
+		}
+		if _, err := repository.CompleteSearch(t.Context(), store.SearchCompletion{
+			JobID:                leases[0].JobID,
+			Outcome:              "throttled",
+			NextAttemptAt:        now.Add(time.Hour),
+			ResumeProviders:      []string{"stale-provider"},
+			ResumeRouteSignature: "stale-route",
+			PreserveResume:       true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		leases, err = repository.LeaseDueSearches(t.Context(), now.Add(time.Hour), 1, time.Minute)
+		if err != nil || len(leases) != 1 {
+			t.Fatalf("resumed lease = %+v/%v", leases, err)
+		}
+		if applied, err := repository.ApplyMediaEvent(t.Context(), store.MediaEventMutation{EventID: "deleted", Type: "delete", Ref: media.Ref, At: now.Add(2 * time.Hour)}); err != nil || !applied {
+			t.Fatalf("delete event = %v/%v", applied, err)
+		}
+		service := &workerWorkflow{outcome: workflow.Result{
+			Outcome:              workflow.OutcomeThrottled,
+			RetryAt:              now.Add(3 * time.Hour),
+			ResumeProviders:      []string{"new-provider"},
+			ResumeRouteSignature: "new-route",
+		}}
+		w := testWorker(nil, service, testutil.NewClock(now.Add(time.Hour)))
+		w.Repository = repository
+		if err := w.runSearchLease(t.Context(), leases[0]); err != nil {
+			t.Fatal(err)
+		}
+		status, err := repository.GetSearchStatus(t.Context(), mediaID, "en")
+		if err != nil || status.State != "complete" || status.LastOutcome != "deleted" {
+			t.Fatalf("deleted status = %+v/%v", status, err)
+		}
+		audit, err := sql.Open("sqlite", databasePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer audit.Close()
+		var providersJSON, signature string
+		if err := audit.QueryRow(`SELECT resume_providers_json,resume_route_signature FROM search_states WHERE media_id=? AND language='en'`, mediaID).Scan(&providersJSON, &signature); err != nil {
+			t.Fatal(err)
+		}
+		if providersJSON != `[]` || signature != "" {
+			t.Fatalf("deleted completion retained resume = %s/%q", providersJSON, signature)
+		}
+	})
+}
+
 func TestRunOnceLogsCorrelatedSearchJobLifecycle(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
@@ -101,16 +331,54 @@ func TestRunOnceLogsCorrelatedSearchJobLifecycle(t *testing.T) {
 	}
 }
 
+func TestWorkerLogsProviderResumeCountsWithoutProviderLists(t *testing.T) {
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	repository.searches[0].Priority = store.SearchPriorityMissing
+	repository.searches[0].ResumeProviders = []string{"prior-provider"}
+	repository.searches[0].ResumeRouteSignature = "route-v1"
+	service := &workerWorkflow{outcome: workflow.Result{
+		Outcome:              workflow.OutcomeThrottled,
+		RetryAt:              now.Add(time.Hour),
+		ResumeProviders:      []string{"completed-provider"},
+		ResumeRouteSignature: "route-v1",
+	}}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := testWorker(repository, service, testutil.NewClock(now))
+	w.Events = events
+	w.RandomUnit = func() float64 { return 0 }
+
+	if err := w.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	records := workerLogRecords(t, logs.String())
+	if got := findWorkerEvent(t, records, "job.leased")["resume_provider_count"]; got != float64(1) {
+		t.Fatalf("leased resume_provider_count = %#v, want 1", got)
+	}
+	if got := findWorkerEvent(t, records, "job.completed")["resume_provider_count"]; got != float64(1) {
+		t.Fatalf("completed resume_provider_count = %#v, want 1", got)
+	}
+	if strings.Contains(logs.String(), "prior-provider") || strings.Contains(logs.String(), "completed-provider") {
+		t.Fatalf("provider resume list leaked into logs: %s", logs.String())
+	}
+}
+
 func TestRunOnceLogsTechnicalRetryAndSameKeyRerun(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
+	repository.searches[0].ResumeProviders = []string{"prior-provider"}
+	repository.searches[0].ResumeRouteSignature = "route-v1"
 	repository.completionResults = []store.SearchCompletionResult{{RerunScheduled: true}}
 	var logs bytes.Buffer
 	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", Redact: func(error) string { return "sanitized" }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker := testWorker(repository, &workerWorkflow{err: errors.New("secret failure")}, testutil.NewClock(now))
+	worker := testWorker(repository, &workerWorkflow{outcome: workflow.Result{ResumeProviders: []string{"completed-provider"}, ResumeRouteSignature: "route-v1"}, err: errors.New("secret failure")}, testutil.NewClock(now))
 	worker.Events = events
 	if err := worker.RunOnce(context.Background()); err == nil {
 		t.Fatal("RunOnce() error = nil")
@@ -121,6 +389,9 @@ func TestRunOnceLogsTechnicalRetryAndSameKeyRerun(t *testing.T) {
 	completed := findWorkerEvent(t, records, "job.completed")
 	if completed["outcome"] != "failed" || completed["error"] != "sanitized" || completed["error_kind"] != "workflow" {
 		t.Fatalf("failed completion = %#v", completed)
+	}
+	if completed["resume_provider_count"] != float64(0) {
+		t.Fatalf("rerun completion resume_provider_count = %#v, want 0", completed["resume_provider_count"])
 	}
 	if strings.Contains(logs.String(), "secret failure") {
 		t.Fatalf("unsanitized workflow error leaked: %s", logs.String())
@@ -766,6 +1037,7 @@ type workerWorkflow struct {
 	outcome         workflow.Result
 	outcomes        []workflow.Result
 	err             error
+	requests        []workflow.Request
 }
 
 type stubbornWorkflow struct {
@@ -860,10 +1132,12 @@ func waitForWorkflowStart(t *testing.T, started <-chan int64) int64 {
 	}
 }
 
-func (w *workerWorkflow) Run(ctx context.Context, _ workflow.Request) (workflow.Result, error) {
+func (w *workerWorkflow) Run(ctx context.Context, request workflow.Request) (workflow.Result, error) {
 	w.mu.Lock()
 	w.active++
 	w.calls++
+	request.ResumeProviders = slices.Clone(request.ResumeProviders)
+	w.requests = append(w.requests, request)
 	call := w.calls
 	result := w.outcome
 	if call <= len(w.outcomes) {

@@ -604,6 +604,64 @@ func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 	}
 }
 
+func TestManualSearchClearsProviderResumeBeforeWorkflowFailure(t *testing.T) {
+	cfg := testConfig(t)
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	media := domain.Media{
+		EntityID: 7,
+		Ref:      domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7},
+		Fingerprint: domain.MediaFingerprint{
+			Path: filepath.Join(cfg.MediaRoots[0], "missing.mkv"), FileID: 7, Size: 100, ModTime: now,
+		},
+		Title: "Movie", Year: 2024,
+	}
+	application, err := New(t.Context(), cfg, Options{
+		SkipLapseCheck: true,
+		SkipProbeCheck: true,
+		Clock:          testutil.NewClock(now),
+		ProbeRunner:    probeRunner{},
+		Providers:      map[string]provider.Provider{"english": fakeProvider{id: "english"}},
+		Catalogs:       map[string]catalog.Catalog{"tv": staticCatalog{media: media}},
+		Worker:         &waitingWorker{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	mediaID, _, err := application.Repository.UpsertMedia(t.Context(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.UpsertSearchStateWithPriority(t.Context(), mediaID, "en", now, store.SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := application.Repository.LeaseDueSearches(t.Context(), now, 1, time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("initial lease = %+v/%v", leases, err)
+	}
+	if _, err := application.Repository.CompleteSearch(t.Context(), store.SearchCompletion{
+		JobID:                leases[0].JobID,
+		Outcome:              "throttled",
+		NextAttemptAt:        now.Add(time.Hour),
+		ResumeProviders:      []string{"english"},
+		ResumeRouteSignature: application.Workflows["en"].RouteSignature("en"),
+		PreserveResume:       true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := application.Search(t.Context(), "tv", "movie", 7, "en", false); err == nil {
+		t.Fatal("Search() error = nil, want missing-media workflow failure")
+	}
+	resumed, err := application.Repository.LeaseDueSearches(t.Context(), now.Add(2*time.Hour), 1, time.Minute)
+	if err != nil || len(resumed) != 1 {
+		t.Fatalf("resumed lease = %+v/%v", resumed, err)
+	}
+	if len(resumed[0].ResumeProviders) != 0 || resumed[0].ResumeRouteSignature != "" {
+		t.Fatalf("manual search retained provider resume = %v/%q", resumed[0].ResumeProviders, resumed[0].ResumeRouteSignature)
+	}
+}
+
 func TestNewReportsUnknownProviderTypeAndMissingLapse(t *testing.T) {
 	t.Run("unknown provider", func(t *testing.T) {
 		cfg := testConfig(t)
