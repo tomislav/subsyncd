@@ -55,14 +55,44 @@ func (fakeCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, err
 func (fakeCatalog) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
 	return nil, nil
 }
+func (fakeCatalog) ListIdentitySnapshot(context.Context) (catalog.CatalogIdentitySnapshot, error) {
+	return catalog.CatalogIdentitySnapshot{Kind: domain.MediaEpisode, IDs: map[int64]struct{}{}}, nil
+}
 
-type staticCatalog struct{ media domain.Media }
+type catalogWithoutIdentitySnapshot struct{}
+
+func (catalogWithoutIdentitySnapshot) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
+	return domain.Media{}, nil
+}
+
+func (catalogWithoutIdentitySnapshot) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
+	return nil, nil
+}
+
+type staticCatalog struct {
+	media        domain.Media
+	identityKind domain.MediaKind
+}
 
 func (c staticCatalog) GetMedia(context.Context, domain.MediaRef) (domain.Media, error) {
 	return c.media, nil
 }
 func (staticCatalog) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
 	return nil, nil
+}
+func (c staticCatalog) ListIdentitySnapshot(context.Context) (catalog.CatalogIdentitySnapshot, error) {
+	kind := c.identityKind
+	if kind != domain.MediaMovie && kind != domain.MediaEpisode {
+		kind = domain.MediaEpisode
+	}
+	ids := map[int64]struct{}{}
+	if kind == domain.MediaEpisode && c.media.SeriesID > 0 {
+		ids[c.media.SeriesID] = struct{}{}
+	}
+	if kind == domain.MediaMovie && c.media.EntityID > 0 {
+		ids[c.media.EntityID] = struct{}{}
+	}
+	return catalog.CatalogIdentitySnapshot{Kind: kind, IDs: ids}, nil
 }
 
 type capabilityRunner struct{}
@@ -415,6 +445,22 @@ func TestNewWiresNonblockingCatalogWake(t *testing.T) {
 	reconciler.OnCommitted()
 	if len(background.Wake) != 1 {
 		t.Fatalf("queued wakes = %d, want coalesced wake", len(background.Wake))
+	}
+}
+
+func TestNewRequiresIdentitySnapshotCatalogForReconciliation(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{
+		SkipLapseCheck: true,
+		SkipProbeCheck: true,
+		Providers:      map[string]provider.Provider{"english": fakeProvider{id: "english"}},
+		Catalogs:       map[string]catalog.Catalog{"tv": catalogWithoutIdentitySnapshot{}},
+	})
+	if application != nil {
+		_ = application.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "identity snapshot") {
+		t.Fatalf("New() error = %v, want missing identity snapshot capability", err)
 	}
 }
 

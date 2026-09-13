@@ -174,7 +174,7 @@ func TestPagedHistoryUsesArrapiAndKeepsCursorOnLaterPageFailure(t *testing.T) {
 			if fail {
 				backend := &fakeReconcileStore{cursor: now.Add(-time.Hour)}
 				cat := &Radarr{client: &arrClient{instance: "main"}, entity: client}
-				r := Reconciler{Instance: "main", Catalog: cat, Store: backend, Now: func() time.Time { return now }}
+				r := Reconciler{Instance: "main", Kind: domain.MediaMovie, Catalog: cat, Store: backend, Now: func() time.Time { return now }}
 				if err := r.Run(t.Context()); err == nil || !backend.committed.IsZero() {
 					t.Fatalf("cursor advanced after page failure: %v", err)
 				}
@@ -216,7 +216,7 @@ func TestHistoryShortNonfinalPageCannotAdvanceCursor(t *testing.T) {
 	}}}
 	backend := &fakeReconcileStore{cursor: since}
 	cat := &Radarr{client: &arrClient{instance: "main"}, entity: client}
-	r := Reconciler{Instance: "main", Catalog: cat, Store: backend, Now: func() time.Time { return now }}
+	r := Reconciler{Instance: "main", Kind: domain.MediaMovie, Catalog: cat, Store: backend, Now: func() time.Time { return now }}
 	err := r.Run(t.Context())
 	if err == nil || !backend.committed.IsZero() || len(backend.mutations) != 0 {
 		t.Fatalf("short page committed: err=%v cursor=%v mutations=%d", err, backend.committed, len(backend.mutations))

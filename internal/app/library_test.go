@@ -16,14 +16,32 @@ import (
 
 type discoveryCatalog struct {
 	fakeCatalog
-	items []domain.Media
-	calls int
-	err   error
+	items         []domain.Media
+	calls         int
+	snapshotCalls int
+	err           error
 }
 
 func (c *discoveryCatalog) ListLibrary(context.Context) ([]domain.Media, error) {
 	c.calls++
 	return c.items, c.err
+}
+
+func (c *discoveryCatalog) ListIdentitySnapshot(context.Context) (catalog.CatalogIdentitySnapshot, error) {
+	c.snapshotCalls++
+	kind := domain.MediaEpisode
+	if len(c.items) > 0 {
+		kind = c.items[0].Ref.Kind
+	}
+	ids := make(map[int64]struct{}, len(c.items))
+	for _, item := range c.items {
+		if kind == domain.MediaEpisode {
+			ids[item.SeriesID] = struct{}{}
+		} else {
+			ids[item.EntityID] = struct{}{}
+		}
+	}
+	return catalog.CatalogIdentitySnapshot{Kind: kind, IDs: ids}, nil
 }
 
 func TestLibraryDiscoveryImportsExistingFilesOnceAndExplicitScanFindsMore(t *testing.T) {
@@ -51,6 +69,9 @@ func TestLibraryDiscoveryImportsExistingFilesOnceAndExplicitScanFindsMore(t *tes
 			if err := first.Reconcilers["tv"].Run(ctx); err != nil {
 				t.Fatal(err)
 			}
+			if source.snapshotCalls != 1 {
+				t.Fatalf("recurring reconciliation snapshot calls = %d, want 1", source.snapshotCalls)
+			}
 			id, _, err := first.Repository.FindMedia(ctx, media.Ref)
 			if err != nil {
 				t.Fatalf("empty history left existing library undiscovered: %v", err)
@@ -71,6 +92,9 @@ func TestLibraryDiscoveryImportsExistingFilesOnceAndExplicitScanFindsMore(t *tes
 			if err := second.Reconcilers["tv"].Run(ctx); err != nil {
 				t.Fatal(err)
 			}
+			if source.snapshotCalls != 2 {
+				t.Fatalf("restart reconciliation snapshot calls = %d, want 2", source.snapshotCalls)
+			}
 			if source.calls != 1 {
 				t.Fatalf("restart enumerated library again: %d", source.calls)
 			}
@@ -82,6 +106,9 @@ func TestLibraryDiscoveryImportsExistingFilesOnceAndExplicitScanFindsMore(t *tes
 			source.items = append(source.items, more)
 			if _, err := second.Scan(ctx, "tv", false); err != nil {
 				t.Fatal(err)
+			}
+			if source.snapshotCalls != 3 {
+				t.Fatalf("explicit scan snapshot calls = %d, want shared Run path call 3", source.snapshotCalls)
 			}
 			if _, _, err := second.Repository.FindMedia(ctx, more.Ref); err != nil {
 				t.Fatal(err)

@@ -292,7 +292,15 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	webhookInstances := make(map[string]httpapi.Instance, len(cfg.Instances))
 	for _, instance := range cfg.Instances {
 		arrCatalog := catalogs[instance.Name]
-		reconciler := catalog.Reconciler{Instance: instance.Name, LibraryScope: libraryDiscoveryScope(instance, cfg.MediaRoots), Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnCommitted: notify}
+		reconciliationCatalog, ok := arrCatalog.(catalog.ReconciliationCatalog)
+		if !ok {
+			return nil, fmt.Errorf("Arr instance %q catalog does not support identity snapshots", instance.Name)
+		}
+		kind := domain.MediaEpisode
+		if instance.Type == "radarr" {
+			kind = domain.MediaMovie
+		}
+		reconciler := catalog.Reconciler{Instance: instance.Name, Kind: kind, LibraryScope: libraryDiscoveryScope(instance, cfg.MediaRoots), Catalog: reconciliationCatalog, Store: repository, Languages: languages, Now: clock.Now, OnCommitted: notify}
 		reconcilers[instance.Name] = reconciler
 		webhookInstances[instance.Name] = httpapi.Instance{Token: instance.WebhookToken, Handler: catalog.WebhookHandler{Instance: instance.Name, InstanceType: instance.Type, Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnApplied: notify}}
 	}

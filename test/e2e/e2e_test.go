@@ -116,7 +116,7 @@ func TestProviderResumeSurvivesRestart(t *testing.T) {
 			SkipProbeCheck: true,
 			ProbeRunner:    probeRunner{},
 			Providers:      supplied,
-			Catalogs:       map[string]catalog.Catalog{"radarr-main": wakeCatalog{now: at}},
+			Catalogs:       map[string]catalog.Catalog{"radarr-main": wakeCatalog{now: at, identities: []int64{9}}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -223,7 +223,10 @@ func (*providerResumeFake) Download(context.Context, domain.Candidate, io.Writer
 	return provider.DownloadMetadata{}, errors.New("unexpected provider download")
 }
 
-type wakeCatalog struct{ now time.Time }
+type wakeCatalog struct {
+	now        time.Time
+	identities []int64
+}
 
 func (c wakeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Media, error) {
 	return domain.Media{EntityID: ref.FileID, Ref: ref, Fingerprint: domain.MediaFingerprint{Path: fmt.Sprintf("/media/%d.mkv", ref.FileID), FileID: ref.FileID, Size: 100, ModTime: c.now}, Title: "Movie"}, nil
@@ -231,6 +234,14 @@ func (c wakeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Me
 
 func (wakeCatalog) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
 	return nil, nil
+}
+
+func (c wakeCatalog) ListIdentitySnapshot(context.Context) (catalog.CatalogIdentitySnapshot, error) {
+	ids := make(map[int64]struct{}, len(c.identities))
+	for _, id := range c.identities {
+		ids[id] = struct{}{}
+	}
+	return catalog.CatalogIdentitySnapshot{Kind: domain.MediaMovie, IDs: ids}, nil
 }
 
 type wakeWorkflow struct {
@@ -585,7 +596,7 @@ func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconciler := catalog.Reconciler{Instance: "sonarr-main", Catalog: sonarrCatalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }}
+	reconciler := catalog.Reconciler{Instance: "sonarr-main", Kind: domain.MediaEpisode, Catalog: sonarrCatalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }}
 	if err := reconciler.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -714,6 +725,8 @@ func newReconciliationSonarrServer(t *testing.T, now time.Time) *httptest.Server
 			default:
 				http.NotFound(response, request)
 			}
+		case "/api/v3/series":
+			_ = json.NewEncoder(response).Encode([]map[string]any{{"id": 11}, {"id": 13}, {"id": 15}})
 		case "/api/v3/series/11":
 			_, _ = io.WriteString(response, `{"id":11,"title":"Show","year":2026,"tvdbId":11}`)
 		case "/api/v3/series/13":

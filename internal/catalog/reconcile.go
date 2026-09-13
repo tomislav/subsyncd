@@ -2,8 +2,10 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"subsyncd/internal/domain"
@@ -12,13 +14,15 @@ import (
 
 type ReconciliationStore interface {
 	GetReconciliationState(context.Context, string) (store.ReconciliationState, error)
+	ListActiveCatalogIdentities(context.Context, string, domain.MediaKind) ([]int64, error)
 	CommitReconciliation(context.Context, string, store.ReconciliationState, time.Time, []store.MediaEventMutation) error
 }
 
 type Reconciler struct {
 	Instance     string
+	Kind         domain.MediaKind
 	LibraryScope string
-	Catalog      Catalog
+	Catalog      ReconciliationCatalog
 	Store        ReconciliationStore
 	Languages    []domain.Language
 	Now          func() time.Time
@@ -26,6 +30,9 @@ type Reconciler struct {
 }
 
 func (r Reconciler) Run(ctx context.Context) error {
+	if r.Kind != domain.MediaEpisode && r.Kind != domain.MediaMovie {
+		return fmt.Errorf("%s reconciler media kind is invalid", r.Instance)
+	}
 	if err := r.DiscoverLibrary(ctx, false); err != nil {
 		return err
 	}
@@ -71,6 +78,46 @@ func (r Reconciler) Run(ctx context.Context) error {
 			Priority:  store.SearchPriorityMissing,
 		})
 	}
+	if listErr == nil {
+		identitySnapshot, err := r.Catalog.ListIdentitySnapshot(ctx)
+		if err != nil {
+			return fmt.Errorf("list %s catalog identities: %w", r.Instance, err)
+		}
+		if identitySnapshot.IDs == nil || identitySnapshot.Kind != r.Kind {
+			return fmt.Errorf("%s catalog identity snapshot is invalid", r.Instance)
+		}
+		for identity := range identitySnapshot.IDs {
+			if identity <= 0 {
+				return fmt.Errorf("%s catalog identity snapshot is invalid", r.Instance)
+			}
+		}
+		activeIdentities, err := r.Store.ListActiveCatalogIdentities(ctx, r.Instance, identitySnapshot.Kind)
+		if err != nil {
+			return fmt.Errorf("list %s active catalog identities: %w", r.Instance, err)
+		}
+		sort.Slice(activeIdentities, func(i, j int) bool { return activeIdentities[i] < activeIdentities[j] })
+		for _, identity := range activeIdentities {
+			if identity <= 0 {
+				return fmt.Errorf("%s active catalog identity is invalid", r.Instance)
+			}
+			if _, present := identitySnapshot.IDs[identity]; present {
+				continue
+			}
+			mutation := store.MediaEventMutation{
+				EventID:  snapshotDeleteEventID(r.Instance, identitySnapshot.Kind, identity, pageEnd),
+				Type:     string(EventDelete),
+				Ref:      domain.MediaRef{Instance: r.Instance, Kind: identitySnapshot.Kind},
+				At:       pageEnd,
+				Priority: store.SearchPriorityMissing,
+			}
+			if identitySnapshot.Kind == domain.MediaEpisode {
+				mutation.SeriesID = identity
+			} else {
+				mutation.EntityID = identity
+			}
+			mutations = append(mutations, mutation)
+		}
+	}
 	commitCursor := pageEnd
 	if listErr != nil {
 		commitCursor = snapshot.Cursor
@@ -85,4 +132,9 @@ func (r Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, listErr)
 	}
 	return nil
+}
+
+func snapshotDeleteEventID(instance string, kind domain.MediaKind, identity int64, pageEnd time.Time) string {
+	input := fmt.Sprintf("%d:%s:%s:%d:%s", len(instance), instance, kind, identity, pageEnd.UTC().Format(time.RFC3339Nano))
+	return fmt.Sprintf("snapshot-reconcile:%x", sha256.Sum256([]byte(input)))
 }

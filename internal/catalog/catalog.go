@@ -39,6 +39,14 @@ type IdentitySnapshotCatalog interface {
 	ListIdentitySnapshot(context.Context) (CatalogIdentitySnapshot, error)
 }
 
+// ReconciliationCatalog is the complete catalog contract required by normal
+// and explicit reconciliation. Production reconcilers must never silently
+// omit authoritative top-level identity recovery.
+type ReconciliationCatalog interface {
+	Catalog
+	IdentitySnapshotCatalog
+}
+
 type HistoryState string
 
 const (
