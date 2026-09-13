@@ -859,8 +859,8 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 	if checksumErr != nil {
 		return checksumErr
 	}
-	var processExit *syncer.ProcessExitError
-	if ctx.Err() == nil && errors.As(failure, &processExit) && processExit.ExitCode == 2 && processExit.StdoutEmpty && processExit.StderrEmpty {
+	processExit, eligibleProcessExit := singleProcessExitError(failure)
+	if ctx.Err() == nil && eligibleProcessExit && processExit.ExitCode == 2 && processExit.StdoutEmpty && processExit.StderrEmpty {
 		rejection, err := s.candidateRejectionIdentity(request, candidate, checksum)
 		if err != nil {
 			return err
@@ -890,6 +890,18 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 		*candidateFailures = append(*candidateFailures, failure)
 	}
 	return nil
+}
+
+func singleProcessExitError(failure error) (*syncer.ProcessExitError, bool) {
+	for current := failure; current != nil; current = errors.Unwrap(current) {
+		if _, composite := current.(interface{ Unwrap() []error }); composite {
+			return nil, false
+		}
+		if processExit, ok := current.(*syncer.ProcessExitError); ok {
+			return processExit, true
+		}
+	}
+	return nil, false
 }
 
 func (s *Service) candidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string) (store.CandidateRejection, bool, error) {

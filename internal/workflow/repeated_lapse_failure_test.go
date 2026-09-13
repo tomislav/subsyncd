@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,6 +102,9 @@ func TestRepeatedSilentLapseFailureEligibilityControls(t *testing.T) {
 		{name: "different exit", failure: &syncer.ProcessExitError{ExitCode: 1, StdoutEmpty: true, StderrEmpty: true}},
 		{name: "timeout", failure: context.DeadlineExceeded},
 		{name: "canceled typed exit", ctx: func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }, failure: &syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}},
+		{name: "joined cancellation", failure: errors.Join(&syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}, context.Canceled)},
+		{name: "joined filesystem failure", failure: errors.Join(&syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}, errors.New("read synchronized artifact"))},
+		{name: "joined protocol failure", failure: errors.Join(&syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true}, errors.New("decode LAP protocol"))},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -135,9 +139,26 @@ func TestRepeatedSilentLapseFailureRequiresAvailableArtifactChecksum(t *testing.
 	}
 }
 
+func TestRepeatedSilentLapseFailureAcceptsSingleWrappedProcessExit(t *testing.T) {
+	request := serviceRequest(t)
+	artifact := writeInstallFile(t, filepath.Join(t.TempDir(), "selected.srt"), installSRT)
+	repository := &workflowRepository{}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = repository
+	failure := fmt.Errorf("synchronize candidate: %w", &syncer.ProcessExitError{ExitCode: 2, StdoutEmpty: true, StderrEmpty: true})
+	failures := []error{}
+	if err := service.handleCandidateFailure(t.Context(), request, broadCandidate("silent"), artifact, failure, &failures); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.lapseFailures) != 1 || len(failures) != 1 || !errors.Is(failures[0], failure) {
+		t.Fatalf("single wrapped exit strikes/failures = %#v/%#v, want one first strike and original technical failure", repository.lapseFailures, failures)
+	}
+}
+
 func TestRepeatedSilentLapseFailureDoesNotCrossChangedIdentity(t *testing.T) {
 	for _, change := range []struct {
 		name   string
+		first  func(*Request)
 		second func(*Request, *domain.Candidate, string, **Service)
 	}{
 		{
@@ -155,11 +176,21 @@ func TestRepeatedSilentLapseFailureDoesNotCrossChangedIdentity(t *testing.T) {
 		{name: "tool", second: func(_ *Request, _ *domain.Candidate, _ string, service **Service) {
 			(*service).Synchronizer = &versionedWorkflowSynchronizer{version: "2.0.6"}
 		}},
+		{
+			name:  "member scope",
+			first: func(request *Request) { request.memberScope = "member-one" },
+			second: func(request *Request, _ *domain.Candidate, _ string, _ **Service) {
+				request.memberScope = "member-two"
+			},
+		},
 	} {
 		t.Run(change.name, func(t *testing.T) {
 			ctx := t.Context()
 			request := serviceRequest(t)
 			request.Media.EntityID = 1
+			if change.first != nil {
+				change.first(&request)
+			}
 			databasePath := filepath.Join(t.TempDir(), "state.db")
 			database, err := store.Open(ctx, databasePath)
 			if err != nil {
