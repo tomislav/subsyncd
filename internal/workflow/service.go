@@ -223,6 +223,12 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	}
 	if current.Fingerprint.Path != "" {
 		request.Media.Fingerprint = current.Fingerprint
+		// Refresh can discover a live replacement after progress was copied from
+		// the lease. Revalidate against the new fingerprint before any exclusion.
+		request, err = s.validatedResumeRequest(request)
+		if err != nil {
+			return result, err
+		}
 	}
 	existing, installed, err := s.Repository.GetInstallation(ctx, request.MediaID, request.Language)
 	if err != nil {

@@ -270,6 +270,11 @@ func TestWorkerClearsProviderResume(t *testing.T) {
 		}}
 		w := testWorker(nil, service, testutil.NewClock(now.Add(time.Hour)))
 		w.Repository = repository
+		var logs bytes.Buffer
+		w.Events, err = observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := w.runSearchLease(t.Context(), leases[0]); err != nil {
 			t.Fatal(err)
 		}
@@ -288,6 +293,10 @@ func TestWorkerClearsProviderResume(t *testing.T) {
 		}
 		if providersJSON != `[]` || signature != "" {
 			t.Fatalf("deleted completion retained resume = %s/%q", providersJSON, signature)
+		}
+		completed := findWorkerEvent(t, workerLogRecords(t, logs.String()), "job.completed")
+		if completed["resume_provider_count"] != float64(0) {
+			t.Fatalf("deleted completion logged resume_provider_count = %v, want 0", completed["resume_provider_count"])
 		}
 	})
 }
@@ -984,6 +993,9 @@ func (r *workerRepository) CompleteSearch(_ context.Context, completion store.Se
 	}
 	r.searchCompletions = append(r.searchCompletions, completion)
 	result := store.SearchCompletionResult{}
+	if completion.PreserveResume {
+		result.ResumeProviderCount = len(completion.ResumeProviders)
+	}
 	if len(r.completionResults) > 0 {
 		result = r.completionResults[0]
 		r.completionResults = r.completionResults[1:]

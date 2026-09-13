@@ -63,7 +63,7 @@ Expected: FAIL because `SearchQuery.SkipProviders` and phase evidence do not exi
 
 - [ ] **Step 3: Implement exclusion before provider access**
 
-Add a private normalized membership helper and apply it at the top of both exact and broad provider loops, before capability/language/media checks call provider methods that can access persisted state. Populate `ApplicableProviders` only for non-skipped providers that support the phase. Do not include exclusions in `providerCacheKey`; excluded providers never reach `searchProvider`.
+Add a private exact-identity membership helper and apply it at the top of both exact and broad provider loops, before capability/language/media checks call provider methods that can access persisted state. Never trim configured provider IDs. Populate `ApplicableProviders` only for non-skipped providers that support the phase. Do not include exclusions in `providerCacheKey`; excluded providers never reach `searchProvider`.
 
 - [ ] **Step 4: Write failing clean-empty accounting tests**
 
@@ -181,7 +181,7 @@ Expected: FAIL because lease/completion do not read or write resume fields.
 
 - [ ] **Step 6: Implement strict storage and atomic completion**
 
-Use a small constant bound (maximum eight configured providers) and reject duplicate/empty IDs. Select resume columns in the due query, decode before claims, and serialize completion state before opening its transaction. In `CompleteSearch`, set resume columns only when `rerun_requested=0 AND PreserveResume=1`; otherwise set them to `[]`/empty signature. The deleted and `rerun_requested=1` branches always clear resume state.
+Derive persistence/decode bounds from the exact accepted per-language route: its canonical serialized JSON byte size and provider membership. Reject duplicate/empty IDs without trimming identity. Do not impose a fixed provider-count cap: every accepted configuration must complete. Invalidate stale route/media signatures before applying a smaller current route bound. Select resume columns and the media fingerprint in the due query and decode before claims. In `CompleteSearch`, compare the opaque signature with the current fingerprint and configured route inside the owner-guarded transaction; retain progress only when scope still matches, `rerun_requested=0`, and `PreserveResume=1`. Otherwise clear it. Return the actual retained count with completion so deleted and rerun branches log zero.
 
 Update `UpsertSearchStateWithPriority`, `scheduleMediaSearchTx` for import/rename/unsupported, and `EnsureUpgradeSearch` transitions so authoritative resets and upgrade work clear resume state without disturbing active lease ownership/rerun semantics.
 
@@ -251,7 +251,7 @@ func providerRouteSignature(language domain.Language, preferred, fallback []stri
 }
 ```
 
-When the stored signature differs, ignore all exclusions. When it matches, validate unique nonempty IDs against current preferred/fallback membership before inventory refresh.
+Bind the route signature to the exact path/file-ID/size/mtime fingerprint using an opaque SHA-256 digest; persist no path. When the stored signature differs, ignore all exclusions. When it matches, validate unique nonempty IDs against current preferred/fallback membership before inventory refresh. Revalidate after adopting the refreshed fingerprint, and clear every language's persisted progress transactionally when inventory discovers a replacement. Path-only changes may repeat providers once.
 
 - [ ] **Step 4: Write the failing three-provider resume scenario**
 

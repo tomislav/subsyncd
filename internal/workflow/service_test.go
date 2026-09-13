@@ -1479,11 +1479,12 @@ func TestServiceProviderResumeRetainsCleanPeerForCandidateRetry(t *testing.T) {
 				"candidate": &fakeProvider{id: "candidate", downloadErr: test.downloadErr},
 			}
 
-			result, err := service.Run(t.Context(), serviceRequest(t))
+			request := serviceRequest(t)
+			result, err := service.Run(t.Context(), request)
 			if (err != nil) != test.wantErr || result.Outcome != test.wantOutcome {
 				t.Fatalf("Run() = %+v, %v", result, err)
 			}
-			if !slices.Equal(result.ResumeProviders, []string{"peer"}) || result.ResumeRouteSignature != service.RouteSignature("en") {
+			if !slices.Equal(result.ResumeProviders, []string{"peer"}) || result.ResumeRouteSignature != service.ResumeSignature(request.Language, request.Media.Fingerprint) {
 				t.Fatalf("resume = %v/%q", result.ResumeProviders, result.ResumeRouteSignature)
 			}
 		})
@@ -1508,7 +1509,7 @@ func TestServiceUpgradeClearsProviderResumeAndRunsFullRoute(t *testing.T) {
 	service.Repository = &workflowRepository{found: true, installation: existing}
 	service.ProviderOrder = []string{"down", "healthy"}
 	request.ResumeProviders = []string{"healthy"}
-	request.ResumeRouteSignature = service.RouteSignature(request.Language)
+	request.ResumeRouteSignature = service.ResumeSignature(request.Language, request.Media.Fingerprint)
 
 	result, err := service.Run(t.Context(), request)
 	if err != nil || result.Outcome != OutcomeNoResult || !result.RetryAt.IsZero() {

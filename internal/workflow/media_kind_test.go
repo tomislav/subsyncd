@@ -54,7 +54,7 @@ func TestMovieProviderResumeValidatesAgainstConfiguredRoute(t *testing.T) {
 	service.Providers["gestdown"] = &gestdown.Client{}
 	request := serviceRequest(t)
 	request.ResumeProviders = []string{"gestdown"}
-	request.ResumeRouteSignature = service.RouteSignature(request.Language)
+	request.ResumeRouteSignature = service.ResumeSignature(request.Language, request.Media.Fingerprint)
 
 	result, err := service.Run(t.Context(), request)
 	if err != nil || result.Outcome != OutcomeThrottled || !slices.Equal(result.ResumeProviders, []string{"gestdown"}) {

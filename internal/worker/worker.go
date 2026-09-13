@@ -319,7 +319,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			slog.Int("next_failure_attempt", lease.FailureAttempt+1),
 		)
 		w.logRerun(jobCtx, completionResult)
-		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow", completion.NextAttemptAt, started, completedResumeProviderCount(completion, completionResult), err)
+		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow", completion.NextAttemptAt, started, completionResult.ResumeProviderCount, err)
 		return err
 	}
 	completion, err := w.workflowCompletion(lease, result)
@@ -333,7 +333,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		return err
 	}
 	w.logRerun(jobCtx, completionResult)
-	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, completedResumeProviderCount(completion, completionResult), nil)
+	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, completionResult.ResumeProviderCount, nil)
 	return nil
 }
 
@@ -374,13 +374,6 @@ func preserveProviderResume(lease store.SearchLease, result workflow.Result, com
 	completion.ResumeProviders = append([]string(nil), result.ResumeProviders...)
 	completion.ResumeRouteSignature = result.ResumeRouteSignature
 	completion.PreserveResume = true
-}
-
-func completedResumeProviderCount(completion store.SearchCompletion, result store.SearchCompletionResult) int {
-	if result.RerunScheduled {
-		return 0
-	}
-	return len(completion.ResumeProviders)
 }
 
 func (w *Worker) processNotifications(ctx context.Context, leases []store.NotificationLease) error {

@@ -71,7 +71,7 @@ func (c *Coordinator) Search(ctx context.Context, query SearchQuery) SearchResul
 
 func (c *Coordinator) searchExact(ctx context.Context, query SearchQuery) SearchResult {
 	result := SearchResult{Errors: make(map[string]error)}
-	skipped := normalizedProviderMembership(query.SkipProviders)
+	skipped := exactProviderMembership(query.SkipProviders)
 	for _, item := range c.Providers {
 		if !item.Capabilities().ExactFileHash || !item.SupportsLanguage(query.Language) || !SupportsMediaKind(item, query.Media.Ref.Kind) {
 			continue
@@ -99,7 +99,7 @@ func (c *Coordinator) searchExact(ctx context.Context, query SearchQuery) Search
 
 func (c *Coordinator) searchBroad(ctx context.Context, query SearchQuery) SearchResult {
 	result := SearchResult{Errors: make(map[string]error)}
-	skipped := normalizedProviderMembership(query.SkipProviders)
+	skipped := exactProviderMembership(query.SkipProviders)
 	type broadResult struct {
 		index      int
 		providerID string
@@ -151,10 +151,10 @@ func (m providerMembership) has(providerID string) bool {
 	return found
 }
 
-func normalizedProviderMembership(providerIDs []string) providerMembership {
+func exactProviderMembership(providerIDs []string) providerMembership {
 	membership := make(providerMembership, len(providerIDs))
 	for _, providerID := range providerIDs {
-		if providerID = strings.TrimSpace(providerID); providerID != "" {
+		if providerID != "" {
 			membership[providerID] = struct{}{}
 		}
 	}

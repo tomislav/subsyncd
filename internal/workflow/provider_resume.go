@@ -28,6 +28,10 @@ func (s *Service) RouteSignature(language domain.Language) string {
 	return providerRouteSignature(language, s.ProviderOrder, s.FallbackProviderOrder)
 }
 
+func (s *Service) ResumeSignature(language domain.Language, fingerprint domain.MediaFingerprint) string {
+	return domain.ProviderResumeSignature(s.RouteSignature(language), fingerprint)
+}
+
 func providerRouteSignature(language domain.Language, preferred, fallback []string) string {
 	digest := sha256.New()
 	writeRoutePart(digest, language.String())
@@ -50,7 +54,7 @@ func writeRoutePart(target hash.Hash, value string) {
 }
 
 func (s *Service) validatedResumeRequest(request Request) (Request, error) {
-	if request.Manual || request.ResumeRouteSignature != s.RouteSignature(request.Language) {
+	if request.Manual || request.ResumeRouteSignature != s.ResumeSignature(request.Language, request.Media.Fingerprint) {
 		request.ResumeProviders = nil
 		request.ResumeRouteSignature = ""
 		return request, nil
@@ -154,7 +158,7 @@ func (s *Service) finishProviderResume(request Request, installed bool, result R
 	}
 	result.ResumeProviders = s.mergeResumeProviders(request.ResumeProviders, clean)
 	if len(result.ResumeProviders) != 0 {
-		result.ResumeRouteSignature = s.RouteSignature(request.Language)
+		result.ResumeRouteSignature = s.ResumeSignature(request.Language, request.Media.Fingerprint)
 	}
 	return result
 }

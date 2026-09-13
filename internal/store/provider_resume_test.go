@@ -12,7 +12,157 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"subsyncd/internal/domain"
 )
+
+func TestSearchResumePreservesConfiguredIdentityAndLargeIDs(t *testing.T) {
+	want := []string{"p", " p", strings.Repeat("long-provider", 400)}
+	encoded, err := encodeResumeProviders(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeResumeProviders(encoded)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip = %q/%v", got, err)
+	}
+	repo := (&Repository{}).WithProviderResumeRoutes(map[domain.Language]ProviderResumeRoute{"en": {Signature: "route", Providers: want}})
+	got, err = repo.decodeSearchResume("en", encoded)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("configured route decode = %q/%v", got, err)
+	}
+}
+
+func TestSearchResumeEpochFingerprintRoundTrip(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC)
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	media := testMedia()
+	media.Fingerprint.ModTime = time.Unix(0, 0).UTC()
+	repo := db.Repository().WithProviderResumeRoutes(map[domain.Language]ProviderResumeRoute{"en": {Signature: "route", Providers: []string{"p"}}})
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("initial lease = %+v/%v", leases, err)
+	}
+	signature := domain.ProviderResumeSignature("route", media.Fingerprint)
+	result, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: leases[0].JobID, Outcome: "throttled", NextAttemptAt: now.Add(time.Hour), PreserveResume: true, ResumeProviders: []string{"p"}, ResumeRouteSignature: signature})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ResumeProviderCount != 1 {
+		t.Errorf("epoch fingerprint completion retained %d providers, want 1", result.ResumeProviderCount)
+	}
+	leases, err = repo.LeaseDueSearches(ctx, now.Add(time.Hour), 1, time.Minute)
+	if err != nil || len(leases) != 1 || !reflect.DeepEqual(leases[0].ResumeProviders, []string{"p"}) || leases[0].ResumeRouteSignature != signature {
+		t.Fatalf("epoch fingerprint resumed lease = %+v/%v", leases, err)
+	}
+}
+
+func TestSearchResumeBoundsFollowCurrentRoute(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	media := testMedia()
+	mediaID, _, err := db.Repository().UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository().WithProviderResumeRoutes(map[domain.Language]ProviderResumeRoute{
+		"en": {Signature: "current-route", Providers: []string{"p"}},
+	})
+	for _, test := range []struct {
+		name, signature, encoded string
+		wantErr                  bool
+	}{
+		{"too many current IDs", domain.ProviderResumeSignature("current-route", media.Fingerprint), `["p","q"]`, true},
+		{"current oversized ID", domain.ProviderResumeSignature("current-route", media.Fingerprint), `["oversized"]`, true},
+		{"stale larger route", domain.ProviderResumeSignature("old-route", media.Fingerprint), `["old-provider-one","old-provider-two"]`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, SearchPriorityMissing); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json=?,resume_route_signature=? WHERE media_id=?`, test.encoded, test.signature, mediaID); err != nil {
+				t.Fatal(err)
+			}
+			leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("lease = %+v/%v", leases, err)
+			}
+			if !test.wantErr && (len(leases) != 1 || len(leases[0].ResumeProviders) != 0 || leases[0].ResumeRouteSignature != "") {
+				t.Fatalf("stale route survived: %+v", leases)
+			}
+		})
+	}
+}
+
+func TestSearchResumeCompletionUsesCurrentFingerprintAndRouteBound(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replacement=%t", replacement), func(t *testing.T) {
+			ctx := t.Context()
+			now := time.Now().UTC()
+			db, err := Open(ctx, filepath.Join(t.TempDir(), "subsyncd.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			media := testMedia()
+			repo := db.Repository().WithProviderResumeRoutes(map[domain.Language]ProviderResumeRoute{"en": {Signature: "route", Providers: []string{"p"}}})
+			mediaID, _, err := repo.UpsertMedia(ctx, media)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, SearchPriorityMissing); err != nil {
+				t.Fatal(err)
+			}
+			leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute)
+			if err != nil || len(leases) != 1 {
+				t.Fatalf("lease = %+v/%v", leases, err)
+			}
+			ids := []string{"p", "outside-route"}
+			if replacement {
+				changed := media.Fingerprint
+				changed.Size++
+				if err := repo.ReplaceTrackInventory(ctx, mediaID, media.Fingerprint, changed, nil); err != nil {
+					t.Fatal(err)
+				}
+				ids = []string{"p"}
+			}
+			_, err = repo.CompleteSearch(ctx, SearchCompletion{JobID: leases[0].JobID, Outcome: "throttled", NextAttemptAt: now.Add(time.Hour), PreserveResume: true, ResumeProviders: ids, ResumeRouteSignature: domain.ProviderResumeSignature("route", media.Fingerprint)})
+			if !replacement {
+				if err == nil {
+					t.Fatal("completion accepted providers outside the configured route bound")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var encoded, signature string
+			if err := db.db.QueryRow(`SELECT resume_providers_json,resume_route_signature FROM search_states WHERE media_id=?`, mediaID).Scan(&encoded, &signature); err != nil {
+				t.Fatal(err)
+			}
+			if encoded != "[]" || signature != "" {
+				t.Fatalf("stale completion restored progress: %s/%q", encoded, signature)
+			}
+		})
+	}
+}
 
 func TestLeaseDueSearchesRejectsIterationErrorBeforeClaim(t *testing.T) {
 	claims := &atomic.Int32{}
@@ -80,7 +230,7 @@ type resumeIterationErrorRows struct {
 }
 
 func (*resumeIterationErrorRows) Columns() []string {
-	return []string{"media_id", "language", "attempt", "failure_attempt", "priority", "resume_providers_json", "resume_route_signature"}
+	return []string{"media_id", "language", "attempt", "failure_attempt", "priority", "resume_providers_json", "resume_route_signature", "path", "file_id", "size", "mod_time_ns"}
 }
 
 func (*resumeIterationErrorRows) Close() error { return nil }
@@ -90,7 +240,7 @@ func (r *resumeIterationErrorRows) Next(destination []driver.Value) error {
 		return errors.New("injected due-search iteration failure")
 	}
 	r.returned = true
-	copy(destination, []driver.Value{int64(1), "en", int64(0), int64(0), int64(SearchPriorityMissing), "[]", "route"})
+	copy(destination, []driver.Value{int64(1), "en", int64(0), int64(0), int64(SearchPriorityMissing), "[]", "route", "/media/movie.mkv", int64(1), int64(100), int64(0)})
 	return nil
 }
 
@@ -156,11 +306,11 @@ func TestSearchResumeRoundTrip(t *testing.T) {
 
 func TestSearchResumeRejectsMalformedState(t *testing.T) {
 	fixtures := map[string]string{
-		"corrupt-json":   `not-json-provider-secret`,
-		"duplicate-id":   `["duplicate-secret","duplicate-secret"]`,
-		"empty-id":       `[""]`,
-		"non-string":     `["provider",17]`,
-		"oversized-list": `["one","two","three","four","five","six","seven","eight","ninth-secret"]`,
+		"corrupt-json": `not-json-provider-secret`,
+		"duplicate-id": `["duplicate-secret","duplicate-secret"]`,
+		"empty-id":     `[""]`,
+		"non-string":   `["provider",17]`,
+		"blank-id":     `["   "]`,
 	}
 	for name, persisted := range fixtures {
 		t.Run(name, func(t *testing.T) {

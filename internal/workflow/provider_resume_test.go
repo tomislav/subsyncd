@@ -38,7 +38,7 @@ func TestProviderRouteSignature(t *testing.T) {
 		{"preferred membership", "en", &Service{ProviderOrder: []string{"open"}, FallbackProviderOrder: []string{"subdl"}}},
 		{"preferred order", "en", &Service{ProviderOrder: []string{"titlovi", "open"}, FallbackProviderOrder: []string{"subdl"}}},
 		{"tier", "en", &Service{ProviderOrder: []string{"open"}, FallbackProviderOrder: []string{"titlovi", "subdl"}}},
-		{"fallback order", "en", &Service{ProviderOrder: []string{"open", "titlovi"}, FallbackProviderOrder: []string{"other", "subdl"}}},
+		{"fallback membership", "en", &Service{ProviderOrder: []string{"open", "titlovi"}, FallbackProviderOrder: []string{"other", "subdl"}}},
 	}
 	for _, change := range changes {
 		t.Run(change.name, func(t *testing.T) {
@@ -46,6 +46,12 @@ func TestProviderRouteSignature(t *testing.T) {
 				t.Fatalf("changed route retained signature %q", changed)
 			}
 		})
+	}
+	service.FallbackProviderOrder = []string{"subdl", "other"}
+	before := service.RouteSignature("en")
+	service.FallbackProviderOrder = []string{"other", "subdl"}
+	if after := service.RouteSignature("en"); after == before {
+		t.Fatal("same-membership fallback reorder retained the route signature")
 	}
 }
 
@@ -56,7 +62,7 @@ func TestServiceRetainsProviderResumeAcrossInventoryFailure(t *testing.T) {
 	service.Inventory.(*fakeInventory).err = sentinel
 	request := serviceRequest(t)
 	request.ResumeProviders = []string{"titlovi"}
-	request.ResumeRouteSignature = service.RouteSignature(request.Language)
+	request.ResumeRouteSignature = service.ResumeSignature(request.Language, request.Media.Fingerprint)
 
 	result, err := service.Run(t.Context(), request)
 	if !errors.Is(err, sentinel) {
@@ -64,6 +70,29 @@ func TestServiceRetainsProviderResumeAcrossInventoryFailure(t *testing.T) {
 	}
 	if !slices.Equal(result.ResumeProviders, []string{"titlovi"}) || result.ResumeRouteSignature != request.ResumeRouteSignature {
 		t.Fatalf("resume = %v/%q", result.ResumeProviders, result.ResumeRouteSignature)
+	}
+}
+
+func TestServiceInvalidatesResumeForEveryFingerprintField(t *testing.T) {
+	service := &Service{ProviderOrder: []string{"p"}}
+	original := domain.MediaFingerprint{Path: "/media/private/movie.mkv", FileID: 17, Size: 123, ModTime: time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC)}
+	for _, test := range []struct {
+		name   string
+		change func(*domain.MediaFingerprint)
+	}{
+		{"path", func(f *domain.MediaFingerprint) { f.Path = "/media/private/renamed.mkv" }},
+		{"file ID", func(f *domain.MediaFingerprint) { f.FileID++ }},
+		{"size", func(f *domain.MediaFingerprint) { f.Size++ }},
+		{"mtime", func(f *domain.MediaFingerprint) { f.ModTime = f.ModTime.Add(time.Nanosecond) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := Request{Language: "en", Media: domain.Media{Fingerprint: original}, ResumeProviders: []string{"p"}, ResumeRouteSignature: service.ResumeSignature("en", original)}
+			test.change(&request.Media.Fingerprint)
+			validated, err := service.validatedResumeRequest(request)
+			if err != nil || len(validated.ResumeProviders) != 0 || validated.ResumeRouteSignature != "" {
+				t.Fatalf("changed fingerprint retained progress: %+v/%v", validated, err)
+			}
+		})
 	}
 }
 
@@ -101,7 +130,7 @@ func TestServiceValidatesProviderResume(t *testing.T) {
 			service.ProviderOrder = []string{"open"}
 			request := serviceRequest(t)
 			request.ResumeProviders = slices.Clone(test.providers)
-			request.ResumeRouteSignature = service.RouteSignature(request.Language)
+			request.ResumeRouteSignature = service.ResumeSignature(request.Language, request.Media.Fingerprint)
 
 			if _, err := service.Run(t.Context(), request); err == nil {
 				t.Fatal("Run() error = nil")
@@ -172,7 +201,7 @@ func TestServiceResumesOnlyUnfinishedProviders(t *testing.T) {
 			if err != nil || first.Outcome != OutcomeThrottled || !first.RetryAt.Equal(firstReset) {
 				t.Fatalf("first Run() = %+v, %v", first, err)
 			}
-			if !slices.Equal(first.ResumeProviders, []string{"titlovi", "subdl"}) || first.ResumeRouteSignature != service.RouteSignature(request.Language) {
+			if !slices.Equal(first.ResumeProviders, []string{"titlovi", "subdl"}) || first.ResumeRouteSignature != service.ResumeSignature(request.Language, request.Media.Fingerprint) {
 				t.Fatalf("first resume = %v/%q", first.ResumeProviders, first.ResumeRouteSignature)
 			}
 

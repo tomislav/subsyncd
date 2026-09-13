@@ -1,6 +1,6 @@
 # Provider-Specific Cooldown Resume
 
-**Status:** Implemented and verified — 2026-09-13
+**Status:** Implemented; final-review repairs awaiting independent re-review — 2026-09-13
 
 ## Purpose
 
@@ -12,7 +12,7 @@ This refines the reset scheduling introduced by commit `58b511c`. It applies to 
 
 Persist a search-cycle resume record on `search_states`. The record contains:
 
-- the configured route signature for the language;
+- an opaque signature binding the configured language route to the exact media fingerprint;
 - provider IDs that completed both applicable search phases with no candidates during the throttled cycle.
 
 The worker passes a valid resume record into the workflow. Each tier coordinator excludes those provider IDs from exact and broad calls. Providers absent from the record run normally. This is durable across process restarts and avoids changing the general six-hour provider-result cache policy.
@@ -32,7 +32,9 @@ resume_providers_json  TEXT NOT NULL DEFAULT '[]'
 resume_route_signature TEXT NOT NULL DEFAULT ''
 ```
 
-`resume_providers_json` is a JSON array of unique provider IDs in deterministic configured order. It is bounded by configured route membership and decoded strictly; malformed persisted state is a repository error rather than silently skipping providers. The signature is derived from the canonical language plus ordered preferred and fallback provider IDs with unambiguous separators. It contains identifiers only, never credentials, endpoints, query data, media paths, or candidate references.
+`resume_providers_json` is a JSON array of unique provider IDs in deterministic configured order. Provider IDs preserve exact configured identity; no trimming or other normalization may conflate IDs. Daemon repository decoding and persistence are bounded by the current accepted route's serialized JSON size and exact membership, without imposing a fixed provider-count cap. A stale signature invalidates progress before the current bound is applied, so shrinking a previously larger route remains safe. Current-scope malformed state is a bounded generic repository error. Unscoped repository utilities retain strict structural validation; daemon assembly always supplies the route policy.
+
+The signature hashes the canonical language plus ordered preferred and fallback provider IDs, then binds that opaque route identity to media path, physical file ID, size, and nanosecond mtime using length-prefixed fields. Only the resulting SHA-256 digest is persisted. Resume records never contain credentials, endpoints, query data, media paths, or candidate references. A harmless path-only change may repeat providers once.
 
 Search leases carry both values. Search completion may replace or clear them under the existing lease-owner compare-and-swap. Attempt counters, priority, next-attempt time, lease ownership, rerun coalescing, and candidate rejection rows retain their current semantics.
 
@@ -66,13 +68,15 @@ Resume state is ignored and cleared for routine upgrade work. It is also cleared
 
 Configuration changes are safe: a changed preferred/fallback membership or order changes the route signature, invalidating the entire resume record. This ensures a newly added provider or a provider moved between tiers is not accidentally skipped.
 
+A live media replacement discovered by inventory invalidates progress for every language in the inventory transaction. The workflow revalidates already-copied progress after adopting the refreshed fingerprint and before provider exclusion. Completion compares the signature with the current catalog fingerprint inside the lease-owner transaction so an older in-flight completion cannot restore progress for the prior file.
+
 Same-key catalog events during an active lease retain the existing lease and request one immediate rerun. Their authoritative reset clears stored resume state. Completion of the stale in-flight attempt must not restore its old resume record because the `rerun_requested` branch continues to ignore the stale completion schedule and metadata.
 
 ## Coordinator and workflow interfaces
 
 The workflow request gains a bounded provider-exclusion set plus its validated route signature. Each per-language workflow exposes or is assembled with the matching signature. The coordinator filters exclusions only after normal language/media-kind applicability checks and before cache or availability access, so a skipped provider performs no cache read, provider-state read, log lifecycle, or remote request.
 
-The workflow result returns the next resume-provider list. Provider IDs remain low-cardinality configuration identifiers. Structured completion logs add only `resume_provider_count`; they do not log the list, media path, cache key, or provider response.
+The workflow result returns the next resume-provider list. Provider IDs remain configuration identifiers. Structured completion logs add only `resume_provider_count`, using the authoritative count returned by the committed repository completion, including zero after concurrent deletion, replacement, or rerun. They do not log the list, signature, media path, cache key, or provider response.
 
 If all providers in a tier are excluded, that tier returns an ordinary empty pass without fabricating a provider outage. The tier merger then relies on the unfinished provider's real outcome. Applicable-provider counts used for all-provider technical/throttle classification exclude resumed providers, so one resumed provider's technical failure cannot be masked by two deliberately skipped providers.
 
@@ -107,7 +111,10 @@ Focused TDD must prove:
 - a resumed provider no-result clears resume state and returns to normal missing backoff;
 - technical and candidate-bearing providers are never marked clean-empty;
 - preferred/fallback merging, fallback installation, and promotion scheduling retain existing behavior;
-- route changes, upgrades, imports/replacements/renames, manual retry, deletion, unsupported media, success, and same-key reruns clear or invalidate state as specified;
+- route changes (including a same-membership fallback reorder), upgrades, imports/replacements/renames, manual retry, deletion, unsupported media, success, and same-key reruns clear or invalidate state as specified;
+- an app/worker/SQLite regression proves that live replacement after cache expiry reruns completed providers and clears other-language progress;
+- a valid ten-provider route with nine clean-empty providers and one cooldown completes and later resumes only the unfinished provider;
+- exact configured provider identities such as `p` and ` p` never share exclusions;
 - migration 012 preserves attempts, failure attempts, priority, leases, installations, rejections, provider state, and cache TTLs while immediately rescheduling only eligible pre-feature throttled rows;
 - restart round trips provider resume state through SQLite and skips completed providers;
 - malformed persisted state fails closed without provider calls;
@@ -126,4 +133,4 @@ Run affected packages with `-race`, then the complete race-enabled suite, `go ve
 
 ## Implementation record
 
-The approved contract is implemented by `96959e9`, `f0ab4bc`, `8be6841`, `6a3c5dd`, and `53140be`. Runtime tests established coordinator exclusion before cache/availability/logging/remote access; strict exact-plus-broad clean-empty accounting; route, media, manual, upgrade, terminal, and rerun invalidation; owner-guarded persistence; fallback behavior; restart survival; migration scope; and count-only structured logging. The final full verification gate and the documentation status are updated only after its commands pass.
+The initial implementation is `96959e9`, `f0ab4bc`, `8be6841`, `6a3c5dd`, and `53140be`, followed by documentation commits through `dc5f5c6`. The final whole-diff review rejected completion: live inventory replacement could reuse progress, the fixed eight-provider persistence cap rejected larger accepted routes, and provider exclusion trimmed exact identities. It also requested fallback reorder coverage, authoritative retained-count logging, and corrections to the overstated approval ledger. This repair adopts the tightened contract above and adds permanent regressions. Independent re-review and the controller's complete verification gates remain required; passing earlier tests did not constitute whole-diff approval.

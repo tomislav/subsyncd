@@ -16,8 +16,9 @@ import (
 )
 
 type Repository struct {
-	store       *Store
-	searchScope *searchScope
+	store        *Store
+	searchScope  *searchScope
+	resumeRoutes map[domain.Language]providerResumeBound
 }
 
 type searchScope struct {
@@ -107,7 +108,8 @@ type SearchCompletion struct {
 }
 
 type SearchCompletionResult struct {
-	RerunScheduled bool
+	RerunScheduled      bool
+	ResumeProviderCount int
 }
 
 type NotificationRequest struct {
@@ -583,6 +585,9 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, e
 		if err := invalidateInstallationTx(ctx, tx, mediaID); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE search_states SET resume_providers_json='[]',resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
+			return fmt.Errorf("clear replaced media search resume: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE media_id = ?`, mediaID); err != nil {
 		return fmt.Errorf("delete old tracks: %w", err)
@@ -672,15 +677,7 @@ func validUnsupportedReason(reason domain.UnsupportedReason) bool {
 	return reason == "" || reason == domain.UnsupportedMultiEpisode
 }
 
-const (
-	maxSearchResumeProviders = 8
-	maxSearchResumeJSONBytes = 4096
-)
-
 func decodeResumeProviders(encoded string) ([]string, error) {
-	if len(encoded) > maxSearchResumeJSONBytes {
-		return nil, fmt.Errorf("invalid search resume providers")
-	}
 	var providers []string
 	if err := json.Unmarshal([]byte(encoded), &providers); err != nil || providers == nil {
 		return nil, fmt.Errorf("invalid search resume providers")
@@ -699,16 +696,13 @@ func encodeResumeProviders(providers []string) (string, error) {
 		return "", err
 	}
 	encoded, err := json.Marshal(providers)
-	if err != nil || len(encoded) > maxSearchResumeJSONBytes {
+	if err != nil {
 		return "", fmt.Errorf("invalid search resume providers")
 	}
 	return string(encoded), nil
 }
 
 func validateResumeProviders(providers []string) error {
-	if len(providers) > maxSearchResumeProviders {
-		return fmt.Errorf("invalid search resume providers")
-	}
 	seen := make(map[string]struct{}, len(providers))
 	for _, providerID := range providers {
 		if strings.TrimSpace(providerID) == "" {
@@ -731,7 +725,7 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 		return nil, fmt.Errorf("begin search lease: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	query := `SELECT media_id, language, attempt, failure_attempt, priority, resume_providers_json, resume_route_signature FROM search_states JOIN media ON media.id=search_states.media_id WHERE media.deleted=0 AND state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`
+	query := `SELECT media_id, language, attempt, failure_attempt, priority, resume_providers_json, resume_route_signature, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE media.deleted=0 AND state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`
 	args := []any{now.UnixNano(), now.UnixNano()}
 	if scope := r.searchScope; scope != nil {
 		if len(scope.instances) == 0 || len(scope.languages) == 0 {
@@ -764,11 +758,17 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 	for rows.Next() {
 		var item due
 		var encodedProviders string
-		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt, &item.failureAttempt, &item.priority, &encodedProviders, &item.resumeSignature); err != nil {
+		var fingerprint domain.MediaFingerprint
+		var modTime int64
+		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt, &item.failureAttempt, &item.priority, &encodedProviders, &item.resumeSignature, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan due search: %w", err)
 		}
-		item.resumeProviders, err = decodeResumeProviders(encodedProviders)
+		fingerprint.ModTime = time.Unix(0, modTime).UTC()
+		if !r.currentResumeScope(item.language, fingerprint, item.resumeSignature) {
+			encodedProviders, item.resumeSignature = "[]", ""
+		}
+		item.resumeProviders, err = r.decodeSearchResume(item.language, encodedProviders)
 		if err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("decode due search resume state: %w", err)
@@ -819,15 +819,6 @@ func (r *Repository) RenewSearchLease(ctx context.Context, jobID string, now tim
 }
 
 func (r *Repository) CompleteSearch(ctx context.Context, completion SearchCompletion) (SearchCompletionResult, error) {
-	resumeProvidersJSON, err := encodeResumeProviders(completion.ResumeProviders)
-	if err != nil {
-		return SearchCompletionResult{}, err
-	}
-	resumeSignature := completion.ResumeRouteSignature
-	if !completion.PreserveResume {
-		resumeProvidersJSON = "[]"
-		resumeSignature = ""
-	}
 	state := "complete"
 	next := int64(0)
 	if !completion.NextAttemptAt.IsZero() {
@@ -851,10 +842,27 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 	}
 	defer func() { _ = tx.Rollback() }()
 	var rerunScheduled, deleted bool
-	if err := tx.QueryRowContext(ctx, `SELECT search_states.rerun_requested, media.deleted FROM search_states JOIN media ON media.id=search_states.media_id WHERE search_states.lease_owner=?`, completion.JobID).Scan(&rerunScheduled, &deleted); errors.Is(err, sql.ErrNoRows) {
+	var language string
+	var fingerprint domain.MediaFingerprint
+	var modTime int64
+	if err := tx.QueryRowContext(ctx, `SELECT search_states.rerun_requested, media.deleted, search_states.language, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE search_states.lease_owner=?`, completion.JobID).Scan(&rerunScheduled, &deleted, &language, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); errors.Is(err, sql.ErrNoRows) {
 		return SearchCompletionResult{}, fmt.Errorf("search lease %s not found", completion.JobID)
 	} else if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("read search completion state: %w", err)
+	}
+	fingerprint.ModTime = time.Unix(0, modTime).UTC()
+	resumeProvidersJSON, resumeSignature := "[]", ""
+	retainedCount := 0
+	if completion.PreserveResume && !deleted && !rerunScheduled && r.currentResumeScope(language, fingerprint, completion.ResumeRouteSignature) {
+		resumeProvidersJSON, err = encodeResumeProviders(completion.ResumeProviders)
+		if err != nil {
+			return SearchCompletionResult{}, err
+		}
+		if _, err := r.decodeSearchResume(language, resumeProvidersJSON); err != nil {
+			return SearchCompletionResult{}, err
+		}
+		resumeSignature = completion.ResumeRouteSignature
+		retainedCount = len(completion.ResumeProviders)
 	}
 	var result sql.Result
 	if deleted {
@@ -888,7 +896,7 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 	if err := tx.Commit(); err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("commit search completion: %w", err)
 	}
-	return SearchCompletionResult{RerunScheduled: rerunScheduled}, nil
+	return SearchCompletionResult{RerunScheduled: rerunScheduled, ResumeProviderCount: retainedCount}, nil
 }
 
 func (r *Repository) EnqueueNotification(ctx context.Context, request NotificationRequest) (bool, error) {

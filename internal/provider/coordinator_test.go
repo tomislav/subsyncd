@@ -68,6 +68,21 @@ func (c *memoryCache) PutProviderCache(_ context.Context, entry store.ProviderCa
 	return nil
 }
 
+func TestCoordinatorResumePreservesExactProviderIdentity(t *testing.T) {
+	for _, mode := range []SearchMode{SearchExactHash, SearchBroad} {
+		t.Run(string(mode), func(t *testing.T) {
+			plain := &fakeProvider{id: "p", capabilities: Capabilities{ExactFileHash: true}}
+			spaced := &fakeProvider{id: " p", capabilities: Capabilities{ExactFileHash: true}}
+			result := newTestCoordinator(plain, spaced).Search(t.Context(), SearchQuery{
+				Media: testQueryMedia(), Language: "en", Mode: mode, SkipProviders: []string{" p"},
+			})
+			if !slices.Equal(result.ApplicableProviders, []string{"p"}) || len(plain.calls) != 1 || len(spaced.calls) != 0 {
+				t.Fatalf("applicable = %q; calls plain=%d spaced=%d", result.ApplicableProviders, len(plain.calls), len(spaced.calls))
+			}
+		})
+	}
+}
+
 func TestCoordinatorExactModeReturnsEveryExactCandidateInProviderOrder(t *testing.T) {
 	first := &fakeProvider{id: "first", capabilities: Capabilities{ExactFileHash: true}, candidates: map[SearchMode][]domain.Candidate{
 		SearchExactHash: {
