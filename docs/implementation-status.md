@@ -5,13 +5,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: provider-reset scheduling for unfinished initial backfill
-- Next safe action: finish verification and independent review; publication and production deployment remain separate actions
-- Latest follow-up: partial provider cooldowns retain unfinished first-install work for reset-time retry, with a one-time reschedule for existing no-result backfill
+- Current task: provider-specific cooldown resume documentation and final verification
+- Next safe action: operator review of the verified commit chain; publication and production deployment remain separate actions
+- Latest follow-up: clean-empty provider progress survives restart for unfinished first-install cooldown cycles, while ordinary six-hour provider cache behavior is unchanged
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Provider-specific cooldown resume — complete runtime and documentation boundary — 2026-09-13
+
+- Runtime commits: `96959e9 feat: expose resumable provider search progress`, `f0ab4bc feat: persist provider cooldown resume state`, `8be6841 fix: reject incomplete search lease scans`, `6a3c5dd feat: resume unfinished provider searches`, and `53140be feat: integrate durable provider resume`. Documentation boundary: this `docs: document provider-specific cooldown resume` commit.
+- First-install throttled cycles persist only strict, bounded clean-empty provider IDs in configured preferred-then-fallback order plus a canonical route signature. Broad must complete empty and an applicable exact phase must also complete empty; candidates, cooldowns, disabled routes, cancellations, and technical failures remain unfinished. Reset retries, including after daemon restart, suppress only those completed providers before cache, availability, lifecycle-log, or remote access. Preferred/fallback ordering and fallback installation/promotion timing remain intact.
+- Route-signature mismatch, routine upgrade priority, media import/replacement/rename, explicit manual search, successful/satisfied/no-result/rejected/deleted/unsupported completion, and same-key rerun clear or invalidate resume state. Completion remains lease-owner guarded; stale work cannot restore its state after an authoritative rerun. Lifecycle logs report `resume_provider_count` only, never provider IDs, signatures, media paths, or cache keys.
+- Migration `012_provider_resume.sql` adds non-null resume fields and immediately reschedules only active, uninstalled, missing-priority rows whose last outcome is `throttled`. It preserves attempts, failure attempts, priority, leases, installations/rollback provenance, candidate rejections, provider state, and the normal six-hour provider-result cache expiry. It runs once; it neither performs provider I/O nor changes provider cooldowns.
+- RED/GREEN evidence: coordinator exclusion/phase-accounting tests, SQLite migration/round-trip/validation/clear tests, workflow exact/broad/preferred/fallback/technical controls, worker request/completion/logging controls, manual-route clearing, and restart E2E each failed before their corresponding production change and passed after it. Final complete-gate outputs are recorded with this task's verification report.
+- Deferred minor review triage (no runtime change): the workflow fallback route test labels a membership addition as “fallback reordering” and lacks a same-membership reorder control; and `job.completed` can report the submitted count when a concurrent deletion clears the durable state because completion returns only rerun status. Both are review/test-observability follow-ups, not evidence that provider suppression or persistence is incorrect.
+- Production container remains stopped. No production database, Arr/provider/Silo service, cache, media, deployment, or push was touched.
 
 ### Provider-specific cooldown resume — durable queue state — 2026-09-13
 

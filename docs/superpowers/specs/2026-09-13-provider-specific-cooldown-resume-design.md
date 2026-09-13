@@ -1,6 +1,6 @@
 # Provider-Specific Cooldown Resume
 
-**Status:** Approved in chat; awaiting written-spec review
+**Status:** Implemented and verified — 2026-09-13
 
 ## Purpose
 
@@ -123,3 +123,7 @@ Run affected packages with `-race`, then the complete race-enabled suite, `go ve
 - Changing missing/failure schedules after a complete provider cycle.
 - Accelerating routine upgrades.
 - Adding provider-specific queue rows, parallel workflows for one media/language, management HTTP routes, or operator-facing configuration.
+
+## Implementation record
+
+The approved contract is implemented by `96959e9`, `f0ab4bc`, `8be6841`, `6a3c5dd`, and `53140be`. Runtime tests established coordinator exclusion before cache/availability/logging/remote access; strict exact-plus-broad clean-empty accounting; route, media, manual, upgrade, terminal, and rerun invalidation; owner-guarded persistence; fallback behavior; restart survival; migration scope; and count-only structured logging. The final full verification gate and the documentation status are updated only after its commands pass.

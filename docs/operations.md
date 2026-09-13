@@ -84,7 +84,9 @@ subsyncd can upgrade subtitles it installed when a better match becomes availabl
 
 Optional per-language `fallback_providers` supply subtitles when preferred providers have no installable result or are unavailable. Fallback installations get weekly preferred-provider checks, including exact matches; a known preferred cooldown can bring the first check forward. `explain` displays the stored `fallback` flag. See [provider tiers](providers.md#choose-languages) for configuration and promotion rules.
 
-Initial backfill searches that could not run every applicable provider because of a known cooldown retry after that provider reset instead of aging into the ordinary missing-result backoff. On the first startup containing migration 011, existing active, uninstalled `no_result` backfill rows become immediately eligible once; normal capacity limits and provider cooldown gates still control actual dispatch and remote requests.
+Initial backfill searches that could not run every applicable provider because of a known cooldown retry after that provider reset instead of aging into the ordinary missing-result backoff. While waiting, subsyncd persists the clean-empty providers from the configured route and, after restart or reset, calls only the providers that were unfinished. A provider is clean-empty only after broad search completed without candidates and, when applicable, exact search also completed without candidates; candidate-bearing, unavailable, or technically failed providers remain pending. Preferred and fallback tiers still run in their configured order before a throttled result is returned.
+
+Migration 011 makes existing active, uninstalled `no_result` backfill rows immediately eligible once. Migration 012 makes the corresponding active, uninstalled, missing-priority `throttled` rows immediately eligible once, so they can capture this provider-specific progress. These migrations do not contact a provider themselves, alter attempts, leases, installations, provider cooldowns, rejection evidence, or the ordinary six-hour provider cache TTL. Normal capacity limits and provider cooldown gates still control actual dispatch and remote requests.
 
 See [matching and upgrades](providers.md#matching-and-upgrades) for more about selection and timing checks.
 
@@ -121,7 +123,7 @@ docker compose run --rm --no-deps subsyncd search --instance radarr-main --kind 
 docker compose up -d subsyncd
 ```
 
-Review the command's result before restarting. Successful manual searches save any future upgrade check, including fallback promotion, while preserving earlier queued work and retained leases. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
+Review the command's result before restarting. A manual search clears any saved provider-resume progress for that media and language, then runs the complete current preferred/fallback route; it does not reuse a stale partial-cooldown route after a configuration change. Successful manual searches save any future upgrade check, including fallback promotion, while preserving earlier queued work and retained leases. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
 
 To discover any unindexed files in the full library and reconcile retained history, use `scan --instance sonarr-main` or `scan --instance radarr-main` in place of `search ...` in the same stop/run/start sequence. The command queues new work; the daemon processes it after restarting. Rescanning does not reset existing search schedules, reconsider retained deletions, or overwrite installation provenance.
 
