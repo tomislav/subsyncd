@@ -4,14 +4,23 @@ This file is the resumable implementation ledger. The approved design and plan r
 
 ## Current state
 
-- Branch: isolated provider-specific cooldown resume worktree, based on `dc5f5c6`
-- Current task: final-review repair wave complete; independent re-review pending
-- Next safe action: final controller re-review and complete race/vet/tagged-E2E verification; publication and production deployment remain separate actions
-- Latest follow-up: fingerprint-scoped resume, bounds derived from accepted routes, exact provider identity, and authoritative retained-count logging repair the failed final review
+- Branch: isolated repeated-silent-LAPSE-failure worktree, based on `0e1b1cc`
+- Current task: repeated silent LAPSE failure quarantine complete; publication and production deployment remain separate actions
+- Next safe action: independent whole-diff review before any publication; deployment remains operator-managed
+- Latest follow-up: migration 013 records only the narrow two-strike silent-exit exception, including the final rule that composite/multi-cause errors remain technical
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Repeated silent LAPSE failure quarantine — final documentation and verification — 2026-09-13
+
+- Commits: `ac77a67 feat: classify silent LAPSE process exits`, `d14b2ca feat: persist repeated silent LAPSE failures`, `6e28f49 feat: quarantine repeated silent LAPSE failures`, `0e1b1cc fix: reject composite LAPSE strike failures`, and this `docs: record repeated LAPSE quarantine` documentation boundary. Migration `013_repeated_lapse_failures.sql` is additive: it preserves existing durable state and adds only the bounded, media-cascading strike table.
+- Adopted behavior: only a selected artifact with a checksum may strike, and only when a direct or unary `%w`-wrapped `ProcessExitError` reports exit code 2 with completely empty stdout and stderr. The first observation remains a technical failure; the second identical observation from a later preparation atomically persists `lapse_repeated_empty_exit`, removes the strike, and lets ordinary candidate/version/provider progression continue. The durable identity includes the complete candidate, media fingerprint, artifact, LAPSE/tool-policy, language, provider/result, and failure signature; changed material starts a fresh first strike. `search --retry-rejected` and every candidate-rejection reset clear both unconfirmed strikes and confirmed rejections for that media/language.
+- Rejected broader behavior: a first silent exit never quarantines a candidate. Composite or multi-cause errors remain technical even if one cause is an otherwise eligible process exit. Diagnostic-bearing exits, other exit codes, timeouts, cancellation, runner/process-protocol/filesystem failures, missing checksums, and provider/network failures remain technical and retain normal failure backoff.
+- Coverage decision: no new tagged-E2E regression was added. `TestRepeatedSilentLapseFailureSurvivesRestartAndAdvancesCandidate` already exercises the real workflow with SQLite, closes and reopens the database between attempts, verifies strike-one persistence, atomic strike-two cleanup/rejection, and installation of a later candidate. The tagged E2E suite still passed as the repository-wide deployment boundary.
+- Verification: `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./... -race -count=1`, `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go vet ./...`, `GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./test/e2e -tags=e2e -race -count=1`, `gofmt -l cmd internal test`, and `git diff --check` passed. The initial full-suite sandbox attempt could not bind loopback listeners; the permitted rerun used only local `httptest`/fake-server fixtures and made no external or production requests.
+- Next task: obtain independent whole-diff review before publication; no deployment, production inspection, or external provider/Arr/Silo request is part of this work.
 
 ### Repeated silent LAPSE failure quarantine — Task 1 — 2026-09-13
 
