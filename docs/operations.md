@@ -84,6 +84,8 @@ subsyncd can upgrade subtitles it installed when a better match becomes availabl
 
 Optional per-language `fallback_providers` supply subtitles when preferred providers have no installable result or are unavailable. Fallback installations get weekly preferred-provider checks, including exact matches; a known preferred cooldown can bring the first check forward. `explain` displays the stored `fallback` flag. See [provider tiers](providers.md#choose-languages) for configuration and promotion rules.
 
+Initial backfill searches that could not run every applicable provider because of a known cooldown retry after that provider reset instead of aging into the ordinary missing-result backoff. On the first startup containing migration 011, existing active, uninstalled `no_result` backfill rows become immediately eligible once; normal capacity limits and provider cooldown gates still control actual dispatch and remote requests.
+
 See [matching and upgrades](providers.md#matching-and-upgrades) for more about selection and timing checks.
 
 ## LAPSE cache expiry

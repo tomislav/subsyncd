@@ -395,6 +395,13 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 			result.RetryAt = retry
 			return result, nil
 		}
+		if !activeInstallation {
+			if retry, blocked := unavailableProviderRetry(search.Errors); blocked {
+				result.Outcome = OutcomeThrottled
+				result.RetryAt = retry
+				return result, nil
+			}
+		}
 		if providerCount > 0 && len(search.Errors) >= providerCount {
 			return result, &acquisitionExhaustedError{fmt.Errorf("all %d assigned subtitle providers failed", providerCount)}
 		}
@@ -1445,6 +1452,15 @@ func allProvidersUnavailable(failures map[string]error, expected int) (time.Time
 		values = append(values, failure)
 	}
 	return unavailableErrors(values)
+}
+
+func unavailableProviderRetry(failures map[string]error) (time.Time, bool) {
+	values := make([]error, 0, len(failures))
+	for _, failure := range failures {
+		values = append(values, failure)
+	}
+	retry, unavailable := unavailableErrors(values)
+	return retry, unavailable && !retry.IsZero()
 }
 
 func unavailableErrors(failures []error) (time.Time, bool) {

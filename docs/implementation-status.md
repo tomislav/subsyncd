@@ -5,13 +5,20 @@ This file is the resumable implementation ledger. The approved design and plan r
 ## Current state
 
 - Branch: `main`
-- Current task: publish deferred Arr reconciliation recovery
-- Next safe action: commit and push the verified authorized change to GitHub `main`, then observe GitHub Actions; production deployment remains user-managed
-- Latest follow-up: stale Sonarr/Radarr current-file records with dangling symlinks defer only their entity while valid page mutations commit without cursor advancement
+- Current task: provider-reset scheduling for unfinished initial backfill
+- Next safe action: finish verification and independent review; publication and production deployment remain separate actions
+- Latest follow-up: partial provider cooldowns retain unfinished first-install work for reset-time retry, with a one-time reschedule for existing no-result backfill
 - Runtime module: `subsyncd` on Go 1.27.1
 - Test caches: `GOCACHE=/tmp/subsyncd-gocache`, `GOMODCACHE=/tmp/subsyncd-gomodcache`
 
 ## Completed tasks
+
+### Provider-reset scheduling for unfinished initial backfill — 2026-09-13
+
+- Commit: this task, based on `6068d13`. Initial first-install work now remains throttled when at least one applicable provider was skipped by a persisted search/download cooldown and the providers that did run found no installation. The worker retries at the earliest known reset with its existing jitter and does not advance missing-result or technical-failure counters.
+- Routine upgrades retain their existing cadence. Genuine complete-provider no-result searches, successful/satisfied work, technical failures, and deterministic candidate rejection filtering are unchanged. Fallback tiers remain available before the reset, and a successful fallback installation retains the existing preferred-reset promotion rule.
+- Migration `011_reschedule_unfinished_backfill.sql` gives existing active, uninstalled missing-priority rows whose last outcome was `no_result` one immediate opportunity to adopt reset scheduling. It preserves attempt counters, durable leases, installations, candidate/rejection evidence, deleted media, rejected outcomes, and upgrade-priority schedules.
+- TDD: focused workflow and migration regressions failed before the implementation and passed afterward. Verification passed `go test ./internal/workflow ./internal/store ./internal/worker -race -count=1`, full `go test ./... -race -count=1`, `go vet ./...`, tagged `go test ./test/e2e -tags=e2e -race -count=1`, gofmt, and `git diff --check`, using sanitized local fixtures and fake servers only. Independent review found no actionable issues. No production mutation or deployment is part of this implementation.
 
 ### Deferred stale-file reconciliation recovery — 2026-09-13
 

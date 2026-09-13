@@ -1369,12 +1369,27 @@ func TestServiceClassifiesDownloadCooldownWhenNoCandidateCanRun(t *testing.T) {
 	}
 }
 
-func TestServiceDoesNotClassifyPartialProviderThrottleAsAllUnavailable(t *testing.T) {
+func TestServiceRetriesInitialSearchAfterPartialProviderThrottle(t *testing.T) {
 	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
 	searcher := &fakeSearcher{result: provider.SearchResult{Errors: map[string]error{"down": &provider.CooldownError{ProviderID: "down", Scope: provider.OperationSearch, ResetAt: reset}}}}
 	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
 	service.ProviderOrder = []string{"down", "healthy"}
 	result, err := service.Run(context.Background(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
+func TestServiceDoesNotAccelerateUpgradeAfterPartialProviderThrottle(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	request := serviceRequest(t)
+	existing := matchingInstallation(request, broadCandidate("installed"), []byte(`{"total":35}`))
+	searcher := &fakeSearcher{result: provider.SearchResult{Errors: map[string]error{"down": &provider.CooldownError{ProviderID: "down", Scope: provider.OperationSearch, ResetAt: reset}}}}
+	service := testService(t, managedSidecarInventory(existing), searcher, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = &workflowRepository{found: true, installation: existing}
+	service.ProviderOrder = []string{"down", "healthy"}
+
+	result, err := service.Run(context.Background(), request)
 	if err != nil || result.Outcome != OutcomeNoResult || !result.RetryAt.IsZero() {
 		t.Fatalf("Run() = %#v, %v", result, err)
 	}

@@ -133,6 +133,8 @@ Technical workflow failures retry after 1 minute, 5 minutes, 15 minutes,
 import or replacement resets this failure schedule and runs immediately.
 Provider cooldowns use their separately persisted reset times instead.
 
+For a first-install search, a provider skipped because of a known search or download cooldown keeps the work unfinished even when another configured provider searched successfully but found no installable result. The search is retried after the earliest applicable provider reset, with worker jitter, without advancing missing-result or technical-failure attempts. This does not accelerate routine upgrade checks, retry candidates with persisted deterministic rejections, or change successful/no-result scheduling when every provider actually ran. Migration 011 makes existing active, uninstalled `no_result` backfill work immediately eligible once so it adopts this behavior; it preserves attempts, leases, installations, and rejection evidence.
+
 Nonexact installed subtitles are normally reconsidered after 7, 30, or 90 days depending on their score. Preferred exact matches need no scheduled upgrade check while the media stays unchanged; fallback matches are checked weekly.
 
 If credentials are rejected, correct them and clear the affected provider's saved state using the [provider recovery instructions](operations.md#troubleshooting). Use [manual searches and explain](operations.md#inspect-or-search-one-file) to investigate a particular file.
