@@ -447,6 +447,54 @@ func (r *Repository) ListMediaByInstance(ctx context.Context, instance string) (
 	return items, nil
 }
 
+// ListActiveCatalogIdentities returns the positive top-level Arr identities
+// still tracked for an instance. Episodes are addressed by their Sonarr
+// series identity; movies use their Radarr entity identity.
+func (r *Repository) ListActiveCatalogIdentities(ctx context.Context, instance string, kind domain.MediaKind) ([]int64, error) {
+	if strings.TrimSpace(instance) == "" {
+		return nil, fmt.Errorf("instance is required")
+	}
+
+	identityColumn := ""
+	switch kind {
+	case domain.MediaEpisode:
+		identityColumn = "series_id"
+	case domain.MediaMovie:
+		identityColumn = "entity_id"
+	default:
+		return nil, fmt.Errorf("invalid media kind %q", kind)
+	}
+
+	query := `SELECT DISTINCT ` + identityColumn + ` FROM media WHERE instance=? AND kind=? AND deleted=0 AND ` + identityColumn + `>0 ORDER BY ` + identityColumn
+	rows, err := r.store.db.QueryContext(ctx, query, instance, string(kind))
+	if err != nil {
+		return nil, fmt.Errorf("list active catalog identities: %w", err)
+	}
+	var identities []int64
+	for rows.Next() {
+		var identity int64
+		if err := rows.Scan(&identity); err != nil {
+			closeErr := rows.Close()
+			if closeErr != nil {
+				return nil, fmt.Errorf("scan active catalog identity: %w", errors.Join(err, closeErr))
+			}
+			return nil, fmt.Errorf("scan active catalog identity: %w", err)
+		}
+		identities = append(identities, identity)
+	}
+	if err := rows.Err(); err != nil {
+		closeErr := rows.Close()
+		if closeErr != nil {
+			return nil, fmt.Errorf("iterate active catalog identities: %w", errors.Join(err, closeErr))
+		}
+		return nil, fmt.Errorf("iterate active catalog identities: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close active catalog identities: %w", err)
+	}
+	return identities, nil
+}
+
 func (r *Repository) GetSearchStatus(ctx context.Context, mediaID int64, language domain.Language) (SearchStatus, error) {
 	var status SearchStatus
 	var next int64
