@@ -186,9 +186,9 @@ silo:
       to: /mnt/media
 ```
 
-The installation provenance and one checksum-deduplicated intent per configured notifier are written in the same SQLite transaction as the filesystem publication's logical commit. If that durable database operation fails, the new sidecar is removed or the prior managed copy is restored. Only after it commits does asynchronous delivery send `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped parent directory of the media file. A later Silo failure never rolls back the subtitle or installation; timeout, 408, 429, and 5xx responses retry independently, while other 4xx responses are terminal. See [the Silo protocol ledger](../references/silo.md).
+The installation provenance and one checksum-deduplicated intent per configured notifier are written in the same SQLite transaction as the filesystem publication's logical commit. If that durable database operation fails, the new sidecar is removed or the prior managed copy is restored. Only after it commits does asynchronous delivery send `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped parent directory of the media file. A later Silo failure never rolls back the subtitle or installation; timeout, 408, 429, and 5xx responses retry independently, while other 4xx responses are terminal. See [the Silo API reference](../references/silo.md).
 
-This adapter targets Silo's current pre-1.0 native API. Silo plans to retire `/api/v1` at 1.0, and the v2 scan route is not yet published. Check the protocol ledger and upgrade `subsyncd` before moving Silo past its dual-API bridge release; `subsyncd` deliberately does not guess or fall back between mutating API versions.
+This adapter targets Silo's current pre-1.0 native API. Silo plans to retire `/api/v1` at 1.0, and the v2 scan route is not yet published. Check the API reference and upgrade `subsyncd` before moving Silo past its dual-API bridge release; `subsyncd` deliberately does not guess or fall back between mutating API versions.
 
 ## Backup, restart, and recovery
 

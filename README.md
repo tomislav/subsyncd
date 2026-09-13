@@ -165,6 +165,9 @@ Logs are available through `docker compose logs`. Set `logging.level: debug` in 
 - [Configuration example](config.example.yaml) — all settings in one place.
 - [Operations guide](docs/operations.md) — manual searches, diagnostics, Silo setup, backups, and troubleshooting.
 - [Provider guide](docs/providers.md) — language support, matching, synchronization, and retry schedules.
+- [Logging guide](docs/logging.md) — log levels, workflow tracing, and safe diagnostic sharing.
+- [Architecture](docs/architecture.md) — system boundaries and durable processing flow.
+- [Developer references](docs/development/) — current implementation contracts for operations, providers, and logging.
 
 To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.0.5. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
 
