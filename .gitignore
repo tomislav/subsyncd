@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 /.agents/production.local.md
+/.worktrees/
 
 /subsyncd
 /coverage.out
