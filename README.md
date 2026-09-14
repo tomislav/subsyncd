@@ -87,7 +87,7 @@ Edit `config/config.yaml` to:
 
 - Set the Sonarr and Radarr URLs to addresses reachable from the container. Remove any instance you do not use.
 - Keep only the providers you want, enter any required usernames, passwords, and API keys in the quoted placeholders, and remove unused provider names from `languages` too. Gestdown requires no credentials.
-- If you use Silo, enable it and replace its API-key placeholder in the same file.
+- If you use Silo, ensure it supports API v2, enable it, and replace its admin API-key placeholder in the same file.
 - Choose your languages, using tags such as `en`, `hr`, or `pt-BR`.
 - Match each `path_mappings.remote` to the path reported by Sonarr or Radarr. The `local` path is where that same folder appears inside subsyncd.
 

@@ -22,10 +22,12 @@ func TestDisabledSiloNotifierIsNoop(t *testing.T) {
 	}
 }
 
-func TestSiloPostsNativeTargetedScanWithMappedParentDirectory(t *testing.T) {
+func TestSiloPostsV2TargetedScanWithMappedParentDirectory(t *testing.T) {
 	var gotPath, gotToken string
+	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/scan" {
+		requests++
+		if request.Method != http.MethodPost || request.URL.Path != "/silo/api/v2/scan" {
 			t.Errorf("request = %s %s", request.Method, request.URL.Path)
 		}
 		if request.Header.Get("Content-Type") != "application/json" {
@@ -35,7 +37,7 @@ func TestSiloPostsNativeTargetedScanWithMappedParentDirectory(t *testing.T) {
 		var payload struct {
 			Path string `json:"path"`
 		}
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		if err := decodeSiloPayload(request, &payload); err != nil {
 			t.Errorf("payload = %#v, %v", payload, err)
 		} else {
 			gotPath = payload.Path
@@ -43,7 +45,7 @@ func TestSiloPostsNativeTargetedScanWithMappedParentDirectory(t *testing.T) {
 		writer.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
-	notifier, err := NewSilo(SiloConfig{Enabled: true, BaseURL: server.URL, APIKey: "sa_secret", PathMappings: []PathMapping{{From: "/local/media", To: "/mnt/library"}}})
+	notifier, err := NewSilo(SiloConfig{Enabled: true, BaseURL: server.URL + "/silo/", APIKey: "sa_secret", PathMappings: []PathMapping{{From: "/local/media", To: "/mnt/library"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +53,18 @@ func TestSiloPostsNativeTargetedScanWithMappedParentDirectory(t *testing.T) {
 	if err := notifier.SubtitleChanged(context.Background(), media, "/local/media/shows/Show/episode.en.srt"); err != nil {
 		t.Fatal(err)
 	}
+	if requests != 1 {
+		t.Fatalf("requests = %d; want 1", requests)
+	}
 	if gotPath != "/mnt/library/shows/Show" || gotToken != "Bearer sa_secret" {
 		t.Fatalf("scan = path %q token %q", gotPath, gotToken)
 	}
+}
+
+func decodeSiloPayload(request *http.Request, payload any) error {
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(payload)
 }
 
 func TestRewritePathSupportsRootMappingsAndLongestPrefix(t *testing.T) {
@@ -122,12 +133,21 @@ func TestSiloClassifiesFailuresWithoutLeakingCredentialsOrBodies(t *testing.T) {
 		{http.StatusUnauthorized, false},
 		{http.StatusForbidden, false},
 		{http.StatusBadRequest, false},
+		{http.StatusNotFound, false},
+		{http.StatusGone, false},
+		{http.StatusConflict, false},
+		{http.StatusUnprocessableEntity, false},
 		{http.StatusRequestTimeout, true},
 		{http.StatusTooManyRequests, true},
 		{http.StatusBadGateway, true},
 	} {
 		t.Run(http.StatusText(test.status), func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				requests++
+				if request.URL.Path != "/api/v2/scan" {
+					t.Errorf("unexpected route %s", request.URL.Path)
+				}
 				writer.WriteHeader(test.status)
 				_, _ = writer.Write([]byte("body-secret"))
 			}))
@@ -137,6 +157,9 @@ func TestSiloClassifiesFailuresWithoutLeakingCredentialsOrBodies(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = notifier.SubtitleChanged(context.Background(), domain.Media{Fingerprint: domain.MediaFingerprint{Path: "/media/movie.mkv"}}, "/media/movie.en.srt")
+			if requests != 1 {
+				t.Fatalf("requests = %d; want no fallback", requests)
+			}
 			if err == nil || IsRetryable(err) != test.retryable {
 				t.Fatalf("error = %T %v, retryable=%v", err, err, IsRetryable(err))
 			}

@@ -60,7 +60,7 @@ func NewSilo(config SiloConfig) (Notifier, error) {
 	if err != nil || base.Scheme == "" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.Scheme != "http" && base.Scheme != "https" {
 		return nil, fmt.Errorf("Silo base URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
 	}
-	base.Path = strings.TrimRight(base.Path, "/") + "/api/v1/scan"
+	base.Path = strings.TrimRight(base.Path, "/") + "/api/v2/scan"
 	client := http.Client{Timeout: defaultTimeout}
 	if config.Client != nil {
 		client = *config.Client

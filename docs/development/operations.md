@@ -186,9 +186,9 @@ silo:
       to: /mnt/media
 ```
 
-The installation provenance and one checksum-deduplicated intent per configured notifier are written in the same SQLite transaction as the filesystem publication's logical commit. If that durable database operation fails, the new sidecar is removed or the prior managed copy is restored. Only after it commits does asynchronous delivery send `POST /api/v1/scan` with `Authorization: Bearer …` and the mapped parent directory of the media file. A later Silo failure never rolls back the subtitle or installation; timeout, 408, 429, and 5xx responses retry independently, while other 4xx responses are terminal. See [the Silo API reference](../references/silo.md).
+The installation provenance and one checksum-deduplicated intent per configured notifier are written in the same SQLite transaction as the filesystem publication's logical commit. If that durable database operation fails, the new sidecar is removed or the prior managed copy is restored. Only after it commits does asynchronous delivery send `POST /api/v2/scan` with `Authorization: Bearer …` and the mapped parent directory of the media file. A later Silo failure never rolls back the subtitle or installation; timeout, 408, 429, and 5xx responses retry independently, while other 4xx responses are terminal. See [the Silo API reference](../references/silo.md).
 
-This adapter targets Silo's current pre-1.0 native API. Silo plans to retire `/api/v1` at 1.0, and the v2 scan route is not yet published. Check the API reference and upgrade `subsyncd` before moving Silo past its dual-API bridge release; `subsyncd` deliberately does not guess or fall back between mutating API versions.
+This adapter requires Silo API v2 and has no v1 compatibility or version fallback. Keep `silo.url` set to the server base URL, without an API suffix. Silo marks scan dispatch as non-idempotent: the durable outbox provides at-least-once notification delivery, so an uncertain transport failure or lease recovery can repeat a targeted scan. There is no immediate HTTP retry or cross-version replay. Existing pending intents use v2 after upgrading; completed intents are not replayed.
 
 ## Backup, restart, and recovery
 
