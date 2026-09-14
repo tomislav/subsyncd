@@ -299,7 +299,7 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	defer providerServer.Close()
 	var siloCalls atomic.Int64
 	silo := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/scan" || request.Header.Get("Authorization") != "Bearer silo-key" {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v2/scan" || request.Header.Get("Authorization") != "Bearer silo-key" {
 			t.Errorf("unexpected Silo request: %s %s", request.Method, request.URL.Path)
 			response.WriteHeader(http.StatusBadRequest)
 			return
