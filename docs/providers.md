@@ -120,6 +120,8 @@ sync:
 
 Set `sync.policy: always` to run LAPSE for every nonexact candidate. Exact file matches still skip it. LAPSE can read much of the media file on its first run, so this may increase processing time and network-storage traffic.
 
+Set `sync.policy: never` to download subtitles without synchronization. Every candidate that reaches `minimum_release_score` is installed with the timing it was downloaded with, including season packs and upgrades; `bypass_score` and the other `sync` switches are ignored. Timing is not verified, so the release score is the only protection against an out-of-sync subtitle: raise `minimum_release_score` (60 is a reasonable start; 75 effectively requires a release-group match). A pack containing several versions of the requested episode is skipped, because without LAPSE there is no safe way to choose between them. Switching policy lets candidates previously rejected for failed timing be reconsidered.
+
 ## Retries and provider limits
 
 Missing subtitles are checked again automatically: initially within minutes and hours, then after days, and eventually about every two weeks. Reusable search results are cached for six hours, so every scheduled check does not necessarily make another provider request. Results whose download links cannot be safely stored, including Titlovi links with query parameters, need a fresh provider search before downloading.

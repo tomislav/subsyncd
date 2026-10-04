@@ -290,6 +290,21 @@ languages:
 	}
 }
 
+func TestLoadParsesNeverSyncPolicy(t *testing.T) {
+	root := t.TempDir()
+	text := strings.Replace(validConfig(root, `
+languages:
+  en: {providers: [subdl-main]}
+`), "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m}", "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, policy: never}", 1)
+	cfg, err := loadText(t, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.Policy != "never" {
+		t.Fatalf("sync policy = %q", cfg.Sync.Policy)
+	}
+}
+
 func TestLoadDefaultsToConservativeLapseConfidencePolicy(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := loadText(t, validConfig(root, `

@@ -93,7 +93,8 @@ sync:
   lapse_path: /opt/lapse/lapse
   timeout: 30m
   # "confidence" avoids reading the media when strong release evidence is enough.
-  # Use "always" to send every non-exact candidate through LAPSE.
+  # Use "always" to send every non-exact candidate through LAPSE, or "never" to
+  # install eligible candidates with their downloaded timing (unverified).
   policy: confidence
   bypass_score: 75
   require_identity_anchor: true

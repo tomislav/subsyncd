@@ -554,8 +554,8 @@ func (c Config) Validate() error {
 	if c.Sync.Timeout <= 0 {
 		return fmt.Errorf("sync timeout must be positive")
 	}
-	if c.Sync.Policy != "" && c.Sync.Policy != "always" && c.Sync.Policy != "confidence" {
-		return fmt.Errorf("sync policy must be always or confidence")
+	if c.Sync.Policy != "" && c.Sync.Policy != "always" && c.Sync.Policy != "confidence" && c.Sync.Policy != "never" {
+		return fmt.Errorf("sync policy must be always, confidence, or never")
 	}
 	if c.Sync.BypassScore != 0 && (c.Sync.BypassScore < 1 || c.Sync.BypassScore > 100) {
 		return fmt.Errorf("sync bypass_score must be between 1 and 100")

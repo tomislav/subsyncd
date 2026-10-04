@@ -1271,6 +1271,9 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 	if item.candidate.ExactHash {
 		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "exact_hash", Mode: "bypass", Reference: "provider_hash", Ratio: 1, Confidence: 1, Agreement: 1, Coverage: 1, Parts: 1}, bypass: true}, nil
 	}
+	if s.LapsePolicy.syncDisabled() {
+		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "sync_disabled", Mode: "bypass", Reference: "policy"}, bypass: true}, nil
+	}
 	if !item.runtimePack && canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
 		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
@@ -1345,6 +1348,12 @@ func (p LapsePolicy) normalized() LapsePolicy {
 	return p
 }
 
+// syncDisabled reports the operator's choice to install every eligible
+// nonexact candidate with its provider timing and never invoke LAPSE.
+func (p LapsePolicy) syncDisabled() bool {
+	return p.Mode == "never"
+}
+
 func canBypassLapse(media domain.Media, candidate domain.Candidate, score domain.Score, installed bool, policy LapsePolicy) bool {
 	if policy.Mode != "confidence" ||
 		(installed && policy.LapseForUpgrades) ||
@@ -1388,7 +1397,7 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 		destination = existing.Path
 	}
 	selectionMode := prepared.sync.Verdict
-	if selectionMode != "exact_hash" && selectionMode != "score_bypass" {
+	if selectionMode != "exact_hash" && selectionMode != "score_bypass" && selectionMode != "sync_disabled" {
 		selectionMode = "lapse"
 	}
 	s.workflowEvents().Log(ctx, slog.LevelInfo, "candidate.selected", "subtitle candidate selected", slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("exact_hash", prepared.candidate.ExactHash), slog.String("selection_mode", selectionMode))

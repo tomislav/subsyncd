@@ -16,6 +16,20 @@ func memberRequest(request Request, scope string) Request {
 // prepareMembers retains validated outputs for the enclosing score tier. Paths
 // may be immutable cache sources; cleanup removes only private workspace files.
 func (s *Service) prepareMembers(ctx context.Context, request Request, item downloadedCandidate, paths []string, installed bool, existing store.Installation, workspace string, index int, failures *[]error, result *Result) ([]preparedCandidate, error) {
+	if len(paths) > 1 && s.LapsePolicy.syncDisabled() {
+		// Versions are ranked by LAPSE confidence; without it, any choice
+		// would be an arbitrary archive member.
+		if _, err := s.recordCandidateRejection(ctx, request, item.candidate, "", &pack.SelectionError{Rule: "versions_ambiguous_without_sync", Reason: "multiple episode versions cannot be ranked when synchronization is disabled", MatchingMemberCount: len(paths)}); err != nil {
+			return nil, err
+		}
+		result.Decisions = append(result.Decisions, Decision{Stage: "pack_selection", ProviderID: item.candidate.ProviderID, ResultID: item.candidate.ResultID, Reason: "multiple episode versions cannot be ranked when synchronization is disabled"})
+		for _, path := range paths {
+			if err := removeWorkflowArtifact(workspace, path); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}
 	var ready []preparedCandidate
 	allRejected := true
 	groupMayReject := true
