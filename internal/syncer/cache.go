@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// PruneCache removes expired LAPSE v2.0.5 profiles by last-write time. A busy
+// PruneCache removes expired LAPSE v2.2.4 profiles by last-write time. A busy
 // cache is skipped until the next sweep, so cleanup never races a subprocess.
 // Unknown files, directories and symlinks are deliberately left untouched.
 func (l *Lapse) PruneCache(ctx context.Context, ttl time.Duration, now time.Time) (int, error) {

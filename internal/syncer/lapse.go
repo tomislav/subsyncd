@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	CompatibilityVersion   = "2.0.5"
+	CompatibilityVersion   = "2.2.4"
 	defaultTimeout         = 30 * time.Minute
 	maximumSubtitleBytes   = 100 << 20
 	maximumSubtitleCues    = 100_000
@@ -262,6 +262,7 @@ type lapseReport struct {
 	Cues        int
 	IgnoredCues int
 	Parts       int
+	Snapped     int
 	Written     bool
 	Why         string
 	Output      string
@@ -282,6 +283,7 @@ type rawReport struct {
 	Cues        *int     `json:"cues"`
 	IgnoredCues *int     `json:"ignored_cues"`
 	Parts       *int     `json:"parts"`
+	Snapped     *int     `json:"snapped"`
 	Written     *bool    `json:"written"`
 	Why         *string  `json:"why,omitempty"`
 	Output      *string  `json:"output"`
@@ -310,10 +312,10 @@ func decodeReport(payload []byte) (lapseReport, error) {
 		}
 		return lapseReport{}, fmt.Errorf("trailing JSON: %w", err)
 	}
-	if raw.Mode == nil || raw.Reference == nil || raw.OffsetMS == nil || raw.Ratio == nil || raw.Confidence == nil || raw.Margin == nil || raw.Sigma == nil || raw.Agreement == nil || raw.Verdict == nil || raw.Coverage == nil || raw.Cues == nil || raw.IgnoredCues == nil || raw.Parts == nil || raw.Written == nil || raw.Output == nil || raw.Splits == nil {
+	if raw.Mode == nil || raw.Reference == nil || raw.OffsetMS == nil || raw.Ratio == nil || raw.Confidence == nil || raw.Margin == nil || raw.Sigma == nil || raw.Agreement == nil || raw.Verdict == nil || raw.Coverage == nil || raw.Cues == nil || raw.IgnoredCues == nil || raw.Parts == nil || raw.Snapped == nil || raw.Written == nil || raw.Output == nil || raw.Splits == nil {
 		return lapseReport{}, fmt.Errorf("LAPSE JSON is missing required fields")
 	}
-	report := lapseReport{Mode: *raw.Mode, Reference: *raw.Reference, OffsetMS: *raw.OffsetMS, Ratio: *raw.Ratio, Confidence: *raw.Confidence, Margin: *raw.Margin, Sigma: *raw.Sigma, Agreement: *raw.Agreement, Verdict: *raw.Verdict, Coverage: *raw.Coverage, Cues: *raw.Cues, IgnoredCues: *raw.IgnoredCues, Parts: *raw.Parts, Written: *raw.Written, Output: *raw.Output, Splits: append([]int(nil), (*raw.Splits)...)}
+	report := lapseReport{Mode: *raw.Mode, Reference: *raw.Reference, OffsetMS: *raw.OffsetMS, Ratio: *raw.Ratio, Confidence: *raw.Confidence, Margin: *raw.Margin, Sigma: *raw.Sigma, Agreement: *raw.Agreement, Verdict: *raw.Verdict, Coverage: *raw.Coverage, Cues: *raw.Cues, IgnoredCues: *raw.IgnoredCues, Parts: *raw.Parts, Snapped: *raw.Snapped, Written: *raw.Written, Output: *raw.Output, Splits: append([]int(nil), (*raw.Splits)...)}
 	if raw.Why != nil {
 		report.Why = *raw.Why
 	}
@@ -337,7 +339,7 @@ func (r lapseReport) validate() error {
 	if !finite(r.Ratio) || r.Ratio <= 0 || !unit(r.Confidence) || !unit(r.Margin) || !finite(r.Sigma) || r.Sigma < 0 || !unit(r.Agreement) || !unit(r.Coverage) {
 		return fmt.Errorf("LAPSE JSON contains unsafe metrics")
 	}
-	if r.Cues <= 0 || r.IgnoredCues < 0 || r.Parts < 1 || len(r.Splits) != r.Parts-1 {
+	if r.Cues <= 0 || r.IgnoredCues < 0 || r.Parts < 1 || len(r.Splits) != r.Parts-1 || r.Snapped < 0 || r.Snapped > r.Cues {
 		return fmt.Errorf("LAPSE JSON contains inconsistent cue or part counts")
 	}
 	previous := 0

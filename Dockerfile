@@ -25,9 +25,9 @@ RUN sh /build-ffprobe.sh "${FFMPEG_VERSION}" "${FFMPEG_SHA256}" "${TARGETARCH}"
 
 FROM debian:${DEBIAN_VERSION} AS lapse-release
 ARG TARGETARCH
-ARG LAPSE_VERSION=2.0.5
-ARG LAPSE_AMD64_SHA256=95f1eb35d83ee0084ba968f145c23c3c79aeb08c995b0f584b2177b016b67014
-ARG LAPSE_ARM64_SHA256=23226fea64f7141687b764e5d080b6ed4f9e2fbed476938363e993bd3705ee17
+ARG LAPSE_VERSION=2.2.4
+ARG LAPSE_AMD64_SHA256=9a7471f75460948be73ff017ab9b9fcaf9fb00dd8c59e50a182a965c466c6e88
+ARG LAPSE_ARM64_SHA256=73d67bbb06d5cbba58d308b46b38b5a8d6d112d3868d6ac567b55ced0673cbce
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 RUN set -eux; \
     target_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
@@ -45,7 +45,7 @@ RUN set -eux; \
 FROM debian:${DEBIAN_VERSION} AS runtime
 ARG FFMPEG_VERSION=8.1
 ARG VERSION=dev
-ARG LAPSE_VERSION=2.0.5
+ARG LAPSE_VERSION=2.2.4
 LABEL org.opencontainers.image.title="subsyncd" \
       org.opencontainers.image.description="Focused, headless subtitle acquisition and synchronization service" \
       org.opencontainers.image.version="${VERSION}" \

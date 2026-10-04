@@ -169,7 +169,7 @@ Logs are available through `docker compose logs`. Set `logging.level: debug` in 
 - [Architecture](docs/architecture.md) — system boundaries and durable processing flow.
 - [Developer references](docs/development/) — current implementation contracts for operations, providers, and logging.
 
-To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.0.5. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
+To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.2.4. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
 
 ```bash
 go build -trimpath -o subsyncd ./cmd/subsyncd

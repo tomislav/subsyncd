@@ -39,6 +39,9 @@ func TestParseReportRejectsMalformedOrUnsafeResults(t *testing.T) {
 		{"unknown verdict", strings.Replace(string(fixture(t, "solid.json")), `"solid"`, `"forced"`, 1)},
 		{"nonfinite", strings.Replace(string(fixture(t, "solid.json")), `"ratio":1`, `"ratio":1e999`, 1)},
 		{"confidence above one", strings.Replace(string(fixture(t, "solid.json")), `"confidence":0.455`, `"confidence":1.1`, 1)},
+		{"missing snapped", strings.Replace(string(fixture(t, "solid.json")), `"snapped":0,`, ``, 1)},
+		{"negative snapped", strings.Replace(string(fixture(t, "solid.json")), `"snapped":0`, `"snapped":-1`, 1)},
+		{"snapped above cues", strings.Replace(string(fixture(t, "solid.json")), `"snapped":0`, `"snapped":1579`, 1)},
 		{"parts mismatch", strings.Replace(string(fixture(t, "solid.json")), `"parts":1`, `"parts":2`, 1)},
 		{"unordered split", ""},
 	}
@@ -110,8 +113,8 @@ func TestLapseReportsTheCompatibilityVersionUsedByRejectionPolicy(t *testing.T) 
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
 		return Execution{}, nil
 	}), t.TempDir())
-	if got := lapse.CompatibilityVersion(); got != "2.0.5" {
-		t.Fatalf("CompatibilityVersion() = %q, want 2.0.5", got)
+	if got := lapse.CompatibilityVersion(); got != "2.2.4" {
+		t.Fatalf("CompatibilityVersion() = %q, want 2.2.4", got)
 	}
 }
 

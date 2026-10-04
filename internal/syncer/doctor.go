@@ -13,7 +13,7 @@ func CheckCapabilities(ctx context.Context, path string, runner Runner) error {
 	if runner == nil {
 		runner = OSRunner{}
 	}
-	// LAPSE v2.0.5 prints usage for an empty invocation. It does not implement
+	// LAPSE v2.2.4 prints usage for an empty invocation. It does not implement
 	// --help; that token is interpreted as an input filename.
 	execution, err := runner.Run(ctx, Command{Path: path})
 	if err != nil {

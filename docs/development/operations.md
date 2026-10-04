@@ -121,7 +121,7 @@ Sonarr can associate more than one episode with a single media file. `subsyncd` 
 
 ## LAPSE policy
 
-LAPSE v2.0.5 is the compatibility baseline. Exact OpenSubtitles hash matches always bypass it. With the default `sync.policy: confidence`, a non-pack first install also bypasses LAPSE when its release score is at least 75 and the score contains an identity anchor (external ID or normalized title/year), a release-group match, and explicit episode evidence for TV. Provider rating and popularity can add points but cannot replace those required anchors. The stored sync verdict is `score_bypass`, so `explain` distinguishes this decision from an exact hash and a LAPSE result.
+LAPSE v2.2.4 is the compatibility baseline. Exact OpenSubtitles hash matches always bypass it. With the default `sync.policy: confidence`, a non-pack first install also bypasses LAPSE when its release score is at least 75 and the score contains an identity anchor (external ID or normalized title/year), a release-group match, and explicit episode evidence for TV. Provider rating and popularity can add points but cannot replace those required anchors. The stored sync verdict is `score_bypass`, so `explain` distinguishes this decision from an exact hash and a LAPSE result.
 
 Packs and managed-subtitle upgrades still require LAPSE by default, even if their score is high. Candidates below the bypass score or missing any required anchor also require it. If Radarr identifies a movie edition, a non-hash candidate must explicitly match that edition to bypass LAPSE; an unknown edition remains eligible but requires LAPSE, while a known mismatch is rejected. Set `sync.policy: always` to restore LAPSE for every non-exact candidate. The individual `require_*` and `lapse_for_*` switches are configurable for unusual libraries, but relaxing them increases the chance of installing a wrong or unsynchronized subtitle.
 
@@ -215,6 +215,6 @@ If a user wants to take ownership of a subtitle, edit or replace the sidecar. It
 
 ## Minimal FFprobe packaging
 
-The image builds static FFprobe 8.1 from a checksummed FFmpeg source archive using a digest-pinned Alpine builder. Only local-file protocols and the container/parser/subtitle capabilities needed for inventory are enabled. The full `ffmpeg` command is not installed. LAPSE v2.0.5 retains its own linked FFmpeg libraries, ONNX Runtime and Silero model; `libstdc++6` remains an explicit runtime dependency.
+The image builds static FFprobe 8.1 from a checksummed FFmpeg source archive using a digest-pinned Alpine builder. Only local-file protocols and the container/parser/subtitle capabilities needed for inventory are enabled. The full `ffmpeg` command is not installed. LAPSE v2.2.4 retains its own linked FFmpeg libraries, ONNX Runtime and Silero model; `libstdc++6` remains an explicit runtime dependency.
 
 `scripts/build-ffprobe.sh` verifies the source digest and target architecture, builds the probe, and emits its license and a CycloneDX source-component inventory under `/usr/share/sbom/ffmpeg.cdx.json`. Both Dockerfiles run FFprobe version and LAPSE/Silero load checks during the image build, including both platforms built by GitHub Actions. Keep the version, source hash and runtime version label synchronized when upgrading.

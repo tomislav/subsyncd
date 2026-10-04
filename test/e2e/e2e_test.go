@@ -887,7 +887,7 @@ func (lapseRunner) Run(_ context.Context, command syncer.Command) (syncer.Execut
 			written = true
 		}
 	}
-	report, _ := json.Marshal(map[string]any{"mode": "auto/shifted", "reference": "vad", "offset_ms": 25, "ratio": 1, "confidence": 0.9, "margin": 0.2, "sigma": 2, "agreement": 0.9, "verdict": "solid", "coverage": 1, "cues": 1, "ignored_cues": 0, "parts": 1, "written": written || contains(command.Args, "--dry-run"), "output": output, "splits": []any{}})
+	report, _ := json.Marshal(map[string]any{"mode": "auto/shifted", "reference": "vad", "offset_ms": 25, "ratio": 1, "confidence": 0.9, "margin": 0.2, "sigma": 2, "agreement": 0.9, "verdict": "solid", "coverage": 1, "cues": 1, "ignored_cues": 0, "parts": 1, "snapped": 0, "written": written || contains(command.Args, "--dry-run"), "output": output, "splits": []any{}})
 	return syncer.Execution{Stdout: report}, nil
 }
 
