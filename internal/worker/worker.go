@@ -64,23 +64,26 @@ type Repository interface {
 }
 
 type Worker struct {
-	Repository        Repository
-	Workflow          Workflow
-	Clock             Clock
-	Notifiers         map[string]notifier.Notifier
-	Reconcilers       map[string]Reconciler
-	RandomUnit        func() float64
-	OnError           func(error)
-	PollInterval      time.Duration
-	LeaseDuration     time.Duration
-	RenewInterval     time.Duration
-	ShutdownTimeout   time.Duration
-	ReconcileInterval time.Duration
-	SearchBatch       int
-	MaxWorkflows      int
-	NotificationBatch int
-	Wake              <-chan struct{}
-	Events            *observability.Emitter
+	Repository  Repository
+	Workflow    Workflow
+	Clock       Clock
+	Notifiers   map[string]notifier.Notifier
+	Reconcilers map[string]Reconciler
+	// ReconcilePriorities orders reconciliation (and so first-run library
+	// discovery) by instance queue_priority, highest first; ties run by name.
+	ReconcilePriorities map[string]int
+	RandomUnit          func() float64
+	OnError             func(error)
+	PollInterval        time.Duration
+	LeaseDuration       time.Duration
+	RenewInterval       time.Duration
+	ShutdownTimeout     time.Duration
+	ReconcileInterval   time.Duration
+	SearchBatch         int
+	MaxWorkflows        int
+	NotificationBatch   int
+	Wake                <-chan struct{}
+	Events              *observability.Emitter
 	// Routes pauses leasing for routes whose providers are all unavailable.
 	Routes RouteGate
 
@@ -549,7 +552,12 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 	for name := range w.Reconcilers {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		if pi, pj := w.ReconcilePriorities[names[i]], w.ReconcilePriorities[names[j]]; pi != pj {
+			return pi > pj
+		}
+		return names[i] < names[j]
+	})
 	var failures []error
 	now := w.Clock.Now()
 	for _, name := range names {

@@ -325,7 +325,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			resumeRoutes[language] = store.ProviderResumeRoute{Signature: service.RouteSignature(language), Providers: cfg.Languages[language].AllProviders()}
 		}
 		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes)
-		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
+		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
 	}
 
 	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}

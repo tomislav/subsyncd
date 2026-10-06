@@ -1210,6 +1210,9 @@ func TestNewRanksWorkerSearchClaimsByInstanceQueuePriority(t *testing.T) {
 		ids[route.instance] = id
 	}
 	background := application.Worker.(*worker.Worker)
+	if background.ReconcilePriorities["tv-ranked"] != 10 || background.ReconcilePriorities["tv"] != 0 {
+		t.Fatalf("reconcile priorities = %v, want tv-ranked 10 and tv 0", background.ReconcilePriorities)
+	}
 	leases, err := background.Repository.LeaseDueSearchesExcept(context.Background(), now, 1, time.Minute, nil)
 	if err != nil || len(leases) != 1 || leases[0].MediaID != ids["tv-ranked"] {
 		t.Fatalf("worker claims=%+v error=%v; want ranked instance first", leases, err)
