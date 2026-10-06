@@ -90,6 +90,7 @@ Edit `config/config.yaml` to:
 - If you use Silo, ensure it supports API v2, enable it, and replace its admin API-key placeholder in the same file.
 - Choose your languages, using tags such as `en`, `hr`, or `pt-BR`.
 - Match each `path_mappings.remote` to the path reported by Sonarr or Radarr. The `local` path is where that same folder appears inside subsyncd.
+- Optionally set `queue_priority` on an instance (0–1000, default 0) to work through its library before instances with a lower value. New imports still go first.
 
 Keep `config/config.yaml` private—it contains all your service credentials. Keep the single quotes around values; write an apostrophe inside a value as two apostrophes (`it''s`).
 
