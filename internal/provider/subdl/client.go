@@ -70,7 +70,9 @@ func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
 
-func (c *Client) SearchCacheVersion() string { return "subdl-annotations-alternate-id-v2" }
+// v3: searches no longer send hi=1, which made SubDL return hearing-impaired
+// subtitles only; cached v2 results are that filtered set.
+func (c *Client) SearchCacheVersion() string { return "subdl-no-hi-filter-v3" }
 
 const annotationEvidenceVersion = "subdl-annotations-v1"
 
@@ -153,7 +155,6 @@ func (c *Client) searchParameters(media domain.Media, language string) url.Value
 		"type":          {map[bool]string{true: "tv", false: "movie"}[media.Ref.Kind == domain.MediaEpisode]},
 		"languages":     {language},
 		"releases":      {"1"},
-		"hi":            {"1"},
 		"comment":       {"1"},
 		"unpack":        {"1"},
 		"subs_per_page": {"30"},
