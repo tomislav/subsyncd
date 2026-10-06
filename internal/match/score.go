@@ -133,8 +133,9 @@ func Rank(items []EvaluatedCandidate) {
 		if left.Candidate.Rating != right.Candidate.Rating {
 			return left.Candidate.Rating > right.Candidate.Rating
 		}
-		if left.Candidate.Popularity != right.Candidate.Popularity {
-			return left.Candidate.Popularity > right.Candidate.Popularity
+		// Raw counts keep discriminating after normalized popularity saturates.
+		if left.Candidate.DownloadCount != right.Candidate.DownloadCount {
+			return left.Candidate.DownloadCount > right.Candidate.DownloadCount
 		}
 		if left.Candidate.ProviderID != right.Candidate.ProviderID {
 			return left.Candidate.ProviderID < right.Candidate.ProviderID

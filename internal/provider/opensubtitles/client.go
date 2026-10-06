@@ -343,6 +343,17 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 	return request, nil
 }
 
+// ratingVotePrior shrinks averages from few votes toward zero, so one 10/10
+// vote cannot outrank a well-established rating.
+const ratingVotePrior = 5
+
+func weightedRating(ratings float64, votes int64) float64 {
+	if votes <= 0 {
+		return 0
+	}
+	return min(max(ratings/10, 0), 1) * float64(votes) / float64(votes+ratingVotePrior)
+}
+
 type searchResponse struct {
 	TotalPages int          `json:"total_pages"`
 	Data       []searchItem `json:"data"`
@@ -355,6 +366,7 @@ type searchItem struct {
 		ForeignPartsOnly bool    `json:"foreign_parts_only"`
 		HearingImpaired  bool    `json:"hearing_impaired"`
 		Ratings          float64 `json:"ratings"`
+		Votes            int64   `json:"votes"`
 		DownloadCount    int64   `json:"download_count"`
 		Release          string  `json:"release"`
 		MovieHashMatch   bool    `json:"moviehash_match"`
@@ -407,7 +419,7 @@ func normalizeCandidates(providerID string, query baseprovider.SearchQuery, item
 					externalIDs.IMDb = fmt.Sprintf("tt%07d", item.Attributes.FeatureDetails.IMDbID)
 				}
 			}
-			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: externalIDs, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, Forced: item.Attributes.ForeignPartsOnly, HearingImpaired: item.Attributes.HearingImpaired, Rating: min(max(item.Attributes.Ratings/10, 0), 1), Popularity: baseprovider.NormalizePopularity(item.Attributes.DownloadCount), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10), DownloadVersion: "srt-v1"}
+			candidate := domain.Candidate{ProviderID: providerID, ResultID: strconv.FormatInt(file.FileID, 10), Language: language, Kind: query.Media.Ref.Kind, Title: title, Year: item.Attributes.FeatureDetails.Year, Season: item.Attributes.FeatureDetails.SeasonNumber, Episode: item.Attributes.FeatureDetails.EpisodeNumber, ExternalIDs: externalIDs, ReleaseNames: releases, ExactHash: item.Attributes.MovieHashMatch, Forced: item.Attributes.ForeignPartsOnly, HearingImpaired: item.Attributes.HearingImpaired, Rating: weightedRating(item.Attributes.Ratings, item.Attributes.Votes), Popularity: baseprovider.NormalizePopularity(item.Attributes.DownloadCount), DownloadCount: item.Attributes.DownloadCount, DownloadRef: strconv.FormatInt(file.FileID, 10), DownloadVersion: "srt-v1"}
 			candidates = append(candidates, candidate)
 		}
 	}

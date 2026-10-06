@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -94,7 +95,7 @@ func TestSearchAuthenticatesPaginatesAndNormalizesExactCandidates(t *testing.T) 
 	if len(candidates) == 2 && (candidates[0].DownloadVersion != "srt-v1" || candidates[1].DownloadVersion != "srt-v1") {
 		t.Fatalf("missing converted-download rejection version: %#v", candidates)
 	}
-	if len(candidates) != 2 || !candidates[0].ExactHash || candidates[0].ResultID != "501" || candidates[0].DownloadRef != "501" || candidates[0].Rating != 0.85 || candidates[0].ExternalIDs.IMDb != "tt1234567" || candidates[0].ExternalIDs.TMDB != 7654 || !candidates[1].HearingImpaired {
+	if len(candidates) != 2 || !candidates[0].ExactHash || candidates[0].ResultID != "501" || candidates[0].DownloadRef != "501" || math.Abs(candidates[0].Rating-0.425) > 1e-9 || candidates[0].ExternalIDs.IMDb != "tt1234567" || candidates[0].ExternalIDs.TMDB != 7654 || !candidates[1].HearingImpaired {
 		t.Fatalf("candidates = %#v", candidates)
 	}
 }
@@ -128,6 +129,31 @@ func TestSearchExcludesAIAndMachineTranslationsOnEveryPage(t *testing.T) {
 				t.Fatalf("search pages = %d, want 2", pages)
 			}
 		})
+	}
+}
+
+func TestNormalizeCandidatesWeightsRatingByVotes(t *testing.T) {
+	item := func(id int64, ratings float64, votes int64) searchItem {
+		result := searchItem{}
+		result.Attributes.Language = "en"
+		result.Attributes.Ratings = ratings
+		result.Attributes.Votes = votes
+		result.Attributes.Files = append(result.Attributes.Files, struct {
+			FileID   int64  `json:"file_id"`
+			FileName string `json:"file_name"`
+		}{FileID: id})
+		return result
+	}
+	query := baseprovider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}}}
+	candidates := normalizeCandidates("opensubtitles", query, []searchItem{item(1, 10, 0), item(2, 10, 1), item(3, 8, 40), item(4, 10, 45)})
+	want := []float64{0, 1.0 / 6, 0.8 * 40 / 45, 0.9}
+	for index, candidate := range candidates {
+		if math.Abs(candidate.Rating-want[index]) > 1e-9 {
+			t.Fatalf("candidate %s rating = %v, want %v", candidate.ResultID, candidate.Rating, want[index])
+		}
+	}
+	if len(candidates) != len(want) || candidates[1].Rating >= candidates[2].Rating {
+		t.Fatalf("a single 10/10 vote must not outrank 40 votes at 8/10: %#v", candidates)
 	}
 }
 

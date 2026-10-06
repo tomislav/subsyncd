@@ -278,6 +278,17 @@ func TestRankUsesDocumentedStableTieBreaks(t *testing.T) {
 	}
 }
 
+func TestRankBreaksPopularityTiesOnRawDownloadCount(t *testing.T) {
+	items := []EvaluatedCandidate{
+		{Candidate: domain.Candidate{ProviderID: "a", ResultID: "1", Popularity: 1, DownloadCount: 2_000}, Score: domain.Score{Total: 50}},
+		{Candidate: domain.Candidate{ProviderID: "a", ResultID: "2", Popularity: 1, DownloadCount: 200_000}, Score: domain.Score{Total: 50}},
+	}
+	Rank(items)
+	if items[0].Candidate.ResultID != "2" {
+		t.Fatalf("ranked = %#v", items)
+	}
+}
+
 func scoredMedia() domain.Media {
 	return domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Title: "Example Show", Year: 2024, Season: 1, Episode: 2, ExternalIDs: domain.ExternalIDs{IMDb: "tt123", TMDB: 456}, ReleaseName: "Example.Show.S01E02.1080p.NF.WEB-DL.EXTENDED-GROUP", ReleaseGroup: "GROUP", Source: "WEB-DL", Resolution: "1080p", StreamingService: "Netflix", Edition: "Extended"}
 }

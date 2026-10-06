@@ -49,6 +49,8 @@ Every exact-hash and broad search page explicitly sends `ai_translated=exclude` 
 
 OpenSubtitles supports exact file-hash search and broad metadata search as separate phases. The hash is computed on the first exact search and stored by algorithm plus path, Arr file ID, byte size, and nanosecond mtime. It reads only the first and last 64 KiB plus the file size, supports normal 64-bit media sizes without an artificial 9 GB ceiling, and is reused until any part of that fingerprint changes. Exact results score 100 and bypass LAPSE, but an unusable exact candidate advances to the next exact candidate and then broad fallback rather than ending the job. For movies, feature IMDb/TMDB IDs are comparable media identities. For episodes, OpenSubtitles feature IDs identify the episode while Sonarr supplies series IDs, so the adapter compares OpenSubtitles `parent_imdb_id`/`parent_tmdb_id` instead. Missing parent IDs remain neutral; episode feature IDs are never misrepresented as series IDs.
 
+The OpenSubtitles rating is weighted by its vote count: the normalized average is multiplied by `votes / (votes + 5)`, so unrated results contribute nothing, one 10/10 vote earns 1 point, and the full 3 points need about 45 such votes. The weighted value is used for both the score signal and rating tie-breaks.
+
 After authentication, official OpenSubtitles endpoints use the validated session API host returned by login (`api.opensubtitles.com` or `vip-api.opensubtitles.com`). Explicit private/test endpoints remain isolated from official routing. Temporary subtitle-file requests carry no application key or bearer token. Issued links use a separate `download_transfer` operation, so an exhausted API download quota cannot prevent redemption of a link already issued; transfer concurrency and failure backoff still apply.
 
 The published subsyncd container includes the application's OpenSubtitles API key. Configure only the account username and password. Source builds and private wrappers may set `api_key` explicitly to override the built-in value; a build without an embedded key requires that override.
@@ -151,6 +153,8 @@ Known identity conflicts reject before points are considered. Conflicts include 
 | Resolution | 5 |
 | Provider rating | 0–3 |
 | Popularity/downloads | 0–2 |
+
+Popularity is `min(log10(downloads + 1) / 4, 1)`, so it saturates at about 10,000 downloads and earns its second point from about 1,000. When ranking the broad shortlist, equal scores are ordered by provider priority, rating, raw download count, provider ID, then result ID; the raw count keeps discriminating after popularity saturates.
 
 Non-hash totals are capped at 100 and require `minimum_release_score` (35 by default). Exact episode coordinates, a parsed release range containing the episode, or an explicit containing pack earn episode evidence. The LAPSE bypass threshold is separate: `sync.bypass_score` defaults to 75. Reaching it is necessary but not sufficient; with the safe defaults, the candidate also needs an external-ID or title/year anchor, release-group evidence, matching season/episode evidence for TV, and an explicit edition match whenever Radarr identifies the target movie's edition. An edition-unknown candidate remains eligible but receives no edition points and must use LAPSE. Rating and popularity never substitute for these anchors.
 
