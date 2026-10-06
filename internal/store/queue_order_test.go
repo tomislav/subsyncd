@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -163,5 +165,43 @@ func TestLeaseDueSearchesRanksInstancesWithinClass(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("lease order = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestLeaseDueSearchesExceptSkipsPausedRoutes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	repo := openTestRepository(t)
+	insert := func(fileID int64, kind domain.MediaKind) int64 {
+		t.Helper()
+		media := testMedia()
+		media.EntityID = fileID
+		media.Ref = domain.MediaRef{Instance: "arr", Kind: kind, FileID: fileID}
+		media.Fingerprint.FileID = fileID
+		media.Fingerprint.Path = filepath.Join("/media", string(kind), fmt.Sprint(fileID)+".mkv")
+		id, _, err := repo.UpsertMedia(ctx, media)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	movie := insert(1, domain.MediaMovie)
+	episode := insert(2, domain.MediaEpisode)
+	for _, id := range []int64{movie, episode} {
+		requireSearchState(t, repo, id, "hr", now.Add(-time.Hour), SearchPriorityMissing)
+		requireSearchState(t, repo, id, "en", now.Add(-time.Hour), SearchPriorityMissing)
+	}
+
+	leases, err := repo.LeaseDueSearchesExcept(ctx, now, 10, time.Minute, []RouteKey{{Language: "hr", Kind: domain.MediaMovie}, {Language: "en", Kind: domain.MediaEpisode}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, lease := range leases {
+		got[fmt.Sprintf("%d/%s", lease.MediaID, lease.Language)] = true
+	}
+	want := map[string]bool{fmt.Sprintf("%d/en", movie): true, fmt.Sprintf("%d/hr", episode): true}
+	if len(got) != len(want) || !got[fmt.Sprintf("%d/en", movie)] || !got[fmt.Sprintf("%d/hr", episode)] {
+		t.Fatalf("leased routes = %v, want %v", got, want)
 	}
 }

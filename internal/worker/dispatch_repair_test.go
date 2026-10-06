@@ -43,9 +43,9 @@ type cancelingClaimRepository struct {
 	receivedParent bool
 }
 
-func (r *cancelingClaimRepository) LeaseDueSearches(ctx context.Context, now time.Time, limit int, duration time.Duration) ([]store.SearchLease, error) {
+func (r *cancelingClaimRepository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, limit int, duration time.Duration, paused []store.RouteKey) ([]store.SearchLease, error) {
 	r.receivedParent = ctx == r.parent
-	leases, err := r.workerRepository.LeaseDueSearches(ctx, now, limit, duration)
+	leases, err := r.workerRepository.LeaseDueSearchesExcept(ctx, now, limit, duration, paused)
 	r.cancel()
 	return leases, err
 }

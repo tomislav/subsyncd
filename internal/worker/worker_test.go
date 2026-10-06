@@ -926,6 +926,8 @@ type workerRepository struct {
 	notifications           []store.NotificationLease
 	notificationCompletions []store.NotificationCompletion
 	leaseCalls              chan struct{}
+	searchLeaseCalls        int
+	pausedRoutes            []store.RouteKey
 }
 
 func newWorkerRepository(searches int, now time.Time) *workerRepository {
@@ -940,20 +942,27 @@ func newWorkerRepository(searches int, now time.Time) *workerRepository {
 	return repository
 }
 
-func (r *workerRepository) LeaseDueSearches(_ context.Context, _ time.Time, limit int, _ time.Duration) ([]store.SearchLease, error) {
+func (r *workerRepository) LeaseDueSearchesExcept(_ context.Context, _ time.Time, limit int, _ time.Duration, paused []store.RouteKey) ([]store.SearchLease, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.searchLeaseCalls++
+	r.pausedRoutes = append([]store.RouteKey(nil), paused...)
 	if r.leaseCalls != nil {
 		select {
 		case r.leaseCalls <- struct{}{}:
 		default:
 		}
 	}
-	if limit > len(r.searches) {
-		limit = len(r.searches)
+	var result, remaining []store.SearchLease
+	for _, lease := range r.searches {
+		route := store.RouteKey{Language: domain.Language(lease.Language), Kind: r.media[lease.MediaID].Ref.Kind}
+		if len(result) < limit && !slices.Contains(paused, route) {
+			result = append(result, lease)
+		} else {
+			remaining = append(remaining, lease)
+		}
 	}
-	result := append([]store.SearchLease(nil), r.searches[:limit]...)
-	r.searches = append([]store.SearchLease(nil), r.searches[limit:]...)
+	r.searches = remaining
 	return result, nil
 }
 

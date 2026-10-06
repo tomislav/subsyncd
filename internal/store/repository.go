@@ -817,7 +817,19 @@ func validateResumeProviders(providers []string) error {
 	return nil
 }
 
+// RouteKey identifies one language route for one media kind.
+type RouteKey struct {
+	Language domain.Language
+	Kind     domain.MediaKind
+}
+
 func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit int, duration time.Duration) ([]SearchLease, error) {
+	return r.LeaseDueSearchesExcept(ctx, now, limit, duration, nil)
+}
+
+// LeaseDueSearchesExcept leases due searches like LeaseDueSearches but skips
+// every search on a paused route, so other languages and media kinds proceed.
+func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, limit int, duration time.Duration, paused []RouteKey) ([]SearchLease, error) {
 	if limit <= 0 || duration <= 0 {
 		return nil, fmt.Errorf("lease limit and duration must be positive")
 	}
@@ -839,6 +851,14 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 		for _, language := range scope.languages {
 			args = append(args, string(language))
 		}
+	}
+	if len(paused) > 0 {
+		conditions := make([]string, 0, len(paused))
+		for _, route := range paused {
+			conditions = append(conditions, `(language=? AND media.kind=?)`)
+			args = append(args, route.Language.String(), string(route.Kind))
+		}
+		query += ` AND NOT (` + strings.Join(conditions, ` OR `) + `)`
 	}
 	rankOrder, rankArgs := r.instanceRankOrder()
 	query += ` ORDER BY priority DESC, ` + rankOrder + `queue_order_ns, next_attempt_at_ns, media_id, language LIMIT ?`

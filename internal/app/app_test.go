@@ -1103,7 +1103,7 @@ func TestNewScopesOnlyWorkerSearchClaims(t *testing.T) {
 		}
 	}
 	background := application.Worker.(*worker.Worker)
-	leases, err := background.Repository.LeaseDueSearches(context.Background(), now, 1, time.Minute)
+	leases, err := background.Repository.LeaseDueSearchesExcept(context.Background(), now, 1, time.Minute, nil)
 	if err != nil || len(leases) != 1 || leases[0].MediaID != 3 || leases[0].Language != "en" {
 		t.Fatalf("worker scope claims=%+v error=%v", leases, err)
 	}
@@ -1210,8 +1210,47 @@ func TestNewRanksWorkerSearchClaimsByInstanceQueuePriority(t *testing.T) {
 		ids[route.instance] = id
 	}
 	background := application.Worker.(*worker.Worker)
-	leases, err := background.Repository.LeaseDueSearches(context.Background(), now, 1, time.Minute)
+	leases, err := background.Repository.LeaseDueSearchesExcept(context.Background(), now, 1, time.Minute, nil)
 	if err != nil || len(leases) != 1 || leases[0].MediaID != ids["tv-ranked"] {
 		t.Fatalf("worker claims=%+v error=%v; want ranked instance first", leases, err)
+	}
+}
+
+type coolingProvider struct {
+	fakeProvider
+	resetAt time.Time
+}
+
+func (p coolingProvider) CheckDownloadAvailability(context.Context) error {
+	return &provider.CooldownError{ProviderID: p.id, Scope: provider.OperationDownload, ResetAt: p.resetAt, Suppressed: true}
+}
+
+func TestNewPausesWorkerRoutesWhoseProvidersAreAllUnavailable(t *testing.T) {
+	cfg := testConfig(t)
+	resetAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": coolingProvider{fakeProvider: fakeProvider{id: "english"}, resetAt: resetAt}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	background := application.Worker.(*worker.Worker)
+	if background.Routes == nil {
+		t.Fatal("worker has no route gate")
+	}
+	pauses, err := background.Routes.PausedRoutes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []worker.RoutePause{
+		{RouteKey: store.RouteKey{Language: "en", Kind: domain.MediaEpisode}, ResetAt: resetAt, ProviderCount: 1},
+		{RouteKey: store.RouteKey{Language: "en", Kind: domain.MediaMovie}, ResetAt: resetAt, ProviderCount: 1},
+	}
+	if len(pauses) != len(want) {
+		t.Fatalf("paused routes = %+v, want %+v", pauses, want)
+	}
+	for i := range want {
+		if pauses[i].RouteKey != want[i].RouteKey || !pauses[i].ResetAt.Equal(want[i].ResetAt) || pauses[i].ProviderCount != want[i].ProviderCount {
+			t.Fatalf("paused routes = %+v, want %+v", pauses, want)
+		}
 	}
 }
