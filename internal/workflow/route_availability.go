@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"subsyncd/internal/domain"
@@ -37,19 +36,11 @@ func (s *Service) RouteAvailability(ctx context.Context, kind domain.MediaKind) 
 		}
 		status.ProviderCount++
 		err := provider.CheckDownloadAvailability(ctx, item)
-		var cooldown *provider.CooldownError
-		var quota *provider.QuotaError
-		var disabled *provider.DisabledError
-		var reset time.Time
-		switch {
-		case err == nil:
+		if err == nil {
 			return RouteStatus{}, nil
-		case errors.As(err, &cooldown):
-			reset = cooldown.ResetAt
-		case errors.As(err, &quota):
-			reset = quota.ResetAt
-		case errors.As(err, &disabled):
-		default:
+		}
+		reset, unavailable := unavailableReset(err)
+		if !unavailable {
 			return RouteStatus{}, err
 		}
 		if !reset.IsZero() && (status.ResetAt.IsZero() || reset.Before(status.ResetAt)) {

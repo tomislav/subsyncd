@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -31,6 +32,10 @@ func (w *Worker) pausedRouteKeys(ctx context.Context) ([]store.RouteKey, error) 
 	events := w.Events.For("worker")
 	pauses, err := w.Routes.PausedRoutes(ctx)
 	if err != nil {
+		// Cancellation during shutdown is not a failed check.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		events.Log(ctx, slog.LevelError, "queue.route_check_failed", "route availability check failed; no searches leased",
 			events.ErrorAttrs("route_check", err)...)
 		return nil, err
@@ -43,7 +48,8 @@ func (w *Worker) pausedRouteKeys(ctx context.Context) ([]store.RouteKey, error) 
 	for _, pause := range pauses {
 		current[pause.RouteKey] = pause
 		keys = append(keys, pause.RouteKey)
-		if _, known := w.pausedRoutes[pause.RouteKey]; known {
+		// Log a new pause, and again when its reset time or reason changes.
+		if previous, known := w.pausedRoutes[pause.RouteKey]; known && previous.ResetAt.Equal(pause.ResetAt) {
 			continue
 		}
 		attrs := []slog.Attr{

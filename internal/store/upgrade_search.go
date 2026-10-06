@@ -20,7 +20,7 @@ func (r *Repository) EnsureUpgradeSearch(ctx context.Context, mediaID int64, lan
  ON CONFLICT(media_id,language) DO UPDATE SET
  state='pending',
  next_attempt_at_ns=excluded.next_attempt_at_ns,
- queue_order_ns=excluded.queue_order_ns,
+ queue_order_ns=CASE WHEN search_states.state='pending' THEN MIN(search_states.queue_order_ns, excluded.queue_order_ns) ELSE excluded.queue_order_ns END,
  priority=CASE WHEN search_states.state='complete' THEN excluded.priority ELSE search_states.priority END,
  attempt=CASE WHEN search_states.state='complete' THEN 0 ELSE search_states.attempt END,
  failure_attempt=CASE WHEN search_states.state='complete' THEN 0 ELSE search_states.failure_attempt END,

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -20,8 +19,6 @@ type Repository struct {
 	store        *Store
 	searchScope  *searchScope
 	resumeRoutes map[domain.Language]providerResumeBound
-	// instanceRanks orders due searches between instances within each class.
-	instanceRanks map[string]int
 }
 
 type searchScope struct {
@@ -36,42 +33,6 @@ func (r *Repository) WithSearchScope(instances []string, languages []domain.Lang
 	clone := *r
 	clone.searchScope = &searchScope{instances: append([]string(nil), instances...), languages: append([]domain.Language(nil), languages...)}
 	return &clone
-}
-
-// WithInstanceRanks returns a repository whose search claims order instances by
-// rank (higher first) within each priority class, before queue position.
-// Unlisted instances rank 0. Only nonzero ranks affect the query.
-func (r *Repository) WithInstanceRanks(ranks map[string]int) *Repository {
-	clone := *r
-	clone.instanceRanks = make(map[string]int, len(ranks))
-	for instance, rank := range ranks {
-		if rank != 0 {
-			clone.instanceRanks[instance] = rank
-		}
-	}
-	return &clone
-}
-
-// instanceRankOrder returns an ORDER BY term ranking media.instance, or "" when
-// no instance has a nonzero rank.
-func (r *Repository) instanceRankOrder() (string, []any) {
-	if len(r.instanceRanks) == 0 {
-		return "", nil
-	}
-	instances := make([]string, 0, len(r.instanceRanks))
-	for instance := range r.instanceRanks {
-		instances = append(instances, instance)
-	}
-	sort.Strings(instances)
-	var term strings.Builder
-	args := make([]any, 0, 2*len(instances))
-	term.WriteString("CASE media.instance")
-	for _, instance := range instances {
-		term.WriteString(" WHEN ? THEN ?")
-		args = append(args, instance, r.instanceRanks[instance])
-	}
-	term.WriteString(" ELSE 0 END DESC, ")
-	return term.String(), args
 }
 
 type TrackRecord struct {
@@ -860,9 +821,8 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		}
 		query += ` AND NOT (` + strings.Join(conditions, ` OR `) + `)`
 	}
-	rankOrder, rankArgs := r.instanceRankOrder()
-	query += ` ORDER BY priority DESC, ` + rankOrder + `queue_order_ns, next_attempt_at_ns, media_id, language LIMIT ?`
-	args = append(append(args, rankArgs...), limit)
+	query += ` ORDER BY priority DESC, instance_rank DESC, queue_order_ns, next_attempt_at_ns, media_id, language LIMIT ?`
+	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("select due searches: %w", err)
@@ -1942,6 +1902,35 @@ func (r *Repository) EnsureInstance(ctx context.Context, name, instanceType, bas
 	_, err := r.store.db.ExecContext(ctx, `INSERT INTO instances(name, type, base_url, updated_at_ns) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET type=excluded.type, base_url=excluded.base_url, updated_at_ns=excluded.updated_at_ns`, name, instanceType, baseURL, now.UnixNano())
 	if err != nil {
 		return fmt.Errorf("ensure Arr instance: %w", err)
+	}
+	return nil
+}
+
+// SetInstanceQueuePriorities stores each configured instance's queue_priority
+// and re-ranks existing searches to match. Instances not listed rank 0. New
+// searches take their instance's rank from an insert trigger.
+func (r *Repository) SetInstanceQueuePriorities(ctx context.Context, priorities map[string]int) error {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin instance queue priorities: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE instances SET queue_priority=0 WHERE queue_priority<>0`); err != nil {
+		return fmt.Errorf("reset instance queue priorities: %w", err)
+	}
+	for name, priority := range priorities {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET queue_priority=? WHERE name=?`, priority, name); err != nil {
+			return fmt.Errorf("set instance %s queue priority: %w", name, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE search_states SET instance_rank=ranked.rank
+		FROM (SELECT media.id AS media_id, COALESCE(instances.queue_priority, 0) AS rank
+		      FROM media LEFT JOIN instances ON instances.name=media.instance) AS ranked
+		WHERE ranked.media_id=search_states.media_id AND search_states.instance_rank<>ranked.rank`); err != nil {
+		return fmt.Errorf("re-rank searches: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit instance queue priorities: %w", err)
 	}
 	return nil
 }

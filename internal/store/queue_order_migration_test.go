@@ -86,7 +86,7 @@ func TestMigrationCopiesDueTimeIntoQueueOrder(t *testing.T) {
 	if err := migrated.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name='search_due_idx'`).Scan(&index); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(index, "queue_order_ns") {
-		t.Fatalf("search_due_idx = %q, want queue_order_ns", index)
+	if !strings.Contains(index, "instance_rank") || !strings.Contains(index, "queue_order_ns") {
+		t.Fatalf("search_due_idx = %q, want instance_rank and queue_order_ns", index)
 	}
 }

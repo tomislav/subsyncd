@@ -153,8 +153,16 @@ func TestLeaseDueSearchesRanksInstancesWithinClass(t *testing.T) {
 	requireSearchState(t, base, unranked, "en", now.Add(-4*time.Hour), SearchPriorityMissing)
 	requireSearchState(t, base, lowImport, "en", now.Add(-time.Minute), SearchPriorityImport)
 
-	repo := base.WithInstanceRanks(map[string]int{"sonarr-main": 20, "sonarr-lq": 10})
-	leases, err := repo.LeaseDueSearches(ctx, now, 4, time.Minute)
+	for _, instance := range []string{"sonarr-main", "sonarr-lq", "sonarr-other"} {
+		if err := base.EnsureInstance(ctx, instance, "sonarr", "http://arr.invalid", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Existing rows are re-ranked by the refresh.
+	if err := base.SetInstanceQueuePriorities(ctx, map[string]int{"sonarr-main": 20, "sonarr-lq": 10}); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := base.LeaseDueSearches(ctx, now, 4, time.Minute)
 	if err != nil || len(leases) != 4 {
 		t.Fatalf("leases = %d, %v", len(leases), err)
 	}
@@ -203,5 +211,65 @@ func TestLeaseDueSearchesExceptSkipsPausedRoutes(t *testing.T) {
 	want := map[string]bool{fmt.Sprintf("%d/en", movie): true, fmt.Sprintf("%d/hr", episode): true}
 	if len(got) != len(want) || !got[fmt.Sprintf("%d/en", movie)] || !got[fmt.Sprintf("%d/hr", episode)] {
 		t.Fatalf("leased routes = %v, want %v", got, want)
+	}
+}
+
+func TestNewSearchStatesInheritInstanceRank(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	repo := openTestRepository(t)
+	media := testMedia()
+	if err := repo.EnsureInstance(ctx, media.Ref.Instance, "sonarr", "http://arr.invalid", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetInstanceQueuePriorities(ctx, map[string]int{media.Ref.Instance: 30}); err != nil {
+		t.Fatal(err)
+	}
+	id := insertTestMedia(t, repo, 7, now)
+	requireSearchState(t, repo, id, "en", now, SearchPriorityMissing)
+	if _, err := repo.EnsureConfiguredLanguageSearches(ctx, []string{media.Ref.Instance}, []domain.Language{"hr"}, now); err != nil {
+		t.Fatal(err)
+	}
+	rankOf := func(language string) int {
+		t.Helper()
+		var rank int
+		if err := repo.store.db.QueryRow(`SELECT instance_rank FROM search_states WHERE media_id=? AND language=?`, id, language).Scan(&rank); err != nil {
+			t.Fatal(err)
+		}
+		return rank
+	}
+	if rankOf("en") != 30 || rankOf("hr") != 30 {
+		t.Fatalf("instance_rank en/hr = %d/%d, want 30/30", rankOf("en"), rankOf("hr"))
+	}
+	// Lowering the configured rank re-ranks existing rows; unlisted instances fall to 0.
+	if err := repo.SetInstanceQueuePriorities(ctx, map[string]int{}); err != nil {
+		t.Fatal(err)
+	}
+	if rankOf("en") != 0 {
+		t.Fatalf("instance_rank after reset = %d, want 0", rankOf("en"))
+	}
+}
+
+func TestEnsureUpgradeSearchKeepsEarlierQueuePosition(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	repo := openTestRepository(t)
+	id := insertTestMedia(t, repo, 1, now)
+	queued := now.Add(-3 * time.Hour)
+	requireSearchState(t, repo, id, "en", queued, SearchPriorityMissing)
+	leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("leases = %d, %v", len(leases), err)
+	}
+	reset := now.Add(6 * time.Hour)
+	if _, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: leases[0].JobID, Outcome: "throttled", NextAttemptAt: reset, PreserveQueueOrder: true}); err != nil {
+		t.Fatal(err)
+	}
+	earlier := now.Add(time.Hour)
+	if err := repo.EnsureUpgradeSearch(ctx, id, "en", earlier); err != nil {
+		t.Fatal(err)
+	}
+	if next, order := searchQueueOrder(t, repo, id, "en"); next != earlier.UnixNano() || order != queued.UnixNano() {
+		t.Fatalf("next/order = %d/%d, want %d/%d", next, order, earlier.UnixNano(), queued.UnixNano())
 	}
 }

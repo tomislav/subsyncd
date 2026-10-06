@@ -207,10 +207,15 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		// Diagnostics expose persisted state only; no providers, workers or durable caches.
 		return &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Events: events, Clock: clock, readOnly: true}, nil
 	}
+	queuePriorities := make(map[string]int, len(cfg.Instances))
 	for _, instance := range cfg.Instances {
 		if err := repository.EnsureInstance(ctx, instance.Name, instance.Type, instance.URL, clock.Now()); err != nil {
 			return nil, err
 		}
+		queuePriorities[instance.Name] = instance.QueuePriority
+	}
+	if err := repository.SetInstanceQueuePriorities(ctx, queuePriorities); err != nil {
+		return nil, err
 	}
 
 	providers, err := buildProviders(cfg, database, repository, clock, httpClient, options.Providers, events)
@@ -312,16 +317,14 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	workerRunner := options.Worker
 	if workerRunner == nil {
 		instances := make([]string, 0, len(cfg.Instances))
-		ranks := make(map[string]int, len(cfg.Instances))
 		for _, instance := range cfg.Instances {
 			instances = append(instances, instance.Name)
-			ranks[instance.Name] = instance.QueuePriority
 		}
 		resumeRoutes := make(map[domain.Language]store.ProviderResumeRoute, len(workflows))
 		for language, service := range workflows {
 			resumeRoutes[language] = store.ProviderResumeRoute{Signature: service.RouteSignature(language), Providers: cfg.Languages[language].AllProviders()}
 		}
-		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes).WithInstanceRanks(ranks)
+		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes)
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
 	}
 

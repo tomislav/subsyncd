@@ -1621,17 +1621,8 @@ func unavailableErrors(failures []error) (time.Time, bool) {
 	}
 	var earliest time.Time
 	for _, failure := range failures {
-		var cooldown *provider.CooldownError
-		var quota *provider.QuotaError
-		var disabled *provider.DisabledError
-		var reset time.Time
-		switch {
-		case errors.As(failure, &cooldown):
-			reset = cooldown.ResetAt
-		case errors.As(failure, &quota):
-			reset = quota.ResetAt
-		case errors.As(failure, &disabled):
-		default:
+		reset, unavailable := unavailableReset(failure)
+		if !unavailable {
 			return time.Time{}, false
 		}
 		if !reset.IsZero() && (earliest.IsZero() || reset.Before(earliest)) {
@@ -1639,6 +1630,25 @@ func unavailableErrors(failures []error) (time.Time, bool) {
 		}
 	}
 	return earliest, true
+}
+
+// unavailableReset classifies one provider error: a cooldown, exhausted quota or
+// disabled state makes the provider unavailable, with its reset (zero when
+// disabled). Any other error is not an unavailability.
+func unavailableReset(failure error) (time.Time, bool) {
+	var cooldown *provider.CooldownError
+	var quota *provider.QuotaError
+	var disabled *provider.DisabledError
+	switch {
+	case errors.As(failure, &cooldown):
+		return cooldown.ResetAt, true
+	case errors.As(failure, &quota):
+		return quota.ResetAt, true
+	case errors.As(failure, &disabled):
+		return time.Time{}, true
+	default:
+		return time.Time{}, false
+	}
 }
 
 func classifyCandidateFailures(result Result, failures []error) (Result, error, bool) {
