@@ -522,3 +522,38 @@ func assertErrorContains(t *testing.T, err error, fragments ...string) {
 		}
 	}
 }
+
+func TestInstanceQueuePriorityDefaultsToZeroAndLoads(t *testing.T) {
+	root := t.TempDir()
+	extra := fmt.Sprintf(`
+languages:
+  en: {providers: [subdl-main]}
+instances:
+  - {name: radarr-main, type: radarr, url: "http://radarr:7878", api_key: key, webhook_token: token, queue_priority: 30, path_mappings: [{remote: /movies, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: token, path_mappings: [{remote: /tv, local: %q}]}
+`, root, root)
+	cfg, err := loadText(t, validConfigWithoutInstances(root, extra))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Instances[0].QueuePriority; got != 30 {
+		t.Fatalf("radarr-main queue_priority = %d, want 30", got)
+	}
+	if got := cfg.Instances[1].QueuePriority; got != 0 {
+		t.Fatalf("sonarr-main queue_priority = %d, want default 0", got)
+	}
+}
+
+func TestValidateRejectsOutOfRangeQueuePriority(t *testing.T) {
+	for _, value := range []string{"-1", "1001"} {
+		root := t.TempDir()
+		extra := fmt.Sprintf(`
+languages:
+  en: {providers: [subdl-main]}
+instances:
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: token, queue_priority: %s, path_mappings: [{remote: /tv, local: %q}]}
+`, value, root)
+		_, err := loadText(t, validConfigWithoutInstances(root, extra))
+		assertErrorContains(t, err, "sonarr-main", "queue_priority")
+	}
+}

@@ -23,6 +23,9 @@ instances:
     path_mappings:
       - remote: /data/tv
         local: /media/tv
+    # Optional: within each queue class, instances with a higher value are
+    # searched first (0-1000, default 0).
+    # queue_priority: 10
   - name: radarr-main
     type: radarr
     url: http://radarr:7878

@@ -106,6 +106,9 @@ type SearchCompletion struct {
 	ResumeProviders       []string
 	ResumeRouteSignature  string
 	PreserveResume        bool
+	// PreserveQueueOrder keeps the search's queue position while NextAttemptAt
+	// moves, so a throttle changes when it may run but not where it runs.
+	PreserveQueueOrder bool
 }
 
 type SearchCompletionResult struct {
@@ -714,7 +717,7 @@ func (r *Repository) UpsertSearchStateWithPriority(ctx context.Context, mediaID 
 	if !validSearchPriority(priority) {
 		return fmt.Errorf("invalid search priority %d", priority)
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, priority) VALUES (?, ?, 'pending', 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, priority=excluded.priority, rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL, resume_providers_json='[]', resume_route_signature=''`, mediaID, language.String(), next.UnixNano(), priority)
+	_, err := r.store.db.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, queue_order_ns, priority) VALUES (?, ?, 'pending', 0, 0, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, queue_order_ns=excluded.queue_order_ns, priority=excluded.priority, rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL, resume_providers_json='[]', resume_route_signature=''`, mediaID, language.String(), next.UnixNano(), next.UnixNano(), priority)
 	if err != nil {
 		return fmt.Errorf("upsert search state: %w", err)
 	}
@@ -775,7 +778,19 @@ func validateResumeProviders(providers []string) error {
 	return nil
 }
 
+// RouteKey identifies one language route for one media kind.
+type RouteKey struct {
+	Language domain.Language
+	Kind     domain.MediaKind
+}
+
 func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit int, duration time.Duration) ([]SearchLease, error) {
+	return r.LeaseDueSearchesExcept(ctx, now, limit, duration, nil)
+}
+
+// LeaseDueSearchesExcept leases due searches like LeaseDueSearches but skips
+// every search on a paused route, so other languages and media kinds proceed.
+func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, limit int, duration time.Duration, paused []RouteKey) ([]SearchLease, error) {
 	if limit <= 0 || duration <= 0 {
 		return nil, fmt.Errorf("lease limit and duration must be positive")
 	}
@@ -798,7 +813,15 @@ func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit 
 			args = append(args, string(language))
 		}
 	}
-	query += ` ORDER BY priority DESC, next_attempt_at_ns, media_id, language LIMIT ?`
+	if len(paused) > 0 {
+		conditions := make([]string, 0, len(paused))
+		for _, route := range paused {
+			conditions = append(conditions, `(language=? AND media.kind=?)`)
+			args = append(args, route.Language.String(), string(route.Kind))
+		}
+		query += ` AND NOT (` + strings.Join(conditions, ` OR `) + `)`
+	}
+	query += ` ORDER BY priority DESC, instance_rank DESC, queue_order_ns, next_attempt_at_ns, media_id, language LIMIT ?`
 	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -928,19 +951,20 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		// A deleted row stays terminal even if its old workflow reports a retry or
 		// success. Retain ownership until this owner-checked completion arrives.
 		rerunScheduled = false
-		result, err = tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL, resume_providers_json='[]', resume_route_signature='' WHERE lease_owner=?`, completion.JobID)
+		result, err = tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, queue_order_ns=0, rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL, resume_providers_json='[]', resume_route_signature='' WHERE lease_owner=?`, completion.JobID)
 	} else {
 		result, err = tx.ExecContext(ctx, `UPDATE search_states SET
 		state=CASE WHEN rerun_requested=1 THEN 'pending' ELSE ? END,
 		attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN ? ELSE attempt+? END,
 		failure_attempt=CASE WHEN rerun_requested=1 THEN 0 WHEN ? THEN 0 ELSE failure_attempt+? END,
 		next_attempt_at_ns=CASE WHEN rerun_requested=1 THEN next_attempt_at_ns ELSE ? END,
+		queue_order_ns=CASE WHEN rerun_requested=1 OR ?=1 THEN queue_order_ns ELSE ? END,
 		last_outcome=CASE WHEN rerun_requested=1 THEN '' ELSE ? END,
 		priority=CASE WHEN rerun_requested=1 OR ?=0 THEN priority ELSE ? END,
 		resume_providers_json=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '[]' END,
 		resume_route_signature=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '' END,
 		rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL
-		WHERE lease_owner=?`, state, completion.ResetMissingAttempt, advanceMissing, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.JobID)
+		WHERE lease_owner=?`, state, completion.ResetMissingAttempt, advanceMissing, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.PreserveQueueOrder, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.JobID)
 	}
 	if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("complete search: %w", err)
@@ -1660,7 +1684,7 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted=1 WHERE id=?`, mediaID); err != nil {
 				return false, fmt.Errorf("mark deleted media: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, rerun_requested=0, resume_providers_json='[]', resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, queue_order_ns=0, rerun_requested=0, resume_providers_json='[]', resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
 				return false, fmt.Errorf("cancel deleted media searches: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE events SET media_id=?, file_id=?, entity_id=? WHERE event_id=?`, mediaID, fileID, entityID, mutation.EventID); err != nil {
@@ -1706,10 +1730,10 @@ func scheduleMediaSearchTx(ctx context.Context, tx *sql.Tx, mediaID int64, langu
 		return fmt.Errorf("invalid unsupported media reason %q", unsupported)
 	}
 	if unsupported == "" {
-		_, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, priority) VALUES (?, ?, 'pending', 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, last_outcome='', priority=MAX(search_states.priority, excluded.priority), rerun_requested=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE 1 END, lease_owner=search_states.lease_owner, lease_until_ns=search_states.lease_until_ns, resume_providers_json='[]', resume_route_signature=''`, mediaID, language.String(), at.UnixNano(), priority)
+		_, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, queue_order_ns, priority) VALUES (?, ?, 'pending', 0, 0, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns, queue_order_ns=excluded.queue_order_ns, last_outcome='', priority=MAX(search_states.priority, excluded.priority), rerun_requested=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE 1 END, lease_owner=search_states.lease_owner, lease_until_ns=search_states.lease_until_ns, resume_providers_json='[]', resume_route_signature=''`, mediaID, language.String(), at.UnixNano(), at.UnixNano(), priority)
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, priority) VALUES (?, ?, 'complete', 0, 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state=CASE WHEN search_states.lease_owner IS NULL THEN 'complete' ELSE 'pending' END, attempt=0, failure_attempt=0, next_attempt_at_ns=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE ? END, last_outcome=CASE WHEN search_states.lease_owner IS NULL THEN ? ELSE '' END, priority=MAX(search_states.priority, excluded.priority), rerun_requested=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE 1 END, lease_owner=search_states.lease_owner, lease_until_ns=search_states.lease_until_ns, resume_providers_json='[]', resume_route_signature=''`, mediaID, language.String(), string(unsupported), priority, at.UnixNano(), string(unsupported))
+	_, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, priority) VALUES (?, ?, 'complete', 0, 0, 0, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET state=CASE WHEN search_states.lease_owner IS NULL THEN 'complete' ELSE 'pending' END, attempt=0, failure_attempt=0, next_attempt_at_ns=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE ? END, queue_order_ns=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE ? END, last_outcome=CASE WHEN search_states.lease_owner IS NULL THEN ? ELSE '' END, priority=MAX(search_states.priority, excluded.priority), rerun_requested=CASE WHEN search_states.lease_owner IS NULL THEN 0 ELSE 1 END, lease_owner=search_states.lease_owner, lease_until_ns=search_states.lease_until_ns, resume_providers_json='[]', resume_route_signature=''`, mediaID, language.String(), string(unsupported), priority, at.UnixNano(), at.UnixNano(), string(unsupported))
 	return err
 }
 
@@ -1882,6 +1906,35 @@ func (r *Repository) EnsureInstance(ctx context.Context, name, instanceType, bas
 	return nil
 }
 
+// SetInstanceQueuePriorities stores each configured instance's queue_priority
+// and re-ranks existing searches to match. Instances not listed rank 0. New
+// searches take their instance's rank from an insert trigger.
+func (r *Repository) SetInstanceQueuePriorities(ctx context.Context, priorities map[string]int) error {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin instance queue priorities: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE instances SET queue_priority=0 WHERE queue_priority<>0`); err != nil {
+		return fmt.Errorf("reset instance queue priorities: %w", err)
+	}
+	for name, priority := range priorities {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET queue_priority=? WHERE name=?`, priority, name); err != nil {
+			return fmt.Errorf("set instance %s queue priority: %w", name, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE search_states SET instance_rank=ranked.rank
+		FROM (SELECT media.id AS media_id, COALESCE(instances.queue_priority, 0) AS rank
+		      FROM media LEFT JOIN instances ON instances.name=media.instance) AS ranked
+		WHERE ranked.media_id=search_states.media_id AND search_states.instance_rank<>ranked.rank`); err != nil {
+		return fmt.Errorf("re-rank searches: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit instance queue priorities: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) EnsureConfiguredLanguageSearches(ctx context.Context, instances []string, languages []domain.Language, now time.Time) (int64, error) {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1892,10 +1945,10 @@ func (r *Repository) EnsureConfiguredLanguageSearches(ctx context.Context, insta
 	var inserted int64
 	for _, instance := range instances {
 		for _, language := range languages {
-			result, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, next_attempt_at_ns, last_outcome, priority)
-				SELECT id, ?, CASE WHEN unsupported_reason='' THEN 'pending' ELSE 'complete' END, CASE WHEN unsupported_reason='' THEN ? ELSE 0 END, unsupported_reason, ?
+			result, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, next_attempt_at_ns, queue_order_ns, last_outcome, priority)
+				SELECT id, ?, CASE WHEN unsupported_reason='' THEN 'pending' ELSE 'complete' END, CASE WHEN unsupported_reason='' THEN ? ELSE 0 END, CASE WHEN unsupported_reason='' THEN ? ELSE 0 END, unsupported_reason, ?
 				FROM media WHERE instance=? AND deleted=0
-				ON CONFLICT(media_id, language) DO NOTHING`, language.String(), now.UnixNano(), SearchPriorityMissing, instance)
+				ON CONFLICT(media_id, language) DO NOTHING`, language.String(), now.UnixNano(), now.UnixNano(), SearchPriorityMissing, instance)
 			if err != nil {
 				return 0, fmt.Errorf("backfill configured language %s for instance %s: %w", language, instance, err)
 			}

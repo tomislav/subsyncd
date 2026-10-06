@@ -54,7 +54,7 @@ var reconcileFailureDelays = [...]time.Duration{
 }
 
 type Repository interface {
-	LeaseDueSearches(context.Context, time.Time, int, time.Duration) ([]store.SearchLease, error)
+	LeaseDueSearchesExcept(context.Context, time.Time, int, time.Duration, []store.RouteKey) ([]store.SearchLease, error)
 	RenewSearchLease(context.Context, string, time.Time, time.Duration) error
 	CompleteSearch(context.Context, store.SearchCompletion) (store.SearchCompletionResult, error)
 	GetMedia(context.Context, int64) (domain.Media, error)
@@ -81,9 +81,13 @@ type Worker struct {
 	NotificationBatch int
 	Wake              <-chan struct{}
 	Events            *observability.Emitter
+	// Routes pauses leasing for routes whose providers are all unavailable.
+	Routes RouteGate
 
 	reconcileMu       sync.Mutex
 	reconcileAttempts map[string]reconcileAttempt
+	routeMu           sync.Mutex
+	pausedRoutes      map[store.RouteKey]RoutePause
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -108,7 +112,12 @@ func (w *Worker) Run(ctx context.Context) error {
 		if available <= 0 {
 			return
 		}
-		leases, err := w.Repository.LeaseDueSearches(ctx, w.Clock.Now(), available, w.LeaseDuration)
+		paused, err := w.pausedRouteKeys(ctx)
+		if err != nil {
+			w.report(err)
+			return
+		}
+		leases, err := w.Repository.LeaseDueSearchesExcept(ctx, w.Clock.Now(), available, w.LeaseDuration, paused)
 		if err != nil {
 			w.report(err)
 			return
@@ -193,7 +202,11 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return errors.Join(append(failures, err)...)
 	}
-	searches, err := w.Repository.LeaseDueSearches(ctx, w.Clock.Now(), w.SearchBatch, w.LeaseDuration)
+	var searches []store.SearchLease
+	paused, err := w.pausedRouteKeys(ctx)
+	if err == nil {
+		searches, err = w.Repository.LeaseDueSearchesExcept(ctx, w.Clock.Now(), w.SearchBatch, w.LeaseDuration, paused)
+	}
 	if err != nil {
 		failures = append(failures, err)
 	} else {
@@ -369,7 +382,9 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		completion.Outcome = string(result.Outcome)
 		completion.Priority = store.SearchPriorityMissing
 	case workflow.OutcomeThrottled:
+		// The jittered reset only delays eligibility; the search keeps its place.
 		completion.NextAttemptAt = w.throttleRetryAt(result.RetryAt)
+		completion.PreserveQueueOrder = true
 		preserveProviderResume(lease, result, &completion)
 	default:
 		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)

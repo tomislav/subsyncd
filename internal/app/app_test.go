@@ -1103,7 +1103,7 @@ func TestNewScopesOnlyWorkerSearchClaims(t *testing.T) {
 		}
 	}
 	background := application.Worker.(*worker.Worker)
-	leases, err := background.Repository.LeaseDueSearches(context.Background(), now, 1, time.Minute)
+	leases, err := background.Repository.LeaseDueSearchesExcept(context.Background(), now, 1, time.Minute, nil)
 	if err != nil || len(leases) != 1 || leases[0].MediaID != 3 || leases[0].Language != "en" {
 		t.Fatalf("worker scope claims=%+v error=%v", leases, err)
 	}
@@ -1180,4 +1180,77 @@ type scanProbeFunc func(string) error
 
 func (f scanProbeFunc) Run(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
 	return []byte(`{"streams":[]}`), nil, f(args[len(args)-1])
+}
+
+func TestNewRanksWorkerSearchClaimsByInstanceQueuePriority(t *testing.T) {
+	cfg := testConfig(t)
+	ranked := cfg.Instances[0]
+	ranked.Name = "tv-ranked"
+	ranked.QueuePriority = 10
+	cfg.Instances = append(cfg.Instances, ranked)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}, "tv-ranked": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	now := time.Now()
+	ids := map[string]int64{}
+	for index, route := range []struct {
+		instance string
+		due      time.Time
+	}{{"tv", now.Add(-time.Hour)}, {"tv-ranked", now}} {
+		media := domain.Media{EntityID: int64(index + 1), Ref: domain.MediaRef{Instance: route.instance, Kind: domain.MediaMovie, FileID: int64(index + 1)}, Fingerprint: domain.MediaFingerprint{FileID: int64(index + 1), Path: filepath.Join(cfg.MediaRoots[0], fmt.Sprintf("%d.mkv", index)), Size: 100, ModTime: now}, Title: "Movie"}
+		id, _, err := application.Repository.UpsertMedia(context.Background(), media)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := application.Repository.UpsertSearchStateWithPriority(context.Background(), id, "en", route.due, store.SearchPriorityMissing); err != nil {
+			t.Fatal(err)
+		}
+		ids[route.instance] = id
+	}
+	background := application.Worker.(*worker.Worker)
+	leases, err := background.Repository.LeaseDueSearchesExcept(context.Background(), now, 1, time.Minute, nil)
+	if err != nil || len(leases) != 1 || leases[0].MediaID != ids["tv-ranked"] {
+		t.Fatalf("worker claims=%+v error=%v; want ranked instance first", leases, err)
+	}
+}
+
+type coolingProvider struct {
+	fakeProvider
+	resetAt time.Time
+}
+
+func (p coolingProvider) CheckDownloadAvailability(context.Context) error {
+	return &provider.CooldownError{ProviderID: p.id, Scope: provider.OperationDownload, ResetAt: p.resetAt, Suppressed: true}
+}
+
+func TestNewPausesWorkerRoutesWhoseProvidersAreAllUnavailable(t *testing.T) {
+	cfg := testConfig(t)
+	resetAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": coolingProvider{fakeProvider: fakeProvider{id: "english"}, resetAt: resetAt}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	background := application.Worker.(*worker.Worker)
+	if background.Routes == nil {
+		t.Fatal("worker has no route gate")
+	}
+	pauses, err := background.Routes.PausedRoutes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []worker.RoutePause{
+		{RouteKey: store.RouteKey{Language: "en", Kind: domain.MediaEpisode}, ResetAt: resetAt, ProviderCount: 1},
+		{RouteKey: store.RouteKey{Language: "en", Kind: domain.MediaMovie}, ResetAt: resetAt, ProviderCount: 1},
+	}
+	if len(pauses) != len(want) {
+		t.Fatalf("paused routes = %+v, want %+v", pauses, want)
+	}
+	for i := range want {
+		if pauses[i].RouteKey != want[i].RouteKey || !pauses[i].ResetAt.Equal(want[i].ResetAt) || pauses[i].ProviderCount != want[i].ProviderCount {
+			t.Fatalf("paused routes = %+v, want %+v", pauses, want)
+		}
+	}
 }

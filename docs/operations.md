@@ -66,6 +66,23 @@ Whole-movie and whole-series deletion retires indexed media and its searches eve
 
 After starting the daemon, subsyncd imports the existing Sonarr and Radarr libraries in the background once per instance. This also happens for already-configured instances after upgrading to a version with full-library discovery. It discovers movies and episode files within your path mappings even when their import history is gone, and queues subtitle checks for configured languages. Files already indexed keep their existing searches and installation records; suitable embedded or sidecar subtitles can satisfy checks without a download. Files containing multiple episodes remain unsupported.
 
+Searches run in a fixed order: imports and renames first, then missing subtitles, then upgrade checks. Within each of those, instances with a higher `queue_priority` go first, then the oldest queued work. For example, to cover the main libraries before lower-quality copies:
+
+```yaml
+instances:
+  - name: radarr-main
+    queue_priority: 30
+    # ...
+  - name: sonarr-main
+    queue_priority: 20
+    # ...
+  - name: radarr-lq
+    queue_priority: 10
+    # ...
+```
+
+Instances without `queue_priority` rank 0. A provider cooldown does not change this order; see [Retries and provider limits](providers.md#retries-and-provider-limits).
+
 Completed discovery is remembered across restarts. Changed path mappings or media roots trigger another discovery pass. A failed or interrupted pass is retried with reconciliation backoff. If a webhook commits during enumeration, the snapshot is discarded and retried to avoid importing stale state. Startup validation and readiness stay local/offline; library API requests happen only during background work or an explicit scan. After discovery, retained Arr history is reconciled normally every six hours, with webhooks providing immediate updates.
 
 If a webhook updates the catalog while history is being fetched, subsyncd discards the stale history snapshot and retries later. Newer deletions, replacements and renames remain intact, and the saved history position advances only after a successful reconciliation.

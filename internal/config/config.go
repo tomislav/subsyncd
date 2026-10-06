@@ -20,6 +20,7 @@ import (
 const (
 	defaultListen                          = "0.0.0.0:8097"
 	defaultMinimumReleaseScore             = 35
+	maxQueuePriority                       = 1000
 	defaultRequestsPerSecond               = 1
 	defaultBurst                           = 1
 	defaultMaxConcurrent                   = 1
@@ -75,6 +76,9 @@ type InstanceConfig struct {
 	APIKey       string        `yaml:"api_key"`
 	WebhookToken string        `yaml:"webhook_token"`
 	PathMappings []PathMapping `yaml:"path_mappings"`
+	// QueuePriority ranks this instance's searches within each queue class.
+	// Higher runs first; the default 0 keeps queue order unchanged.
+	QueuePriority int `yaml:"queue_priority"`
 }
 
 type ProviderSpec struct {
@@ -537,6 +541,9 @@ func (c Config) Validate() error {
 		}
 		if instance.APIKey == "" || instance.WebhookToken == "" {
 			return fmt.Errorf("instance %s credentials are required", instance.Name)
+		}
+		if instance.QueuePriority < 0 || instance.QueuePriority > maxQueuePriority {
+			return fmt.Errorf("instance %s queue_priority must be between 0 and %d", instance.Name, maxQueuePriority)
 		}
 		for _, mapping := range instance.PathMappings {
 			if !filepath.IsAbs(mapping.Local) || !withinAnyRoot(mapping.Local, c.MediaRoots) {

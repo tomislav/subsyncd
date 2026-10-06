@@ -207,10 +207,15 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		// Diagnostics expose persisted state only; no providers, workers or durable caches.
 		return &App{Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Events: events, Clock: clock, readOnly: true}, nil
 	}
+	queuePriorities := make(map[string]int, len(cfg.Instances))
 	for _, instance := range cfg.Instances {
 		if err := repository.EnsureInstance(ctx, instance.Name, instance.Type, instance.URL, clock.Now()); err != nil {
 			return nil, err
 		}
+		queuePriorities[instance.Name] = instance.QueuePriority
+	}
+	if err := repository.SetInstanceQueuePriorities(ctx, queuePriorities); err != nil {
+		return nil, err
 	}
 
 	providers, err := buildProviders(cfg, database, repository, clock, httpClient, options.Providers, events)
@@ -320,7 +325,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			resumeRoutes[language] = store.ProviderResumeRoute{Signature: service.RouteSignature(language), Providers: cfg.Languages[language].AllProviders()}
 		}
 		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes)
-		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
+		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
 	}
 
 	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}
@@ -410,6 +415,29 @@ func (r workflowRouter) Run(ctx context.Context, request workflow.Request) (work
 		return workflow.Result{}, fmt.Errorf("language %s is not configured", request.Language)
 	}
 	return service.Run(ctx, request)
+}
+
+// PausedRoutes reports every configured language and media kind whose
+// providers are all unable to download, in a stable order.
+func (r workflowRouter) PausedRoutes(ctx context.Context) ([]worker.RoutePause, error) {
+	languages := make([]domain.Language, 0, len(r))
+	for language := range r {
+		languages = append(languages, language)
+	}
+	sort.Slice(languages, func(i, j int) bool { return languages[i] < languages[j] })
+	var pauses []worker.RoutePause
+	for _, language := range languages {
+		for _, kind := range []domain.MediaKind{domain.MediaEpisode, domain.MediaMovie} {
+			status, err := r[language].RouteAvailability(ctx, kind)
+			if err != nil {
+				return nil, fmt.Errorf("check %s %s route availability: %w", language, kind, err)
+			}
+			if status.Paused {
+				pauses = append(pauses, worker.RoutePause{RouteKey: store.RouteKey{Language: language, Kind: kind}, ResetAt: status.ResetAt, ProviderCount: status.ProviderCount})
+			}
+		}
+	}
+	return pauses, nil
 }
 
 func (a *App) Ready(ctx context.Context) error {
