@@ -312,14 +312,16 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	workerRunner := options.Worker
 	if workerRunner == nil {
 		instances := make([]string, 0, len(cfg.Instances))
+		ranks := make(map[string]int, len(cfg.Instances))
 		for _, instance := range cfg.Instances {
 			instances = append(instances, instance.Name)
+			ranks[instance.Name] = instance.QueuePriority
 		}
 		resumeRoutes := make(map[domain.Language]store.ProviderResumeRoute, len(workflows))
 		for language, service := range workflows {
 			resumeRoutes[language] = store.ProviderResumeRoute{Signature: service.RouteSignature(language), Providers: cfg.Languages[language].AllProviders()}
 		}
-		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes)
+		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes).WithInstanceRanks(ranks)
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, MaxWorkflows: cfg.Worker.MaxConcurrent, Wake: wake, Events: events}
 	}
 

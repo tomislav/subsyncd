@@ -369,7 +369,9 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		completion.Outcome = string(result.Outcome)
 		completion.Priority = store.SearchPriorityMissing
 	case workflow.OutcomeThrottled:
+		// The jittered reset only delays eligibility; the search keeps its place.
 		completion.NextAttemptAt = w.throttleRetryAt(result.RetryAt)
+		completion.PreserveQueueOrder = true
 		preserveProviderResume(lease, result, &completion)
 	default:
 		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)

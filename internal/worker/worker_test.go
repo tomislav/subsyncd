@@ -149,10 +149,10 @@ func TestWorkerPersistsProviderResume(t *testing.T) {
 				t.Fatalf("incomplete resume completion = %+v", completion)
 			}
 			if test.result.Outcome == workflow.OutcomeThrottled {
-				if !completion.NextAttemptAt.Equal(test.result.RetryAt) || completion.AdvanceMissingAttempt || completion.AdvanceFailureAttempt || completion.Priority != 0 {
+				if !completion.NextAttemptAt.Equal(test.result.RetryAt) || completion.AdvanceMissingAttempt || completion.AdvanceFailureAttempt || completion.Priority != 0 || !completion.PreserveQueueOrder {
 					t.Fatalf("throttled scheduling changed = %+v", completion)
 				}
-			} else if !completion.NextAttemptAt.Equal(now.Add(time.Minute)) || !completion.AdvanceFailureAttempt || completion.AdvanceMissingAttempt || completion.Priority != 0 {
+			} else if !completion.NextAttemptAt.Equal(now.Add(time.Minute)) || !completion.AdvanceFailureAttempt || completion.AdvanceMissingAttempt || completion.Priority != 0 || completion.PreserveQueueOrder {
 				t.Fatalf("technical scheduling changed = %+v", completion)
 			}
 		})
