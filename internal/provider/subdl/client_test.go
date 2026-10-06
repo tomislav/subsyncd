@@ -112,9 +112,16 @@ func TestEpisodeSearchRunsFallbacksDeduplicatesAndPrefersDirectMember(t *testing
 	if queries[0].Get("season_number") != "1" || queries[0].Get("episode_number") != "2" || queries[1].Get("episode_number") != "102" || queries[1].Has("season_number") || queries[2].Has("episode_number") {
 		t.Fatalf("fallback queries = %#v", queries)
 	}
-	for _, key := range []string{"api_key", "imdb_id", "file_name", "type", "year", "languages", "releases", "hi", "unpack", "subs_per_page", "client"} {
+	for _, key := range []string{"api_key", "imdb_id", "file_name", "type", "year", "languages", "releases", "unpack", "subs_per_page", "client"} {
 		if queries[0].Get(key) == "" {
 			t.Errorf("standard query missing %s: %s", key, queries[0].Encode())
+		}
+	}
+	// SubDL's hi=1 filters to hearing-impaired subtitles only; the hi flag is
+	// returned on every result without it.
+	for _, query := range queries {
+		if query.Has("hi") {
+			t.Errorf("query must not filter to hearing-impaired subtitles: %s", query.Encode())
 		}
 	}
 	if len(candidates) != 1 || candidates[0].ResultID != "/subtitle/pack.zip:file-2" || candidates[0].DownloadRef != "/subtitle/pack/file-2" || candidates[0].Pack != nil || candidates[0].Episode != 2 || !candidates[0].HearingImpaired || len(candidates[0].ReleaseNames) != 3 {
