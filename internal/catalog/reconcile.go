@@ -78,6 +78,7 @@ func (r Reconciler) Run(ctx context.Context) error {
 			Priority:  store.SearchPriorityMissing,
 		})
 	}
+	mutations = append(mutations, r.recheckLegacyMultiEpisode(ctx)...)
 	identitySnapshot, err := r.Catalog.ListIdentitySnapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("list %s catalog identities: %w", r.Instance, err)
@@ -135,4 +136,46 @@ func (r Reconciler) Run(ctx context.Context) error {
 func snapshotDeleteEventID(instance string, kind domain.MediaKind, identity int64, pageEnd time.Time) string {
 	input := fmt.Sprintf("%d:%s:%s:%d:%s", len(instance), instance, kind, identity, pageEnd.UTC().Format(time.RFC3339Nano))
 	return fmt.Sprintf("snapshot-reconcile:%x", sha256.Sum256([]byte(input)))
+}
+
+type legacyMultiEpisodeStore interface {
+	ListLegacyMultiEpisodeMedia(context.Context, string) ([]domain.MediaRef, error)
+}
+
+// recheckLegacyMultiEpisode re-hydrates, once, files marked unsupported
+// multi-episode before episode ranges were supported. Each result is committed
+// as an import, which stores either the range (and schedules its searches) or
+// the checked-unsupported marker. A file that fails to hydrate is skipped and
+// retried on the next reconciliation.
+func (r Reconciler) recheckLegacyMultiEpisode(ctx context.Context) []store.MediaEventMutation {
+	repository, ok := r.Store.(legacyMultiEpisodeStore)
+	if r.Kind != domain.MediaEpisode || !ok {
+		return nil
+	}
+	refs, err := repository.ListLegacyMultiEpisodeMedia(ctx, r.Instance)
+	if err != nil {
+		return nil
+	}
+	now := r.Now().UTC()
+	var mutations []store.MediaEventMutation
+	for _, ref := range refs {
+		if ctx.Err() != nil {
+			return mutations
+		}
+		media, err := r.Catalog.GetMedia(ctx, ref)
+		if err != nil || media.EntityID <= 0 || media.Ref != ref {
+			continue
+		}
+		mutations = append(mutations, store.MediaEventMutation{
+			EventID:   fmt.Sprintf("multi-episode-recheck:%s:%d:%d", r.Instance, ref.FileID, now.UnixNano()),
+			Type:      string(EventImport),
+			EntityID:  media.EntityID,
+			Media:     media,
+			Ref:       ref,
+			Languages: r.Languages,
+			At:        now,
+			Priority:  store.SearchPriorityMissing,
+		})
+	}
+	return mutations
 }

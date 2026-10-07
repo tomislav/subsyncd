@@ -297,9 +297,37 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 		Duration:         parseRuntime(file.MediaInfo.RunTime),
 	}
 	if len(episodes) > 1 {
-		media.UnsupportedReason = domain.UnsupportedMultiEpisode
+		applyEpisodeRange(&media, episodes)
 	}
 	return media, episodeIDs, nil
+}
+
+// applyEpisodeRange records a multi-episode file (episodes sorted by season and
+// number) as one range when its episodes are consecutive in a single season.
+// Absolute numbers are kept only when every episode has a consecutive one.
+// Anything else stays unsupported.
+func applyEpisodeRange(media *domain.Media, episodes []sonarrEpisode) {
+	first, last := episodes[0], episodes[len(episodes)-1]
+	consecutive := first.EpisodeNumber > 0
+	absolute := first.AbsoluteEpisodeNumber > 0
+	for index, episode := range episodes {
+		if episode.SeasonNumber != first.SeasonNumber || episode.EpisodeNumber != first.EpisodeNumber+index {
+			consecutive = false
+		}
+		if episode.AbsoluteEpisodeNumber != first.AbsoluteEpisodeNumber+index {
+			absolute = false
+		}
+	}
+	if !consecutive {
+		media.UnsupportedReason = domain.UnsupportedMultiEpisode
+		media.EpisodeEnd = domain.CheckedUnsupportedEpisodeEnd
+		return
+	}
+	media.EpisodeEnd = last.EpisodeNumber
+	media.AbsoluteEpisode, media.AbsoluteEpisodeEnd = 0, 0
+	if absolute {
+		media.AbsoluteEpisode, media.AbsoluteEpisodeEnd = first.AbsoluteEpisodeNumber, last.AbsoluteEpisodeNumber
+	}
 }
 
 func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]HistoryChange, error) {
