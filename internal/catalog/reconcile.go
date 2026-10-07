@@ -103,13 +103,23 @@ func (r Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("list %s active catalog identities: %w", r.Instance, err)
 	}
 	sort.Slice(activeIdentities, func(i, j int) bool { return activeIdentities[i] < activeIdentities[j] })
+	var missing []int64
 	for _, identity := range activeIdentities {
 		if identity <= 0 {
 			return fmt.Errorf("%s active catalog identity is invalid", r.Instance)
 		}
-		if _, present := identitySnapshot.IDs[identity]; present {
-			continue
+		if _, present := identitySnapshot.IDs[identity]; !present {
+			missing = append(missing, identity)
 		}
+	}
+	if withholdSnapshotDeletions(len(activeIdentities), len(missing)) {
+		events := r.Events.For("catalog")
+		events.Log(ctx, slog.LevelWarn, "reconcile.snapshot_deletions_withheld", "catalog snapshot would delete most tracked identities; deletions withheld",
+			slog.String("instance", r.Instance), slog.String("media_kind", string(identitySnapshot.Kind)),
+			slog.Int("active_count", len(activeIdentities)), slog.Int("missing_count", len(missing)), slog.Int("snapshot_count", len(identitySnapshot.IDs)))
+		missing = nil
+	}
+	for _, identity := range missing {
 		mutation := store.MediaEventMutation{
 			EventID:  snapshotDeleteEventID(r.Instance, identitySnapshot.Kind, identity, pageEnd),
 			Type:     string(EventDelete),
@@ -138,6 +148,23 @@ func (r Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("%s reconciliation deferred (history since %s): %w", r.Instance, snapshot.Cursor, mergeDeferrals(discoveryErr, listErr))
 	}
 	return nil
+}
+
+// massDeletionMinimum is the smallest snapshot deletion that can be withheld
+// as a mass deletion, so ordinary removals from small libraries still apply.
+const massDeletionMinimum = 10
+
+// withholdSnapshotDeletions reports whether one snapshot would delete so much
+// of the tracked catalog that it more likely comes from an emptied, restored,
+// or different Arr database than from real removals. A fresh instance numbers
+// its items from 1 and so shares some IDs by coincidence; zero overlap alone
+// is not enough. Snapshot deletions are permanent (rediscovery never revives
+// them), so such a snapshot deletes nothing; history still commits.
+func withholdSnapshotDeletions(active, missing int) bool {
+	if active < 2 || missing == 0 {
+		return false
+	}
+	return missing == active || (missing >= massDeletionMinimum && missing*2 > active)
 }
 
 func snapshotDeleteEventID(instance string, kind domain.MediaKind, identity int64, pageEnd time.Time) string {

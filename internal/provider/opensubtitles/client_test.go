@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -583,5 +584,113 @@ func TestSearchBodyFailureRemainsTechnicalAndSuccessfulJSONResetsCircuit(t *test
 	_, err = c.Search(context.Background(), q)
 	if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(c.clock.Now().Add(time.Minute)) {
 		t.Fatalf("successful JSON did not reset circuit: %v", err)
+	}
+}
+
+func TestAPIRequestsDoNotFollowRedirects(t *testing.T) {
+	var leaked []string
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "api.opensubtitles.com" {
+			leaked = append(leaked, r.URL.Host+" api-key="+r.Header.Get("Api-Key"))
+			return reviewResponse(r, 200, `{"token":"stolen"}`), nil
+		}
+		response := reviewResponse(r, http.StatusPermanentRedirect, "")
+		response.Header.Set("Location", "https://attacker.example.test"+r.URL.Path)
+		return response, nil
+	})
+	if _, err := c.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}); err == nil {
+		t.Fatal("search followed a redirected login")
+	}
+	if len(leaked) != 0 {
+		t.Fatalf("redirected API requests reached %v", leaked)
+	}
+}
+
+func TestSignedDownloadFollowsOnlyHTTPSRedirects(t *testing.T) {
+	var reached []string
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Path == "/api/v1/login":
+			return reviewResponse(r, 200, `{"token":"token"}`), nil
+		case r.URL.Path == "/api/v1/download":
+			return reviewResponse(r, 200, `{"link":"https://cdn.example.test/signed","file_name":"sub.srt"}`), nil
+		case r.URL.Host == "cdn.example.test":
+			response := reviewResponse(r, http.StatusFound, "")
+			response.Header.Set("Location", "http://plain.example.test/file")
+			return response, nil
+		default:
+			reached = append(reached, r.URL.String())
+			return reviewResponse(r, 200, "subtitle"), nil
+		}
+	})
+	if _, err := c.Download(context.Background(), domain.Candidate{DownloadRef: "1"}, io.Discard); err == nil {
+		t.Fatal("download followed a redirect to plain HTTP")
+	}
+	if len(reached) != 0 {
+		t.Fatalf("insecure redirect reached %v", reached)
+	}
+}
+
+func TestSearchPaginationIsBounded(t *testing.T) {
+	for name, pageBody := range map[string]string{
+		"empty pages":     `{"total_pages":100000,"data":[]}`,
+		"endless results": `{"total_pages":100000,"data":[{"id":"1","attributes":{"language":"en","files":[{"file_id":1}]}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			pages := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/login":
+					io.WriteString(w, `{"token":"token","expires_in":3600}`)
+				case "/api/v1/subtitles":
+					pages++
+					io.WriteString(w, pageBody)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, staticHasher{}, 1024)
+			if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}); err != nil {
+				t.Fatal(err)
+			}
+			if pages > maxSearchPages {
+				t.Fatalf("requested %d pages, cap is %d", pages, maxSearchPages)
+			}
+		})
+	}
+}
+
+func TestQuotaErrorDoesNotCarryProviderText(t *testing.T) {
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/api/v1/login":
+			return reviewResponse(r, 200, `{"token":"token"}`), nil
+		default:
+			return reviewResponse(r, http.StatusNotAcceptable, `{"message":"You have downloaded your allowed 20 subtitles for account someone@example.test","reset_time_utc":"2026-09-04T18:00:00Z"}`), nil
+		}
+	})
+	_, err := c.Download(context.Background(), domain.Candidate{DownloadRef: "1"}, io.Discard)
+	var quota *baseprovider.QuotaError
+	if !errors.As(err, &quota) {
+		t.Fatalf("error = %T %v, want QuotaError", err, err)
+	}
+	if strings.Contains(err.Error(), "someone@example.test") || strings.Contains(err.Error(), "allowed 20") {
+		t.Fatalf("quota error carries provider body text: %v", err)
+	}
+}
+
+func TestQuotaResetIsClampedToMaximumCooldown(t *testing.T) {
+	c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/api/v1/login":
+			return reviewResponse(r, 200, `{"token":"token"}`), nil
+		default:
+			return reviewResponse(r, http.StatusNotAcceptable, `{"reset_time_utc":"2099-01-01T00:00:00Z"}`), nil
+		}
+	})
+	_, err := c.Download(context.Background(), domain.Candidate{DownloadRef: "1"}, io.Discard)
+	var quota *baseprovider.QuotaError
+	want := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC).Add(baseprovider.MaxProviderCooldown)
+	if !errors.As(err, &quota) || !quota.ResetAt.Equal(want) {
+		t.Fatalf("error = %v, want quota reset %s", err, want)
 	}
 }

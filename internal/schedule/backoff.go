@@ -1,9 +1,6 @@
 package schedule
 
 import (
-	"net/http"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -69,21 +66,6 @@ func delayAt(attempt int, delays []time.Duration) time.Duration {
 		attempt = len(delays) - 1
 	}
 	return delays[attempt]
-}
-
-func RetryAfter(now time.Time, header string) (time.Time, bool) {
-	value := strings.TrimSpace(header)
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds < 0 {
-			return time.Time{}, false
-		}
-		return now.Add(time.Duration(seconds) * time.Second), true
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return when, true
 }
 
 func UpgradeDelay(exactHash bool, score int) (time.Duration, bool) {

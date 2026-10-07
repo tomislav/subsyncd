@@ -1,5 +1,5 @@
 {
   "eventType": "Rename",
   "movie": {"id": 20, "title": "Example Movie"},
-  "movieFile": {"id": 2001, "relativePath": "Example Movie (2024)/new.mkv"}
+  "renamedMovieFiles": [{"id": 2001, "relativePath": "Example Movie (2024)/new.mkv", "path": "/movies/Example Movie (2024)/new.mkv", "previousRelativePath": "Example Movie (2024)/old.mkv", "previousPath": "/movies/Example Movie (2024)/old.mkv"}]
 }

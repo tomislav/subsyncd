@@ -1,7 +1,6 @@
 package schedule
 
 import (
-	"net/http"
 	"testing"
 	"time"
 )
@@ -65,20 +64,6 @@ func TestFailureDelayRetainsHourlyCapForNotificationDelivery(t *testing.T) {
 		if got := FailureDelay(attempt); got != want {
 			t.Errorf("FailureDelay(%d) = %s, want %s", attempt, got, want)
 		}
-	}
-}
-
-func TestRetryAfterParsesSecondsAndHTTPDate(t *testing.T) {
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	if got, ok := RetryAfter(now, "90"); !ok || !got.Equal(now.Add(90*time.Second)) {
-		t.Errorf("RetryAfter seconds = %s, %v", got, ok)
-	}
-	date := now.Add(3 * time.Minute).Format(http.TimeFormat)
-	if got, ok := RetryAfter(now, date); !ok || !got.Equal(now.Add(3*time.Minute)) {
-		t.Errorf("RetryAfter date = %s, %v", got, ok)
-	}
-	if _, ok := RetryAfter(now, "nonsense"); ok {
-		t.Error("RetryAfter malformed header accepted")
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -123,6 +124,9 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 		slog.Int("max_concurrent", cfg.Worker.MaxConcurrent),
 		slog.Bool("silo_enabled", cfg.Silo.Enabled),
 	)
+	if options.Command == "serve" {
+		warnWeakWebhookTokens(ctx, appEvents, cfg)
+	}
 	runtimeOptions := options.Runtime
 	runtimeOptions.Events = events
 	runtimeOptions.ReadOnly = options.Command == "explain" || options.Command == "doctor" || options.Command == "analyze-sync"
@@ -134,6 +138,22 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 	application.Command = options.Command
 	appEvents.Log(ctx, slog.LevelInfo, "service.ready", "subsyncd ready", slog.String("command", options.Command))
 	return application, nil
+}
+
+// minimumWebhookTokenLength is the length below which a webhook token is
+// reported as easy to guess. Shorter tokens still work.
+const minimumWebhookTokenLength = 16
+
+// warnWeakWebhookTokens names, without the token, each instance whose webhook
+// token is shorter than minimumWebhookTokenLength.
+func warnWeakWebhookTokens(ctx context.Context, events *observability.Emitter, cfg config.Config) {
+	for _, instance := range cfg.Instances {
+		if utf8.RuneCountInString(instance.WebhookToken) >= minimumWebhookTokenLength {
+			continue
+		}
+		events.Log(ctx, slog.LevelWarn, "config.weak_webhook_token", "webhook token is shorter than recommended",
+			slog.String("instance", observability.SafeText(instance.Name)), slog.Int("minimum_length", minimumWebhookTokenLength))
+	}
 }
 
 func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err error) {
@@ -483,7 +503,11 @@ func (a *App) Serve(ctx context.Context) error {
 			return fmt.Errorf("listen on %s: %w", a.Config.Server.Listen, err)
 		}
 	}
-	server := &http.Server{Handler: a.Handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	serverEvents := a.Events
+	if serverEvents == nil {
+		serverEvents = observability.Discard()
+	}
+	server := &http.Server{Handler: a.Handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: serverEvents.For("http").ServerErrorLog()}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cacheTicker := time.NewTicker(time.Hour)
@@ -641,6 +665,28 @@ func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, l
 	if err != nil {
 		return "", fmt.Errorf("load media: %w", err)
 	}
+	active, err := a.Repository.MediaActive(ctx, media.Ref)
+	if err != nil {
+		return "", err
+	}
+	if !active {
+		// An unknown file or a deletion tombstone enters the catalog through the
+		// transactional media mutation, which schedules every configured
+		// language and advances the reconciliation fence like an Arr import.
+		now := a.Clock.Now().UTC()
+		if _, err := a.Repository.ApplyMediaEvent(ctx, store.MediaEventMutation{
+			EventID:   fmt.Sprintf("manual-search:%s:%s:%d:%d", media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, now.UnixNano()),
+			Type:      string(catalog.EventImport),
+			EntityID:  media.EntityID,
+			Ref:       media.Ref,
+			Media:     media,
+			Languages: sortedLanguages(a.Config),
+			At:        now,
+			Priority:  store.SearchPriorityMissing,
+		}); err != nil {
+			return "", err
+		}
+	}
 	mediaID, _, err := a.Repository.UpsertMedia(ctx, media)
 	if err != nil {
 		return "", err
@@ -656,6 +702,12 @@ func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, l
 	result, err := service.Run(ctx, workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true})
 	if err != nil {
 		return "", err
+	}
+	if !active && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
+		// The revival queued this language too; this run already answered it.
+		if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome)); err != nil {
+			return "", err
+		}
 	}
 	if !result.NextUpgrade.IsZero() && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
 		if err := a.Repository.EnsureUpgradeSearch(ctx, mediaID, language, result.NextUpgrade); err != nil {

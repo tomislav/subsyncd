@@ -134,3 +134,30 @@ func decodeJSONLines(t *testing.T, output string) []map[string]any {
 	}
 	return records
 }
+
+func TestServerErrorLogEmitsOneRedactedRecordPerLine(t *testing.T) {
+	var output bytes.Buffer
+	events, err := New(&output, Options{Level: "info", Version: "test", Redact: func(err error) string {
+		return strings.ReplaceAll(err.Error(), "/media/Private Show", "<media>")
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := events.For("http").ServerErrorLog()
+	logger.Print("http: panic serving 192.0.2.1:5000: open /media/Private Show/x.mkv\ngoroutine 7 [running]:\nmain.handler()")
+	logger.Print("http: Accept error: too many open files; retrying in 5ms")
+
+	records := decodeJSONLines(t, output.String())
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2: %s", len(records), output.String())
+	}
+	if records[0]["event"] != "http.server_error" || records[0]["component"] != "http" || records[0]["reason"] != "panic" || records[0]["level"] != "error" {
+		t.Fatalf("panic record = %#v", records[0])
+	}
+	if text := output.String(); strings.Contains(text, "goroutine") || strings.Contains(text, "Private Show") {
+		t.Fatalf("server error log leaked stack or media path: %s", text)
+	}
+	if records[1]["reason"] != "accept" || records[1]["level"] != "warn" {
+		t.Fatalf("accept record = %#v", records[1])
+	}
+}

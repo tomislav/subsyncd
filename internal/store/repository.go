@@ -350,12 +350,16 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 			return 0, false, fmt.Errorf("update media: %w", err)
 		}
 	}
-	if contentChanged {
-		if err := invalidateInstallationTx(ctx, tx, id); err != nil {
+	// Managed sidecars follow the media stem even when the content changed, so
+	// a sidecar carried over to a renamed upgrade stays managed (and
+	// replaceable) instead of looking user-owned. Invalidation runs after.
+	if found && existingPath != media.Fingerprint.Path {
+		if err := rebaseInstallationPathsTx(ctx, tx, id, existingPath, media.Fingerprint.Path); err != nil {
 			return 0, false, err
 		}
-	} else if existingPath != media.Fingerprint.Path {
-		if err := rebaseInstallationPathsTx(ctx, tx, id, existingPath, media.Fingerprint.Path); err != nil {
+	}
+	if contentChanged {
+		if err := invalidateInstallationTx(ctx, tx, id); err != nil {
 			return 0, false, err
 		}
 	}
@@ -398,6 +402,20 @@ func (r *Repository) FindMedia(ctx context.Context, ref domain.MediaRef) (int64,
 	}
 	media, err := r.GetMedia(ctx, mediaID)
 	return mediaID, media, err
+}
+
+// MediaActive reports whether a file identity is known and not a deletion
+// tombstone.
+func (r *Repository) MediaActive(ctx context.Context, ref domain.MediaRef) (bool, error) {
+	var deleted bool
+	err := r.store.db.QueryRowContext(ctx, `SELECT deleted FROM media WHERE instance=? AND kind=? AND file_id=?`, ref.Instance, string(ref.Kind), ref.FileID).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read media %s/%s/%d state: %w", ref.Instance, ref.Kind, ref.FileID, err)
+	}
+	return !deleted, nil
 }
 
 func (r *Repository) FindMediaByEntity(ctx context.Context, instance string, kind domain.MediaKind, entityID int64) (int64, domain.Media, bool, error) {
@@ -724,6 +742,16 @@ func (r *Repository) UpsertSearchStateWithPriority(ctx context.Context, mediaID 
 	return nil
 }
 
+// SettlePendingSearch completes an unleased pending search with a manual
+// outcome, so a search that a manual run just satisfied is not repeated.
+func (r *Repository) SettlePendingSearch(ctx context.Context, mediaID int64, language domain.Language, outcome string) error {
+	_, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='complete', attempt=0, failure_attempt=0, next_attempt_at_ns=0, queue_order_ns=0, last_outcome=?, resume_providers_json='[]', resume_route_signature='' WHERE media_id=? AND language=? AND state='pending' AND lease_owner IS NULL AND lease_until_ns IS NULL`, outcome, mediaID, language.String())
+	if err != nil {
+		return fmt.Errorf("settle manual search: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) ClearSearchResume(ctx context.Context, mediaID int64, language domain.Language) error {
 	if _, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET resume_providers_json='[]',resume_route_signature='' WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
 		return fmt.Errorf("clear search resume state: %w", err)
@@ -1038,6 +1066,10 @@ func (r *Repository) LeaseDueNotifications(ctx context.Context, now time.Time, l
 		}
 		due = append(due, item)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("read due notifications: %w", err)
+	}
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("close due notifications: %w", err)
 	}
@@ -1084,7 +1116,10 @@ func (r *Repository) CompleteNotification(ctx context.Context, completion Notifi
 	if !completion.NextAttemptAt.IsZero() {
 		next = completion.NextAttemptAt.UnixNano()
 	}
-	result, err := r.store.db.ExecContext(ctx, `UPDATE notifications SET attempt=attempt+1, next_attempt_at_ns=?, result=?, lease_owner=NULL, lease_until_ns=NULL WHERE lease_owner=?`, next, completion.Result, completion.JobID)
+	// Deduplication collapses replays of a pending intent only. A finished
+	// intent (delivered or abandoned) releases its key, so publishing the same
+	// subtitle again, for example after its sidecar was deleted, is delivered.
+	result, err := r.store.db.ExecContext(ctx, `UPDATE notifications SET attempt=attempt+1, next_attempt_at_ns=?, result=?, lease_owner=NULL, lease_until_ns=NULL, dedupe_key=CASE WHEN ?=0 THEN NULL ELSE dedupe_key END WHERE lease_owner=?`, next, completion.Result, next, completion.JobID)
 	if err != nil {
 		return fmt.Errorf("complete notification: %w", err)
 	}
@@ -1777,7 +1812,8 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}
-		if !changed && existingPath != media.Fingerprint.Path {
+		// Callers invalidate provenance after this when the content changed.
+		if existingPath != media.Fingerprint.Path {
 			if err := rebaseInstallationPathsTx(ctx, tx, id, existingPath, media.Fingerprint.Path); err != nil {
 				return 0, false, err
 			}

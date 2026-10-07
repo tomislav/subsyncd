@@ -968,6 +968,41 @@ func TestNotificationLeaseRetryCompletionAndDedupeLifecycle(t *testing.T) {
 	}
 }
 
+func TestFinishedNotificationReleasesDedupeKey(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	request := NotificationRequest{Notifier: "silo", DedupeKey: "install:1:sum", PayloadJSON: []byte(`{}`), NextAttemptAt: now}
+	if inserted, err := repo.EnqueueNotification(ctx, request); err != nil || !inserted {
+		t.Fatalf("first enqueue = %t, %v", inserted, err)
+	}
+	jobs, err := repo.LeaseDueNotifications(ctx, now, 10, time.Minute)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("lease = %#v, %v", jobs, err)
+	}
+	// A leased, undelivered intent still deduplicates.
+	if inserted, err := repo.EnqueueNotification(ctx, request); err != nil || inserted {
+		t.Fatalf("enqueue while pending = %t, %v", inserted, err)
+	}
+	if err := repo.CompleteNotification(ctx, NotificationCompletion{JobID: jobs[0].JobID, Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	var retained int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM notifications WHERE dedupe_key IS NOT NULL`).Scan(&retained); err != nil || retained != 0 {
+		t.Fatalf("finished notification still holds its dedupe key: count=%d err=%v", retained, err)
+	}
+	// The same subtitle published again (for example after the sidecar was
+	// deleted) needs a new scan.
+	later := now.Add(time.Hour)
+	request.NextAttemptAt = later
+	if inserted, err := repo.EnqueueNotification(ctx, request); err != nil || !inserted {
+		t.Fatalf("enqueue after delivery = %t, %v", inserted, err)
+	}
+	if jobs, err := repo.LeaseDueNotifications(ctx, later, 10, time.Minute); err != nil || len(jobs) != 1 || jobs[0].Attempt != 0 {
+		t.Fatalf("lease after re-enqueue = %#v, %v", jobs, err)
+	}
+}
+
 func TestGetMediaReturnsWorkflowIdentity(t *testing.T) {
 	repo := openTestRepository(t)
 	want := testMedia()
@@ -1203,6 +1238,50 @@ func TestRenameEventRetainsInstallationProvenance(t *testing.T) {
 	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
 	if err != nil || !found || got.Path != "/media/New.Name.en.srt" || got.MediaPath != media.Fingerprint.Path || string(got.ScoreJSON) != `{"total":70}` {
 		t.Fatalf("renamed event installation = %#v/%v/%v", got, found, err)
+	}
+}
+
+func TestUpgradeWithNewFilenameRebasesAndInvalidatesInstallation(t *testing.T) {
+	for _, path := range []string{"event", "upsert"} {
+		t.Run(path, func(t *testing.T) {
+			repo := openTestRepository(t)
+			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			media := testMedia()
+			media.Fingerprint.Path = "/media/Show.S01E01.720p.mkv"
+			media.Fingerprint.ModTime = now
+			if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "import", Type: "import", EntityID: media.EntityID, Media: media, Ref: media.Ref, Languages: []domain.Language{"en"}, At: now}); err != nil {
+				t.Fatal(err)
+			}
+			mediaID, _, err := repo.FindMedia(context.Background(), media.Ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/Show.S01E01.720p.en.srt", Checksum: "sum", ScoreJSON: []byte(`{"total":70}`), SyncResultJSON: []byte(`{"verdict":"solid"}`), MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}
+			if err := repo.RecordInstallation(context.Background(), installation); err != nil {
+				t.Fatal(err)
+			}
+			// The upgrade replaces the file and Arr names it after the new quality.
+			upgraded := media
+			upgraded.Ref.FileID = media.Ref.FileID + 1
+			upgraded.Fingerprint = domain.MediaFingerprint{Path: "/media/Show.S01E01.1080p.mkv", FileID: upgraded.Ref.FileID, Size: media.Fingerprint.Size * 2, ModTime: now.Add(time.Hour)}
+			if path == "event" {
+				if _, err := repo.ApplyMediaEvent(context.Background(), MediaEventMutation{EventID: "upgrade", Type: "import", EntityID: upgraded.EntityID, Media: upgraded, Ref: upgraded.Ref, Languages: []domain.Language{"en"}, At: now.Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, _, err := repo.UpsertMedia(context.Background(), upgraded); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
+			if err != nil || !found {
+				t.Fatalf("GetInstallation() = %#v/%v/%v", got, found, err)
+			}
+			if got.Path != "/media/Show.S01E01.1080p.en.srt" {
+				t.Fatalf("installation path = %q, want it rebased to the new media stem", got.Path)
+			}
+			if got.MediaPath != "" || got.MediaFileID != 0 || string(got.ScoreJSON) != "{}" {
+				t.Fatalf("upgrade did not invalidate provenance: %#v", got)
+			}
+		})
 	}
 }
 

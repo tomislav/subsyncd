@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -688,5 +689,87 @@ func TestInstallerRollsBackAfterCatalogDeleteBeforeCommit(t *testing.T) {
 	notifications, err := repo.LeaseDueNotifications(ctx, time.Now().Add(time.Minute), 10, time.Minute)
 	if err != nil || len(notifications) != 0 {
 		t.Fatalf("deleted install notified: %#v %v", notifications, err)
+	}
+}
+
+func TestFreshInstallNeverOverwritesSidecarCreatedDuringPublication(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "Movie.en.srt")
+	userSRT := strings.Replace(installSRT, "Hello", "User edit", 1)
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), installSRT)
+	repository := &installationRepository{}
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, NotifierNames: []string{"silo"}, Fault: func(stage InstallStage) error {
+		if stage == StageRename {
+			// Another writer (Arr extras import, the user) creates the sidecar
+			// after the absence check but before publication.
+			return os.WriteFile(destination, []byte(userSRT), 0o600)
+		}
+		return nil
+	}}
+	_, err := installer.Install(context.Background(), installRequest(t, source, destination))
+	if !errors.Is(err, ErrProtectedSubtitle) {
+		t.Fatalf("Install() error = %v, want ErrProtectedSubtitle", err)
+	}
+	payload, err := os.ReadFile(destination)
+	if err != nil || string(payload) != userSRT {
+		t.Fatalf("user sidecar = %q, %v", payload, err)
+	}
+	if repository.recordCalls != 0 {
+		t.Fatalf("record calls = %d, want 0", repository.recordCalls)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".subsyncd-") {
+			t.Fatalf("staging file left behind: %s", entry.Name())
+		}
+	}
+}
+
+func TestFreshInstallFallsBackToRenameWhenLinksAreUnsupported(t *testing.T) {
+	for name, linkErr := range map[string]error{"enosys": syscall.ENOSYS, "exdev": syscall.EXDEV, "eacces": syscall.EACCES, "enotsup": syscall.ENOTSUP} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			destination := filepath.Join(root, "Movie.en.srt")
+			source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), installSRT)
+			repository := &installationRepository{}
+			installer := Installer{Repository: repository, MediaRoots: []string{root}, Link: func(string, string) error {
+				return &os.LinkError{Op: "link", Err: linkErr}
+			}}
+			if _, err := installer.Install(context.Background(), installRequest(t, source, destination)); err != nil {
+				t.Fatalf("Install() error = %v", err)
+			}
+			if payload, err := os.ReadFile(destination); err != nil || string(payload) != installSRT {
+				t.Fatalf("published subtitle = %q, %v", payload, err)
+			}
+			if repository.recordCalls != 1 {
+				t.Fatalf("record calls = %d, want 1", repository.recordCalls)
+			}
+		})
+	}
+}
+
+func TestFreshInstallKeepsPublishedLinkWhenStagingCleanupFails(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "Movie.en.srt")
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), installSRT)
+	repository := &installationRepository{}
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, Link: func(staged, published string) error {
+		if err := os.Link(staged, published); err != nil {
+			return err
+		}
+		// Make the follow-up removal of the staging name fail.
+		return os.Remove(staged)
+	}}
+	if _, err := installer.Install(context.Background(), installRequest(t, source, destination)); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if payload, err := os.ReadFile(destination); err != nil || string(payload) != installSRT {
+		t.Fatalf("published subtitle = %q, %v", payload, err)
+	}
+	if repository.recordCalls != 1 {
+		t.Fatalf("published subtitle was not recorded: record calls = %d", repository.recordCalls)
 	}
 }

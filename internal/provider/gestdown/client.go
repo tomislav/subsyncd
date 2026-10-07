@@ -230,7 +230,8 @@ func (c *Client) request(ctx context.Context, operation base.Operation, path str
 		if response.StatusCode == http.StatusTooManyRequests {
 			reason = base.CooldownRateLimit
 		}
-		if err := c.transport.PersistCooldown(ctx, operation, reason, reset); err != nil {
+		reset, err := c.transport.PersistCooldown(ctx, operation, reason, reset)
+		if err != nil {
 			return nil, err
 		}
 		return nil, &base.CooldownError{ProviderID: c.id, Scope: operation, Reason: string(reason), ResetAt: reset}

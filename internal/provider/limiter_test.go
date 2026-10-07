@@ -196,3 +196,62 @@ func (emptyStateStore) GetProviderState(context.Context, string, string) (store.
 }
 
 func (emptyStateStore) PutProviderState(context.Context, store.ProviderState) error { return nil }
+
+func TestGateLateSuccessDoesNotShortenStrongerCooldown(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	gate := NewGate(database.Repository(), clock, 1)
+	gate.Configure("account", 1000, 1, 2)
+	quotaReset := now.Add(6 * time.Hour)
+	if err := gate.Persist(ctx, Throttle{ProviderID: "account", Scope: OperationDownload, Reason: "download_quota", ResetAt: quotaReset}); err != nil {
+		t.Fatal(err)
+	}
+	// A request already in flight completes with capacity left in its window.
+	if err := gate.Persist(ctx, Throttle{ProviderID: "account", Scope: OperationDownload, Reason: "x-ratelimit", Limit: 10, Remaining: 9, ResetAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	// A shorter exhausted window must not shorten the quota either.
+	if err := gate.Persist(ctx, Throttle{ProviderID: "account", Scope: OperationDownload, Reason: "retry-after", ResetAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	var cooldown *CooldownError
+	if _, err := gate.Acquire(ctx, "account", "api.example", OperationDownload); !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(quotaReset) {
+		t.Fatalf("download error = %v, want quota cooldown until %s", err, quotaReset)
+	}
+
+	// Once the quota has expired, newer windows apply normally.
+	clock.Set(quotaReset.Add(time.Second))
+	if err := gate.Persist(ctx, Throttle{ProviderID: "account", Scope: OperationDownload, Reason: "x-ratelimit", Limit: 10, Remaining: 9, ResetAt: quotaReset.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	release, err := gate.Acquire(ctx, "account", "api.example", OperationDownload)
+	if err != nil {
+		t.Fatalf("download after quota reset: %v", err)
+	}
+	release()
+}
+
+func TestGateClampsPersistedResetToMaximumCooldown(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	gate := NewGate(database.Repository(), testutil.NewClock(now), 1)
+	gate.Configure("account", 1000, 1, 1)
+	if err := gate.Persist(ctx, Throttle{ProviderID: "account", Scope: OperationDownload, Reason: "download_quota", ResetAt: now.AddDate(70, 0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	var cooldown *CooldownError
+	if _, err := gate.Acquire(ctx, "account", "api.example", OperationDownload); !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(now.Add(MaxProviderCooldown)) {
+		t.Fatalf("download error = %v, want cooldown until %s", err, now.Add(MaxProviderCooldown))
+	}
+}
