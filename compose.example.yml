@@ -1,8 +1,24 @@
+# subsyncd Docker Compose example.
+#
+# Copy this file to compose.yaml. Put host-specific values in a .env file next
+# to it; the defaults after ":-" below apply when a variable is not set:
+#
+#   PUID=1000                       # Host user that can read media and write subtitles
+#   PGID=1000                       # Host group for the same access
+#   TZ=Etc/UTC                      # Time zone for log timestamps
+#   MOVIES_PATH=/srv/media/movies   # Host folder with your movies
+#   TV_PATH=/srv/media/tv           # Host folder with your TV shows
+#   SUBSYNCD_IMAGE_TAG=latest       # Pin a published version or sha-<commit> tag
+#
+# Create config/ and data/ before the first start, and set the media paths:
+# Docker creates missing host folders as root, which the container cannot use.
 services:
   subsyncd:
     image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-latest}
     init: true
     restart: unless-stopped
+    # Runs as an unprivileged user with a read-only root filesystem. Only the
+    # volumes and /tmp below are writable.
     read_only: true
     user: "${PUID:-1000}:${PGID:-1000}"
     cap_drop:
@@ -10,20 +26,36 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      TZ: ${TZ:-Europe/Zagreb}
+      TZ: ${TZ:-Etc/UTC}
     volumes:
+      # config/config.yaml, read-only. Start from config.example.yaml.
       - ./config:/config:ro
+      # Database and caches. Back this folder up with the service stopped.
       - ./data:/data:rw
+      # Media folders. Subtitles are written next to the media files, so these
+      # must be writable. Keep the container paths in sync with media_roots
+      # and path_mappings in config.yaml.
       - ${MOVIES_PATH:-./media/movies}:/media/movies:rw
       - ${TV_PATH:-./media/tv}:/media/tv:rw
+    # Scratch space for downloads and LAPSE. Increase size if you raise
+    # worker.max_concurrent in config.yaml.
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=512m,uid=${PUID:-1000},gid=${PGID:-1000}
+    # Sonarr and Radarr on the "media" network reach subsyncd at
+    # http://subsyncd:8097. If they run outside Docker, publish the port:
+    # ports:
+    #   - "8097:8097"
     expose:
       - "8097"
+    # Shutdown drains work in two 30-second windows; 75s leaves room for both.
+    # Do not lower it.
     stop_grace_period: 75s
+    # Resource limits. LAPSE is the heaviest user; adjust for your host.
     mem_limit: 2g
     cpus: 2.0
     pids_limit: 256
+    # Same check as the image's built-in health check: database and media
+    # folders are available. It does not contact Sonarr, Radarr or providers.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8097/readyz"]
       interval: 30s
@@ -34,5 +66,8 @@ services:
       - media
 
 networks:
+  # An existing network shared with Sonarr and Radarr. Create it once with
+  #   docker network create media
+  # or replace "media" with the network your stack already uses.
   media:
     external: true

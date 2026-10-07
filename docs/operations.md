@@ -184,7 +184,7 @@ docker compose exec subsyncd subsyncd doctor
 
 To pin a build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or SHA tag. For rollback, use the matching image and complete stopped-data backup together. Check the notes for the published release before upgrading older builds; unsupported pre-release databases require a fresh data directory.
 
-Allow the container to stop fully before starting another process against the same media. The supplied Compose file allows 75 seconds for shutdown. Increase this if you increase `worker.shutdown_timeout`.
+Allow the container to stop fully before starting another process against the same media. The supplied Compose file allows 75 seconds for shutdown, which covers both fixed 30-second shutdown windows; do not lower it.
 
 ## Troubleshooting
 

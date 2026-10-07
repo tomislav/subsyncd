@@ -1,30 +1,59 @@
-# Replace credential placeholders in your private config/config.yaml.
-# Keep quotes around credentials. In single quotes, escape an apostrophe as two.
+# subsyncd configuration example.
+#
+# Copy this file to config/config.yaml and edit the copy. Keep that copy
+# private: it holds every credential subsyncd uses.
+#
+# Values marked "required" must be set. Everything else shows its default and
+# can be deleted if you are happy with that default.
+#
+# Credentials: replace each quoted placeholder. Keep the single quotes; to
+# write an apostrophe inside a quoted value, type it twice ('it''s').
+# A value written exactly as '${NAME}' is read from the environment variable
+# NAME instead, and startup fails if NAME is not set.
+#
+# Paths below are paths inside the container, as mounted by compose.yaml.
+# Restart subsyncd after any change to this file.
+
+# Required. Where subsyncd keeps its database and caches. Must be absolute.
 data_dir: /data
+
+# Required. Folders subsyncd may write subtitles into. Every subtitle is
+# written beside its media file, and only inside one of these roots.
 media_roots:
   - /media/movies
   - /media/tv
 
 server:
+  # Address for webhooks and health checks. Default: 0.0.0.0:8097.
   listen: 0.0.0.0:8097
 
 logging:
+  # debug, info, warn or error. Default: info.
+  # The SUBSYNCD_LOG_LEVEL environment variable overrides this.
   level: info
 
 worker:
+  # How many subtitle searches run at the same time, 1 to 8. Default: 1.
+  # Raising it may also need a larger /tmp in compose.yaml.
   max_concurrent: 1
 
+# Sonarr and Radarr instances. Remove any you do not use.
 instances:
-  - name: sonarr-main
-    type: sonarr
-    url: http://sonarr:8989
-    api_key: 'your-sonarr-api-key'
+  - name: sonarr-main        # Required, unique. Also part of the webhook URL.
+    type: sonarr             # Required: sonarr or radarr.
+    url: http://sonarr:8989  # Required. Must be reachable from the container.
+    api_key: 'your-sonarr-api-key'   # Required. Sonarr: Settings > General.
+    # Required. A random secret you choose. Use it in the Sonarr webhook URL:
+    #   http://subsyncd:8097/webhooks/sonarr-main?token=<this secret>
     webhook_token: 'your-own-random-sonarr-secret'
+    # Translates paths reported by Sonarr ("remote") to the same folder inside
+    # this container ("local"). Each local path must sit inside a media root.
+    # Media whose path matches no mapping is skipped.
     path_mappings:
       - remote: /data/tv
         local: /media/tv
-    # Optional: within each queue class, instances with a higher value are
-    # searched first (0-1000, default 0).
+    # Optional. Within each queue stage, instances with a higher value are
+    # searched first. 0 to 1000. Default: 0.
     # queue_priority: 10
   - name: radarr-main
     type: radarr
@@ -35,87 +64,122 @@ instances:
       - remote: /data/movies
         local: /media/movies
 
+# Subtitle providers. The key (for example "opensubtitles-main") is a name you
+# choose; list it under "languages" to use it. Remove providers you do not use.
+#
+# Every provider also accepts these request limits (defaults shown below).
+# Lower them if a provider complains; raising them rarely helps.
+#   requests_per_second: 1   # Average request rate.
+#   burst: 1                 # Requests allowed back to back before the rate applies.
+#   max_concurrent: 1        # Requests in flight at the same time.
 providers:
-  titlovi-main:
-    type: titlovi
-    username: 'your-titlovi-username'
-    password: 'your-titlovi-password'
-    requests_per_second: 1
-    burst: 1
-    max_concurrent: 1
-    max_pages: 5
   opensubtitles-main:
     type: opensubtitles
-    username: 'your-opensubtitles-username'
-    password: 'your-opensubtitles-password'
+    username: 'your-opensubtitles-username'   # Required.
+    password: 'your-opensubtitles-password'   # Required.
+    # Required. Sent as the HTTP User-Agent; any short identifier works.
     user_agent: subsyncd
-    requests_per_second: 1
-    burst: 1
-    max_concurrent: 1
+    # Published images include the application key. Only native builds and
+    # locally built images need to set it:
+    # api_key: 'your-opensubtitles-api-key'
+
   subdl-main:
     type: subdl
-    api_key: 'your-subdl-api-key'
-    requests_per_second: 1
-    burst: 1
-    max_concurrent: 1
+    api_key: 'your-subdl-api-key'   # Required.
 
-  # Optional keyless provider for TV episodes. Add to a language route to enable.
+  titlovi-main:
+    type: titlovi
+    username: 'your-titlovi-username'   # Required. Account must be API-enabled.
+    password: 'your-titlovi-password'   # Required.
+    # Maximum result pages read per search. Default: 5.
+    max_pages: 5
+
+  # Keyless provider for TV episodes only; movie searches skip it.
+  # Uncomment and add it to a language to use it.
   # gestdown-main:
   #   type: gestdown
-  #   requests_per_second: 1
-  #   burst: 1
-  #   max_concurrent: 1
 
 provider_http:
+  # Limits requests in flight to one provider website across all accounts you
+  # configured for it (for example two OpenSubtitles accounts). Default: 1.
   shared_origin_max_concurrent: 1
 
+# Required. Languages to fetch, as BCP 47 tags such as en, hr or pt-BR.
+# Each language tries its "providers" in order; at least one is required.
 languages:
   hr:
     providers:
       - titlovi-main
-    # Optional: try only after preferred providers have no installable result.
+    # Optional. Tried only when the providers above have no installable
+    # subtitle or are unavailable.
     # fallback_providers: [opensubtitles-main]
   en:
     providers:
       - opensubtitles-main
       - subdl-main
 
+# Matching.
+# Include hearing-impaired (SDH/HI) subtitles. Default: false.
 allow_hearing_impaired: false
+# Lowest score, 1 to 100, a non-exact match needs to be considered. Higher is
+# stricter. Default: 35. Raise it (60 is a good start) if sync.policy is never.
 minimum_release_score: 35
 
 pack_cache:
-  ttl: 24h
-  max_bytes: 536870912
+  # Season-pack downloads are kept so later episodes need no new download.
+  ttl: 24h                 # How long a pack is kept. Default: 24h.
+  max_bytes: 536870912     # Total cache size in bytes. Default: 536870912 (512 MiB).
 
 lapse_cache:
-  # Speech profiles expire 30 days after their last write; reads do not renew TTL.
+  # How long LAPSE speech-timing profiles are kept, counted from when they were
+  # written; reading a profile does not extend it. Default: 720h (30 days).
   ttl: 720h
 
 sync:
-  # The production image installs the pinned LAPSE release here.
+  # Required. Path to the LAPSE binary. The published image has it here.
   lapse_path: /opt/lapse/lapse
+  # Longest a single LAPSE run may take. Default: 30m.
   timeout: 30m
-  # "confidence" avoids reading the media when strong release evidence is enough.
-  # Use "always" to send every non-exact candidate through LAPSE, or "never" to
-  # install eligible candidates with their downloaded timing (unverified).
+  # When to check and fix subtitle timing with LAPSE. Default: confidence.
+  #   confidence  Skip LAPSE only for a strong match (see bypass_score and the
+  #               switches below); check everything else.
+  #   always      Check every non-exact match. Exact file-hash matches still skip.
+  #   never       Never check; install subtitles with their downloaded timing.
+  #               The settings below are then ignored.
   policy: confidence
+  # The settings below only apply when policy is confidence. Each "true" makes
+  # skipping LAPSE harder; all default to true.
+  # Minimum score, 1 to 100, for a match to skip LAPSE. Default: 75.
   bypass_score: 75
+  # Skipping LAPSE needs a matching external ID or title and year.
   require_identity_anchor: true
+  # For TV, skipping LAPSE needs the subtitle to name the right episode.
   require_episode_evidence: true
+  # Skipping LAPSE needs a matching release group.
   require_release_group: true
+  # Always check subtitles taken from season packs.
   lapse_for_packs: true
+  # Always check upgrades that replace a subtitle subsyncd installed.
   lapse_for_upgrades: true
 
 install:
+  # Permissions for new subtitle files, as a quoted octal string. Must not
+  # include execute bits. Default: "0644".
   file_mode: "0644"
+  # Optional owner and group for new subtitles. Leave unset to keep the
+  # container's PUID/PGID. The supplied compose.yaml drops all capabilities, so
+  # changing the owner fails; gid works only for a group PUID already belongs to.
   # uid: 1000
   # gid: 1000
 
+# Optional. Asks Silo to rescan a folder after a subtitle is installed.
 silo:
-  enabled: false
-  # Silo API v2 server base URL, without /api/v2; v1 is not supported.
+  enabled: false   # Default: false. The settings below are needed only when true.
+  # Silo API v2 server base URL, without /api/v2. Silo API v1 is not supported.
   url: http://silo:8080
-  api_key: 'your-silo-admin-api-key'
+  api_key: 'your-silo-admin-api-key'   # A Silo admin API key.
+  # Translates subsyncd's media paths ("from") to the same folder as Silo sees
+  # it ("to"). Both must be absolute.
   path_mappings:
     - from: /media
       to: /mnt/media
