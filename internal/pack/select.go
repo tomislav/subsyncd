@@ -536,7 +536,7 @@ func ReleaseEpisodeRange(name string) (season, from, to int, found, invalid bool
 func selectRange(manifest Manifest, members []Member, media domain.Media) (Member, error) {
 	var matches []Member
 	for _, member := range members {
-		if hasInvalidOrAmbiguousRangeEvidence(member.SafeName) {
+		if contradictsRange(member.SafeName, media) {
 			continue
 		}
 		season, from, to, found := episodeRange(member.SafeName)
@@ -556,8 +556,12 @@ func contradictsRange(name string, media domain.Media) bool {
 	if hasInvalidOrAmbiguousRangeEvidence(name) {
 		return true
 	}
-	if _, season, from, to, found := acceptedEpisodeRangeMatch(name); found {
-		return season != media.Season || from < media.Episode || to > media.EpisodeEnd
+	// A range is one piece of evidence; remove it and check the other tokens too.
+	if ranged, season, from, to, found := acceptedEpisodeRangeMatch(name); found {
+		if season != media.Season || from > media.Episode || to < media.EpisodeEnd {
+			return true
+		}
+		name = name[:ranged.indices[0]] + " " + name[ranged.indices[1]:]
 	}
 	for _, token := range episodeTokenPattern.FindAllStringIndex(name, -1) {
 		if !completeRangeToken(name, token[0], token[1]) {

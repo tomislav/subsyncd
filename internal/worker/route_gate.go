@@ -57,6 +57,9 @@ func (w *Worker) pausedRouteKeys(ctx context.Context) ([]store.RouteKey, error) 
 			slog.String("media_kind", string(pause.Kind)),
 			slog.Int("provider_count", pause.ProviderCount),
 		}
+		if pause.RangesOnly {
+			attrs = append(attrs, slog.Bool("episode_ranges_only", true))
+		}
 		if pause.ResetAt.IsZero() {
 			attrs = append(attrs, slog.String("reason", "disabled"))
 		} else {
@@ -66,8 +69,11 @@ func (w *Worker) pausedRouteKeys(ctx context.Context) ([]store.RouteKey, error) 
 	}
 	for key := range w.pausedRoutes {
 		if _, still := current[key]; !still {
-			events.Log(ctx, slog.LevelInfo, "queue.route_resumed", "subtitle searches resumed",
-				slog.String("language", key.Language.String()), slog.String("media_kind", string(key.Kind)))
+			attrs := []slog.Attr{slog.String("language", key.Language.String()), slog.String("media_kind", string(key.Kind))}
+			if key.RangesOnly {
+				attrs = append(attrs, slog.Bool("episode_ranges_only", true))
+			}
+			events.Log(ctx, slog.LevelInfo, "queue.route_resumed", "subtitle searches resumed", attrs...)
 		}
 	}
 	w.pausedRoutes = current

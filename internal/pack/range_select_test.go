@@ -43,7 +43,7 @@ func TestSelectSingleEpisodeForRangeTargetAcceptsANonContradictingSingleFile(t *
 			t.Errorf("SelectSingleEpisode(%q) = %#v, %v; want it selected", name, selected, err)
 		}
 	}
-	for _, name := range []string{"Mad.Men.S07E01.srt", "Mad.Men.S06E03.srt"} {
+	for _, name := range []string{"Mad.Men.S07E01.srt", "Mad.Men.S06E03.srt", "Mad.Men.S06E01-E02.and.S07E05.srt"} {
 		if selected, err := SelectSingleEpisode(Manifest{Members: []Member{{SafeName: name}}}, domain.Candidate{}, media, false); err == nil {
 			t.Errorf("SelectSingleEpisode(%q) = %#v, want an error for contradicting evidence", name, selected)
 		}

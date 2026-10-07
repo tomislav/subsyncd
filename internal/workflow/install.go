@@ -374,15 +374,8 @@ func validatedSubtitle(path string, media domain.Media) ([]byte, error) {
 	if !utf8.Valid(payload) || bytes.IndexByte(payload, 0) >= 0 {
 		return nil, &subtitleValidationError{reason: "installation source is not UTF-8 text"}
 	}
-	var subtitles *astisub.Subtitles
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".srt":
-		subtitles, err = astisub.ReadFromSRT(bytes.NewReader(payload))
-	case ".ass", ".ssa":
-		subtitles, err = astisub.ReadFromSSAWithOptions(bytes.NewReader(payload), astisub.SSAOptions{})
-	case ".vtt":
-		subtitles, err = astisub.ReadFromWebVTT(bytes.NewReader(payload))
-	default:
+	subtitles, supported, err := parseSubtitlePayload(path, payload)
+	if !supported {
 		return nil, &subtitleValidationError{reason: "installation source has unsupported extension"}
 	}
 	if err != nil || subtitles == nil || len(subtitles.Items) == 0 || len(subtitles.Items) > 100_000 {
@@ -419,7 +412,20 @@ func checkRangeCoverage(path string, media domain.Media) error {
 	if err != nil {
 		return nil
 	}
-	var subtitles *astisub.Subtitles
+	subtitles, supported, err := parseSubtitlePayload(path, payload)
+	if !supported || err != nil || subtitles == nil {
+		return nil
+	}
+	var last time.Duration
+	for _, item := range subtitles.Items {
+		last = max(last, item.EndAt)
+	}
+	return rangeCoverageError(last, media)
+}
+
+// parseSubtitlePayload parses a subtitle by its extension. supported is false
+// for extensions subsyncd does not install.
+func parseSubtitlePayload(path string, payload []byte) (subtitles *astisub.Subtitles, supported bool, err error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".srt":
 		subtitles, err = astisub.ReadFromSRT(bytes.NewReader(payload))
@@ -428,16 +434,9 @@ func checkRangeCoverage(path string, media domain.Media) error {
 	case ".vtt":
 		subtitles, err = astisub.ReadFromWebVTT(bytes.NewReader(payload))
 	default:
-		return nil
+		return nil, false, nil
 	}
-	if err != nil || subtitles == nil {
-		return nil
-	}
-	var last time.Duration
-	for _, item := range subtitles.Items {
-		last = max(last, item.EndAt)
-	}
-	return rangeCoverageError(last, media)
+	return subtitles, true, err
 }
 
 func rangeCoverageError(last time.Duration, media domain.Media) error {

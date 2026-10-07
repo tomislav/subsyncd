@@ -782,6 +782,8 @@ func validateResumeProviders(providers []string) error {
 type RouteKey struct {
 	Language domain.Language
 	Kind     domain.MediaKind
+	// RangesOnly limits the key to multi-episode files on the route.
+	RangesOnly bool
 }
 
 func (r *Repository) LeaseDueSearches(ctx context.Context, now time.Time, limit int, duration time.Duration) ([]SearchLease, error) {
@@ -816,7 +818,11 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 	if len(paused) > 0 {
 		conditions := make([]string, 0, len(paused))
 		for _, route := range paused {
-			conditions = append(conditions, `(language=? AND media.kind=?)`)
+			condition := `(language=? AND media.kind=?)`
+			if route.RangesOnly {
+				condition = `(language=? AND media.kind=? AND media.episode_end > media.episode)`
+			}
+			conditions = append(conditions, condition)
 			args = append(args, route.Language.String(), string(route.Kind))
 		}
 		query += ` AND NOT (` + strings.Join(conditions, ` OR `) + `)`

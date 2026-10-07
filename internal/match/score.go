@@ -75,19 +75,16 @@ func evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 }
 
 // coversTarget reports whether a candidate for a multi-episode file covers
-// every episode in it: an exact hash, a pack containing the whole range (a
-// season pack's member selection enforces the range later), or a release name
-// whose episode range spans it. Evidence of the first episode alone does not.
+// every episode in it: an exact hash, a range pack spanning it, or a release
+// name whose standard or absolute episode range spans it. Evidence of one
+// episode does not, and neither does a whole-season pack: it cannot show that
+// it holds a combined subtitle, so downloading it would waste quota.
 func coversTarget(media domain.Media, candidate domain.Candidate, releases []Release) bool {
 	if candidate.ExactHash {
 		return true
 	}
 	if pack := candidate.Pack; pack != nil {
 		switch pack.Scope {
-		case domain.PackSeason:
-			if pack.Season == media.Season {
-				return true
-			}
 		case domain.PackRange:
 			standard := (pack.Season == 0 || pack.Season == media.Season) && pack.EpisodeFrom > 0 && pack.EpisodeFrom <= media.Episode && media.EpisodeEnd <= pack.EpisodeTo
 			absolute := media.AbsoluteEpisodeEnd > 0 && pack.AbsoluteEpisodeFrom > 0 && pack.AbsoluteEpisodeFrom <= media.AbsoluteEpisode && media.AbsoluteEpisodeEnd <= pack.AbsoluteEpisodeTo
@@ -101,8 +98,20 @@ func coversTarget(media domain.Media, candidate domain.Candidate, releases []Rel
 		if release.Season == media.Season && release.Episode > 0 && release.Episode <= media.Episode && media.EpisodeEnd <= end {
 			return true
 		}
+		if media.AbsoluteEpisodeEnd > 0 && release.AbsoluteEpisode > 0 && release.AbsoluteEpisode <= media.AbsoluteEpisode && media.AbsoluteEpisodeEnd <= release.AbsoluteEpisodeEnd {
+			return true
+		}
 	}
 	return false
+}
+
+// episodeInTarget reports whether an episode number belongs to the target:
+// its episode, or for a multi-episode file any episode in its range.
+func episodeInTarget(media domain.Media, episode int) bool {
+	if media.IsEpisodeRange() {
+		return media.Episode <= episode && episode <= media.EpisodeEnd
+	}
+	return episode == media.Episode
 }
 
 // Explicit provider evidence contributes only to its own signal. It must never
@@ -201,7 +210,7 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 		if candidate.Season != 0 && candidate.Season != media.Season {
 			reasons = append(reasons, "candidate season conflicts with target")
 		}
-		if !selectedMember && candidate.Episode != 0 && candidate.Episode != media.Episode && candidate.Episode != media.AbsoluteEpisode {
+		if !selectedMember && candidate.Episode != 0 && !episodeInTarget(media, candidate.Episode) && candidate.Episode != media.AbsoluteEpisode {
 			reasons = append(reasons, "candidate episode conflicts with target")
 		}
 	}

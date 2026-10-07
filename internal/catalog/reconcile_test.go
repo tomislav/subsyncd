@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -719,16 +721,24 @@ func TestReconcileRechecksLegacyMultiEpisodeFilesOnce(t *testing.T) {
 			{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 3001}, // hydration fails: retried next time
 		},
 	}
-	reconciler := Reconciler{Instance: "sonarr-main", Kind: domain.MediaEpisode, Catalog: catalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciler := Reconciler{Instance: "sonarr-main", Kind: domain.MediaEpisode, Catalog: catalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }, Events: events}
 
 	if err := reconciler.Run(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `"event":"reconcile.multi_episode_recheck_failed"`) || !strings.Contains(logs.String(), `"file_id":3001`) {
+		t.Fatalf("failed re-check was not logged: %s", logs.String())
 	}
 	byFile := map[int64]store.MediaEventMutation{}
 	for _, mutation := range repository.mutations {
 		byFile[mutation.Ref.FileID] = mutation
 	}
-	if got := byFile[1001]; got.Type != string(EventImport) || got.Media.EpisodeEnd != 2 || got.EntityID != 101 || len(got.Languages) != 1 || got.Priority != store.SearchPriorityMissing {
+	if got := byFile[1001]; got.Type != string(EventImport) || got.EventID != "multi-episode-recheck:sonarr-main:1001" || got.Media.EpisodeEnd != 2 || got.EntityID != 101 || len(got.Languages) != 1 || got.Priority != store.SearchPriorityMissing {
 		t.Fatalf("ranged recheck mutation = %+v", got)
 	}
 	if got := byFile[2001]; got.Type != string(EventImport) || got.Media.EpisodeEnd != domain.CheckedUnsupportedEpisodeEnd {

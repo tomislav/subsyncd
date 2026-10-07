@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -27,6 +29,8 @@ type Reconciler struct {
 	Languages    []domain.Language
 	Now          func() time.Time
 	OnCommitted  func()
+	// Events receives background warnings that do not fail reconciliation.
+	Events *observability.Emitter
 }
 
 func (r Reconciler) Run(ctx context.Context) error {
@@ -152,8 +156,11 @@ func (r Reconciler) recheckLegacyMultiEpisode(ctx context.Context) []store.Media
 	if r.Kind != domain.MediaEpisode || !ok {
 		return nil
 	}
+	events := r.Events.For("catalog")
 	refs, err := repository.ListLegacyMultiEpisodeMedia(ctx, r.Instance)
 	if err != nil {
+		events.Log(ctx, slog.LevelWarn, "reconcile.multi_episode_recheck_failed", "could not list legacy multi-episode files",
+			append([]slog.Attr{slog.String("instance", r.Instance)}, events.ErrorAttrs("list", err)...)...)
 		return nil
 	}
 	now := r.Now().UTC()
@@ -163,11 +170,18 @@ func (r Reconciler) recheckLegacyMultiEpisode(ctx context.Context) []store.Media
 			return mutations
 		}
 		media, err := r.Catalog.GetMedia(ctx, ref)
-		if err != nil || media.EntityID <= 0 || media.Ref != ref {
+		if err == nil && (media.EntityID <= 0 || media.Ref != ref) {
+			err = fmt.Errorf("hydrated media does not match the file")
+		}
+		if err != nil {
+			// Retried on the next reconciliation (every six hours).
+			events.Log(ctx, slog.LevelWarn, "reconcile.multi_episode_recheck_failed", "could not re-check a multi-episode file",
+				append([]slog.Attr{slog.String("instance", r.Instance), slog.Int64("file_id", ref.FileID)}, events.ErrorAttrs("hydration", err)...)...)
 			continue
 		}
 		mutations = append(mutations, store.MediaEventMutation{
-			EventID:   fmt.Sprintf("multi-episode-recheck:%s:%d:%d", r.Instance, ref.FileID, now.UnixNano()),
+			// Stable per file, so a retried commit applies the re-check once.
+			EventID:   fmt.Sprintf("multi-episode-recheck:%s:%d", r.Instance, ref.FileID),
 			Type:      string(EventImport),
 			EntityID:  media.EntityID,
 			Media:     media,
