@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 )
 
 type OwnedSidecar struct {
@@ -29,7 +30,7 @@ func ScanSidecars(mediaPath string, ownership map[domain.Language]OwnedSidecar) 
 	stem := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
 	entries, err := os.ReadDir(directory)
 	if err != nil {
-		return nil, fmt.Errorf("scan sidecars: %w", err)
+		return nil, fmt.Errorf("scan sidecars: %w", observability.PathErrorCause(err))
 	}
 	var tracks []Track
 	for _, entry := range entries {
@@ -51,7 +52,7 @@ func ScanSidecars(mediaPath string, ownership map[domain.Language]OwnedSidecar) 
 		path := filepath.Join(directory, entry.Name())
 		checksum, err := checksumFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("checksum sidecar %q: %w", path, err)
+			return nil, fmt.Errorf("checksum sidecar: %w", observability.PathErrorCause(err))
 		}
 		owned, managed := ownership[language]
 		protected := !managed || filepath.Clean(owned.Path) != filepath.Clean(path) || owned.Checksum != checksum

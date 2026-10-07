@@ -2,11 +2,13 @@ package inventory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -55,10 +57,10 @@ type Service struct {
 func (s Service) Refresh(ctx context.Context, mediaID int64, media domain.Media, forceProbe bool) (Inventory, error) {
 	info, err := os.Stat(media.Fingerprint.Path)
 	if err != nil {
-		return Inventory{}, fmt.Errorf("stat media: %w", err)
+		return Inventory{}, fmt.Errorf("stat media: %w", observability.PathErrorCause(err))
 	}
 	if !info.Mode().IsRegular() {
-		return Inventory{}, fmt.Errorf("media path %q is not a regular file", media.Fingerprint.Path)
+		return Inventory{}, errors.New("media path is not a regular file")
 	}
 	fingerprint := domain.MediaFingerprint{Path: filepath.Clean(media.Fingerprint.Path), FileID: media.Ref.FileID, Size: info.Size(), ModTime: info.ModTime()}
 	stored, err := s.Repository.GetTrackInventory(ctx, mediaID)
@@ -107,7 +109,7 @@ func (s Service) Refresh(ctx context.Context, mediaID int64, media domain.Media,
 	// Recheck even on cache hits because sidecar scanning also takes time.
 	current, err := os.Stat(fingerprint.Path)
 	if err != nil {
-		return Inventory{}, fmt.Errorf("recheck inventory media: %w", err)
+		return Inventory{}, fmt.Errorf("recheck inventory media: %w", observability.PathErrorCause(err))
 	}
 	if !current.Mode().IsRegular() || !os.SameFile(info, current) || current.Size() != fingerprint.Size || !current.ModTime().Equal(fingerprint.ModTime) {
 		return Inventory{}, store.ErrStaleInventory
