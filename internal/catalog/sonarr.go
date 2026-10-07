@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cplieger/arrapi/v2"
@@ -346,7 +347,8 @@ func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]H
 	hydrated := make(map[int64]hydratedFile)
 	present := make(map[int64]HistoryChange)
 	finalized := make([]HistoryChange, 0, len(changes))
-	var deferred error
+	var deferred *DeferredHistoryError
+	seriesTitles := make(map[int]string)
 nextChange:
 	for _, change := range changes {
 		episode, err := s.entity.EpisodeByID(ctx, int(change.EntityID))
@@ -392,7 +394,7 @@ nextChange:
 						}
 						continue
 					}
-					deferred = errors.Join(deferred, fmt.Errorf("%w: Sonarr episode %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+					deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, seriesTitles, change.EntityID, episode))
 					continue nextChange
 				}
 				return nil, fmt.Errorf("map current Sonarr episode %d: %w", change.EntityID, err)
@@ -432,7 +434,7 @@ nextChange:
 							continue
 						}
 						if errors.Is(mapErr, errMappedPathUnavailable) {
-							deferred = errors.Join(deferred, fmt.Errorf("%w: Sonarr episode %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+							deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, seriesTitles, change.EntityID, episode))
 							continue
 						}
 						return nil, fmt.Errorf("map rechecked Sonarr episode %d: %w", change.EntityID, mapErr)
@@ -440,7 +442,7 @@ nextChange:
 					media, episodeIDs, err = s.hydrateMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: fileID})
 					if err != nil {
 						if errors.Is(err, errMappedPathUnavailable) {
-							deferred = errors.Join(deferred, fmt.Errorf("%w: Sonarr episode %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+							deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, seriesTitles, change.EntityID, episode))
 							continue
 						}
 						return nil, fmt.Errorf("hydrate rechecked Sonarr history entity %d: %w", change.EntityID, err)
@@ -474,7 +476,26 @@ nextChange:
 		finalized = append(finalized, change)
 	}
 	sortHistoryChanges(finalized)
-	return finalized, deferred
+	return finalized, deferredHistoryResult(deferred)
+}
+
+// historyDeferral labels a deferred episode for operators. The series title
+// is best effort: a failed lookup leaves the season and episode identity.
+// Titles are fetched once per series and only for entities that will be
+// logged, so an unavailable mount does not add a request per episode.
+func (s *Sonarr) historyDeferral(ctx context.Context, deferred *DeferredHistoryError, seriesTitles map[int]string, entityID int64, episode arrapi.Episode) HistoryDeferral {
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Season: episode.SeasonNumber, Episode: episode.EpisodeNumber, EpisodeTitle: episode.Title}
+	logged := deferred == nil || len(deferred.Entities) < maximumLoggedDeferrals
+	if title, known := seriesTitles[episode.SeriesID]; known {
+		media.Title = title
+	} else if logged && episode.SeriesID > 0 {
+		var series sonarrSeries
+		if err := s.client.getJSON(ctx, "/api/v3/series/"+strconv.Itoa(episode.SeriesID), nil, &series); err == nil && series.ID == int64(episode.SeriesID) {
+			media.Title = series.Title
+		}
+		seriesTitles[episode.SeriesID] = media.Title
+	}
+	return HistoryDeferral{Kind: domain.MediaEpisode, EntityID: entityID, Title: strings.TrimPrefix(observability.MediaTitle(media), "- ")}
 }
 
 func alternateTitleStrings(titles []arrAlternateTitle) []string {

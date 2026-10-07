@@ -229,7 +229,7 @@ func (r *Radarr) ListChanges(ctx context.Context, since, through time.Time) ([]H
 		return nil, err
 	}
 	finalized := make([]HistoryChange, 0, len(changes))
-	var deferred error
+	var deferred *DeferredHistoryError
 nextChange:
 	for index := range changes {
 		change := changes[index]
@@ -274,7 +274,7 @@ nextChange:
 						}
 						continue
 					}
-					deferred = errors.Join(deferred, fmt.Errorf("%w: Radarr movie %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+					deferred = addHistoryDeferral(deferred, radarrHistoryDeferral(change.EntityID, movie))
 					continue nextChange
 				}
 				return nil, fmt.Errorf("map current Radarr movie %d: %w", change.EntityID, err)
@@ -312,7 +312,7 @@ nextChange:
 						continue
 					}
 					if errors.Is(mapErr, errMappedPathUnavailable) {
-						deferred = errors.Join(deferred, fmt.Errorf("%w: Radarr movie %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+						deferred = addHistoryDeferral(deferred, radarrHistoryDeferral(change.EntityID, movie))
 						continue
 					}
 					return nil, fmt.Errorf("map rechecked Radarr movie %d: %w", change.EntityID, mapErr)
@@ -321,7 +321,7 @@ nextChange:
 				item, err = r.GetMedia(ctx, ref)
 				if err != nil {
 					if errors.Is(err, errMappedPathUnavailable) {
-						deferred = errors.Join(deferred, fmt.Errorf("%w: Radarr movie %d has unavailable current media", ErrHistoryDeferred, change.EntityID))
+						deferred = addHistoryDeferral(deferred, radarrHistoryDeferral(change.EntityID, movie))
 						continue
 					}
 					return nil, fmt.Errorf("hydrate rechecked Radarr history entity %d: %w", change.EntityID, err)
@@ -340,5 +340,11 @@ nextChange:
 		change.Media = item
 		finalized = append(finalized, change)
 	}
-	return finalized, deferred
+	return finalized, deferredHistoryResult(deferred)
+}
+
+// radarrHistoryDeferral labels a deferred movie for operators.
+func radarrHistoryDeferral(entityID int64, movie arrapi.Movie) HistoryDeferral {
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Title: movie.Title, Year: movie.Year}
+	return HistoryDeferral{Kind: domain.MediaMovie, EntityID: entityID, Title: observability.MediaTitle(media)}
 }

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"subsyncd/internal/catalog"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/notifier"
 	"subsyncd/internal/observability"
@@ -44,7 +45,12 @@ type Reconciler interface {
 type reconcileAttempt struct {
 	LastAttempt time.Time
 	Failures    int
+	Deferred    bool
 }
+
+// reconcileDeferredDelay is the fixed retry for a page that committed but had
+// to wait for unreadable media. It does not escalate like a failure.
+const reconcileDeferredDelay = time.Hour
 
 var reconcileFailureDelays = [...]time.Duration{
 	5 * time.Minute,
@@ -566,6 +572,9 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 		}
 		attempt := w.reconcileAttempts[name]
 		delay := w.ReconcileInterval
+		if attempt.Deferred {
+			delay = reconcileDeferredDelay
+		}
 		if attempt.Failures > 0 {
 			index := attempt.Failures - 1
 			if index >= len(reconcileFailureDelays) {
@@ -579,8 +588,23 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 		started := time.Now()
 		events := w.Events.For("worker")
 		events.Log(ctx, slog.LevelInfo, "reconcile.started", "catalog reconciliation started", slog.String("instance", name))
-		if err := w.Reconcilers[name].Run(ctx); err != nil {
+		err := w.Reconcilers[name].Run(ctx)
+		var deferred *catalog.ReconciliationDeferredError
+		if errors.As(err, &deferred) {
+			w.reconcileAttempts[name] = reconcileAttempt{LastAttempt: now, Deferred: true}
+			events.Log(ctx, slog.LevelWarn, "reconcile.deferred", "catalog reconciliation is waiting for unavailable media",
+				slog.String("instance", name),
+				slog.Int("deferred_count", len(deferred.Entities)),
+				slog.Any("deferred_media", deferred.DeferredMedia()),
+				slog.Time("deferred_since", deferred.Since),
+				slog.Time("expires_at", deferred.ExpiresAt),
+				slog.Time("retry_at", now.Add(reconcileDeferredDelay)),
+				slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+			continue
+		}
+		if err != nil {
 			attempt.LastAttempt = now
+			attempt.Deferred = false
 			if attempt.Failures < len(reconcileFailureDelays) {
 				attempt.Failures++
 			}

@@ -18,6 +18,46 @@ type ReconciliationStore interface {
 	GetReconciliationState(context.Context, string) (store.ReconciliationState, error)
 	ListActiveCatalogIdentities(context.Context, string, domain.MediaKind) ([]int64, error)
 	CommitReconciliation(context.Context, string, store.ReconciliationState, time.Time, []store.MediaEventMutation) error
+	RetainReconciliation(context.Context, string, store.ReconciliationState, time.Time, []store.MediaEventMutation) error
+}
+
+// DefaultDeferralLimit bounds how long entities with unreadable media may hold
+// an instance's history cursor. Their next import, rename, or deletion is
+// reconciled normally after the cursor moves past them.
+const DefaultDeferralLimit = 24 * time.Hour
+
+// maximumLoggedDeferrals bounds the entity list carried in one log record.
+const maximumLoggedDeferrals = 10
+
+// ReconciliationDeferredError reports a committed page whose cursor was
+// retained because current media could not be read. It is an expected,
+// degraded outcome rather than a reconciliation failure, and it matches
+// ErrHistoryDeferred.
+type ReconciliationDeferredError struct {
+	Instance  string
+	Since     time.Time
+	ExpiresAt time.Time
+	Entities  []HistoryDeferral
+	Err       error
+}
+
+func (e *ReconciliationDeferredError) Error() string {
+	return fmt.Sprintf("%s reconciliation deferred since %s: %v", e.Instance, e.Since.UTC().Format(time.RFC3339), e.Err)
+}
+
+func (e *ReconciliationDeferredError) Unwrap() error { return e.Err }
+
+// DeferredMedia returns log-safe descriptions of at most ten deferred entities.
+func (e *ReconciliationDeferredError) DeferredMedia() []string {
+	return describeDeferrals(e.Entities)
+}
+
+func describeDeferrals(entities []HistoryDeferral) []string {
+	described := make([]string, 0, min(len(entities), maximumLoggedDeferrals))
+	for _, entity := range entities[:min(len(entities), maximumLoggedDeferrals)] {
+		described = append(described, entity.describe())
+	}
+	return described
 }
 
 type Reconciler struct {
@@ -28,7 +68,9 @@ type Reconciler struct {
 	Store        ReconciliationStore
 	Languages    []domain.Language
 	Now          func() time.Time
-	OnCommitted  func()
+	// DeferralLimit overrides DefaultDeferralLimit when positive.
+	DeferralLimit time.Duration
+	OnCommitted   func()
 	// Events receives background warnings that do not fail reconciliation.
 	Events *observability.Emitter
 }
@@ -121,18 +163,46 @@ func (r Reconciler) Run(ctx context.Context) error {
 		}
 		mutations = append(mutations, mutation)
 	}
-	commitCursor := pageEnd
-	if listErr != nil {
-		commitCursor = snapshot.Cursor
+	limit := r.DeferralLimit
+	if limit <= 0 {
+		limit = DefaultDeferralLimit
 	}
-	if err := r.Store.CommitReconciliation(ctx, r.Instance, snapshot, commitCursor, mutations); err != nil {
+	var entities []HistoryDeferral
+	var detail *DeferredHistoryError
+	if errors.As(listErr, &detail) {
+		entities = detail.Entities
+	}
+	expired := listErr != nil && !snapshot.DeferredSince.IsZero() && !pageEnd.Before(snapshot.DeferredSince.Add(limit))
+	if listErr != nil && !expired {
+		if err := r.Store.RetainReconciliation(ctx, r.Instance, snapshot, pageEnd, mutations); err != nil {
+			return fmt.Errorf("commit %s reconciliation page: %w", r.Instance, err)
+		}
+	} else if err := r.Store.CommitReconciliation(ctx, r.Instance, snapshot, pageEnd, mutations); err != nil {
 		return fmt.Errorf("commit %s reconciliation page: %w", r.Instance, err)
 	}
 	if r.OnCommitted != nil {
 		r.OnCommitted()
 	}
+	if expired {
+		r.Events.For("catalog").Log(ctx, slog.LevelWarn, "reconcile.deferral_expired", "stopped waiting for unavailable media in Arr history",
+			slog.String("instance", r.Instance),
+			slog.Time("deferred_since", snapshot.DeferredSince),
+			slog.Int("deferred_count", len(entities)),
+			slog.Any("deferred_media", describeDeferrals(entities)))
+		return nil
+	}
 	if listErr != nil {
-		return fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, listErr)
+		since := snapshot.DeferredSince
+		if since.IsZero() {
+			since = pageEnd
+		}
+		return &ReconciliationDeferredError{
+			Instance:  r.Instance,
+			Since:     since,
+			ExpiresAt: since.Add(limit),
+			Entities:  entities,
+			Err:       fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, listErr),
+		}
 	}
 	return nil
 }

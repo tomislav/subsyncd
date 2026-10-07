@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,7 +232,7 @@ func TestRadarrHistoryDefersBrokenSymlinkAfterCurrentStateRecheck(t *testing.T) 
 			})
 		case "/api/v3/movie/402":
 			movieRequests++
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 402, "hasFile": true, "movieFile": map[string]any{"id": 1700, "movieId": 402, "path": "/remote/movies/movie.mkv"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 402, "title": "Example Movie", "year": 2001, "hasFile": true, "movieFile": map[string]any{"id": 1700, "movieId": 402, "path": "/remote/movies/movie.mkv"}})
 		case "/api/v3/movie/403":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 403, "hasFile": false})
 		default:
@@ -248,6 +250,13 @@ func TestRadarrHistoryDefersBrokenSymlinkAfterCurrentStateRecheck(t *testing.T) 
 	}
 	if movieRequests != 2 {
 		t.Fatalf("current movie requests = %d, want 2", movieRequests)
+	}
+	var deferral *DeferredHistoryError
+	if !errors.As(err, &deferral) || !reflect.DeepEqual(deferral.Entities, []HistoryDeferral{{Kind: domain.MediaMovie, EntityID: 402, Title: "Example Movie (2001)"}}) {
+		t.Fatalf("deferral = %#v, want one titled movie", deferral)
+	}
+	if !strings.Contains(err.Error(), "Radarr movie 402 (Example Movie (2001)) has unavailable current media") {
+		t.Fatalf("deferral error = %q", err)
 	}
 	if len(changes) != 1 || changes[0].HistoryID != 41 || changes[0].EntityID != 403 || changes[0].State != HistoryAbsent {
 		t.Fatalf("nondeferred changes = %#v", changes)

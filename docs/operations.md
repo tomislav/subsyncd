@@ -87,6 +87,8 @@ Completed discovery is remembered across restarts. Changed path mappings or medi
 
 If a webhook updates the catalog while history is being fetched, subsyncd discards the stale history snapshot and retries later. Newer deletions, replacements and renames remain intact, and the saved history position advances only after a successful reconciliation.
 
+If Arr reports a current file that subsyncd cannot read, such as a symlink whose target is missing or unavailable, reconciliation applies every other change, keeps its history position, and logs `reconcile.deferred` (warn) naming up to ten affected movies or episodes. It checks again every hour. If the file is still unreadable after 24 hours, subsyncd moves its history position past it and logs `reconcile.deferral_expired`; the item is picked up again by its next import, rename or deletion in Arr. Replace or remove the broken file in Arr to clear the warning sooner.
+
 After adding an instance, provider, or language, restart subsyncd. A new language schedules checks for media already indexed under your configured instances. Existing subtitles may satisfy those checks without a download.
 
 ## Missing subtitles and upgrades

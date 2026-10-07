@@ -1995,9 +1995,12 @@ func (r *Repository) EnsureConfiguredLanguageSearches(ctx context.Context, insta
 }
 
 // ReconciliationState is the cursor and event fence captured before hydration.
+// DeferredSince is when deferred history first retained the current cursor; it
+// is zero while the cursor advances normally.
 type ReconciliationState struct {
-	Cursor   time.Time
-	Revision int64
+	Cursor        time.Time
+	Revision      int64
+	DeferredSince time.Time
 }
 
 // ErrReconciliationStale means the instance changed while history was fetched.
@@ -2012,8 +2015,8 @@ func readReconciliationState(ctx context.Context, reader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, instance string) (ReconciliationState, error) {
 	var state ReconciliationState
-	var raw string
-	if err := reader.QueryRowContext(ctx, `SELECT reconciliation_cursor, event_revision FROM instances WHERE name=?`, instance).Scan(&raw, &state.Revision); err != nil {
+	var raw, deferredSince string
+	if err := reader.QueryRowContext(ctx, `SELECT reconciliation_cursor, event_revision, reconciliation_deferred_since FROM instances WHERE name=?`, instance).Scan(&raw, &state.Revision, &deferredSince); err != nil {
 		return ReconciliationState{}, fmt.Errorf("read reconciliation state: %w", err)
 	}
 	if raw != "" {
@@ -2022,6 +2025,13 @@ func readReconciliationState(ctx context.Context, reader interface {
 			return ReconciliationState{}, fmt.Errorf("parse reconciliation cursor: %w", err)
 		}
 		state.Cursor = parsed
+	}
+	if deferredSince != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, deferredSince)
+		if err != nil {
+			return ReconciliationState{}, fmt.Errorf("parse reconciliation deferral start: %w", err)
+		}
+		state.DeferredSince = parsed
 	}
 	return state, nil
 }
@@ -2037,6 +2047,20 @@ func (r *Repository) GetReconciliationCursor(ctx context.Context, instance strin
 // The required pre-hydration state fences events and concurrent reconciliation
 // pages, including empty pages that insert no events.
 func (r *Repository) CommitReconciliation(ctx context.Context, instance string, expected ReconciliationState, cursor time.Time, mutations []MediaEventMutation) error {
+	return r.commitReconciliationPage(ctx, instance, expected, cursor, time.Time{}, mutations)
+}
+
+// RetainReconciliation commits an incomplete page without advancing the
+// cursor and records deferredAt as the deferral start unless one is already
+// recorded. The same fence as CommitReconciliation applies.
+func (r *Repository) RetainReconciliation(ctx context.Context, instance string, expected ReconciliationState, deferredAt time.Time, mutations []MediaEventMutation) error {
+	if deferredAt.IsZero() {
+		return fmt.Errorf("reconciliation deferral time is required")
+	}
+	return r.commitReconciliationPage(ctx, instance, expected, expected.Cursor, deferredAt, mutations)
+}
+
+func (r *Repository) commitReconciliationPage(ctx context.Context, instance string, expected ReconciliationState, cursor, deferredAt time.Time, mutations []MediaEventMutation) error {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin reconciliation commit: %w", err)
@@ -2089,7 +2113,7 @@ func (r *Repository) CommitReconciliation(ctx context.Context, instance string, 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM reconciliation_replays WHERE instance=?`, instance); err != nil {
 			return fmt.Errorf("clear deferred reconciliation replays: %w", err)
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE instances SET reconciliation_cursor=?, updated_at_ns=? WHERE name=?`, cursor.UTC().Format(time.RFC3339Nano), cursor.UnixNano(), instance)
+		result, err := tx.ExecContext(ctx, `UPDATE instances SET reconciliation_cursor=?, reconciliation_deferred_since='', updated_at_ns=? WHERE name=?`, cursor.UTC().Format(time.RFC3339Nano), cursor.UnixNano(), instance)
 		if err != nil {
 			return fmt.Errorf("advance reconciliation cursor: %w", err)
 		}
@@ -2099,6 +2123,10 @@ func (r *Repository) CommitReconciliation(ctx context.Context, instance string, 
 		}
 		if count != 1 {
 			return fmt.Errorf("Arr instance %q not found", instance)
+		}
+	} else if !deferredAt.IsZero() {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET reconciliation_deferred_since=? WHERE name=? AND reconciliation_deferred_since=''`, deferredAt.UTC().Format(time.RFC3339Nano), instance); err != nil {
+			return fmt.Errorf("record reconciliation deferral start: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

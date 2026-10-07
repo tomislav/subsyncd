@@ -55,6 +55,8 @@ Already-active download cooldowns suppress provider searches and downloads. Sear
 
 When every provider for a language is unavailable, `queue.route_paused` (warn) reports the language, media kind and `reset_at`, and no searches for it start until `queue.route_resumed`.
 
+`reconcile.deferred` (warn) means an Arr instance reported a file subsyncd cannot read; `deferred_media` names the movies or episodes, and `expires_at` is when subsyncd stops waiting for them (`reconcile.deferral_expired`). `reconcile.failed` (error) is reserved for real reconciliation failures. See [Operations](operations.md).
+
 Use [`explain`](operations.md#inspect-or-search-one-file) for the saved result and next search time. Successful health checks are deliberately quiet.
 
 At debug level, `archive.classified` reports archive type, subtitle-member count, and `single`, `provider_pack`, or `runtime_pack` classification. `pack_cache.publication` reports whether caching succeeded, failed, was disabled, or lacked safe identity; `pack_cache.lookup` reports a hit, miss, or error and whether the selected entry is a runtime pack. These events omit member filenames, paths, and download references.
