@@ -748,3 +748,66 @@ func TestReconcileRechecksLegacyMultiEpisodeFilesOnce(t *testing.T) {
 		t.Fatal("a failed hydration was committed")
 	}
 }
+
+type deferringLibraryCatalog struct {
+	*fakeReconcileCatalog
+	items    []domain.Media
+	deferral error
+}
+
+func (c *deferringLibraryCatalog) ListLibrary(context.Context) ([]domain.Media, error) {
+	return c.items, c.deferral
+}
+
+func TestReconcilerContinuesHistoryAfterDeferredLibraryDiscovery(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := db.Repository()
+	if err := repo.EnsureInstance(ctx, "radarr-lq", "radarr", "http://arr.invalid", now); err != nil {
+		t.Fatal(err)
+	}
+	readable := domain.Media{EntityID: 401, Ref: domain.MediaRef{Instance: "radarr-lq", Kind: domain.MediaMovie, FileID: 1601}, Title: "Readable", Fingerprint: domain.MediaFingerprint{Path: "/media/readable.mkv", FileID: 1601, Size: 100, ModTime: now}}
+	libraryDeferral := HistoryDeferral{Kind: domain.MediaMovie, EntityID: 402, Title: "Example Movie (2001)"}
+	historyDeferral := HistoryDeferral{Kind: domain.MediaMovie, EntityID: 403}
+	catalog := &deferringLibraryCatalog{
+		fakeReconcileCatalog: &fakeReconcileCatalog{err: &DeferredHistoryError{Entities: []HistoryDeferral{historyDeferral}}, snapshot: completeSnapshot(domain.MediaMovie, 401, 402, 403)},
+		items:                []domain.Media{readable},
+		deferral:             &DeferredHistoryError{Entities: []HistoryDeferral{libraryDeferral}},
+	}
+	reconciler := Reconciler{Instance: "radarr-lq", Kind: domain.MediaMovie, LibraryScope: "scope", Catalog: catalog, Store: repo, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }}
+
+	err = reconciler.Run(ctx)
+	var deferral *DeferredHistoryError
+	if !errors.Is(err, ErrHistoryDeferred) || !errors.As(err, &deferral) {
+		t.Fatalf("Run() error = %v, want a typed deferral", err)
+	}
+	if !reflect.DeepEqual(deferral.Entities, []HistoryDeferral{libraryDeferral, historyDeferral}) {
+		t.Fatalf("deferred entities = %#v", deferral.Entities)
+	}
+	if catalog.changeCalls != 1 {
+		t.Fatalf("history reads = %d, want history reconciled after deferred discovery", catalog.changeCalls)
+	}
+	if _, _, err := repo.FindMedia(ctx, readable.Ref); err != nil {
+		t.Fatalf("readable library media was not committed: %v", err)
+	}
+	if scope, _, err := repo.LibraryDiscoveryState(ctx, "radarr-lq"); err != nil || scope != "" {
+		t.Fatalf("discovery scope = %q, %v; want incomplete", scope, err)
+	}
+}
+
+func TestReconcilerPreservesTypedHistoryDeferral(t *testing.T) {
+	deferral := &DeferredHistoryError{Entities: []HistoryDeferral{{Kind: domain.MediaEpisode, EntityID: 8094, Title: "Example Show - S07E10"}}}
+	catalog := &fakeReconcileCatalog{err: deferral, snapshot: completeSnapshot(domain.MediaEpisode)}
+	reconciler := Reconciler{Instance: "sonarr-lq", Kind: domain.MediaEpisode, Catalog: catalog, Store: &fakeReconcileStore{}, Now: func() time.Time { return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC) }}
+
+	err := reconciler.Run(context.Background())
+	var got *DeferredHistoryError
+	if !errors.As(err, &got) || !reflect.DeepEqual(got.Entities, deferral.Entities) {
+		t.Fatalf("Run() error = %v, want the catalog's typed deferral", err)
+	}
+}

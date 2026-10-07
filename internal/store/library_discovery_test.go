@@ -381,3 +381,30 @@ func TestLibraryDiscoveryRejectsSnapshotFileSharedByExistingEntities(t *testing.
 		t.Fatal("shared snapshot file committed")
 	}
 }
+
+func TestPartialLibraryDiscoveryCreatesWorkWithoutCompletingScope(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	at := time.Now().UTC()
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr", at); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := repo.LibraryDiscoveryState(ctx, "sonarr-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := testMedia()
+	if err := repo.CommitPartialLibraryDiscovery(ctx, "sonarr-main", revision, []domain.Media{media}, []domain.Language{"en"}, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.FindMedia(ctx, media.Ref); err != nil {
+		t.Fatalf("partially discovered media: %v", err)
+	}
+	scope, after, err := repo.LibraryDiscoveryState(ctx, "sonarr-main")
+	if err != nil || scope != "" || after == revision {
+		t.Fatalf("state after partial discovery = %q/%d/%v, want incomplete scope and a new revision", scope, after, err)
+	}
+	if err := repo.CommitPartialLibraryDiscovery(ctx, "sonarr-main", revision, nil, []domain.Language{"en"}, at); !errors.Is(err, ErrLibraryDiscoveryStale) {
+		t.Fatalf("stale partial discovery error = %v", err)
+	}
+}

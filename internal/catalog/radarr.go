@@ -42,6 +42,7 @@ func (r *Radarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 	}
 	seenEntities := make(map[int64]movieIdentity, len(movies))
 	seenFiles := make(map[int64]int64, len(movies))
+	var deferred *DeferredHistoryError
 	for _, movie := range movies {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -83,10 +84,18 @@ func (r *Radarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 			if IsOutsideScope(err) {
 				continue
 			}
+			if errors.Is(err, errMappedPathUnavailable) {
+				deferred = addHistoryDeferral(deferred, radarrHistoryDeferral(entityID, movie))
+				continue
+			}
 			return nil, fmt.Errorf("map current Radarr movie %d: %w", entityID, err)
 		}
 		item, err := r.GetMedia(ctx, domain.MediaRef{Instance: r.client.instance, Kind: domain.MediaMovie, FileID: fileID})
 		if err != nil {
+			if errors.Is(err, errMappedPathUnavailable) {
+				deferred = addHistoryDeferral(deferred, radarrHistoryDeferral(entityID, movie))
+				continue
+			}
 			return nil, fmt.Errorf("hydrate Radarr library entity %d: %w", entityID, err)
 		}
 		if item.EntityID != entityID {
@@ -97,7 +106,7 @@ func (r *Radarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return items, nil
+	return items, deferredHistoryResult(deferred)
 }
 
 type Radarr struct {

@@ -767,6 +767,30 @@ func TestRunOnceDeferredReconcileRetriesHourlyWithoutBackoff(t *testing.T) {
 	}
 }
 
+func TestRunOnceTreatsBareHistoryDeferralAsDeferred(t *testing.T) {
+	now := time.Date(2026, 10, 7, 11, 43, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	reconciler := &sequenceReconciler{clock: clock, errs: []error{fmt.Errorf("list history: %w", catalog.ErrHistoryDeferred)}}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := testWorker(newWorkerRepository(0, now), &workerWorkflow{}, clock)
+	worker.Events = events
+	worker.Reconcilers = map[string]Reconciler{"radarr-lq": reconciler}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v, want a deferral to succeed", err)
+	}
+	record := findWorkerEvent(t, workerLogRecords(t, logs.String()), "reconcile.deferred")
+	if record["deferred_count"] != float64(0) {
+		t.Fatalf("bare deferral fields = %#v", record)
+	}
+	if strings.Contains(logs.String(), "reconcile.failed") {
+		t.Fatalf("bare deferral logged as a failure: %s", logs.String())
+	}
+}
+
 func TestRunOnceDeferredReconcileRetryNeverExceedsInterval(t *testing.T) {
 	now := time.Date(2026, 10, 7, 11, 43, 0, 0, time.UTC)
 	clock := testutil.NewClock(now)

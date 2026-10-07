@@ -1182,6 +1182,27 @@ func (deferringCatalog) ListChanges(context.Context, time.Time, time.Time) ([]ca
 	return nil, &catalog.DeferredHistoryError{Entities: []catalog.HistoryDeferral{{Kind: domain.MediaMovie, EntityID: 7, Title: "Example Movie (2001)"}}}
 }
 
+type deferringLibrary struct{ deferringCatalog }
+
+func (deferringLibrary) ListLibrary(context.Context) ([]domain.Media, error) {
+	return nil, &catalog.DeferredHistoryError{Entities: []catalog.HistoryDeferral{{Kind: domain.MediaEpisode, FileID: 1001, Title: "Example Show - season 7"}}}
+}
+
+// An unreadable file in forced library discovery is reported, not fatal.
+func TestScanReportsDeferredLibraryFileWithoutFailing(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	application, err := New(ctx, cfg, Options{SkipLapseCheck: true, SkipProbeCheck: true, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": deferringLibrary{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	result, err := application.Scan(ctx, "tv", false)
+	if err != nil || result != "scan complete: instance=tv media=0 force_probe=false deferred=2 (Sonarr file 1001 (Example Show - season 7); Radarr movie 7 (Example Movie (2001)))" {
+		t.Fatalf("scan=%q error=%v", result, err)
+	}
+}
+
 // A deferred history entity is reported, not treated as a failed scan.
 func TestScanReportsDeferredHistoryWithoutFailing(t *testing.T) {
 	ctx := context.Background()

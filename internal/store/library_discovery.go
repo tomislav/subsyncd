@@ -26,7 +26,22 @@ func (r *Repository) LibraryDiscoveryState(ctx context.Context, instance string)
 // CommitLibraryDiscovery adds only previously unknown media. Existing entity rows,
 // including retained deletions and replaced file identities, belong to reconciliation.
 func (r *Repository) CommitLibraryDiscovery(ctx context.Context, instance, scope string, revision int64, items []domain.Media, languages []domain.Language, at time.Time) error {
-	if strings.TrimSpace(instance) == "" || strings.TrimSpace(scope) == "" || revision < 0 || at.IsZero() {
+	if strings.TrimSpace(scope) == "" {
+		return fmt.Errorf("invalid library discovery identity")
+	}
+	return r.commitLibraryDiscovery(ctx, instance, scope, revision, items, languages, at)
+}
+
+// CommitPartialLibraryDiscovery adds the readable part of an enumeration that
+// deferred unreadable media. It leaves the scope incomplete so the next
+// reconciliation enumerates the library again.
+func (r *Repository) CommitPartialLibraryDiscovery(ctx context.Context, instance string, revision int64, items []domain.Media, languages []domain.Language, at time.Time) error {
+	return r.commitLibraryDiscovery(ctx, instance, "", revision, items, languages, at)
+}
+
+// commitLibraryDiscovery records scope as complete unless it is empty.
+func (r *Repository) commitLibraryDiscovery(ctx context.Context, instance, scope string, revision int64, items []domain.Media, languages []domain.Language, at time.Time) error {
+	if strings.TrimSpace(instance) == "" || revision < 0 || at.IsZero() {
 		return fmt.Errorf("invalid library discovery identity")
 	}
 	for _, language := range languages {
@@ -88,8 +103,10 @@ func (r *Repository) CommitLibraryDiscovery(ctx context.Context, instance, scope
 	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY created_at_ns DESC, id DESC LIMIT -1 OFFSET 10000)`); err != nil {
 		return fmt.Errorf("bound media audit log: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE instances SET library_scope=?, updated_at_ns=? WHERE name=?`, scope, at.UnixNano(), instance); err != nil {
-		return fmt.Errorf("complete library discovery: %w", err)
+	if scope != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET library_scope=?, updated_at_ns=? WHERE name=?`, scope, at.UnixNano(), instance); err != nil {
+			return fmt.Errorf("complete library discovery: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit library discovery: %w", err)

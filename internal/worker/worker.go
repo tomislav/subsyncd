@@ -590,8 +590,10 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 		events := w.Events.For("worker")
 		events.Log(ctx, slog.LevelInfo, "reconcile.started", "catalog reconciliation started", slog.String("instance", name))
 		err := w.Reconcilers[name].Run(ctx)
-		var deferred *catalog.DeferredHistoryError
-		if errors.As(err, &deferred) {
+		// The sentinel decides; the typed error, when present, adds the names.
+		if errors.Is(err, catalog.ErrHistoryDeferred) {
+			deferred := &catalog.DeferredHistoryError{}
+			errors.As(err, &deferred)
 			w.reconcileAttempts[name] = reconcileAttempt{LastAttempt: now, Deferred: true}
 			events.Log(ctx, slog.LevelWarn, "reconcile.deferred", "catalog reconciliation is waiting for unavailable media",
 				slog.String("instance", name),

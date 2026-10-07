@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -250,5 +252,42 @@ func TestSonarrListLibraryRejectsNullEpisodeFiles(t *testing.T) {
 	}
 	if _, err := cat.ListLibrary(context.Background()); err == nil {
 		t.Fatal("ListLibrary() error = nil")
+	}
+}
+
+func TestListLibraryDefersUnreadableFilesInsteadOfFailing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(filepath.Join(root, "missing", "media.mkv"), filepath.Join(root, "media.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	mappings := []config.PathMapping{{Remote: "/remote", Local: root}}
+	for name, test := range map[string]struct {
+		catalog LibraryCatalog
+		want    HistoryDeferral
+	}{
+		"sonarr": {
+			catalog: &Sonarr{client: &arrClient{instance: "sonarr-main"}, mappings: mappings, mediaRoots: []string{root}, entity: sonarrLibraryFake{
+				series: []arrapi.Series{{ID: 10, Title: "Example Show"}},
+				files:  map[int][]arrapi.EpisodeFile{10: {{ID: 1001, SeriesID: 10, SeasonNumber: 7, Path: "/remote/media.mkv"}}},
+			}},
+			want: HistoryDeferral{Kind: domain.MediaEpisode, FileID: 1001, Title: "Example Show - season 7"},
+		},
+		"radarr": {
+			catalog: &Radarr{client: &arrClient{instance: "radarr-main"}, mappings: mappings, mediaRoots: []string{root}, entity: radarrLibraryFake{
+				movies: []arrapi.Movie{{ID: 402, Title: "Example Movie", Year: 2001, HasFile: true, MovieFile: &arrapi.MovieFile{ID: 1700, Path: "/remote/media.mkv"}}},
+			}},
+			want: HistoryDeferral{Kind: domain.MediaMovie, EntityID: 402, Title: "Example Movie (2001)"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			items, err := test.catalog.ListLibrary(context.Background())
+			var deferral *DeferredHistoryError
+			if !errors.As(err, &deferral) || !errors.Is(err, ErrHistoryDeferred) {
+				t.Fatalf("ListLibrary() error = %v, want deferral", err)
+			}
+			if len(items) != 0 || !reflect.DeepEqual(deferral.Entities, []HistoryDeferral{test.want}) {
+				t.Fatalf("items = %#v, deferral = %#v", items, deferral.Entities)
+			}
+		})
 	}
 }

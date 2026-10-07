@@ -82,6 +82,7 @@ func (s *Sonarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 		path     string
 	}
 	seenFiles := make(map[int64]fileIdentity)
+	var deferred *DeferredHistoryError
 	for _, show := range series {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -128,10 +129,18 @@ func (s *Sonarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 				if IsOutsideScope(err) {
 					continue
 				}
+				if errors.Is(err, errMappedPathUnavailable) {
+					deferred = addHistoryDeferral(deferred, sonarrFileDeferral(show, file))
+					continue
+				}
 				return nil, fmt.Errorf("map current Sonarr file %d: %w", fileID, err)
 			}
 			media, _, err := s.hydrateMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: fileID})
 			if err != nil {
+				if errors.Is(err, errMappedPathUnavailable) {
+					deferred = addHistoryDeferral(deferred, sonarrFileDeferral(show, file))
+					continue
+				}
 				return nil, fmt.Errorf("hydrate Sonarr library file %d: %w", fileID, err)
 			}
 			if media.SeriesID != seriesID {
@@ -143,7 +152,17 @@ func (s *Sonarr) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return items, nil
+	return items, deferredHistoryResult(deferred)
+}
+
+// sonarrFileDeferral labels an unreadable library file. Its episodes are not
+// read for an unreadable file, so the label names the series and season.
+func sonarrFileDeferral(show arrapi.Series, file arrapi.EpisodeFile) HistoryDeferral {
+	title := fmt.Sprintf("season %d", file.SeasonNumber)
+	if strings.TrimSpace(show.Title) != "" {
+		title = show.Title + " - " + title
+	}
+	return HistoryDeferral{Kind: domain.MediaEpisode, FileID: int64(file.ID), Title: observability.SafeText(title)}
 }
 
 func NewSonarr(instance, rawURL, apiKey string, mappings []config.PathMapping, mediaRoots []string, events *observability.Emitter) (*Sonarr, error) {

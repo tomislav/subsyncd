@@ -37,8 +37,11 @@ func (r Reconciler) Run(ctx context.Context) error {
 	if r.Kind != domain.MediaEpisode && r.Kind != domain.MediaMovie {
 		return fmt.Errorf("%s reconciler media kind is invalid", r.Instance)
 	}
-	if err := r.DiscoverLibrary(ctx, false); err != nil {
-		return err
+	// A deferred discovery has committed its readable files; history still
+	// reconciles, and both deferrals are reported together below.
+	discoveryErr := r.DiscoverLibrary(ctx, false)
+	if discoveryErr != nil && !errors.Is(discoveryErr, ErrHistoryDeferred) {
+		return discoveryErr
 	}
 	snapshot, err := r.Store.GetReconciliationState(ctx, r.Instance)
 	if err != nil {
@@ -131,8 +134,8 @@ func (r Reconciler) Run(ctx context.Context) error {
 	if r.OnCommitted != nil {
 		r.OnCommitted()
 	}
-	if listErr != nil {
-		return fmt.Errorf("list %s history since %s: %w", r.Instance, snapshot.Cursor, listErr)
+	if listErr != nil || discoveryErr != nil {
+		return fmt.Errorf("%s reconciliation deferred (history since %s): %w", r.Instance, snapshot.Cursor, mergeDeferrals(discoveryErr, listErr))
 	}
 	return nil
 }
