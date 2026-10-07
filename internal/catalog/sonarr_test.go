@@ -494,13 +494,43 @@ func TestSonarrMultiEpisodeFilesThatStayUnsupported(t *testing.T) {
 }
 
 func TestSonarrHistoryLooksUpSeriesTitlesOnlyForLoggedDeferrals(t *testing.T) {
+	deferral, seriesRequests := listDeferredSonarrHistory(t, maximumLoggedDeferrals+1, true)
+	if seriesRequests != maximumLoggedDeferrals {
+		t.Fatalf("series requests = %d, want %d", seriesRequests, maximumLoggedDeferrals)
+	}
+	if first := deferral.Entities[0]; first.Title != "Example Show 1 - S01E01" {
+		t.Fatalf("logged deferral = %#v, want a titled episode", first)
+	}
+	if last := deferral.Entities[maximumLoggedDeferrals]; last.EntityID != 101+maximumLoggedDeferrals || last.Title != "S01E01" {
+		t.Fatalf("unlogged deferral = %#v, want an untitled episode identity", last)
+	}
+	if media := deferral.DeferredMedia(); len(media) != maximumLoggedDeferrals || media[0] != "Sonarr episode 101 (Example Show 1 - S01E01)" {
+		t.Fatalf("DeferredMedia() = %#v", media)
+	}
+}
+
+func TestSonarrHistoryStopsSeriesTitleLookupsAfterFailure(t *testing.T) {
+	deferral, seriesRequests := listDeferredSonarrHistory(t, 3, false)
+	if seriesRequests != 1 {
+		t.Fatalf("series requests = %d, want 1", seriesRequests)
+	}
+	for _, entity := range deferral.Entities {
+		if entity.Title != "S01E01" {
+			t.Fatalf("deferral = %#v, want an untitled episode identity", entity)
+		}
+	}
+}
+
+// listDeferredSonarrHistory defers count episodes, each in its own series, and
+// returns the deferral with the number of series title requests made.
+func listDeferredSonarrHistory(t *testing.T, count int, seriesAvailable bool) (*DeferredHistoryError, int) {
+	t.Helper()
 	root := t.TempDir()
 	if err := os.Symlink(filepath.Join(root, "missing", "show.mkv"), filepath.Join(root, "show.mkv")); err != nil {
 		t.Fatal(err)
 	}
-	const deferredCount = maximumLoggedDeferrals + 1
-	records := make([]map[string]any, 0, deferredCount)
-	for index := 1; index <= deferredCount; index++ {
+	records := make([]map[string]any, 0, count)
+	for index := 1; index <= count; index++ {
 		records = append(records, map[string]any{"id": index, "seriesId": index, "episodeId": 100 + index, "eventType": "downloadFolderImported", "date": time.Date(2026, 9, 5, 11, 0, index, 0, time.UTC).Format(time.RFC3339), "data": map[string]string{}})
 	}
 	seriesRequests := 0
@@ -515,26 +545,25 @@ func TestSonarrHistoryLooksUpSeriesTitlesOnlyForLoggedDeferrals(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "seriesId": id - 100, "seasonNumber": 1, "episodeNumber": 1, "hasFile": true, "episodeFile": map[string]any{"id": 1000 + id, "seriesId": id - 100, "path": "/remote/tv/show.mkv"}})
 		case strings.HasPrefix(r.URL.Path, "/api/v3/series/"):
 			seriesRequests++
+			if !seriesAvailable {
+				http.Error(w, "unavailable", http.StatusBadRequest)
+				return
+			}
 			_, _ = fmt.Sscanf(r.URL.Path, "/api/v3/series/%d", &id)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "title": fmt.Sprintf("Example Show %d", id)})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
 	var deferral *DeferredHistoryError
-	if !errors.As(err, &deferral) || len(deferral.Entities) != deferredCount {
-		t.Fatalf("ListChanges() error = %v, want %d deferrals", err, deferredCount)
+	if !errors.As(err, &deferral) || len(deferral.Entities) != count {
+		t.Fatalf("ListChanges() error = %v, want %d deferrals", err, count)
 	}
-	if seriesRequests != maximumLoggedDeferrals {
-		t.Fatalf("series requests = %d, want %d", seriesRequests, maximumLoggedDeferrals)
-	}
-	if last := deferral.Entities[deferredCount-1]; last.EntityID != 100+deferredCount || last.Title != "S01E01" {
-		t.Fatalf("unlogged deferral = %#v, want an untitled episode identity", last)
-	}
+	return deferral, seriesRequests
 }

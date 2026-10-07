@@ -41,6 +41,19 @@ func (e *DeferredHistoryError) Is(target error) bool {
 	return target == ErrHistoryDeferred
 }
 
+// maximumLoggedDeferrals bounds the entity list carried in one log record.
+const maximumLoggedDeferrals = 10
+
+// DeferredMedia returns log-safe descriptions of at most ten deferred entities.
+func (e *DeferredHistoryError) DeferredMedia() []string {
+	shown := e.Entities[:min(len(e.Entities), maximumLoggedDeferrals)]
+	described := make([]string, 0, len(shown))
+	for _, entity := range shown {
+		described = append(described, entity.describe())
+	}
+	return described
+}
+
 func (d HistoryDeferral) describe() string {
 	label := "Sonarr episode"
 	if d.Kind == domain.MediaMovie {

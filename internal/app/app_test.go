@@ -1176,6 +1176,27 @@ func TestScanSkipsDeletedMedia(t *testing.T) {
 	}
 }
 
+type deferringCatalog struct{ fakeCatalog }
+
+func (deferringCatalog) ListChanges(context.Context, time.Time, time.Time) ([]catalog.HistoryChange, error) {
+	return nil, &catalog.DeferredHistoryError{Entities: []catalog.HistoryDeferral{{Kind: domain.MediaMovie, EntityID: 7, Title: "Example Movie (2001)"}}}
+}
+
+// A deferred history entity is reported, not treated as a failed scan.
+func TestScanReportsDeferredHistoryWithoutFailing(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	application, err := New(ctx, cfg, Options{SkipLapseCheck: true, SkipProbeCheck: true, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": deferringCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	result, err := application.Scan(ctx, "tv", false)
+	if err != nil || result != "scan complete: instance=tv media=0 force_probe=false deferred=1 (Radarr movie 7 (Example Movie (2001)))" {
+		t.Fatalf("scan=%q error=%v", result, err)
+	}
+}
+
 type scanProbeFunc func(string) error
 
 func (f scanProbeFunc) Run(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {

@@ -594,7 +594,10 @@ func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (strin
 	if err := reconciler.DiscoverLibrary(ctx, true); err != nil {
 		return "", err
 	}
-	if err := reconciler.Run(ctx); err != nil {
+	// A deferred page has already committed every readable change; report the
+	// unreadable media instead of failing the scan.
+	var deferred *catalog.DeferredHistoryError
+	if err := reconciler.Run(ctx); err != nil && !errors.As(err, &deferred) {
 		return "", err
 	}
 	items, err := a.Repository.ListMediaByInstance(ctx, instance)
@@ -608,7 +611,11 @@ func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (strin
 			}
 		}
 	}
-	return fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", instance, len(items), forceProbe), nil
+	summary := fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", instance, len(items), forceProbe)
+	if deferred != nil {
+		summary += fmt.Sprintf(" deferred=%d (%s)", len(deferred.Entities), strings.Join(deferred.DeferredMedia(), "; "))
+	}
+	return summary, nil
 }
 
 func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, languageTag string, retryRejected bool) (string, error) {

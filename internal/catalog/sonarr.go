@@ -348,7 +348,7 @@ func (s *Sonarr) ListChanges(ctx context.Context, since, through time.Time) ([]H
 	present := make(map[int64]HistoryChange)
 	finalized := make([]HistoryChange, 0, len(changes))
 	var deferred *DeferredHistoryError
-	seriesTitles := make(map[int]string)
+	titles := deferralTitles{series: make(map[int]string)}
 nextChange:
 	for _, change := range changes {
 		episode, err := s.entity.EpisodeByID(ctx, int(change.EntityID))
@@ -394,7 +394,7 @@ nextChange:
 						}
 						continue
 					}
-					deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, seriesTitles, change.EntityID, episode))
+					deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, &titles, change.EntityID, episode))
 					continue nextChange
 				}
 				return nil, fmt.Errorf("map current Sonarr episode %d: %w", change.EntityID, err)
@@ -434,7 +434,7 @@ nextChange:
 							continue
 						}
 						if errors.Is(mapErr, errMappedPathUnavailable) {
-							deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, seriesTitles, change.EntityID, episode))
+							deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, &titles, change.EntityID, episode))
 							continue
 						}
 						return nil, fmt.Errorf("map rechecked Sonarr episode %d: %w", change.EntityID, mapErr)
@@ -442,7 +442,7 @@ nextChange:
 					media, episodeIDs, err = s.hydrateMedia(ctx, domain.MediaRef{Instance: s.client.instance, Kind: domain.MediaEpisode, FileID: fileID})
 					if err != nil {
 						if errors.Is(err, errMappedPathUnavailable) {
-							deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, seriesTitles, change.EntityID, episode))
+							deferred = addHistoryDeferral(deferred, s.historyDeferral(ctx, deferred, &titles, change.EntityID, episode))
 							continue
 						}
 						return nil, fmt.Errorf("hydrate rechecked Sonarr history entity %d: %w", change.EntityID, err)
@@ -479,21 +479,31 @@ nextChange:
 	return finalized, deferredHistoryResult(deferred)
 }
 
+// deferralTitles caches series titles for one history read. After a failed
+// lookup no further titles are requested, so a slow Sonarr is not retried for
+// labels alone.
+type deferralTitles struct {
+	series map[int]string
+	failed bool
+}
+
 // historyDeferral labels a deferred episode for operators. The series title
 // is best effort: a failed lookup leaves the season and episode identity.
 // Titles are fetched once per series and only for entities that will be
 // logged, so an unavailable mount does not add a request per episode.
-func (s *Sonarr) historyDeferral(ctx context.Context, deferred *DeferredHistoryError, seriesTitles map[int]string, entityID int64, episode arrapi.Episode) HistoryDeferral {
+func (s *Sonarr) historyDeferral(ctx context.Context, deferred *DeferredHistoryError, titles *deferralTitles, entityID int64, episode arrapi.Episode) HistoryDeferral {
 	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Season: episode.SeasonNumber, Episode: episode.EpisodeNumber, EpisodeTitle: episode.Title}
 	logged := deferred == nil || len(deferred.Entities) < maximumLoggedDeferrals
-	if title, known := seriesTitles[episode.SeriesID]; known {
+	if title, known := titles.series[episode.SeriesID]; known {
 		media.Title = title
-	} else if logged && episode.SeriesID > 0 {
+	} else if logged && !titles.failed && episode.SeriesID > 0 {
 		var series sonarrSeries
 		if err := s.client.getJSON(ctx, "/api/v3/series/"+strconv.Itoa(episode.SeriesID), nil, &series); err == nil && series.ID == int64(episode.SeriesID) {
 			media.Title = series.Title
+			titles.series[episode.SeriesID] = media.Title
+		} else {
+			titles.failed = true
 		}
-		seriesTitles[episode.SeriesID] = media.Title
 	}
 	return HistoryDeferral{Kind: domain.MediaEpisode, EntityID: entityID, Title: strings.TrimPrefix(observability.MediaTitle(media), "- ")}
 }

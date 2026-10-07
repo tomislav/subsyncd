@@ -715,13 +715,10 @@ func TestRunOnceDeferredReconcileRetriesHourlyWithoutBackoff(t *testing.T) {
 	now := time.Date(2026, 10, 7, 11, 43, 0, 0, time.UTC)
 	clock := testutil.NewClock(now)
 	repository := newWorkerRepository(0, now)
-	deferred := &catalog.ReconciliationDeferredError{
-		Instance:  "sonarr-lq",
-		Since:     now,
-		ExpiresAt: now.Add(catalog.DefaultDeferralLimit),
-		Entities:  []catalog.HistoryDeferral{{Kind: domain.MediaEpisode, EntityID: 8094, Title: "Example Show - S07E10 - Forecast"}},
-		Err:       catalog.ErrHistoryDeferred,
-	}
+	// Reconciler.Run wraps the catalog's deferral after committing the page.
+	deferred := fmt.Errorf("list sonarr-lq history since %s: %w", now, &catalog.DeferredHistoryError{
+		Entities: []catalog.HistoryDeferral{{Kind: domain.MediaEpisode, EntityID: 8094, Title: "Example Show - S07E10 - Forecast"}},
+	})
 	reconciler := &sequenceReconciler{clock: clock, errs: []error{deferred, deferred, deferred, errors.New("arr unavailable")}}
 	var logs bytes.Buffer
 	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", Redact: func(error) string { return "redacted" }})
@@ -758,7 +755,6 @@ func TestRunOnceDeferredReconcileRetriesHourlyWithoutBackoff(t *testing.T) {
 	records := workerLogRecords(t, logs.String())
 	deferredRecord := findWorkerEvent(t, records, "reconcile.deferred")
 	if deferredRecord["level"] != "warn" || deferredRecord["instance"] != "sonarr-lq" || deferredRecord["deferred_count"] != float64(1) ||
-		deferredRecord["deferred_since"] != now.Format(time.RFC3339Nano) || deferredRecord["expires_at"] != now.Add(catalog.DefaultDeferralLimit).Format(time.RFC3339Nano) ||
 		deferredRecord["retry_at"] != now.Add(time.Hour).Format(time.RFC3339Nano) {
 		t.Fatalf("deferred reconcile fields = %#v", deferredRecord)
 	}
@@ -768,6 +764,27 @@ func TestRunOnceDeferredReconcileRetriesHourlyWithoutBackoff(t *testing.T) {
 	failed := findWorkerEvent(t, records, "reconcile.failed")
 	if failed["attempt"] != float64(1) {
 		t.Fatalf("failure after deferrals = %#v, want attempt 1", failed)
+	}
+}
+
+func TestRunOnceDeferredReconcileRetryNeverExceedsInterval(t *testing.T) {
+	now := time.Date(2026, 10, 7, 11, 43, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	deferred := fmt.Errorf("list history: %w", &catalog.DeferredHistoryError{Entities: []catalog.HistoryDeferral{{Kind: domain.MediaMovie, EntityID: 402}}})
+	reconciler := &sequenceReconciler{clock: clock, errs: []error{deferred, deferred}}
+	worker := testWorker(newWorkerRepository(0, now), &workerWorkflow{}, clock)
+	worker.ReconcileInterval = 30 * time.Minute
+	worker.Reconcilers = map[string]Reconciler{"radarr-lq": reconciler}
+
+	for range 3 {
+		if err := worker.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce() error = %v", err)
+		}
+		clock.Advance(30 * time.Minute)
+	}
+	want := []time.Time{now, now.Add(30 * time.Minute), now.Add(time.Hour)}
+	if !slices.EqualFunc(reconciler.calls, want, time.Time.Equal) {
+		t.Fatalf("reconcile calls = %v, want %v", reconciler.calls, want)
 	}
 }
 

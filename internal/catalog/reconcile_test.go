@@ -49,34 +49,21 @@ func (f *fakeReconcileCatalog) ListIdentitySnapshot(context.Context) (CatalogIde
 }
 
 type fakeReconcileStore struct {
-	cursor        time.Time
-	deferredSince time.Time
-	retainedAt    time.Time
-	retains       int
-	committed     time.Time
-	mutations     []store.MediaEventMutation
-	commitErr     error
-	stateErr      error
-	activeIDs     []int64
-	listErr       error
-	listCalls     int
-	commits       int
-	instance      string
-	kind          domain.MediaKind
+	cursor    time.Time
+	committed time.Time
+	mutations []store.MediaEventMutation
+	commitErr error
+	stateErr  error
+	activeIDs []int64
+	listErr   error
+	listCalls int
+	commits   int
+	instance  string
+	kind      domain.MediaKind
 }
 
 func (f *fakeReconcileStore) GetReconciliationState(context.Context, string) (store.ReconciliationState, error) {
-	return store.ReconciliationState{Cursor: f.cursor, DeferredSince: f.deferredSince}, f.stateErr
-}
-
-func (f *fakeReconcileStore) RetainReconciliation(_ context.Context, _ string, _ store.ReconciliationState, deferredAt time.Time, mutations []store.MediaEventMutation) error {
-	f.retains++
-	if f.commitErr != nil {
-		return f.commitErr
-	}
-	f.retainedAt = deferredAt
-	f.mutations = append([]store.MediaEventMutation(nil), mutations...)
-	return nil
+	return store.ReconciliationState{Cursor: f.cursor}, f.stateErr
 }
 
 func (f *fakeReconcileStore) ListActiveCatalogIdentities(_ context.Context, instance string, kind domain.MediaKind) ([]int64, error) {
@@ -759,67 +746,5 @@ func TestReconcileRechecksLegacyMultiEpisodeFilesOnce(t *testing.T) {
 	}
 	if _, found := byFile[3001]; found {
 		t.Fatal("a failed hydration was committed")
-	}
-}
-
-func TestReconcilerReportsDeferredHistoryWithoutAdvancingCursor(t *testing.T) {
-	cursor := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
-	pageEnd := cursor.Add(4 * time.Hour)
-	deferred := &DeferredHistoryError{Entities: []HistoryDeferral{{Kind: domain.MediaEpisode, EntityID: 8094, Title: "Example Show - S07E10 - Forecast"}}}
-	for _, test := range []struct {
-		name          string
-		deferredSince time.Time
-		wantSince     time.Time
-	}{
-		{name: "first deferral", wantSince: pageEnd},
-		{name: "continuing deferral", deferredSince: pageEnd.Add(-23 * time.Hour), wantSince: pageEnd.Add(-23 * time.Hour)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			repository := &fakeReconcileStore{cursor: cursor, deferredSince: test.deferredSince}
-			catalog := &fakeReconcileCatalog{err: deferred, snapshot: completeSnapshot(domain.MediaEpisode)}
-			reconciler := Reconciler{Instance: "sonarr-lq", Kind: domain.MediaEpisode, Catalog: catalog, Store: repository, Now: func() time.Time { return pageEnd }}
-
-			err := reconciler.Run(context.Background())
-			var result *ReconciliationDeferredError
-			if !errors.As(err, &result) || !errors.Is(err, ErrHistoryDeferred) {
-				t.Fatalf("Run() error = %v, want ReconciliationDeferredError", err)
-			}
-			if !result.Since.Equal(test.wantSince) || !result.ExpiresAt.Equal(test.wantSince.Add(DefaultDeferralLimit)) || !reflect.DeepEqual(result.Entities, deferred.Entities) {
-				t.Fatalf("deferral = %#v", result)
-			}
-			if repository.retains != 1 || repository.commits != 0 || !repository.retainedAt.Equal(pageEnd) {
-				t.Fatalf("store retains = %d at %s, commits = %d", repository.retains, repository.retainedAt, repository.commits)
-			}
-		})
-	}
-}
-
-func TestReconcilerAdvancesPastDeferralAfterLimit(t *testing.T) {
-	cursor := time.Date(2026, 10, 6, 8, 0, 0, 0, time.UTC)
-	pageEnd := cursor.Add(30 * time.Hour)
-	repository := &fakeReconcileStore{cursor: cursor, deferredSince: pageEnd.Add(-DefaultDeferralLimit)}
-	deferred := &DeferredHistoryError{Entities: []HistoryDeferral{{Kind: domain.MediaMovie, EntityID: 402, Title: "Example Movie (2001)"}}}
-	nondeferred := HistoryChange{HistoryID: 41, EntityID: 403, Kind: domain.MediaMovie, Type: EventDelete, State: HistoryAbsent, OccurredAt: cursor.Add(time.Hour)}
-	catalog := &fakeReconcileCatalog{changes: []HistoryChange{nondeferred}, err: deferred, snapshot: completeSnapshot(domain.MediaMovie)}
-	var logs bytes.Buffer
-	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reconciler := Reconciler{Instance: "radarr-lq", Kind: domain.MediaMovie, Catalog: catalog, Store: repository, Now: func() time.Time { return pageEnd }, Events: events}
-
-	if err := reconciler.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error = %v, want expired deferral to succeed", err)
-	}
-	if repository.commits != 1 || repository.retains != 0 || !repository.committed.Equal(pageEnd) {
-		t.Fatalf("store commits = %d to %s, retains = %d", repository.commits, repository.committed, repository.retains)
-	}
-	if len(repository.mutations) != 1 || repository.mutations[0].EventID != "reconcile:radarr-lq:41" {
-		t.Fatalf("mutations = %#v", repository.mutations)
-	}
-	for _, want := range []string{`"event":"reconcile.deferral_expired"`, `"level":"warn"`, `"instance":"radarr-lq"`, `"deferred_count":1`, `Radarr movie 402 (Example Movie (2001))`} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatalf("expiry log missing %s: %s", want, logs.String())
-		}
 	}
 }
