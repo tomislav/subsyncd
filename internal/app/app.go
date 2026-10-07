@@ -591,11 +591,16 @@ func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (strin
 	if !ok {
 		return "", fmt.Errorf("unknown instance %q", instance)
 	}
-	if err := reconciler.DiscoverLibrary(ctx, true); err != nil {
+	// Deferred discovery and history have already committed every readable
+	// change; report the unreadable media instead of failing the scan. A
+	// deferred forced discovery stays incomplete, so Run enumerates again and
+	// reports its deferrals together with history's.
+	if err := reconciler.DiscoverLibrary(ctx, true); err != nil && !errors.Is(err, catalog.ErrHistoryDeferred) {
 		return "", err
 	}
-	if err := reconciler.Run(ctx); err != nil {
-		return "", err
+	runErr := reconciler.Run(ctx)
+	if runErr != nil && !errors.Is(runErr, catalog.ErrHistoryDeferred) {
+		return "", runErr
 	}
 	items, err := a.Repository.ListMediaByInstance(ctx, instance)
 	if err != nil {
@@ -608,7 +613,13 @@ func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (strin
 			}
 		}
 	}
-	return fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", instance, len(items), forceProbe), nil
+	summary := fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", instance, len(items), forceProbe)
+	if runErr != nil {
+		deferred := &catalog.DeferredHistoryError{}
+		errors.As(runErr, &deferred)
+		summary += fmt.Sprintf(" deferred=%d (%s)", len(deferred.Entities), strings.Join(deferred.DeferredMedia(), "; "))
+	}
+	return summary, nil
 }
 
 func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, languageTag string, retryRejected bool) (string, error) {

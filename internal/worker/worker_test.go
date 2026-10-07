@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"subsyncd/internal/catalog"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/notifier"
 	"subsyncd/internal/observability"
@@ -707,6 +708,107 @@ func TestRunOnceReconcileFailureBackoffAndSuccessReset(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "/private/media") || strings.Contains(logs.String(), "/api/v3/history") {
 		t.Fatalf("reconciliation log leaked upstream detail: %s", logs.String())
+	}
+}
+
+func TestRunOnceDeferredReconcileRetriesHourlyWithoutBackoff(t *testing.T) {
+	now := time.Date(2026, 10, 7, 11, 43, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	repository := newWorkerRepository(0, now)
+	// Reconciler.Run wraps the catalog's deferral after committing the page.
+	deferred := fmt.Errorf("list sonarr-lq history since %s: %w", now, &catalog.DeferredHistoryError{
+		Entities: []catalog.HistoryDeferral{{Kind: domain.MediaEpisode, EntityID: 8094, Title: "Example Show - S07E10 - Forecast"}},
+	})
+	reconciler := &sequenceReconciler{clock: clock, errs: []error{deferred, deferred, deferred, errors.New("arr unavailable")}}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", Redact: func(error) string { return "redacted" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := testWorker(repository, &workerWorkflow{}, clock)
+	worker.Events = events
+	worker.Reconcilers = map[string]Reconciler{"sonarr-lq": reconciler}
+
+	run := func(wantError bool) {
+		t.Helper()
+		err := worker.RunOnce(context.Background())
+		if wantError != (err != nil) {
+			t.Fatalf("RunOnce() error = %v, want error %t", err, wantError)
+		}
+	}
+	run(false) // 11:43, deferred
+	clock.Advance(time.Hour - time.Second)
+	run(false)
+	clock.Advance(time.Second)
+	run(false) // 12:43, deferred again: no escalation
+	clock.Advance(time.Hour)
+	run(false) // 13:43, deferred again
+	clock.Advance(time.Hour)
+	run(true) // 14:43, a real failure starts the failure backoff
+	clock.Advance(5 * time.Minute)
+	run(false) // 14:48, success
+
+	want := []time.Time{now, now.Add(time.Hour), now.Add(2 * time.Hour), now.Add(3 * time.Hour), now.Add(3*time.Hour + 5*time.Minute)}
+	if !slices.EqualFunc(reconciler.calls, want, time.Time.Equal) {
+		t.Fatalf("reconcile calls = %v, want %v", reconciler.calls, want)
+	}
+	records := workerLogRecords(t, logs.String())
+	deferredRecord := findWorkerEvent(t, records, "reconcile.deferred")
+	if deferredRecord["level"] != "warn" || deferredRecord["instance"] != "sonarr-lq" || deferredRecord["deferred_count"] != float64(1) ||
+		deferredRecord["retry_at"] != now.Add(time.Hour).Format(time.RFC3339Nano) {
+		t.Fatalf("deferred reconcile fields = %#v", deferredRecord)
+	}
+	if media, ok := deferredRecord["deferred_media"].([]any); !ok || len(media) != 1 || media[0] != "Sonarr episode 8094 (Example Show - S07E10 - Forecast)" {
+		t.Fatalf("deferred media = %#v", deferredRecord["deferred_media"])
+	}
+	failed := findWorkerEvent(t, records, "reconcile.failed")
+	if failed["attempt"] != float64(1) {
+		t.Fatalf("failure after deferrals = %#v, want attempt 1", failed)
+	}
+}
+
+func TestRunOnceTreatsBareHistoryDeferralAsDeferred(t *testing.T) {
+	now := time.Date(2026, 10, 7, 11, 43, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	reconciler := &sequenceReconciler{clock: clock, errs: []error{fmt.Errorf("list history: %w", catalog.ErrHistoryDeferred)}}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := testWorker(newWorkerRepository(0, now), &workerWorkflow{}, clock)
+	worker.Events = events
+	worker.Reconcilers = map[string]Reconciler{"radarr-lq": reconciler}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v, want a deferral to succeed", err)
+	}
+	record := findWorkerEvent(t, workerLogRecords(t, logs.String()), "reconcile.deferred")
+	if record["deferred_count"] != float64(0) {
+		t.Fatalf("bare deferral fields = %#v", record)
+	}
+	if strings.Contains(logs.String(), "reconcile.failed") {
+		t.Fatalf("bare deferral logged as a failure: %s", logs.String())
+	}
+}
+
+func TestRunOnceDeferredReconcileRetryNeverExceedsInterval(t *testing.T) {
+	now := time.Date(2026, 10, 7, 11, 43, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	deferred := fmt.Errorf("list history: %w", &catalog.DeferredHistoryError{Entities: []catalog.HistoryDeferral{{Kind: domain.MediaMovie, EntityID: 402}}})
+	reconciler := &sequenceReconciler{clock: clock, errs: []error{deferred, deferred}}
+	worker := testWorker(newWorkerRepository(0, now), &workerWorkflow{}, clock)
+	worker.ReconcileInterval = 30 * time.Minute
+	worker.Reconcilers = map[string]Reconciler{"radarr-lq": reconciler}
+
+	for range 3 {
+		if err := worker.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce() error = %v", err)
+		}
+		clock.Advance(30 * time.Minute)
+	}
+	want := []time.Time{now, now.Add(30 * time.Minute), now.Add(time.Hour)}
+	if !slices.EqualFunc(reconciler.calls, want, time.Time.Equal) {
+		t.Fatalf("reconcile calls = %v, want %v", reconciler.calls, want)
 	}
 }
 

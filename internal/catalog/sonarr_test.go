@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -319,9 +321,11 @@ func TestSonarrHistoryDefersBrokenSymlinkAfterCurrentStateRecheck(t *testing.T) 
 			})
 		case r.URL.Path == "/api/v3/episode/101":
 			currentRequests++
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 101, "seriesId": 10, "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 101, "seriesId": 10, "seasonNumber": 2, "episodeNumber": 5, "title": "Second\nArrival", "hasFile": true, "episodeFile": map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv"}})
 		case r.URL.Path == "/api/v3/episode/102":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 102, "seriesId": 10, "hasFile": false})
+		case r.URL.Path == "/api/v3/series/10":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Example Show"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -337,6 +341,13 @@ func TestSonarrHistoryDefersBrokenSymlinkAfterCurrentStateRecheck(t *testing.T) 
 	}
 	if currentRequests != 2 {
 		t.Fatalf("current episode requests = %d, want 2", currentRequests)
+	}
+	var deferral *DeferredHistoryError
+	if !errors.As(err, &deferral) || !reflect.DeepEqual(deferral.Entities, []HistoryDeferral{{Kind: domain.MediaEpisode, EntityID: 101, Title: "Example Show - S02E05 - Second Arrival"}}) {
+		t.Fatalf("deferral = %#v, want one titled episode", deferral)
+	}
+	if !strings.Contains(err.Error(), "Sonarr episode 101 (Example Show - S02E05 - Second Arrival) has unavailable current media") || strings.Contains(err.Error(), "/remote") {
+		t.Fatalf("deferral error = %q", err)
 	}
 	if len(changes) != 1 || changes[0].HistoryID != 31 || changes[0].EntityID != 102 || changes[0].State != HistoryAbsent {
 		t.Fatalf("nondeferred changes = %#v", changes)
@@ -480,4 +491,79 @@ func TestSonarrMultiEpisodeFilesThatStayUnsupported(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSonarrHistoryLooksUpSeriesTitlesOnlyForLoggedDeferrals(t *testing.T) {
+	deferral, seriesRequests := listDeferredSonarrHistory(t, maximumLoggedDeferrals+1, true)
+	if seriesRequests != maximumLoggedDeferrals {
+		t.Fatalf("series requests = %d, want %d", seriesRequests, maximumLoggedDeferrals)
+	}
+	if first := deferral.Entities[0]; first.Title != "Example Show 1 - S01E01" {
+		t.Fatalf("logged deferral = %#v, want a titled episode", first)
+	}
+	if last := deferral.Entities[maximumLoggedDeferrals]; last.EntityID != 101+maximumLoggedDeferrals || last.Title != "S01E01" {
+		t.Fatalf("unlogged deferral = %#v, want an untitled episode identity", last)
+	}
+	if media := deferral.DeferredMedia(); len(media) != maximumLoggedDeferrals || media[0] != "Sonarr episode 101 (Example Show 1 - S01E01)" {
+		t.Fatalf("DeferredMedia() = %#v", media)
+	}
+}
+
+func TestSonarrHistoryStopsSeriesTitleLookupsAfterFailure(t *testing.T) {
+	deferral, seriesRequests := listDeferredSonarrHistory(t, 3, false)
+	if seriesRequests != 1 {
+		t.Fatalf("series requests = %d, want 1", seriesRequests)
+	}
+	for _, entity := range deferral.Entities {
+		if entity.Title != "S01E01" {
+			t.Fatalf("deferral = %#v, want an untitled episode identity", entity)
+		}
+	}
+}
+
+// listDeferredSonarrHistory defers count episodes, each in its own series, and
+// returns the deferral with the number of series title requests made.
+func listDeferredSonarrHistory(t *testing.T, count int, seriesAvailable bool) (*DeferredHistoryError, int) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Symlink(filepath.Join(root, "missing", "show.mkv"), filepath.Join(root, "show.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	records := make([]map[string]any, 0, count)
+	for index := 1; index <= count; index++ {
+		records = append(records, map[string]any{"id": index, "seriesId": index, "episodeId": 100 + index, "eventType": "downloadFolderImported", "date": time.Date(2026, 9, 5, 11, 0, index, 0, time.UTC).Format(time.RFC3339), "data": map[string]string{}})
+	}
+	seriesRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var id int
+		switch {
+		case r.URL.Path == "/api/v3/history":
+			writeHistoryRecords(t, w, records)
+		case strings.HasPrefix(r.URL.Path, "/api/v3/episode/"):
+			_, _ = fmt.Sscanf(r.URL.Path, "/api/v3/episode/%d", &id)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "seriesId": id - 100, "seasonNumber": 1, "episodeNumber": 1, "hasFile": true, "episodeFile": map[string]any{"id": 1000 + id, "seriesId": id - 100, "path": "/remote/tv/show.mkv"}})
+		case strings.HasPrefix(r.URL.Path, "/api/v3/series/"):
+			seriesRequests++
+			if !seriesAvailable {
+				http.Error(w, "unavailable", http.StatusBadRequest)
+				return
+			}
+			_, _ = fmt.Sscanf(r.URL.Path, "/api/v3/series/%d", &id)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "title": fmt.Sprintf("Example Show %d", id)})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC))
+	var deferral *DeferredHistoryError
+	if !errors.As(err, &deferral) || len(deferral.Entities) != count {
+		t.Fatalf("ListChanges() error = %v, want %d deferrals", err, count)
+	}
+	return deferral, seriesRequests
 }
