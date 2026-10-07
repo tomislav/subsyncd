@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"subsyncd/internal/config"
+	"subsyncd/internal/observability"
 )
 
 var ErrOutsideScope = errors.New("media is outside configured scope")
@@ -94,9 +95,9 @@ func resolveExistingParents(path string) (string, error) {
 			resolved, err := filepath.EvalSymlinks(current)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return "", fmt.Errorf("%w: resolve mapped path: %v", errMappedPathUnavailable, pathErrorCause(err))
+					return "", fmt.Errorf("%w: resolve mapped path: %v", errMappedPathUnavailable, observability.PathErrorCause(err))
 				}
-				return "", fmt.Errorf("resolve mapped path: %w", pathErrorCause(err))
+				return "", fmt.Errorf("resolve mapped path: %w", observability.PathErrorCause(err))
 			}
 			for i := len(missing) - 1; i >= 0; i-- {
 				resolved = filepath.Join(resolved, missing[i])
@@ -104,7 +105,7 @@ func resolveExistingParents(path string) (string, error) {
 			return filepath.Clean(resolved), nil
 		}
 		if !os.IsNotExist(err) {
-			return "", fmt.Errorf("inspect mapped path: %w", pathErrorCause(err))
+			return "", fmt.Errorf("inspect mapped path: %w", observability.PathErrorCause(err))
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
@@ -118,14 +119,4 @@ func resolveExistingParents(path string) (string, error) {
 func pathContained(root, path string) bool {
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
-// pathErrorCause drops the path an os.PathError carries; resolution runs
-// before the media-root check, so that path may not be redactable.
-func pathErrorCause(err error) error {
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
-		return pathErr.Err
-	}
-	return err
 }
