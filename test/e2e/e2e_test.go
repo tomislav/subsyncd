@@ -629,7 +629,9 @@ func TestSonarrReconciliationPersistsImportDeleteAndUnsupportedMultiEpisode(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unsupported.UnsupportedReason != domain.UnsupportedMultiEpisode || unsupported.Season != 1 || unsupported.Episode != 3 {
+	// Episodes 3 and 5 are not consecutive, so the file stays unsupported and is
+	// recorded as checked; consecutive multi-episode files are supported ranges.
+	if unsupported.UnsupportedReason != domain.UnsupportedMultiEpisode || unsupported.Season != 1 || unsupported.Episode != 3 || unsupported.EpisodeEnd != domain.CheckedUnsupportedEpisodeEnd {
 		t.Fatalf("unsupported media = %#v", unsupported)
 	}
 	unsupportedStatus, err := repository.GetSearchStatus(context.Background(), unsupportedID, "en")
@@ -706,20 +708,20 @@ func newReconciliationSonarrServer(t *testing.T, now time.Time) *httptest.Server
 		case "/api/v3/episode/102":
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": 102, "seriesId": 12, "hasFile": false})
 		case "/api/v3/episode/103":
-			_ = json.NewEncoder(response).Encode(map[string]any{"id": 103, "seriesId": 13, "hasFile": true, "episodeFile": map[string]any{"id": 1003, "seriesId": 13, "path": "/remote/tv/Combined.S01E03E04.mkv"}})
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 103, "seriesId": 13, "hasFile": true, "episodeFile": map[string]any{"id": 1003, "seriesId": 13, "path": "/remote/tv/Combined.S01E03E05.mkv"}})
 		case "/api/v3/episode/105":
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": 105, "seriesId": 15, "hasFile": true, "episodeFile": map[string]any{"id": 1005, "seriesId": 15, "path": "/outside/Other.S01E01.mkv"}})
 		case "/api/v3/episodefile/1001":
 			_ = json.NewEncoder(response).Encode(map[string]any{"id": 1001, "seriesId": 11, "path": "/remote/tv/Show.S01E01.mkv", "size": 100, "dateAdded": now.Add(-30 * time.Minute)})
 		case "/api/v3/episodefile/1003":
-			_ = json.NewEncoder(response).Encode(map[string]any{"id": 1003, "seriesId": 13, "path": "/remote/tv/Combined.S01E03E04.mkv", "size": 300, "dateAdded": now.Add(-10 * time.Minute)})
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 1003, "seriesId": 13, "path": "/remote/tv/Combined.S01E03E05.mkv", "size": 300, "dateAdded": now.Add(-10 * time.Minute)})
 		case "/api/v3/episode":
 			switch request.URL.Query().Get("episodeFileId") {
 			case "1001":
 				_ = json.NewEncoder(response).Encode([]map[string]any{{"id": 101, "seriesId": 11, "seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 1, "title": "Pilot"}})
 			case "1003":
 				_ = json.NewEncoder(response).Encode([]map[string]any{
-					{"id": 104, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 4, "absoluteEpisodeNumber": 4, "title": "Fourth"},
+					{"id": 104, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 5, "absoluteEpisodeNumber": 5, "title": "Fifth"},
 					{"id": 103, "seriesId": 13, "seasonNumber": 1, "episodeNumber": 3, "absoluteEpisodeNumber": 3, "title": "Third"},
 				})
 			default:
