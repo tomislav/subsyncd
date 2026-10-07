@@ -26,7 +26,7 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 | [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file deletions |
 | [Silo](https://github.com/Silo-Server/silo-server) | Refreshes subtitle inventory through its native scan API |
 
-TV files containing multiple episodes are currently unsupported and skipped during subtitle searches.
+TV files containing several consecutive episodes of one season (for example `S06E01-E02`) receive one subtitle that covers the whole file; only subtitles explicitly covering every episode are used. Files whose episodes span seasons or have gaps are skipped.
 
 Sonarr or Radarr supplies the library: subsyncd does not scan a standalone folder as a replacement for either service. See the [Silo compatibility notes](docs/references/silo.md) before enabling that integration.
 

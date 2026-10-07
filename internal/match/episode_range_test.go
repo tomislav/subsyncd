@@ -39,7 +39,9 @@ func TestRangeTargetRequiresWholeRangeCoverage(t *testing.T) {
 			c.Pack = &domain.PackInfo{Scope: domain.PackSeason, Season: 6}
 		}), covers: true},
 		{name: "exact hash", candidate: with(func(c *domain.Candidate) { c.ExactHash = true }), covers: true},
-		{name: "first episode only", candidate: with(func(c *domain.Candidate) { c.ReleaseNames = []string{"mad.men.s06e01 The Doorway.1080p.web-dl.h264-nts"} }), covers: false},
+		{name: "first episode only", candidate: with(func(c *domain.Candidate) {
+			c.ReleaseNames = []string{"mad.men.s06e01 The Doorway.1080p.web-dl.h264-nts"}
+		}), covers: false},
 		{name: "no release evidence", candidate: base, covers: false},
 		{name: "range starting too late", candidate: with(func(c *domain.Candidate) { c.ReleaseNames = []string{"Mad.Men.S06E02-E03.WEB"} }), covers: false},
 		{name: "range pack missing the last episode", candidate: with(func(c *domain.Candidate) {

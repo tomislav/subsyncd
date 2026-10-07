@@ -45,6 +45,9 @@ func MediaTitle(media domain.Media) string {
 	case domain.MediaEpisode:
 		if media.Season > 0 || media.Episode > 0 {
 			title = fmt.Sprintf("%s - S%02dE%02d", title, media.Season, media.Episode)
+			if media.IsEpisodeRange() {
+				title += fmt.Sprintf("-E%02d", media.EpisodeEnd)
+			}
 		}
 		if episodeTitle := strings.TrimSpace(media.EpisodeTitle); episodeTitle != "" {
 			title += " - " + episodeTitle

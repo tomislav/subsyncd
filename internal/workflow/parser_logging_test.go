@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"subsyncd/internal/domain"
 )
 
 func TestSSAValidationDoesNotLogSubtitleContent(t *testing.T) {
@@ -18,7 +20,7 @@ func TestSSAValidationDoesNotLogSubtitleContent(t *testing.T) {
 		if err := os.WriteFile(path, []byte("0\n[private-section]\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := validatedSubtitle(path, 0)
+		_, err := validatedSubtitle(path, domain.Media{})
 		if err == nil {
 			t.Fatal("invalid subtitle accepted")
 		}

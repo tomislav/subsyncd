@@ -154,7 +154,7 @@ func TestServiceExactMediaDurationRejectionContinuesWithRealInstaller(t *testing
 func TestServiceExactJoinedInstallValidationFailureRemainsTerminal(t *testing.T) {
 	request := serviceRequest(t)
 	source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), "1\n00:00:01,000 --> 01:36:00,000\nToo long\n")
-	_, validationErr := validatedSubtitle(source, request.Media.Duration)
+	_, validationErr := validatedSubtitle(source, request.Media)
 	if validationErr == nil {
 		t.Fatal("duration fixture must fail source validation")
 	}

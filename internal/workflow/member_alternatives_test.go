@@ -224,7 +224,7 @@ type versionInstaller struct {
 }
 
 func (i *versionInstaller) Install(ctx context.Context, r InstallRequest) (store.Installation, error) {
-	if _, err := validatedSubtitle(r.SourcePath, r.Media.Duration); err != nil {
+	if _, err := validatedSubtitle(r.SourcePath, r.Media); err != nil {
 		return store.Installation{}, err
 	}
 	payload, err := os.ReadFile(r.SourcePath)

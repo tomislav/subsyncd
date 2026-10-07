@@ -1257,3 +1257,21 @@ func TestNewPausesWorkerRoutesWhoseProvidersAreAllUnavailable(t *testing.T) {
 		}
 	}
 }
+
+func TestExplainShowsEpisodeRange(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	now := application.Clock.Now()
+	media := domain.Media{EntityID: 8, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaEpisode, FileID: 8}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Show.mkv"), FileID: 8, Size: 100, ModTime: now}, Title: "Show", Season: 6, Episode: 1, EpisodeEnd: 2}
+	if _, _, err := application.Repository.UpsertMedia(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+	output, err := application.Explain(context.Background(), "tv", "episode", 8, "en")
+	if err != nil || !strings.Contains(output, "episodes=S06E01-E02") {
+		t.Fatalf("Explain() = %q/%v", output, err)
+	}
+}

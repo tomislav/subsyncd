@@ -30,7 +30,7 @@ func (i *broadValidationInstaller) Install(ctx context.Context, r InstallRequest
 	if r.Candidate.ResultID == "first" && i.failure != nil {
 		return store.Installation{}, i.failure
 	}
-	if _, err := validatedSubtitle(r.SourcePath, r.Media.Duration); err != nil {
+	if _, err := validatedSubtitle(r.SourcePath, r.Media); err != nil {
 		return store.Installation{}, err
 	}
 	return i.fakeInstaller.Install(ctx, r)
