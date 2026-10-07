@@ -800,7 +800,7 @@ func TestRunRecoveryPollFindsSearchWithoutWake(t *testing.T) {
 func TestRunAllowsBoundedGracefulDrain(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
-	started := make(chan struct{})
+	started := make(chan struct{}, 1) // buffered: workerWorkflow signals without blocking
 	release := make(chan struct{})
 	service := &workerWorkflow{started: started, release: release, outcome: workflow.Result{Outcome: workflow.OutcomeSatisfied}}
 	worker := testWorker(repository, service, testutil.NewClock(now))
@@ -825,7 +825,7 @@ func TestRunAllowsBoundedGracefulDrain(t *testing.T) {
 func TestRunCancelsWorkflowAfterDrainTimeout(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
-	started := make(chan struct{})
+	started := make(chan struct{}, 1) // buffered: workerWorkflow signals without blocking
 	service := &workerWorkflow{started: started, release: make(chan struct{})}
 	worker := testWorker(repository, service, testutil.NewClock(now))
 	var logs bytes.Buffer
