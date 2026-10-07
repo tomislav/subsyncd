@@ -102,7 +102,7 @@ func TestSonarrListLibraryHydratesFilesWithoutHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].SeriesID != 10 || items[0].EntityID != 101 || items[0].Ref.FileID != 1001 || items[0].UnsupportedReason != domain.UnsupportedMultiEpisode {
+	if len(items) != 1 || items[0].SeriesID != 10 || items[0].EntityID != 101 || items[0].Ref.FileID != 1001 || items[0].Episode != 2 || items[0].EpisodeEnd != 3 || items[0].UnsupportedReason != "" {
 		t.Fatalf("library = %#v", items)
 	}
 	if fileRequests != 1 {
@@ -148,7 +148,7 @@ func TestSonarrGetMediaRejectsMismatchedHydrationIdentities(t *testing.T) {
 	}
 }
 
-func TestSonarrGetMediaIndexesMultiEpisodeFileAsUnsupported(t *testing.T) {
+func TestSonarrGetMediaIndexesConsecutiveMultiEpisodeFileAsRange(t *testing.T) {
 	root := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -175,7 +175,7 @@ func TestSonarrGetMediaIndexesMultiEpisodeFileAsUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if media.EntityID != 101 || media.Season != 1 || media.Episode != 1 || media.EpisodeTitle != "First" || media.UnsupportedReason != domain.UnsupportedMultiEpisode {
+	if media.EntityID != 101 || media.Season != 1 || media.Episode != 1 || media.EpisodeEnd != 2 || media.AbsoluteEpisode != 11 || media.AbsoluteEpisodeEnd != 12 || media.EpisodeTitle != "First" || media.UnsupportedReason != "" || !media.IsEpisodeRange() {
 		t.Fatalf("multi-episode media = %#v", media)
 	}
 	if len(episodeIDs) != 2 || episodeIDs[0] != 101 || episodeIDs[1] != 102 {
@@ -422,5 +422,62 @@ func TestSonarrHistoryRejectsEpisodeMissingFromCurrentFile(t *testing.T) {
 	}
 	if _, err := catalog.ListChanges(context.Background(), time.Time{}, time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)); err == nil || !strings.Contains(err.Error(), "not attached") {
 		t.Fatalf("ListChanges() error = %v, want membership failure", err)
+	}
+}
+
+func TestSonarrMultiEpisodeFilesThatStayUnsupported(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		episodes []map[string]any
+		wantEnd  int
+		wantAbs  [2]int
+		want     domain.UnsupportedReason
+	}{
+		{name: "different seasons", episodes: []map[string]any{
+			{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 10, "title": "Last"},
+			{"id": 102, "seriesId": 10, "seasonNumber": 2, "episodeNumber": 1, "title": "First"},
+		}, wantEnd: domain.CheckedUnsupportedEpisodeEnd, want: domain.UnsupportedMultiEpisode},
+		{name: "gap", episodes: []map[string]any{
+			{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "title": "One"},
+			{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 3, "title": "Three"},
+		}, wantEnd: domain.CheckedUnsupportedEpisodeEnd, want: domain.UnsupportedMultiEpisode},
+		{name: "missing episode number", episodes: []map[string]any{
+			{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 0, "title": "Special"},
+			{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "title": "One"},
+		}, wantEnd: domain.CheckedUnsupportedEpisodeEnd, want: domain.UnsupportedMultiEpisode},
+		{name: "three consecutive, partial absolute numbering", episodes: []map[string]any{
+			{"id": 101, "seriesId": 10, "seasonNumber": 3, "episodeNumber": 4, "absoluteEpisodeNumber": 24, "title": "Four"},
+			{"id": 102, "seriesId": 10, "seasonNumber": 3, "episodeNumber": 5, "title": "Five"},
+			{"id": 103, "seriesId": 10, "seasonNumber": 3, "episodeNumber": 6, "absoluteEpisodeNumber": 26, "title": "Six"},
+		}, wantEnd: 6},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/api/v3/episodefile/1001":
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 1234, "dateAdded": "2026-09-04T10:00:00Z"})
+				case r.URL.Path == "/api/v3/episode":
+					_ = json.NewEncoder(w).Encode(test.episodes)
+				case r.URL.Path == "/api/v3/series/10":
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Show"})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			catalog, err := NewSonarr("sonarr-main", server.URL, "secret", []config.PathMapping{{Remote: "/remote/tv", Local: root}}, []string{root}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			media, _, err := catalog.hydrateMedia(context.Background(), domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if media.UnsupportedReason != test.want || media.EpisodeEnd != test.wantEnd || media.AbsoluteEpisode != test.wantAbs[0] || media.AbsoluteEpisodeEnd != test.wantAbs[1] {
+				t.Fatalf("media = reason %q E%d-E%d abs %d-%d; want reason %q end %d abs %v", media.UnsupportedReason, media.Episode, media.EpisodeEnd, media.AbsoluteEpisode, media.AbsoluteEpisodeEnd, test.want, test.wantEnd, test.wantAbs)
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -678,5 +680,71 @@ func TestReconcilerRejectsHistoryAndSnapshotFetchedBeforeConcurrentWebhook(t *te
 				t.Fatalf("retry/replay media = %#v, want %#v, %v", gotMedia, expectedMedia, err)
 			}
 		})
+	}
+}
+
+type legacyRangeStore struct {
+	*fakeReconcileStore
+	legacy []domain.MediaRef
+}
+
+func (s *legacyRangeStore) ListLegacyMultiEpisodeMedia(context.Context, string) ([]domain.MediaRef, error) {
+	return s.legacy, nil
+}
+
+type rangeCatalog struct {
+	*fakeReconcileCatalog
+	media map[int64]domain.Media
+	err   map[int64]error
+}
+
+func (c *rangeCatalog) GetMedia(_ context.Context, ref domain.MediaRef) (domain.Media, error) {
+	if err := c.err[ref.FileID]; err != nil {
+		return domain.Media{}, err
+	}
+	return c.media[ref.FileID], nil
+}
+
+func TestReconcileRechecksLegacyMultiEpisodeFilesOnce(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	ranged := domain.Media{EntityID: 101, SeriesID: 10, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 1001}, Season: 6, Episode: 1, EpisodeEnd: 2}
+	stillUnsupported := domain.Media{EntityID: 201, SeriesID: 10, Ref: domain.MediaRef{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 2001}, Season: 1, Episode: 10, EpisodeEnd: domain.CheckedUnsupportedEpisodeEnd, UnsupportedReason: domain.UnsupportedMultiEpisode}
+	catalog := &rangeCatalog{
+		fakeReconcileCatalog: &fakeReconcileCatalog{snapshot: CatalogIdentitySnapshot{Kind: domain.MediaEpisode, IDs: map[int64]struct{}{10: {}}}},
+		media:                map[int64]domain.Media{1001: ranged, 2001: stillUnsupported},
+		err:                  map[int64]error{3001: errors.New("sonarr unavailable")},
+	}
+	repository := &legacyRangeStore{
+		fakeReconcileStore: &fakeReconcileStore{activeIDs: []int64{10}},
+		legacy: []domain.MediaRef{
+			ranged.Ref, stillUnsupported.Ref,
+			{Instance: "sonarr-main", Kind: domain.MediaEpisode, FileID: 3001}, // hydration fails: retried next time
+		},
+	}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciler := Reconciler{Instance: "sonarr-main", Kind: domain.MediaEpisode, Catalog: catalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }, Events: events}
+
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `"event":"reconcile.multi_episode_recheck_failed"`) || !strings.Contains(logs.String(), `"file_id":3001`) {
+		t.Fatalf("failed re-check was not logged: %s", logs.String())
+	}
+	byFile := map[int64]store.MediaEventMutation{}
+	for _, mutation := range repository.mutations {
+		byFile[mutation.Ref.FileID] = mutation
+	}
+	if got := byFile[1001]; got.Type != string(EventImport) || got.EventID != "multi-episode-recheck:sonarr-main:1001" || got.Media.EpisodeEnd != 2 || got.EntityID != 101 || len(got.Languages) != 1 || got.Priority != store.SearchPriorityMissing {
+		t.Fatalf("ranged recheck mutation = %+v", got)
+	}
+	if got := byFile[2001]; got.Type != string(EventImport) || got.Media.EpisodeEnd != domain.CheckedUnsupportedEpisodeEnd {
+		t.Fatalf("still-unsupported recheck mutation = %+v", got)
+	}
+	if _, found := byFile[3001]; found {
+		t.Fatal("a failed hydration was committed")
 	}
 }

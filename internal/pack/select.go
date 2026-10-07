@@ -41,6 +41,9 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 	if len(members) == 0 {
 		return Member{}, selectionError(manifest, "forced_policy", 0, "no members satisfy the forced-subtitle policy")
 	}
+	if media.IsEpisodeRange() {
+		return selectRange(manifest, members, media)
+	}
 	// Explicit conflicting coordinates veto every positive rule, including
 	// provider-direct and absolute matches. Keep other pack members eligible.
 	consistent := members[:0]
@@ -141,6 +144,17 @@ func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media do
 		return selected, nil
 	}
 	members := eligibleMembers(manifest.Members, wantForced)
+	if media.IsEpisodeRange() {
+		// The candidate's own evidence already covers the range; a lone file only
+		// has to not contradict it. Install validation checks its length.
+		if candidate.Pack == nil && len(members) == 1 && !contradictsRange(members[0].SafeName, media) {
+			selected = members[0]
+			selected.SelectionRule = "single_range"
+			selected.SelectionEvidence = "single subtitle member does not contradict the target episode range"
+			return selected, nil
+		}
+		return Member{}, err
+	}
 	if candidate.Pack == nil && len(members) == 1 && !hasInvalidOrAmbiguousRangeEvidence(members[0].SafeName) && !hasEpisodeEvidence(members[0].SafeName) {
 		selected = members[0]
 		selected.SelectionRule = "single_generic"
@@ -513,4 +527,50 @@ func ReleaseEpisodeRange(name string) (season, from, to int, found, invalid bool
 	}
 	season, from, to, found = episodeRange(name)
 	return
+}
+
+// selectRange picks the one member whose filename range covers every episode
+// of a multi-episode target. Single-episode tokens, provider direct members
+// (which carry one episode), absolute numbers and episode titles cannot prove
+// the whole range and are not used.
+func selectRange(manifest Manifest, members []Member, media domain.Media) (Member, error) {
+	var matches []Member
+	for _, member := range members {
+		if contradictsRange(member.SafeName, media) {
+			continue
+		}
+		season, from, to, found := episodeRange(member.SafeName)
+		if found && season == media.Season && from <= media.Episode && media.EpisodeEnd <= to {
+			matches = append(matches, member)
+		}
+	}
+	if selected, done, err := uniqueRule(manifest, matches, "episode_range", fmt.Sprintf("filename range covers S%02dE%02d-E%02d", media.Season, media.Episode, media.EpisodeEnd)); done {
+		return selected, err
+	}
+	return Member{}, selectionError(manifest, "none", 0, "no unique member covers the target episode range")
+}
+
+// contradictsRange reports explicit filename evidence for a different season
+// or for an episode outside the target range.
+func contradictsRange(name string, media domain.Media) bool {
+	if hasInvalidOrAmbiguousRangeEvidence(name) {
+		return true
+	}
+	// A range is one piece of evidence; remove it and check the other tokens too.
+	if ranged, season, from, to, found := acceptedEpisodeRangeMatch(name); found {
+		if season != media.Season || from > media.Episode || to < media.EpisodeEnd {
+			return true
+		}
+		name = name[:ranged.indices[0]] + " " + name[ranged.indices[1]:]
+	}
+	for _, token := range episodeTokenPattern.FindAllStringIndex(name, -1) {
+		if !completeRangeToken(name, token[0], token[1]) {
+			continue
+		}
+		season, episode, _ := episodeToken(name[token[0]:token[1]])
+		if season != media.Season || episode < media.Episode || episode > media.EpisodeEnd {
+			return true
+		}
+	}
+	return false
 }

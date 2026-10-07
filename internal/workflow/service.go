@@ -760,7 +760,7 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 		event = "candidate.skipped"
 		level = slog.LevelInfo
 		switch decision.Reason {
-		case "pack_selection", "invalid_subtitle", "lapse_unsure", "lapse_nothing", "lapse_invalid_output":
+		case "pack_selection", "invalid_subtitle", "partial_coverage", "lapse_unsure", "lapse_nothing", "lapse_invalid_output":
 			decision.ReasonCode = decision.Reason
 		default:
 			decision.ReasonCode = "retained_rejection"
@@ -999,23 +999,32 @@ func (s *Service) candidateRejectionIdentity(request Request, candidate domain.C
 	}, nil
 }
 
-func (s *Service) recordCandidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string, failure error) (bool, error) {
+// rejectionReasonCode classifies deterministic candidate failures; "" means
+// the failure is not a candidate rejection.
+func rejectionReasonCode(failure error) string {
 	var verdict *syncer.VerdictError
 	var selection *pack.SelectionError
 	var content *pack.ContentError
-	_, installContent := failure.(*subtitleValidationError)
+	installContent, isInstallContent := failure.(*subtitleValidationError)
 	_, invalidOutput := failure.(*syncer.InvalidOutputError)
-	reasonCode := ""
 	switch {
 	case invalidOutput:
-		reasonCode = "lapse_invalid_output"
+		return "lapse_invalid_output"
 	case errors.As(failure, &verdict) && (verdict.Verdict == "unsure" || verdict.Verdict == "nothing"):
-		reasonCode = "lapse_" + verdict.Verdict
+		return "lapse_" + verdict.Verdict
 	case errors.As(failure, &selection):
-		reasonCode = "pack_selection"
-	case errors.As(failure, &content) || installContent:
-		reasonCode = "invalid_subtitle"
-	default:
+		return "pack_selection"
+	case isInstallContent && installContent.code != "":
+		return installContent.code
+	case errors.As(failure, &content) || isInstallContent:
+		return "invalid_subtitle"
+	}
+	return ""
+}
+
+func (s *Service) recordCandidateRejection(ctx context.Context, request Request, candidate domain.Candidate, artifactChecksum string, failure error) (bool, error) {
+	reasonCode := rejectionReasonCode(failure)
+	if reasonCode == "" {
 		return false, nil
 	}
 	signature, err := candidateSignature(candidate, request.Media)
@@ -1084,12 +1093,20 @@ func candidateSignature(candidate domain.Candidate, media ...domain.Media) (stri
 	}
 	if len(media) > 0 && media[0].Ref.Kind == domain.MediaEpisode {
 		// Sonarr can correct selection evidence without replacing the physical file.
+		// Range fields are omitted for single episodes so existing signatures,
+		// and the rejections keyed by them, are unchanged.
+		var episodeEnd, absoluteEpisodeEnd int
+		if media[0].IsEpisodeRange() {
+			episodeEnd, absoluteEpisodeEnd = media[0].EpisodeEnd, media[0].AbsoluteEpisodeEnd
+		}
 		evidence, _ := json.Marshal(struct {
-			Season          int
-			Episode         int
-			AbsoluteEpisode int
-			EpisodeTitle    string
-		}{media[0].Season, media[0].Episode, media[0].AbsoluteEpisode, media[0].EpisodeTitle})
+			Season             int
+			Episode            int
+			AbsoluteEpisode    int
+			EpisodeTitle       string
+			EpisodeEnd         int `json:",omitempty"`
+			AbsoluteEpisodeEnd int `json:",omitempty"`
+		}{media[0].Season, media[0].Episode, media[0].AbsoluteEpisode, media[0].EpisodeTitle, episodeEnd, absoluteEpisodeEnd})
 		payload = append(payload, evidence...)
 		payload = append(payload, []byte("/episode-selection-v2")...)
 	}
@@ -1266,6 +1283,12 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 				return preparedCandidate{}, err
 			}
 			return preparedCandidate{}, fmt.Errorf("candidate does not satisfy upgrade policy")
+		}
+	}
+	if !item.candidate.ExactHash {
+		// Reject a partial subtitle for a multi-episode file before LAPSE reads the media.
+		if err := checkRangeCoverage(item.path, request.Media); err != nil {
+			return preparedCandidate{}, err
 		}
 	}
 	if item.candidate.ExactHash {
@@ -1561,7 +1584,7 @@ func (s *Service) applicableProviderCount(request Request, search provider.Searc
 		}
 		p := s.Providers[id]
 		// Custom searchers may not expose adapters through the download map.
-		if p == nil || p.SupportsLanguage(request.Language) && provider.SupportsMediaKind(p, request.Media.Ref.Kind) {
+		if p == nil || p.SupportsLanguage(request.Language) && provider.SupportsMedia(p, request.Media) {
 			count++
 		}
 	}

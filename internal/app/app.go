@@ -305,7 +305,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		if instance.Type == "radarr" {
 			kind = domain.MediaMovie
 		}
-		reconciler := catalog.Reconciler{Instance: instance.Name, Kind: kind, LibraryScope: libraryDiscoveryScope(instance, cfg.MediaRoots), Catalog: reconciliationCatalog, Store: repository, Languages: languages, Now: clock.Now, OnCommitted: notify}
+		reconciler := catalog.Reconciler{Instance: instance.Name, Kind: kind, LibraryScope: libraryDiscoveryScope(instance, cfg.MediaRoots), Catalog: reconciliationCatalog, Store: repository, Languages: languages, Now: clock.Now, OnCommitted: notify, Events: events}
 		reconcilers[instance.Name] = reconciler
 		webhookInstances[instance.Name] = httpapi.Instance{Token: instance.WebhookToken, Handler: catalog.WebhookHandler{Instance: instance.Name, InstanceType: instance.Type, Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnApplied: notify}}
 	}
@@ -432,8 +432,11 @@ func (r workflowRouter) PausedRoutes(ctx context.Context) ([]worker.RoutePause, 
 			if err != nil {
 				return nil, fmt.Errorf("check %s %s route availability: %w", language, kind, err)
 			}
-			if status.Paused {
+			switch {
+			case status.Paused:
 				pauses = append(pauses, worker.RoutePause{RouteKey: store.RouteKey{Language: language, Kind: kind}, ResetAt: status.ResetAt, ProviderCount: status.ProviderCount})
+			case status.RangesPaused:
+				pauses = append(pauses, worker.RoutePause{RouteKey: store.RouteKey{Language: language, Kind: kind, RangesOnly: true}, ResetAt: status.RangesResetAt, ProviderCount: status.ProviderCount})
 			}
 		}
 	}
@@ -683,6 +686,9 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "media: id=%d instance=%s kind=%s file_id=%d title=%q\n", mediaID, instance, kind, fileID, media.Title)
+	if media.IsEpisodeRange() {
+		fmt.Fprintf(&output, "episodes=S%02dE%02d-E%02d\n", media.Season, media.Episode, media.EpisodeEnd)
+	}
 	if media.UnsupportedReason != "" {
 		fmt.Fprintf(&output, "unsupported_reason=%s\n", media.UnsupportedReason)
 	}

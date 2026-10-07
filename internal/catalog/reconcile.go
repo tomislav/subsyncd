@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -27,6 +29,8 @@ type Reconciler struct {
 	Languages    []domain.Language
 	Now          func() time.Time
 	OnCommitted  func()
+	// Events receives background warnings that do not fail reconciliation.
+	Events *observability.Emitter
 }
 
 func (r Reconciler) Run(ctx context.Context) error {
@@ -78,6 +82,7 @@ func (r Reconciler) Run(ctx context.Context) error {
 			Priority:  store.SearchPriorityMissing,
 		})
 	}
+	mutations = append(mutations, r.recheckLegacyMultiEpisode(ctx)...)
 	identitySnapshot, err := r.Catalog.ListIdentitySnapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("list %s catalog identities: %w", r.Instance, err)
@@ -135,4 +140,56 @@ func (r Reconciler) Run(ctx context.Context) error {
 func snapshotDeleteEventID(instance string, kind domain.MediaKind, identity int64, pageEnd time.Time) string {
 	input := fmt.Sprintf("%d:%s:%s:%d:%s", len(instance), instance, kind, identity, pageEnd.UTC().Format(time.RFC3339Nano))
 	return fmt.Sprintf("snapshot-reconcile:%x", sha256.Sum256([]byte(input)))
+}
+
+type legacyMultiEpisodeStore interface {
+	ListLegacyMultiEpisodeMedia(context.Context, string) ([]domain.MediaRef, error)
+}
+
+// recheckLegacyMultiEpisode re-hydrates, once, files marked unsupported
+// multi-episode before episode ranges were supported. Each result is committed
+// as an import, which stores either the range (and schedules its searches) or
+// the checked-unsupported marker. A file that fails to hydrate is skipped and
+// retried on the next reconciliation.
+func (r Reconciler) recheckLegacyMultiEpisode(ctx context.Context) []store.MediaEventMutation {
+	repository, ok := r.Store.(legacyMultiEpisodeStore)
+	if r.Kind != domain.MediaEpisode || !ok {
+		return nil
+	}
+	events := r.Events.For("catalog")
+	refs, err := repository.ListLegacyMultiEpisodeMedia(ctx, r.Instance)
+	if err != nil {
+		events.Log(ctx, slog.LevelWarn, "reconcile.multi_episode_recheck_failed", "could not list legacy multi-episode files",
+			append([]slog.Attr{slog.String("instance", r.Instance)}, events.ErrorAttrs("list", err)...)...)
+		return nil
+	}
+	now := r.Now().UTC()
+	var mutations []store.MediaEventMutation
+	for _, ref := range refs {
+		if ctx.Err() != nil {
+			return mutations
+		}
+		media, err := r.Catalog.GetMedia(ctx, ref)
+		if err == nil && (media.EntityID <= 0 || media.Ref != ref) {
+			err = fmt.Errorf("hydrated media does not match the file")
+		}
+		if err != nil {
+			// Retried on the next reconciliation (every six hours).
+			events.Log(ctx, slog.LevelWarn, "reconcile.multi_episode_recheck_failed", "could not re-check a multi-episode file",
+				append([]slog.Attr{slog.String("instance", r.Instance), slog.Int64("file_id", ref.FileID)}, events.ErrorAttrs("hydration", err)...)...)
+			continue
+		}
+		mutations = append(mutations, store.MediaEventMutation{
+			// Stable per file, so a retried commit applies the re-check once.
+			EventID:   fmt.Sprintf("multi-episode-recheck:%s:%d", r.Instance, ref.FileID),
+			Type:      string(EventImport),
+			EntityID:  media.EntityID,
+			Media:     media,
+			Ref:       ref,
+			Languages: r.Languages,
+			At:        now,
+			Priority:  store.SearchPriorityMissing,
+		})
+	}
+	return mutations
 }

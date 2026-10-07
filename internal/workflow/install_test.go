@@ -175,7 +175,7 @@ func TestInstallSourceContentFailuresAreCandidateRejections(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := serviceRequest(t)
 			path := writeInstallFile(t, filepath.Join(t.TempDir(), test.filename), test.payload)
-			_, failure := validatedSubtitle(path, request.Media.Duration)
+			_, failure := validatedSubtitle(path, request.Media)
 			service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
 			recorded, err := service.recordCandidateRejection(context.Background(), request, exactCandidate("invalid"), "", failure)
 			if failure == nil || err != nil || !recorded {

@@ -273,3 +273,31 @@ func TestEnsureUpgradeSearchKeepsEarlierQueuePosition(t *testing.T) {
 		t.Fatalf("next/order = %d/%d, want %d/%d", next, order, earlier.UnixNano(), queued.UnixNano())
 	}
 }
+
+func TestLeaseDueSearchesExceptCanPauseOnlyEpisodeRanges(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	repo := openTestRepository(t)
+	insert := func(fileID int64, end int) int64 {
+		t.Helper()
+		media := testMedia()
+		media.EntityID, media.Ref.FileID, media.Fingerprint.FileID = fileID, fileID, fileID
+		media.Fingerprint.Path = filepath.Join("/media", fmt.Sprint(fileID)+".mkv")
+		media.Season, media.Episode, media.EpisodeEnd = 1, int(fileID), end
+		id, _, err := repo.UpsertMedia(ctx, media)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireSearchState(t, repo, id, "en", now.Add(-time.Hour), SearchPriorityMissing)
+		return id
+	}
+	single := insert(1, 0)
+	ranged := insert(2, 3)
+	leases, err := repo.LeaseDueSearchesExcept(ctx, now, 10, time.Minute, []RouteKey{{Language: "en", Kind: domain.MediaEpisode, RangesOnly: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 1 || leases[0].MediaID != single {
+		t.Fatalf("leases = %+v, want only the single episode %d (range %d paused)", leases, single, ranged)
+	}
+}

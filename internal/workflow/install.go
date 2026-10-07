@@ -30,7 +30,15 @@ var ErrProtectedSubtitle = errors.New("subtitle is protected from replacement")
 // subtitleValidationError identifies deterministic source-content failures.
 // Only validation before staging may return this error; filesystem and commit
 // failures must retain their technical error identities.
-type subtitleValidationError struct{ reason string }
+type subtitleValidationError struct {
+	reason string
+	// code is a specific rejection reason code; empty means invalid_subtitle.
+	code string
+}
+
+// minimumRangeCoverage is the share of a multi-episode file's runtime that a
+// subtitle must reach to count as covering every episode.
+const minimumRangeCoverage = 0.75
 
 func (e *subtitleValidationError) Error() string { return e.reason }
 
@@ -84,7 +92,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err != nil {
 		return store.Installation{}, err
 	}
-	payload, err := validatedSubtitle(request.SourcePath, request.Media.Duration)
+	payload, err := validatedSubtitle(request.SourcePath, request.Media)
 	if err != nil {
 		return store.Installation{}, err
 	}
@@ -350,7 +358,8 @@ func containedDestination(path string, roots []string) (string, string, error) {
 	return destination, parent, nil
 }
 
-func validatedSubtitle(path string, mediaDuration time.Duration) ([]byte, error) {
+func validatedSubtitle(path string, media domain.Media) ([]byte, error) {
+	mediaDuration := media.Duration
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("installation source is not a regular file")
@@ -365,15 +374,8 @@ func validatedSubtitle(path string, mediaDuration time.Duration) ([]byte, error)
 	if !utf8.Valid(payload) || bytes.IndexByte(payload, 0) >= 0 {
 		return nil, &subtitleValidationError{reason: "installation source is not UTF-8 text"}
 	}
-	var subtitles *astisub.Subtitles
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".srt":
-		subtitles, err = astisub.ReadFromSRT(bytes.NewReader(payload))
-	case ".ass", ".ssa":
-		subtitles, err = astisub.ReadFromSSAWithOptions(bytes.NewReader(payload), astisub.SSAOptions{})
-	case ".vtt":
-		subtitles, err = astisub.ReadFromWebVTT(bytes.NewReader(payload))
-	default:
+	subtitles, supported, err := parseSubtitlePayload(path, payload)
+	if !supported {
 		return nil, &subtitleValidationError{reason: "installation source has unsupported extension"}
 	}
 	if err != nil || subtitles == nil || len(subtitles.Items) == 0 || len(subtitles.Items) > 100_000 {
@@ -393,7 +395,55 @@ func validatedSubtitle(path string, mediaDuration time.Duration) ([]byte, error)
 	if mediaDuration > 0 && last > mediaDuration+5*time.Minute {
 		return nil, &subtitleValidationError{reason: "installation source extends more than five minutes past media duration"}
 	}
+	if err := rangeCoverageError(last, media); err != nil {
+		return nil, err
+	}
 	return payload, nil
+}
+
+// checkRangeCoverage rejects a subtitle for a multi-episode file whose last
+// cue ends before minimumRangeCoverage of the runtime: it covers only part of
+// the file. Unparseable subtitles are left to the normal validation.
+func checkRangeCoverage(path string, media domain.Media) error {
+	if !media.IsEpisodeRange() || media.Duration <= 0 {
+		return nil
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	subtitles, supported, err := parseSubtitlePayload(path, payload)
+	if !supported || err != nil || subtitles == nil {
+		return nil
+	}
+	var last time.Duration
+	for _, item := range subtitles.Items {
+		last = max(last, item.EndAt)
+	}
+	return rangeCoverageError(last, media)
+}
+
+// parseSubtitlePayload parses a subtitle by its extension. supported is false
+// for extensions subsyncd does not install.
+func parseSubtitlePayload(path string, payload []byte) (subtitles *astisub.Subtitles, supported bool, err error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".srt":
+		subtitles, err = astisub.ReadFromSRT(bytes.NewReader(payload))
+	case ".ass", ".ssa":
+		subtitles, err = astisub.ReadFromSSAWithOptions(bytes.NewReader(payload), astisub.SSAOptions{})
+	case ".vtt":
+		subtitles, err = astisub.ReadFromWebVTT(bytes.NewReader(payload))
+	default:
+		return nil, false, nil
+	}
+	return subtitles, true, err
+}
+
+func rangeCoverageError(last time.Duration, media domain.Media) error {
+	if !media.IsEpisodeRange() || media.Duration <= 0 || float64(last) >= float64(media.Duration)*minimumRangeCoverage {
+		return nil
+	}
+	return &subtitleValidationError{code: "partial_coverage", reason: fmt.Sprintf("subtitle ends at %s of a %s multi-episode file", last.Round(time.Second), media.Duration.Round(time.Second))}
 }
 
 func copyRollback(source, parent string) (string, error) {

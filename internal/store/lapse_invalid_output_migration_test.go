@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -87,7 +88,9 @@ func TestMigrationClearsExistingInvalidLapseOutputRejectionsOnce(t *testing.T) {
 		`SELECT id,media_id,language,state,attempt,failure_attempt,next_attempt_at_ns,last_outcome,lease_owner,lease_until_ns,priority,rerun_requested FROM search_states ORDER BY id`,
 	}
 	for _, table := range []string{"media", "installations", "provider_cache", "pack_cache", "pack_members", "notifications"} {
-		queries = append(queries, "SELECT * FROM "+table+" ORDER BY 1")
+		// Compare only the columns that existed before migrating: later
+		// migrations may add columns with defaults without changing retained rows.
+		queries = append(queries, "SELECT "+strings.Join(tableColumns(t, old, table), ", ")+" FROM "+table+" ORDER BY 1")
 	}
 	before := make([][][]any, len(queries))
 	for i, q := range queries {

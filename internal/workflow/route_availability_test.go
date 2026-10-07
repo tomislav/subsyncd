@@ -14,13 +14,14 @@ import (
 // download availability.
 type routeProvider struct {
 	*fakeProvider
-	kinds       []domain.MediaKind
-	unavailable error
-	checks      int
+	kinds             []domain.MediaKind
+	unavailable       error
+	checks            int
+	singleEpisodeOnly bool
 }
 
 func (p *routeProvider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{MediaKinds: p.kinds}
+	return provider.Capabilities{MediaKinds: p.kinds, SingleEpisodeOnly: p.singleEpisodeOnly}
 }
 
 func (p *routeProvider) CheckDownloadAvailability(context.Context) error {
@@ -114,5 +115,26 @@ func TestRouteAvailabilityReturnsStateReadFailures(t *testing.T) {
 	s := routeService([]*routeProvider{newRouteProvider("a", failure)}, nil)
 	if _, err := s.RouteAvailability(t.Context(), domain.MediaMovie); !errors.Is(err, failure) {
 		t.Fatalf("RouteAvailability() error = %v, want %v", err, failure)
+	}
+}
+
+func TestRouteAvailabilityPausesEpisodeRangesWhenOnlySingleEpisodeProvidersRemain(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	cooling := newRouteProvider("os", &provider.CooldownError{ProviderID: "os", Scope: provider.OperationDownload, ResetAt: now.Add(time.Hour)})
+	gestdown := newRouteProvider("gestdown", nil, domain.MediaEpisode)
+	gestdown.singleEpisodeOnly = true
+	got, err := routeService([]*routeProvider{cooling, gestdown}, nil).RouteAvailability(t.Context(), domain.MediaEpisode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Paused || !got.RangesPaused || !got.RangesResetAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("RouteAvailability() = %+v, want only ranges paused until the cooldown resets", got)
+	}
+	cooling.unavailable = nil
+	if got, _ := routeService([]*routeProvider{cooling, gestdown}, nil).RouteAvailability(t.Context(), domain.MediaEpisode); got.RangesPaused {
+		t.Fatalf("ranges paused while a range-capable provider is available: %+v", got)
+	}
+	if got, _ := routeService([]*routeProvider{gestdown}, nil).RouteAvailability(t.Context(), domain.MediaEpisode); got.RangesPaused {
+		t.Fatalf("ranges paused with no range-capable provider on the route: %+v", got)
 	}
 }

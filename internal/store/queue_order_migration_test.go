@@ -90,3 +90,28 @@ func TestMigrationCopiesDueTimeIntoQueueOrder(t *testing.T) {
 		t.Fatalf("search_due_idx = %q, want instance_rank and queue_order_ns", index)
 	}
 }
+
+// tableColumns lists a table's columns as they exist in db.
+func tableColumns(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(columns) == 0 {
+		t.Fatalf("table %s has no columns", table)
+	}
+	return columns
+}
