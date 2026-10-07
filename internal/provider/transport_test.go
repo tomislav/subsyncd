@@ -400,6 +400,8 @@ func TestFallbackResetMatchesProviderPolicy(t *testing.T) {
 		{"subdl", CooldownRateLimit, now.Add(15 * time.Minute)},
 		{"subdl", CooldownDownloadQuota, time.Date(2026, 9, 5, 0, 15, 0, 0, time.UTC)},
 		{"subdl", CooldownServiceBusy, now.Add(time.Hour)},
+		{"subsource", CooldownRateLimit, now.Add(time.Minute)},
+		{"subsource", CooldownDownloadQuota, now.Add(time.Hour)},
 	}
 	for _, test := range tests {
 		if got := FallbackReset(now, test.provider, test.kind); !got.Equal(test.want) {

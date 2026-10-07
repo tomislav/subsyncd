@@ -208,6 +208,14 @@ func FallbackReset(now time.Time, providerType string, kind CooldownKind) time.T
 		case CooldownServiceBusy:
 			return now.Add(time.Hour)
 		}
+	case "subsource":
+		switch kind {
+		case CooldownRateLimit:
+			return now.Add(time.Minute)
+		case CooldownDownloadQuota:
+			// The hourly and daily caps are indistinguishable; retry hourly.
+			return now.Add(time.Hour)
+		}
 	}
 	return time.Time{}
 }

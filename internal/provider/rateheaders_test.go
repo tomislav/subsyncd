@@ -87,3 +87,18 @@ func TestParseRateLimitDoesNotOverflowLargeDelays(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRateLimitAcceptsISOTimestampXReset(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(42*time.Second + 250*time.Millisecond)
+	headers := http.Header{"X-Ratelimit-Limit": {"60"}, "X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset.Format("2006-01-02T15:04:05.000Z")}}
+	window, ok := ParseRateLimit(now, headers)
+	if !ok || window.Limit != 60 || window.Remaining != 0 || !window.ResetAt.Equal(reset) || window.Source != "x-ratelimit" {
+		t.Fatalf("window = %#v, %v; want reset %s", window, ok, reset)
+	}
+	for name, value := range map[string]string{"past": now.Add(-time.Second).Format(time.RFC3339Nano), "malformed": "2026-09-04T99:00:00Z"} {
+		if _, ok := ParseRateLimit(now, http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {value}}); ok {
+			t.Fatalf("%s ISO reset should not produce a window", name)
+		}
+	}
+}

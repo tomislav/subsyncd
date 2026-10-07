@@ -51,12 +51,7 @@ func ParseRateLimit(now time.Time, headers http.Header, jsonResets ...time.Time)
 	}
 
 	if remaining, err := strconv.ParseInt(strings.TrimSpace(headers.Get("X-RateLimit-Remaining")), 10, 64); err == nil {
-		if reset, err := strconv.ParseInt(strings.TrimSpace(headers.Get("X-RateLimit-Reset")), 10, 64); err == nil {
-			// Providers send either a Unix epoch or delta seconds.
-			resetAt := time.Unix(reset, 0).UTC()
-			if reset > 0 && reset < deltaResetLimit {
-				resetAt = afterSeconds(now, reset)
-			}
+		if resetAt, ok := parseXReset(now, headers.Get("X-RateLimit-Reset")); ok {
 			if resetAt.After(now) {
 				limit, _ := strconv.ParseInt(strings.TrimSpace(headers.Get("X-RateLimit-Limit")), 10, 64)
 				if limit <= 0 {
@@ -131,6 +126,20 @@ func parseIntParameter(parameters map[string]string, names ...string) (int64, bo
 		}
 	}
 	return 0, false
+}
+
+// parseXReset reads X-RateLimit-Reset as a Unix epoch, delta seconds, or an
+// RFC 3339 timestamp.
+func parseXReset(now time.Time, raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if reset, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if reset > 0 && reset < deltaResetLimit {
+			return afterSeconds(now, reset), true
+		}
+		return time.Unix(reset, 0).UTC(), true
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	return parsed.UTC(), err == nil
 }
 
 func parseRetryAfter(now time.Time, raw string) (time.Time, bool) {

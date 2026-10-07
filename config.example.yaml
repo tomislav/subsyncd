@@ -97,6 +97,14 @@ providers:
     # Maximum result pages read per search. Default: 5.
     max_pages: 5
 
+  # Broad search only, movies and TV. Daily quota is 7,200 requests per key.
+  # Uncomment and add it to a language to use it.
+  # subsource-main:
+  #   type: subsource
+  #   api_key: 'your-subsource-api-key'   # Required.
+  #   # Maximum 100-result pages read per title and language. Default: 5.
+  #   max_pages: 5
+
   # Keyless provider for TV episodes only; movie searches skip it.
   # Uncomment and add it to a language to use it.
   # gestdown-main:
