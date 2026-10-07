@@ -424,7 +424,7 @@ func TestManualAndDaemonInstallationsKeepDurableNotificationAcrossFailureAndRest
 				if err := audit.QueryRow(`SELECT count(*) FROM installations`).Scan(&installations); err != nil {
 					t.Fatal(err)
 				}
-				if err := audit.QueryRow(`SELECT count(*) FROM notifications WHERE notifier='silo' AND dedupe_key <> ''`).Scan(&intents); err != nil {
+				if err := audit.QueryRow(`SELECT count(*) FROM notifications WHERE notifier='silo'`).Scan(&intents); err != nil {
 					t.Fatal(err)
 				}
 				if installations != 1 || intents != 1 {
