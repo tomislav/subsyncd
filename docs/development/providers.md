@@ -81,6 +81,34 @@ subdl-main:
   max_concurrent: 1
 ```
 
+### SubSource
+
+SubSource uses its documented REST API at `https://api.subsource.net/api/v1` with an `X-API-Key` header. The server also accepts the key as an `api_key` query parameter; the adapter never sends it there, and its tests assert that no request URL carries the key. Search is broad-only for movies and episodes. Startup makes no request.
+
+A search first resolves SubSource's own `movieId`: an IMDb search for the media kind, or, without an IMDb ID, a text search accepting only a normalized exact title (and the year for movies). Series resolve to one entry per season; episodes select the target season and find nothing when it is missing. Conflicting IMDb IDs reject, and several exact title matches with different IMDb IDs are ambiguous and return nothing. The adapter then lists `/subtitles` for that ID and language slug, sorted by popularity, 100 rows per page up to `max_pages` (default 5, at most 20). A 404 from either step is an empty answer that is not cached, since a gateway fault can produce one.
+
+Title searches and listings are kept in an in-memory cache for six hours (256 entries each, oldest evicted first) so the episodes of one season share one search and one listing, and a title missing from a successful search is remembered as an empty answer. Concurrent searches for the same key share one in-flight request; if it fails, a waiter retries rather than inheriting another caller's error or cancellation. Only complete, successful answers are stored; errors, cancellations, 404s and failed pages are not. The cache holds provider metadata only and is lost on restart.
+
+Language slugs come from SubSource's own language list; an unknown slug returns an empty success rather than an error, so each mapping is exact and tested to parse as a canonical tag. The encoding and mixed-language entries `big_5_code`, `chinese_bg_code` and `chinese_bilingual` are not mapped. `tagalog`/`filipino` (`fil`), `pashto`/`pushto` (`ps`) and `sinhala`/`sinhalese` (`si`) share a tag; searches list every slug and merge.
+
+Candidates take title, IMDb/TMDB IDs and season only from the resolved entry; episode candidates carry no year because SubSource's per-season year is not Sonarr's series year. Each trimmed `releaseInfo` entry is a release alternative; entries shaped like SubSource page slugs are dropped. Episode evidence comes from the shared release parser and range parser, plus narrow fallbacks for `S1 EP04`, `Season 1 Episode 4` and `Season01` names the shared parser leaves incomplete. All alternatives with evidence must agree. An exact target episode becomes a single-episode candidate, a containing range or double episode a range pack, and season-only or complete-season evidence for the target season a season pack. Rows naming another episode or season, or with no episode or season evidence at all, are dropped. A lone absolute number is not evidence; absolute ranges are, and must cover the file's whole absolute range. Listing metadata can name a different episode than the archive holds, and the shared strict member selector rejects such archives at installation.
+
+`productionType: machine` rows are excluded. `productionType: forced` or `foreignParts` marks a candidate forced. SubSource reports `hearingImpaired: false` for imported subtitles regardless of content, so the structured flag is ignored and hearing-impaired classification comes only from the shared annotation parser over release names and commentary. Rating is the share of positive votes weighted by `total / (total + 5)`; popularity uses the shared download-count normalization. Search-cache version `subsource-v1` and evidence version `subsource-evidence-v1` scope later interpretation changes to this provider.
+
+Candidate result IDs and download references are the decimal subtitle ID only. Downloads validate it, rebuild `/subtitles/{id}/download`, refuse redirects for every request, and limit declared and streamed ZIP bodies to 20 MiB (`max_download_bytes` may only lower it). The server's `Content-Disposition` name embeds media metadata and is ignored; the archive is named `subsource-<id>.zip` and handled by the normal fail-closed extraction pipeline.
+
+SubSource reports only its 60-request minute window, as `X-RateLimit-*` headers with an RFC 3339 reset timestamp, which the shared parser accepts alongside epoch and delta seconds. The hourly (1,800) and daily (7,200) caps are not reported. A 429 that does not report an exhausted minute window, whether its headers show spare capacity or are absent, therefore means one of those caps (local pacing stays well under the minute limit), and the adapter persists a key-wide (`all` scope) quota cooldown for one hour; a 429 reporting an exhausted minute window uses the header reset. `Retry-After`, if present, keeps the transport's normal handling. HTTP 401 disables the provider like a rejected key; 403 stays an ordinary failure because it can come from a gateway challenge. The default pacing is 0.5 requests per second.
+
+```yaml
+subsource-main:
+  type: subsource
+  api_key: 'your-subsource-api-key'
+  requests_per_second: 0.5
+  burst: 1
+  max_concurrent: 1
+  max_pages: 5
+```
+
 ### Gestdown
 
 Gestdown uses the keyless public API at `https://api.gestdown.info`. The adapter is TV-only and broad-only: the coordinator skips it for movies before search logs, cache access or transport. Media-kind capabilities apply to both search phases; other adapters keep their existing movie/episode support. Unsupported routes do not count as available providers when classifying a tier's outages. Add a `type: gestdown` instance to either provider tier. No startup network request, credentials or migration is required.

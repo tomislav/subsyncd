@@ -9,9 +9,10 @@ Choose the providers you want to use, add credentials where required, and assign
 | OpenSubtitles.com | Account username and password for published images | Exact file matches, movies, and episodes |
 | SubDL | API key | Movies, episodes, and season packs |
 | Titlovi | API-enabled account username and password | Movies, episodes, and season packs |
+| SubSource | API key | Movies, episodes, and season packs |
 | Gestdown | No account or API key | TV episodes |
 
-Provider account quotas still apply. OpenSubtitles results marked as AI or machine translated are excluded automatically.
+Provider account quotas still apply. OpenSubtitles and SubSource results marked as AI or machine translated are excluded automatically.
 
 ## Add your providers
 
@@ -29,6 +30,10 @@ providers:
     type: subdl
     api_key: 'your-subdl-api-key'
 
+  subsource-main:
+    type: subsource
+    api_key: 'your-subsource-api-key'
+
   gestdown-main:
     type: gestdown
 
@@ -41,6 +46,8 @@ providers:
 Published containers include the OpenSubtitles application key. Native builds and locally built images need an explicit `api_key` in that provider's configuration as well as the account credentials.
 
 Gestdown is a keyless TV-only provider using its [public API](https://gestdown.readme.io/reference/getting-started-1). Add `gestdown-main` to a language’s `providers` or `fallback_providers` list to enable it. Movie searches skip it without an API request; keep a movie-capable provider in routes used by Radarr. It supports multiple languages, including `en`, `hr`, `pt`, and `pt-BR`; unsupported language tags fail startup validation.
+
+SubSource searches by IMDb ID, or by exact title when the media has none, and supports more than 100 languages, including `en`, `hr`, `pt-BR`, and `es-419`; unsupported language tags fail startup validation. Create an API key on your SubSource profile page. A key allows 7,200 requests per day. One search costs about two requests, and episodes of the same season share them for six hours. Because SubSource's hearing-impaired flag is unreliable, subtitles count as hearing-impaired only when their release name or description says so. It works well as the last preferred provider for English, where it often has subtitles for specific releases, or as a fallback for other languages.
 
 The [complete configuration example](../config.example.yaml) includes optional request-rate and concurrency settings. Start with its defaults.
 

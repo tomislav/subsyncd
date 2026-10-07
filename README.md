@@ -37,6 +37,7 @@ Sonarr or Radarr supplies the library: subsyncd does not scan a standalone folde
 | OpenSubtitles.com | Username and password (application key included in published images) | File-hash and title/episode searches across multiple languages |
 | SubDL | API key | Movie, episode, and season-pack searches across multiple languages |
 | Titlovi | API-enabled account username and password | Bosnian, Croatian, English, Macedonian, Serbian (Latin and Cyrillic), and Slovenian |
+| SubSource | API key | Movie, episode, and season-pack searches across more than 100 languages |
 | Gestdown | No account or API key | TV episodes across multiple languages; movies are skipped |
 
 Use one provider or combine several. Available languages depend on the provider; subsyncd checks your language/provider settings at startup. Provider account limits still apply.
@@ -51,7 +52,7 @@ languages:
     providers: [titlovi-main]
 ```
 
-To use Gestdown, uncomment `gestdown-main` in the example configuration and add it to a language’s `providers` or `fallback_providers` list. Keep a movie-capable provider in routes used by Radarr.
+To use SubSource, uncomment `subsource-main` in the example configuration, add your API key, and add it to a language’s `providers` or `fallback_providers` list. To use Gestdown, uncomment `gestdown-main` in the example configuration and add it to a language’s `providers` or `fallback_providers` list. Keep a movie-capable provider in routes used by Radarr.
 
 Hearing-impaired subtitles (SDH/HI) are excluded by default. Set `allow_hearing_impaired: true` to include them. See [provider configuration](docs/providers.md) for more options.
 

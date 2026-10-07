@@ -16,6 +16,7 @@ import (
 	"subsyncd/internal/provider"
 	"subsyncd/internal/provider/opensubtitles"
 	"subsyncd/internal/provider/subdl"
+	"subsyncd/internal/provider/subsource"
 	"subsyncd/internal/provider/titlovi"
 	"subsyncd/internal/store"
 )
@@ -29,6 +30,10 @@ func TestCredentialGatedProviderContracts(t *testing.T) {
 	})
 	t.Run("SubDL", func(t *testing.T) {
 		adapter := build(t, "subdl-contract", subdl.Factory, map[string]string{"type": "subdl", "api_key": requiredEnv(t, "SUBDL_API_KEY")})
+		search(t, adapter, "en")
+	})
+	t.Run("SubSource", func(t *testing.T) {
+		adapter := build(t, "subsource-contract", subsource.Factory, map[string]string{"type": "subsource", "api_key": requiredEnv(t, "SUBSOURCE_API_KEY")})
 		search(t, adapter, "en")
 	})
 	t.Run("Titlovi", func(t *testing.T) {
