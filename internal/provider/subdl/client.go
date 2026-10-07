@@ -447,7 +447,8 @@ func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operat
 		if reset.IsZero() {
 			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownDownloadQuota)
 		}
-		if err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownDownloadQuota, reset); err != nil {
+		reset, err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownDownloadQuota, reset)
+		if err != nil {
 			return err
 		}
 		return &baseprovider.QuotaError{Scope: operation, ResetAt: reset, Message: "SubDL daily limit"}
@@ -455,7 +456,8 @@ func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operat
 		if reset.IsZero() {
 			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownServiceBusy)
 		}
-		if err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownServiceBusy, reset); err != nil {
+		reset, err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownServiceBusy, reset)
+		if err != nil {
 			return err
 		}
 		return &baseprovider.CooldownError{ProviderID: c.id, Scope: operation, Reason: string(baseprovider.CooldownServiceBusy), ResetAt: reset}
@@ -463,7 +465,8 @@ func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operat
 		if reset.IsZero() {
 			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownRateLimit)
 		}
-		if err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownRateLimit, reset); err != nil {
+		reset, err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownRateLimit, reset)
+		if err != nil {
 			return err
 		}
 		return &baseprovider.CooldownError{ProviderID: c.id, Scope: operation, Reason: string(baseprovider.CooldownRateLimit), ResetAt: reset}

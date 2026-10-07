@@ -55,7 +55,7 @@ Already-active download cooldowns suppress provider searches and downloads. Sear
 
 When every provider for a language is unavailable, `queue.route_paused` (warn) reports the language, media kind and `reset_at`, and no searches for it start until `queue.route_resumed`.
 
-`reconcile.deferred` (warn) means an Arr instance reported a file subsyncd cannot read; `deferred_media` names the movies or episodes. It repeats hourly until the file is readable or replaced in Arr. `reconcile.failed` (error) is reserved for real reconciliation failures. See [Operations](operations.md).
+`reconcile.deferred` (warn) means an Arr instance reported a file subsyncd cannot read; `deferred_media` names the movies or episodes. It repeats hourly until the file is readable or replaced in Arr. `config.weak_webhook_token` (warn, at daemon startup) names an instance whose `webhook_token` is shorter than 16 characters; replace it with the output of `openssl rand -hex 32` and update the Arr webhook URL. `reconcile.snapshot_deletions_withheld` (warn) means Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied; check that the instance URL and Arr database are correct. `reconcile.failed` (error) is reserved for real reconciliation failures. See [Operations](operations.md).
 
 Use [`explain`](operations.md#inspect-or-search-one-file) for the saved result and next search time. Successful health checks are deliberately quiet.
 

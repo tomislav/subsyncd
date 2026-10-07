@@ -32,6 +32,7 @@ type webhookPayload struct {
 	EpisodeFile         webhookFile   `json:"episodeFile"`
 	EpisodeFiles        []webhookFile `json:"episodeFiles"`
 	RenamedEpisodeFiles []webhookFile `json:"renamedEpisodeFiles"`
+	RenamedMovieFiles   []webhookFile `json:"renamedMovieFiles"`
 }
 
 type webhookFile struct {
@@ -126,7 +127,8 @@ func webhookFiles(instanceType string, payload webhookPayload) (domain.MediaKind
 		case "download":
 			return domain.MediaMovie, []webhookFile{payload.MovieFile}, EventImport, nil
 		case "rename":
-			return domain.MediaMovie, []webhookFile{payload.MovieFile}, EventRename, nil
+			// Radarr, like Sonarr, reports renames as a list of renamed files.
+			return domain.MediaMovie, payload.RenamedMovieFiles, EventRename, nil
 		case "moviefiledelete":
 			return domain.MediaMovie, []webhookFile{payload.MovieFile}, EventDelete, nil
 		}

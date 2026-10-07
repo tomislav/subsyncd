@@ -29,7 +29,7 @@ A valid scan returns `202 Accepted` with `status: "accepted"`, `mode` (`library`
 
 ## Delivery and retries
 
-Notification deduplication includes the committed media fingerprint and subtitle destination, as well as notifier, media row, language, and subtitle checksum. Identical subtitle content installed for a replacement file triggers a new scan. Retries of the same installation share one outbox intent.
+Notification deduplication includes the committed media fingerprint and subtitle destination, as well as notifier, media row, language, and subtitle checksum. Identical subtitle content installed for a replacement file triggers a new scan. Retries of the same installation share one outbox intent while it is pending. Once an intent is delivered or terminally rejected it releases its key, so publishing the same subtitle again (for example after the sidecar was deleted and reinstalled) enqueues a new scan.
 
 Silo marks this operation `x-silo-retry-safety: non_retryable`; it provides no scan idempotency key or replay guarantee. The existing outbox deliberately retains at-least-once delivery for subtitle refreshes: timeouts, transport failures, HTTP 408, 429, and 5xx retry asynchronously. An uncertain response or recovered lease can therefore dispatch a duplicate targeted scan. The client makes one request per delivery attempt, never follows redirects, and never retries against another API version. Other failures, including 404, 409, 410, and 422, are terminal. Errors expose only bounded categories and status codes, never credentials, response bodies, or transport URLs.
 

@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+// MaxProviderCooldown bounds any reset a provider reports; the gate applies
+// it to every persisted cooldown. Daily quotas fit comfortably; a larger
+// value is treated as a provider error, not a request to stop for a year.
+const MaxProviderCooldown = 48 * time.Hour
+
+// deltaResetLimit separates delta-seconds reset values from Unix epochs: no
+// real epoch is this small, and no real delta is this large.
+const deltaResetLimit = 10 * 365 * 24 * 60 * 60
+
 type RateLimitWindow struct {
 	Name      string
 	Limit     int64
@@ -18,7 +27,7 @@ type RateLimitWindow struct {
 func ParseRateLimit(now time.Time, headers http.Header, jsonResets ...time.Time) (RateLimitWindow, bool) {
 	var windows []RateLimitWindow
 	policies := parsePolicies(headers.Get("RateLimit-Policy"))
-	for _, entry := range splitHeaderValues(headers.Get("RateLimit")) {
+	for _, entry := range rateLimitEntries(headers.Get("RateLimit")) {
 		name, parameters := parseParameterized(entry)
 		remaining, remainingOK := parseIntParameter(parameters, "r", "remaining")
 		reset, resetOK := parseIntParameter(parameters, "t", "reset")
@@ -29,15 +38,25 @@ func ParseRateLimit(now time.Time, headers http.Header, jsonResets ...time.Time)
 		if direct, ok := parseIntParameter(parameters, "limit", "q"); ok {
 			limit = direct
 		}
-		resetAt := now.Add(time.Duration(reset) * time.Second)
-		if resetAt.After(now) {
-			windows = append(windows, RateLimitWindow{Name: name, Limit: limit, Remaining: remaining, ResetAt: resetAt, Source: "ratelimit"})
+		windows = append(windows, RateLimitWindow{Name: name, Limit: limit, Remaining: remaining, ResetAt: afterSeconds(now, reset), Source: "ratelimit"})
+	}
+
+	// Earlier drafts use separate RateLimit-Limit/-Remaining/-Reset headers
+	// with a delta-seconds reset.
+	if remaining, err := strconv.ParseInt(strings.TrimSpace(headers.Get("RateLimit-Remaining")), 10, 64); err == nil {
+		if reset, err := strconv.ParseInt(strings.TrimSpace(headers.Get("RateLimit-Reset")), 10, 64); err == nil && reset > 0 {
+			limit, _ := strconv.ParseInt(strings.TrimSpace(headers.Get("RateLimit-Limit")), 10, 64)
+			windows = append(windows, RateLimitWindow{Name: "ratelimit", Limit: limit, Remaining: remaining, ResetAt: afterSeconds(now, reset), Source: "ratelimit"})
 		}
 	}
 
 	if remaining, err := strconv.ParseInt(strings.TrimSpace(headers.Get("X-RateLimit-Remaining")), 10, 64); err == nil {
-		if resetEpoch, err := strconv.ParseInt(strings.TrimSpace(headers.Get("X-RateLimit-Reset")), 10, 64); err == nil {
-			resetAt := time.Unix(resetEpoch, 0).UTC()
+		if reset, err := strconv.ParseInt(strings.TrimSpace(headers.Get("X-RateLimit-Reset")), 10, 64); err == nil {
+			// Providers send either a Unix epoch or delta seconds.
+			resetAt := time.Unix(reset, 0).UTC()
+			if reset > 0 && reset < deltaResetLimit {
+				resetAt = afterSeconds(now, reset)
+			}
 			if resetAt.After(now) {
 				limit, _ := strconv.ParseInt(strings.TrimSpace(headers.Get("X-RateLimit-Limit")), 10, 64)
 				if limit <= 0 {
@@ -120,7 +139,7 @@ func parseRetryAfter(now time.Time, raw string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
-		return now.Add(time.Duration(seconds) * time.Second), true
+		return afterSeconds(now, seconds), true
 	}
 	parsed, err := http.ParseTime(raw)
 	return parsed, err == nil && parsed.After(now)
@@ -141,4 +160,33 @@ func moreRestrictive(candidate, current RateLimitWindow) bool {
 		return candidateRatio < currentRatio
 	}
 	return candidate.ResetAt.After(current.ResetAt)
+}
+
+// afterSeconds adds a provider-supplied delay without overflowing. Anything
+// beyond MaxProviderCooldown is clamped when the gate persists it.
+func afterSeconds(now time.Time, seconds int64) time.Time {
+	limit := int64(MaxProviderCooldown / time.Second)
+	if seconds > limit {
+		seconds = limit + 1
+	}
+	return now.Add(time.Duration(seconds) * time.Second)
+}
+
+// rateLimitEntries splits a RateLimit header into policy entries. Draft-08
+// lists `"name";r=..;t=..` items separated by commas; draft-07 sends one
+// dictionary such as `limit=10, remaining=0, reset=30`, which is joined back
+// into a single entry.
+func rateLimitEntries(raw string) []string {
+	entries := splitHeaderValues(raw)
+	dictionary := len(entries) > 0
+	for _, entry := range entries {
+		if strings.Contains(entry, ";") || !strings.Contains(entry, "=") {
+			dictionary = false
+			break
+		}
+	}
+	if dictionary {
+		return []string{strings.Join(entries, ";")}
+	}
+	return entries
 }

@@ -289,6 +289,51 @@ func TestTransportPersistsRetryAfterAndNeverSleepsThroughCooldown(t *testing.T) 
 	}
 }
 
+func TestTransportCooldownErrorCarriesClampedReset(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	gate := NewGate(&memoryStateStore{states: map[string]store.ProviderState{}}, clock, 1)
+	gate.Configure("titlovi-main", 1000, 1, 1)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {now.AddDate(1, 0, 0).Format(http.TimeFormat)}}, Body: io.NopCloser(strings.NewReader("limited"))}, nil
+	})}
+	transport := Client{HTTP: client, Gate: gate, Clock: clock, ProviderID: "titlovi-main", ProviderType: "titlovi"}
+	request, _ := http.NewRequest(http.MethodGet, "https://api.example/search", nil)
+	response, err := transport.Do(context.Background(), OperationSearch, request)
+	if response != nil {
+		response.Body.Close()
+	}
+	var cooldown *CooldownError
+	if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(now.Add(MaxProviderCooldown)) {
+		t.Fatalf("error = %#v, want reset clamped to %s", err, now.Add(MaxProviderCooldown))
+	}
+}
+
+func TestTransportLeavesShortSuccessWindowsToLocalLimiter(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	gate := NewGate(&memoryStateStore{states: map[string]store.ProviderState{}}, clock, 1)
+	gate.Configure("opensubtitles-main", 1000, 1, 1)
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		// Gateways report per-second windows on ordinary successful bursts.
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Ratelimit-Limit": {"5"}, "Ratelimit-Remaining": {"0"}, "Ratelimit-Reset": {"1"}}, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	transport := Client{HTTP: client, Gate: gate, Clock: clock, ProviderID: "opensubtitles-main", ProviderType: "opensubtitles"}
+	for range 2 {
+		request, _ := http.NewRequest(http.MethodGet, "https://api.example/search", nil)
+		response, err := transport.Do(context.Background(), OperationSearch, request)
+		if err != nil {
+			t.Fatalf("request %d error = %v", calls, err)
+		}
+		response.Body.Close()
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
 func TestTransportIgnoresRetryAfterOnSuccessfulResponse(t *testing.T) {
 	now := time.Date(2026, 9, 5, 9, 34, 57, 0, time.UTC)
 	clock := testutil.NewClock(now)

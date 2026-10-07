@@ -73,12 +73,14 @@ type InstallRequest struct {
 }
 
 type Installer struct {
-	Repository    InstallationStore
-	MediaRoots    []string
-	Mode          os.FileMode
-	UID           *int
-	GID           *int
-	Fault         func(InstallStage) error
+	Repository InstallationStore
+	MediaRoots []string
+	Mode       os.FileMode
+	UID        *int
+	GID        *int
+	Fault      func(InstallStage) error
+	// Link creates the fresh-install hard link; nil uses os.Link.
+	Link          func(oldname, newname string) error
 	NotifierNames []string
 	Now           func() time.Time
 	Events        *observability.Emitter
@@ -212,8 +214,8 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err := verifyMediaUnchanged(request.Media.Fingerprint, i.MediaRoots); err != nil {
 		return restore(err)
 	}
-	if err := os.Rename(stagedPath, destination); err != nil {
-		return restore(fmt.Errorf("publish subtitle: %w", err))
+	if err := i.publishStaged(stagedPath, destination, replacing); err != nil {
+		return restore(err)
 	}
 	committedFile = true
 	if err := i.inject(StageDirectorySync); err != nil {
@@ -303,6 +305,34 @@ func replacementState(destination string, existing store.Installation, found boo
 		return false, ErrProtectedSubtitle
 	}
 	return true, nil
+}
+
+// publishStaged moves the staged subtitle into place. A fresh installation
+// links rather than renames, so a sidecar created after the absence check
+// (by Arr or the user) is never overwritten. Any other link failure (no
+// hard-link support on FUSE, SMB, mergerfs or rclone mounts) falls back to
+// rename after the absence check already performed.
+func (i Installer) publishStaged(stagedPath, destination string, replacing bool) error {
+	if !replacing {
+		link := i.Link
+		if link == nil {
+			link = os.Link
+		}
+		err := link(stagedPath, destination)
+		if err == nil {
+			// The subtitle is published. A leftover staging name is removed
+			// again by the deferred cleanup and must not undo the install.
+			_ = os.Remove(stagedPath)
+			return nil
+		}
+		if errors.Is(err, os.ErrExist) {
+			return ErrProtectedSubtitle
+		}
+	}
+	if err := os.Rename(stagedPath, destination); err != nil {
+		return fmt.Errorf("publish subtitle: %w", err)
+	}
+	return nil
 }
 
 func verifyReplacementUnchanged(destination string, existing store.Installation, replacing bool) error {

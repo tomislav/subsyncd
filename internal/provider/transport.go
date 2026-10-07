@@ -141,13 +141,20 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		// quota window that still has capacity.
 		window.Remaining = 0
 	}
+	if found && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices && window.Remaining <= 0 && window.ResetAt.Sub(now) < minimumPersistedWindow {
+		// Gateways report per-second windows on ordinary successful bursts.
+		// The local token bucket paces those; persisting them would only
+		// churn cooldowns, route pauses, and warnings.
+		found = false
+	}
 	if found {
 		throttle := Throttle{ProviderID: c.ProviderID, Scope: operation, Reason: window.Source, Limit: window.Limit, Remaining: window.Remaining, ResetAt: window.ResetAt}
-		if err := c.Gate.Persist(ctx, throttle); err != nil {
+		resetAt, err := c.Gate.persist(ctx, throttle)
+		if err != nil {
 			return response, fmt.Errorf("persist provider %s throttle: %w", c.ProviderID, err)
 		}
 		if response.StatusCode == http.StatusTooManyRequests {
-			return response, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: throttle.Reason, ResetAt: throttle.ResetAt}
+			return response, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: throttle.Reason, ResetAt: resetAt}
 		}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || response.Body == nil {
@@ -161,11 +168,17 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 	return response, nil
 }
 
-func (c Client) PersistCooldown(ctx context.Context, operation Operation, kind CooldownKind, resetAt time.Time) error {
+// minimumPersistedWindow is the shortest exhausted window a successful
+// response persists as a provider cooldown.
+const minimumPersistedWindow = 5 * time.Second
+
+// PersistCooldown records a cooldown and returns the reset that applies,
+// which callers report in their CooldownError or QuotaError.
+func (c Client) PersistCooldown(ctx context.Context, operation Operation, kind CooldownKind, resetAt time.Time) (time.Time, error) {
 	if resetAt.IsZero() {
 		resetAt = FallbackReset(c.Clock.Now(), c.ProviderType, kind)
 	}
-	return c.Gate.Persist(ctx, Throttle{ProviderID: c.ProviderID, Scope: operation, Reason: string(kind), Remaining: 0, ResetAt: resetAt})
+	return c.Gate.persist(ctx, Throttle{ProviderID: c.ProviderID, Scope: operation, Reason: string(kind), Remaining: 0, ResetAt: resetAt})
 }
 
 func (c Client) DisableAuthentication(ctx context.Context, reason string) error {

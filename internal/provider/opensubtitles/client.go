@@ -20,9 +20,12 @@ import (
 )
 
 type Client struct {
-	id         string
-	config     Config
-	transport  baseprovider.Client
+	id        string
+	config    Config
+	transport baseprovider.Client
+	// download fetches issued temporary links. It carries no API key or
+	// token, so it alone may follow redirects, and only to HTTPS targets.
+	download   baseprovider.Client
 	hasher     Hasher
 	hashCache  HashCache
 	clock      baseprovider.Clock
@@ -48,7 +51,27 @@ func New(config Config, transport baseprovider.Client, hasher Hasher, hashCache 
 	if clock == nil {
 		clock = baseprovider.SystemClock{}
 	}
-	return &Client{id: transport.ProviderID, config: config, transport: transport, hasher: hasher, hashCache: hashCache, clock: clock}, nil
+	download := transport
+	if transport.HTTP != nil {
+		// API requests carry the API key, bearer token, and login password.
+		// Go forwards custom headers and replays request bodies on 307/308, so
+		// a redirect must never be followed for them.
+		api := *transport.HTTP
+		api.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		transport.HTTP = &api
+		signed := *download.HTTP
+		signed.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("OpenSubtitles download redirected too many times")
+			}
+			if request.URL.Scheme != "https" || request.URL.User != nil || request.URL.Host == "" {
+				return fmt.Errorf("OpenSubtitles download redirect target is not allowed")
+			}
+			return nil
+		}
+		download.HTTP = &signed
+	}
+	return &Client{id: transport.ProviderID, config: config, transport: transport, download: download, hasher: hasher, hashCache: hashCache, clock: clock}, nil
 }
 
 func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) (baseprovider.Provider, error) {
@@ -111,7 +134,7 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 	}
 
 	var candidates []domain.Candidate
-	for page := 1; ; page++ {
+	for page := 1; page <= maxSearchPages; page++ {
 		parameters.Set("page", strconv.Itoa(page))
 		var response searchResponse
 		if err := c.getJSONWithRefresh(ctx, "/subtitles?"+parameters.Encode(), &response); err != nil {
@@ -343,6 +366,10 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 	return request, nil
 }
 
+// maxSearchPages bounds one search. A reported total_pages is provider data
+// and must not hold a worker or the shared request quota indefinitely.
+const maxSearchPages = 10
+
 // ratingVotePrior shrinks averages from few votes toward zero, so one 10/10
 // vote cannot outrank a well-established rating.
 const ratingVotePrior = 5
@@ -429,7 +456,6 @@ func normalizeCandidates(providerID string, query baseprovider.SearchQuery, item
 type downloadResponse struct {
 	Link         string `json:"link"`
 	FileName     string `json:"file_name"`
-	Message      string `json:"message"`
 	ResetTimeUTC string `json:"reset_time_utc"`
 }
 
@@ -450,7 +476,7 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 	if err != nil {
 		return baseprovider.DownloadMetadata{}, err
 	}
-	download, err := c.transport.Do(ctx, baseprovider.OperationDownloadTransfer, downloadRequest)
+	download, err := c.download.Do(ctx, baseprovider.OperationDownloadTransfer, downloadRequest)
 	if err != nil {
 		if download != nil {
 			download.Body.Close()
@@ -513,10 +539,11 @@ func (c *Client) requestDownloadLink(ctx context.Context, fileID int64, allowRef
 		if !resetAt.After(now) {
 			resetAt = baseprovider.FallbackReset(now, "opensubtitles", baseprovider.CooldownDownloadQuota)
 		}
-		if err := c.transport.PersistCooldown(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, resetAt); err != nil {
+		resetAt, err := c.transport.PersistCooldown(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, resetAt)
+		if err != nil {
 			return downloadResponse{}, err
 		}
-		return downloadResponse{}, &baseprovider.QuotaError{Scope: baseprovider.OperationDownload, ResetAt: resetAt, Message: decoded.Message}
+		return downloadResponse{}, &baseprovider.QuotaError{Scope: baseprovider.OperationDownload, ResetAt: resetAt, Message: "OpenSubtitles download quota"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return downloadResponse{}, fmt.Errorf("OpenSubtitles download request returned HTTP %d", response.StatusCode)

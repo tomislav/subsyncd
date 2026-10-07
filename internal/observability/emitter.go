@@ -2,8 +2,10 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"strings"
 )
@@ -162,4 +164,30 @@ func mergeDynamicAttrs(groups ...[]slog.Attr) []slog.Attr {
 		}
 	}
 	return merged
+}
+
+// ServerErrorLog adapts net/http's internal error logging (accept failures,
+// handler panics, TLS handshakes) to one NDJSON record per call. Only the
+// redacted first line is kept, so panic stack traces never reach the log.
+func (e *Emitter) ServerErrorLog() *log.Logger {
+	return log.New(serverErrorWriter{events: e}, "", 0)
+}
+
+type serverErrorWriter struct{ events *Emitter }
+
+func (w serverErrorWriter) Write(payload []byte) (int, error) {
+	line, _, _ := strings.Cut(string(payload), "\n")
+	line = strings.TrimPrefix(strings.TrimSpace(line), "http: ")
+	reason, level := "other", slog.LevelWarn
+	switch {
+	case strings.HasPrefix(line, "panic serving"):
+		reason, level = "panic", slog.LevelError
+	case strings.HasPrefix(line, "Accept error"):
+		reason = "accept"
+	case strings.HasPrefix(line, "TLS handshake error"):
+		reason = "tls_handshake"
+	}
+	attrs := append([]slog.Attr{slog.String("reason", reason)}, w.events.ErrorAttrs("http_server", errors.New(line))...)
+	w.events.Log(context.Background(), level, "http.server_error", "HTTP server error", attrs...)
+	return len(payload), nil
 }

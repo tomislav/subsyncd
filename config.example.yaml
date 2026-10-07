@@ -43,7 +43,10 @@ instances:
     type: sonarr             # Required: sonarr or radarr.
     url: http://sonarr:8989  # Required. Must be reachable from the container.
     api_key: 'your-sonarr-api-key'   # Required. Sonarr: Settings > General.
-    # Required. A random secret you choose. Use it in the Sonarr webhook URL:
+    # Required. A random secret you choose; generate one with
+    #   openssl rand -hex 32
+    # Tokens shorter than 16 characters work but log a warning at startup.
+    # Use it in the Sonarr webhook URL:
     #   http://subsyncd:8097/webhooks/sonarr-main?token=<this secret>
     webhook_token: 'your-own-random-sonarr-secret'
     # Translates paths reported by Sonarr ("remote") to the same folder inside
@@ -59,7 +62,7 @@ instances:
     type: radarr
     url: http://radarr:7878
     api_key: 'your-radarr-api-key'
-    webhook_token: 'your-own-random-radarr-secret'
+    webhook_token: 'your-own-random-radarr-secret'   # openssl rand -hex 32
     path_mappings:
       - remote: /data/movies
         local: /media/movies

@@ -19,6 +19,8 @@ func IsOutsideScope(err error) bool {
 	return errors.Is(err, ErrOutsideScope)
 }
 
+// MapPath errors never include the remote path or a mapped path outside the
+// media roots: log redaction only replaces configured local roots.
 func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) (string, error) {
 	normalizedRemote := normalizeRemote(remote)
 	type candidate struct {
@@ -37,7 +39,7 @@ func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) 
 		candidates = append(candidates, candidate{remote: prefix, local: mapping.Local})
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("%w: remote path %q does not match a configured mapping", ErrOutsideScope, remote)
+		return "", fmt.Errorf("%w: remote path does not match a configured mapping", ErrOutsideScope)
 	}
 	sort.Slice(candidates, func(i, j int) bool { return len(candidates[i].remote) > len(candidates[j].remote) })
 	selected := candidates[0]
@@ -46,12 +48,12 @@ func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) 
 	parts := strings.Split(remainder, "/")
 	for _, part := range parts {
 		if part == ".." {
-			return "", fmt.Errorf("remote path %q contains traversal", remote)
+			return "", errors.New("remote path contains traversal")
 		}
 	}
 	mapped := filepath.Clean(filepath.Join(append([]string{selected.local}, parts...)...))
 	if !filepath.IsAbs(mapped) {
-		return "", fmt.Errorf("mapped path %q is not absolute", mapped)
+		return "", errors.New("mapped path is not absolute")
 	}
 	resolved, err := resolveExistingParents(mapped)
 	if err != nil {
@@ -66,7 +68,7 @@ func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) 
 			return mapped, nil
 		}
 	}
-	return "", fmt.Errorf("%w: mapped path %q is outside configured media roots", ErrOutsideScope, mapped)
+	return "", fmt.Errorf("%w: mapped path is outside configured media roots", ErrOutsideScope)
 }
 
 func normalizeRemote(path string) string {
@@ -92,9 +94,9 @@ func resolveExistingParents(path string) (string, error) {
 			resolved, err := filepath.EvalSymlinks(current)
 			if err != nil {
 				if os.IsNotExist(err) {
-					return "", fmt.Errorf("%w: resolve mapped path %q: %v", errMappedPathUnavailable, path, err)
+					return "", fmt.Errorf("%w: resolve mapped path: %v", errMappedPathUnavailable, pathErrorCause(err))
 				}
-				return "", fmt.Errorf("resolve mapped path %q: %w", path, err)
+				return "", fmt.Errorf("resolve mapped path: %w", pathErrorCause(err))
 			}
 			for i := len(missing) - 1; i >= 0; i-- {
 				resolved = filepath.Join(resolved, missing[i])
@@ -102,11 +104,11 @@ func resolveExistingParents(path string) (string, error) {
 			return filepath.Clean(resolved), nil
 		}
 		if !os.IsNotExist(err) {
-			return "", fmt.Errorf("inspect mapped path %q: %w", path, err)
+			return "", fmt.Errorf("inspect mapped path: %w", pathErrorCause(err))
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", fmt.Errorf("cannot resolve mapped path %q", path)
+			return "", errors.New("cannot resolve mapped path")
 		}
 		missing = append(missing, filepath.Base(current))
 		current = parent
@@ -116,4 +118,14 @@ func resolveExistingParents(path string) (string, error) {
 func pathContained(root, path string) bool {
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// pathErrorCause drops the path an os.PathError carries; resolution runs
+// before the media-root check, so that path may not be redactable.
+func pathErrorCause(err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Err
+	}
+	return err
 }

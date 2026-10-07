@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"subsyncd/internal/config"
@@ -88,6 +89,29 @@ func TestMapPathRejectsPrefixLookalikeTraversalAndOutsideRoot(t *testing.T) {
 	outside := filepath.Join(filepath.Dir(root), "outside")
 	if got, err := MapPath("/data/tv/file.mkv", []config.PathMapping{{Remote: "/data/tv", Local: outside}}, []string{root}); err == nil {
 		t.Fatalf("outside mapping = %q, want error", got)
+	}
+}
+
+func TestMapPathErrorsDoNotEchoUnredactedPaths(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "Private Show")
+	for name, input := range map[string]struct {
+		remote   string
+		mappings []config.PathMapping
+	}{
+		"unmapped":     {"/srv/Private Show/S01E01.mkv", []config.PathMapping{{Remote: "/data/tv", Local: root}}},
+		"traversal":    {"/data/tv/Private Show/../../S01E01.mkv", []config.PathMapping{{Remote: "/data/tv", Local: root}}},
+		"outside root": {"/data/tv/S01E01.mkv", []config.PathMapping{{Remote: "/data/tv", Local: outside}}},
+	} {
+		_, err := MapPath(input.remote, input.mappings, []string{root})
+		if err == nil {
+			t.Fatalf("%s: MapPath() error = nil", name)
+		}
+		// Remote Arr paths and mapped paths outside the media roots are not
+		// covered by log redaction, which only replaces configured roots.
+		if strings.Contains(err.Error(), "Private Show") || strings.Contains(err.Error(), "S01E01") {
+			t.Fatalf("%s: error echoes media path: %v", name, err)
+		}
 	}
 }
 

@@ -339,6 +339,69 @@ install: {file_mode: "0644"}
 	}
 }
 
+func TestOpenWarnsAboutShortWebhookTokensForDaemonOnly(t *testing.T) {
+	for _, command := range []string{"serve", "doctor"} {
+		t.Run(command, func(t *testing.T) {
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config.yaml")
+			text := fmt.Sprintf(`
+data_dir: %q
+media_roots: [%q]
+server: {listen: "127.0.0.1:0"}
+worker: {max_concurrent: 1}
+instances:
+  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, webhook_token: hook, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: movies, type: radarr, url: "http://radarr.invalid", api_key: api-secret, webhook_token: a-long-random-webhook-secret, path_mappings: [{remote: /movies, local: %q}]}
+providers:
+  english: {type: fake, requests_per_second: 1, burst: 1, max_concurrent: 1}
+provider_http: {shared_origin_max_concurrent: 1}
+languages: {en: {providers: [english]}}
+pack_cache: {ttl: 1h, max_bytes: 1048576}
+sync: {lapse_path: /usr/local/bin/lapse, timeout: 1m}
+install: {file_mode: "0644"}
+`, filepath.Join(root, "data"), root, root, root)
+			if err := os.WriteFile(configPath, []byte(text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(root, "data"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			initialized, err := store.Open(context.Background(), filepath.Join(root, "data", "subsyncd.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialized.Close()
+			var logs bytes.Buffer
+			application, err := Open(context.Background(), configPath, OpenOptions{
+				LogWriter: &logs, Version: "test", Command: command,
+				Runtime: Options{SkipLapseCheck: true, SkipProbeCheck: true, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}, "movies": fakeCatalog{}}, Worker: &waitingWorker{}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer application.Close()
+			var warnings []map[string]any
+			for _, record := range decodeLogRecords(t, logs.String()) {
+				if record["event"] == "config.weak_webhook_token" {
+					warnings = append(warnings, record)
+				}
+			}
+			if command != "serve" {
+				if len(warnings) != 0 {
+					t.Fatalf("diagnostic command warned: %#v", warnings)
+				}
+				return
+			}
+			if len(warnings) != 1 || warnings[0]["instance"] != "tv" || warnings[0]["level"] != "warn" || warnings[0]["minimum_length"] != float64(16) {
+				t.Fatalf("weak token warnings = %#v", warnings)
+			}
+			if strings.Contains(logs.String(), `"hook"`) || strings.Contains(logs.String(), "a-long-random") {
+				t.Fatalf("warning leaked a token: %s", logs.String())
+			}
+		})
+	}
+}
+
 func TestLoggingDocumentationContract(t *testing.T) {
 	read := func(path string) string {
 		t.Helper()
@@ -661,6 +724,82 @@ func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 	}
 }
 
+func TestManualSearchOfDeletedMediaReschedulesConfiguredLanguages(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	mediaPath := filepath.Join(cfg.MediaRoots[0], "Movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: info.Size(), ModTime: info.ModTime()}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
+	application, err := New(ctx, cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: notificationProbe{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: media}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	if _, err := application.Repository.ApplyMediaEvent(ctx, store.MediaEventMutation{EventID: "seed", Type: "import", EntityID: 7, Ref: media.Ref, Media: media, Languages: []domain.Language{"en"}, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	mediaID, _, err := application.Repository.FindMedia(ctx, media.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Repository.ApplyMediaEvent(ctx, store.MediaEventMutation{EventID: "delete", Type: "delete", EntityID: 7, Ref: media.Ref, At: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := application.Repository.GetSearchStatus(ctx, mediaID, "en"); err != nil || status.LastOutcome != "deleted" {
+		t.Fatalf("seeded tombstone status = %#v, %v", status, err)
+	}
+
+	if _, err := application.Search(ctx, "tv", "movie", 7, "en", false); err != nil {
+		t.Fatal(err)
+	}
+	status, err := application.Repository.GetSearchStatus(ctx, mediaID, "en")
+	if err != nil || status.State != "pending" || status.LastOutcome == "deleted" {
+		t.Fatalf("revived media search status = %#v, %v", status, err)
+	}
+}
+
+func TestManualSearchRevivalSettlesTheSatisfiedLanguage(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	mediaPath := filepath.Join(cfg.MediaRoots[0], "Movie.mkv")
+	if err := os.WriteFile(mediaPath, []byte("media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// An existing sidecar satisfies the manual search.
+	if err := os.WriteFile(filepath.Join(cfg.MediaRoots[0], "Movie.en.srt"), []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 7, Size: info.Size(), ModTime: info.ModTime()}, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{TMDB: 7}}
+	application, err := New(ctx, cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: notificationProbe{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: media}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+
+	if _, err := application.Search(ctx, "tv", "movie", 7, "en", false); err != nil {
+		t.Fatal(err)
+	}
+	mediaID, _, err := application.Repository.FindMedia(ctx, media.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := application.Repository.GetSearchStatus(ctx, mediaID, "en")
+	if err != nil || status.State != "complete" || status.LastOutcome != "satisfied" {
+		t.Fatalf("manually satisfied language status = %#v, %v; want complete/satisfied", status, err)
+	}
+}
+
 func TestManualSearchClearsProviderResumeBeforeWorkflowFailure(t *testing.T) {
 	cfg := testConfig(t)
 	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
@@ -802,6 +941,50 @@ func TestServeDrainsHTTPAndWorkerOnCancellation(t *testing.T) {
 	}
 	if records[0]["trigger"] != "context" || records[1]["outcome"] != "success" {
 		t.Fatalf("shutdown fields = %#v / %#v", records[0], records[1])
+	}
+}
+
+func TestServeStopsWorkerWithoutWaitingForInFlightRequests(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &waitingWorker{}
+	cfg := testConfig(t)
+	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+	})
+	application := &App{Config: cfg, Listener: listener, Handler: handler, Worker: worker, Command: "serve"}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- application.Serve(ctx) }()
+	go func() {
+		client := http.Client{Timeout: 5 * time.Second}
+		if response, err := client.Get("http://" + listener.Addr().String() + "/webhook"); err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+	<-entered
+	cancel()
+	// The worker must stop acquiring new work immediately, concurrently with
+	// the HTTP drain, so both shutdown budgets overlap.
+	deadline := time.Now().Add(time.Second)
+	for !worker.stopped.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	stopped := worker.stopped.Load()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("worker kept running while an HTTP request was draining")
 	}
 }
 

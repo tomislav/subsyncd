@@ -141,6 +141,8 @@ http://subsyncd:8097/webhooks/sonarr-main?token=YOUR_SONARR_SECRET
 http://subsyncd:8097/webhooks/radarr-main?token=YOUR_RADARR_SECRET
 ```
 
+Generate each webhook secret with `openssl rand -hex 32`; secrets shorter than 16 characters work but log a startup warning.
+
 For an instance outside Docker, replace `subsyncd` with your Docker host's address and use the published port.
 
 Enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches.

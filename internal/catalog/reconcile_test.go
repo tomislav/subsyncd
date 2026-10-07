@@ -811,3 +811,91 @@ func TestReconcilerPreservesTypedHistoryDeferral(t *testing.T) {
 		t.Fatalf("Run() error = %v, want the catalog's typed deferral", err)
 	}
 }
+
+func TestReconcilerWithholdsDeletionsWhenSnapshotSharesNoTrackedIdentity(t *testing.T) {
+	now := time.Date(2026, 9, 13, 11, 0, 0, 0, time.UTC)
+	for name, snapshot := range map[string]CatalogIdentitySnapshot{
+		"empty":            completeSnapshot(domain.MediaMovie),
+		"foreign instance": completeSnapshot(domain.MediaMovie, 901, 902),
+	} {
+		t.Run(name, func(t *testing.T) {
+			change := HistoryChange{HistoryID: 7, EntityID: 11, Kind: domain.MediaMovie, Type: EventDelete, State: HistoryAbsent, OccurredAt: now.Add(-time.Minute)}
+			catalog := &fakeReconcileCatalog{changes: []HistoryChange{change}, snapshot: snapshot}
+			repository := &fakeReconcileStore{activeIDs: []int64{11, 12, 13}}
+			var logs bytes.Buffer
+			events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reconciler := Reconciler{Instance: "radarr-main", Kind: domain.MediaMovie, Catalog: catalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }, Events: events}
+			if err := reconciler.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if repository.commits != 1 || !repository.committed.Equal(now) {
+				t.Fatalf("history page was not committed: commits=%d cursor=%s", repository.commits, repository.committed)
+			}
+			for _, mutation := range repository.mutations {
+				if strings.HasPrefix(mutation.EventID, "snapshot-reconcile:") {
+					t.Fatalf("snapshot deletion committed: %+v", mutation)
+				}
+			}
+			if len(repository.mutations) != 1 {
+				t.Fatalf("history mutations = %+v, want the one history delete", repository.mutations)
+			}
+			if !strings.Contains(logs.String(), `"event":"reconcile.snapshot_deletions_withheld"`) || !strings.Contains(logs.String(), `"active_count":3`) {
+				t.Fatalf("withheld deletions were not logged: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestReconcilerWithholdsMassSnapshotDeletionDespiteSequentialIDOverlap(t *testing.T) {
+	now := time.Date(2026, 9, 13, 11, 0, 0, 0, time.UTC)
+	ids := func(from, to int64) []int64 {
+		var out []int64
+		for id := from; id <= to; id++ {
+			out = append(out, id)
+		}
+		return out
+	}
+	tests := []struct {
+		name     string
+		active   []int64
+		snapshot []int64
+		deletes  int
+		withheld bool
+	}{
+		// A different or rebuilt Arr instance numbers from 1, so it shares
+		// some IDs with the tracked library by coincidence.
+		{"fresh instance with overlapping ids", ids(1, 30), ids(1, 12), 0, true},
+		{"ordinary removals", ids(1, 30), ids(1, 25), 5, false},
+		{"small library", ids(1, 3), ids(1, 1), 2, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			catalog := &fakeReconcileCatalog{snapshot: completeSnapshot(domain.MediaMovie, test.snapshot...)}
+			repository := &fakeReconcileStore{activeIDs: test.active}
+			var logs bytes.Buffer
+			events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reconciler := Reconciler{Instance: "radarr-main", Kind: domain.MediaMovie, Catalog: catalog, Store: repository, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }, Events: events}
+			if err := reconciler.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			deletes := 0
+			for _, mutation := range repository.mutations {
+				if strings.HasPrefix(mutation.EventID, "snapshot-reconcile:") {
+					deletes++
+				}
+			}
+			if deletes != test.deletes {
+				t.Fatalf("snapshot deletes = %d, want %d", deletes, test.deletes)
+			}
+			if logged := strings.Contains(logs.String(), `"event":"reconcile.snapshot_deletions_withheld"`); logged != test.withheld {
+				t.Fatalf("withheld warning logged = %t, want %t: %s", logged, test.withheld, logs.String())
+			}
+		})
+	}
+}

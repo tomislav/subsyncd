@@ -52,3 +52,38 @@ func TestParseRateLimitCombinesJSONResetAndIgnoresInvalidPastWindows(t *testing.
 		t.Fatal("invalid partial headers should not produce a window")
 	}
 }
+
+func TestParseRateLimitSupportsDeltaAndDraftHeaderForms(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		headers   http.Header
+		remaining int64
+		reset     time.Time
+	}{
+		{"x reset as delta seconds", http.Header{"X-Ratelimit-Limit": {"10"}, "X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"60"}}, 0, now.Add(time.Minute)},
+		{"draft-07 combined header", http.Header{"Ratelimit": {"limit=10, remaining=0, reset=30"}}, 0, now.Add(30 * time.Second)},
+		{"separate ratelimit headers", http.Header{"Ratelimit-Limit": {"10"}, "Ratelimit-Remaining": {"0"}, "Ratelimit-Reset": {"45"}}, 0, now.Add(45 * time.Second)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			window, ok := ParseRateLimit(now, test.headers)
+			if !ok || window.Remaining != test.remaining || !window.ResetAt.Equal(test.reset) {
+				t.Fatalf("window = %#v, %v; want remaining %d reset %s", window, ok, test.remaining, test.reset)
+			}
+		})
+	}
+}
+
+func TestParseRateLimitDoesNotOverflowLargeDelays(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	for name, headers := range map[string]http.Header{
+		"retry-after": {"Retry-After": {"99999999999"}},
+		"ratelimit":   {"Ratelimit": {`"default";r=0;t=99999999999`}},
+	} {
+		window, ok := ParseRateLimit(now, headers)
+		if !ok || !window.ResetAt.After(now.Add(MaxProviderCooldown)) {
+			t.Fatalf("%s: window = %#v, %v; want a reset beyond the cap (clamped when persisted)", name, window, ok)
+		}
+	}
+}

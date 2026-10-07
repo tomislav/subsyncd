@@ -135,25 +135,45 @@ func (g *Gate) checkState(ctx context.Context, providerID string, operation Oper
 }
 
 func (g *Gate) Persist(ctx context.Context, throttle Throttle) error {
+	_, err := g.persist(ctx, throttle)
+	return err
+}
+
+// persist stores throttle state and returns the reset that now applies: the
+// throttle's reset, bounded by MaxProviderCooldown, or a longer cooldown that
+// was already in effect. Callers put that reset in their workflow errors.
+func (g *Gate) persist(ctx context.Context, throttle Throttle) (time.Time, error) {
 	g.stateMu.Lock()
 	defer g.stateMu.Unlock()
+	throttle.ResetAt = g.boundedReset(throttle.ResetAt)
 	state := store.ProviderState{ProviderID: throttle.ProviderID, Scope: string(throttle.Scope), Reason: throttle.Reason, Limit: throttle.Limit, Remaining: throttle.Remaining, ResetAt: throttle.ResetAt, Disabled: throttle.Disabled}
 	previous, found, err := g.previousState(ctx, state.ProviderID, state.Scope)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	state.FailureAttempt = previous.FailureAttempt
 	// Only explicit provider retry may clear a permanent disable. Responses
 	// already in flight when authentication failed must not restore availability.
 	if previous.Disabled {
 		state = previous
+	} else if !state.Disabled && found && previous.Remaining <= 0 && previous.ResetAt.After(g.clock.Now()) && !strings.HasPrefix(previous.Reason, "transient_") {
+		// The most restrictive future reset wins. A response already in flight
+		// when a longer cooldown began must not shorten or clear it.
+		exhausted := state.Remaining <= 0 && state.ResetAt.After(g.clock.Now())
+		if !exhausted || state.ResetAt.Before(previous.ResetAt) {
+			state.Reason, state.Limit, state.Remaining, state.ResetAt = previous.Reason, previous.Limit, previous.Remaining, previous.ResetAt
+		}
 	}
 	if err := g.store.PutProviderState(ctx, state); err != nil {
-		return err
+		return time.Time{}, err
+	}
+	effective := throttle.ResetAt
+	if !state.Disabled && state.ResetAt.After(effective) {
+		effective = state.ResetAt
 	}
 	if state.Scope == string(OperationAuth) && state.Disabled && (!found || !previous.Disabled) {
 		g.events.Log(ctx, slog.LevelWarn, "provider.auth_disabled", "provider authentication disabled", append(g.stateAttrs(state.ProviderID, state.Scope), slog.String("reason", "authentication_failed"))...)
-		return nil
+		return effective, nil
 	}
 	unavailable := !state.Disabled && state.Remaining <= 0 && state.ResetAt.After(g.clock.Now())
 	previousUnavailable := found && !previous.Disabled && previous.Remaining <= 0 && previous.ResetAt.After(g.clock.Now())
@@ -161,7 +181,7 @@ func (g *Gate) Persist(ctx context.Context, throttle Throttle) error {
 		attrs := append(g.stateAttrs(state.ProviderID, state.Scope), slog.String("reason", boundedProviderReason(state.Reason)), slog.Time("reset_at", state.ResetAt.UTC()))
 		g.events.Log(ctx, slog.LevelWarn, "provider.cooldown_started", "provider cooldown started", attrs...)
 	}
-	return nil
+	return effective, nil
 }
 
 func (g *Gate) RecordTransientFailure(ctx context.Context, providerID string, operation Operation, reason string, resetAt time.Time) (store.ProviderState, error) {
@@ -180,6 +200,7 @@ func (g *Gate) RecordTransientFailure(ctx context.Context, providerID string, op
 	} else if !strings.HasPrefix(reason, "transient_") {
 		reason = "transient_" + reason
 	}
+	resetAt = g.boundedReset(resetAt)
 	if !resetAt.After(g.clock.Now()) {
 		index := attempt - 1
 		if index >= len(transientFailureDelays) {
@@ -277,4 +298,13 @@ func boundedProviderReason(reason string) string {
 		}
 		return "provider_state"
 	}
+}
+
+// boundedReset caps a provider-reported reset at MaxProviderCooldown from now,
+// whatever its source (headers, JSON bodies, or provider-specific fallbacks).
+func (g *Gate) boundedReset(resetAt time.Time) time.Time {
+	if limit := g.clock.Now().Add(MaxProviderCooldown); resetAt.After(limit) {
+		return limit
+	}
+	return resetAt
 }
