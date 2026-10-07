@@ -73,7 +73,7 @@ func (c *Coordinator) searchExact(ctx context.Context, query SearchQuery) Search
 	result := SearchResult{Errors: make(map[string]error)}
 	skipped := exactProviderMembership(query.SkipProviders)
 	for _, item := range c.Providers {
-		if !item.Capabilities().ExactFileHash || !item.SupportsLanguage(query.Language) || !SupportsMediaKind(item, query.Media.Ref.Kind) {
+		if !item.Capabilities().ExactFileHash || !item.SupportsLanguage(query.Language) || !SupportsMedia(item, query.Media) {
 			continue
 		}
 		if skipped.has(item.ID()) {
@@ -109,7 +109,7 @@ func (c *Coordinator) searchBroad(ctx context.Context, query SearchQuery) Search
 	channel := make(chan broadResult, len(c.Providers))
 	active := 0
 	for index, provider := range c.Providers {
-		if !provider.SupportsLanguage(query.Language) || !SupportsMediaKind(provider, query.Media.Ref.Kind) {
+		if !provider.SupportsLanguage(query.Language) || !SupportsMedia(provider, query.Media) {
 			continue
 		}
 		if skipped.has(provider.ID()) {

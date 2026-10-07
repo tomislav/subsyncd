@@ -1084,12 +1084,20 @@ func candidateSignature(candidate domain.Candidate, media ...domain.Media) (stri
 	}
 	if len(media) > 0 && media[0].Ref.Kind == domain.MediaEpisode {
 		// Sonarr can correct selection evidence without replacing the physical file.
+		// Range fields are omitted for single episodes so existing signatures,
+		// and the rejections keyed by them, are unchanged.
+		var episodeEnd, absoluteEpisodeEnd int
+		if media[0].IsEpisodeRange() {
+			episodeEnd, absoluteEpisodeEnd = media[0].EpisodeEnd, media[0].AbsoluteEpisodeEnd
+		}
 		evidence, _ := json.Marshal(struct {
-			Season          int
-			Episode         int
-			AbsoluteEpisode int
-			EpisodeTitle    string
-		}{media[0].Season, media[0].Episode, media[0].AbsoluteEpisode, media[0].EpisodeTitle})
+			Season             int
+			Episode            int
+			AbsoluteEpisode    int
+			EpisodeTitle       string
+			EpisodeEnd         int `json:",omitempty"`
+			AbsoluteEpisodeEnd int `json:",omitempty"`
+		}{media[0].Season, media[0].Episode, media[0].AbsoluteEpisode, media[0].EpisodeTitle, episodeEnd, absoluteEpisodeEnd})
 		payload = append(payload, evidence...)
 		payload = append(payload, []byte("/episode-selection-v2")...)
 	}
@@ -1561,7 +1569,7 @@ func (s *Service) applicableProviderCount(request Request, search provider.Searc
 		}
 		p := s.Providers[id]
 		// Custom searchers may not expose adapters through the download map.
-		if p == nil || p.SupportsLanguage(request.Language) && provider.SupportsMediaKind(p, request.Media.Ref.Kind) {
+		if p == nil || p.SupportsLanguage(request.Language) && provider.SupportsMedia(p, request.Media) {
 			count++
 		}
 	}

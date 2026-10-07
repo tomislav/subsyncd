@@ -26,6 +26,10 @@ type Release struct {
 
 var releaseAlternativeSeparator = regexp.MustCompile(`[[:space:]\p{Z}]+/[[:space:]\p{Z}]+`)
 
+// seasonCrossEpisodeDotRange matches the "06x01.02" multi-episode form, which
+// the general parser reads as season 6, episode 6.
+var seasonCrossEpisodeDotRange = regexp.MustCompile(`(?i)(?:^|[^0-9a-z])(\d{1,2})x(\d{1,3})\.(\d{1,3})(?:[^0-9]|$)`)
+
 // parseReleases treats explicitly separated alternatives like separate provider
 // release names. Compact slashes inside a title or release remain intact.
 func parseReleases(names []string) []Release {
@@ -54,6 +58,14 @@ func ParseRelease(raw string) Release {
 		release.Edition = normalizeEdition(parsed.Edition, raw, parsed.Extended, parsed.Remastered, parsed.Unrated)
 		release.Resolution = strings.ToLower(parsed.Resolution)
 		release.Complete = parsed.Complete
+	}
+	if match := seasonCrossEpisodeDotRange.FindStringSubmatch(raw); match != nil {
+		season, _ := strconv.Atoi(match[1])
+		first, _ := strconv.Atoi(match[2])
+		last, _ := strconv.Atoi(match[3])
+		if season > 0 && first > 0 && last > first {
+			release.Season, release.Episode, release.EpisodeEnd = season, first, last
+		}
 	}
 	release.Service = streamingService(raw)
 	if release.Source == "" {

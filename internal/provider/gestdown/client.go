@@ -67,7 +67,7 @@ func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 }
 
 func (c *Client) Capabilities() base.Capabilities {
-	return base.Capabilities{MediaKinds: []domain.MediaKind{domain.MediaEpisode}}
+	return base.Capabilities{MediaKinds: []domain.MediaKind{domain.MediaEpisode}, SingleEpisodeOnly: true}
 }
 func (c *Client) SupportsLanguage(language domain.Language) bool {
 	_, ok := languageNames[language]

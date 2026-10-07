@@ -26,6 +26,18 @@ type Capabilities struct {
 	ExactFileHash    bool
 	SeasonPacks      bool
 	DirectPackMember bool
+	// SingleEpisodeOnly providers return per-episode subtitles only and are not
+	// searched for files that contain several episodes.
+	SingleEpisodeOnly bool
+}
+
+// SupportsMedia reports whether a provider can serve this target: its media
+// kind, and for multi-episode files, subtitles that can cover the whole range.
+func SupportsMedia(p Provider, media domain.Media) bool {
+	if !SupportsMediaKind(p, media.Ref.Kind) {
+		return false
+	}
+	return !media.IsEpisodeRange() || !p.Capabilities().SingleEpisodeOnly
 }
 
 func SupportsMediaKind(p Provider, kind domain.MediaKind) bool {
