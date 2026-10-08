@@ -62,6 +62,7 @@ At debug level, `archive.classified` reports archive type, subtitle-member count
 | Event | Meaning |
 | --- | --- |
 | `queue.route_paused` | Every provider for a language and media kind is unavailable, so no searches for it start until `queue.route_resumed`. The record includes the language, media kind, and `reset_at`. |
+| `provider.response_unrecognized` | SubDL answered a search with a message subsyncd doesn't recognise. The search counts as no result (a message about the API key or authorisation fails it instead), and `excerpt` shows a short, cleaned-up part of SubDL's message. A new not-found wording repeating here means subsyncd should learn it. |
 | `reconcile.deferred` | Sonarr or Radarr reported a file subsyncd cannot read; `deferred_media` names the movies or episodes. It repeats hourly until the file is readable or replaced in Arr. |
 | `reconcile.snapshot_deletions_withheld` | Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied. |
 | `config.weak_webhook_token` | Logged at daemon startup for an instance whose `webhook_token` is shorter than 16 characters. |
