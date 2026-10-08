@@ -216,6 +216,8 @@ Network failures and HTTP 5xx responses open a persisted circuit for that provid
 
 A definitive login HTTP 401 from OpenSubtitles or Titlovi disables the configured instance instead of repeating the rejected credentials for each media job. Correct the credentials, then explicitly clear provider state with `subsyncd retry --provider NAME`.
 
+A SubDL search answered with HTTP 200 and `status: false` (or `success: false`) is an empty result when its `error` is one of SubDL's not-found messages: `can't find film`, `can't find movie or tv` (the current wording for an unknown title, seen for concert films), `film not found`, `no subtitles`, `no subtitles found` or `no subtitle found`. A limit message becomes the usual quota or cooldown. Any other message fails that provider's search as `SubDL search was rejected: <excerpt>`, where the excerpt keeps only letters, digits, spaces and `.,:;'!?()-_%`, collapses whitespace, redacts the configured API key and stops at 80 characters; an empty or unreadable message leaves the bare `SubDL search was rejected`. The excerpt exists so a new SubDL wording is visible in `provider.search_completed`; if one is a not-found message, add it to `isNoResult`, because a failed search is retried on the technical schedule instead of the no-result one.
+
 A SubDL HTTP 403 on search or download is treated as a rejected API key and disables that configured provider instance persistently. This state intentionally has no automatic expiry: fix or replace the key, then run `subsyncd retry --provider NAME` to clear it. Transient and quota failures never blacklist subtitle candidates.
 
 When the provider supplies no reset, compiled fallbacks are:

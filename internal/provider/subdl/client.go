@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -260,6 +261,9 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		if limitErr := c.payloadLimit(ctx, baseprovider.OperationSearch, decoded.Error, time.Time{}); limitErr != nil {
 			return nil, limitErr
 		}
+		if excerpt := rejectionExcerpt(decoded.Error, c.config.APIKey); excerpt != "" {
+			return nil, fmt.Errorf("SubDL search was rejected: %s", excerpt)
+		}
 		return nil, fmt.Errorf("SubDL search was rejected")
 	}
 	if len(decoded.Results) != 0 {
@@ -411,9 +415,48 @@ func cloneValues(source url.Values) url.Values {
 	return copy
 }
 
+// maxRejectionExcerpt bounds how much of an unrecognised SubDL error message an
+// error (and so a log line) may carry.
+const maxRejectionExcerpt = 80
+
+// rejectionExcerpt reduces an unrecognised SubDL error message to a short,
+// single-line, plain-text excerpt: letters, digits and basic punctuation only,
+// whitespace collapsed, the configured API key redacted, at most
+// maxRejectionExcerpt runes. It returns "" when nothing readable remains.
+func rejectionExcerpt(message, apiKey string) string {
+	const placeholder = "SUBDLKEYREDACTED"
+	if apiKey != "" {
+		message = strings.ReplaceAll(message, apiKey, placeholder)
+	}
+	readable := false
+	message = strings.Map(func(character rune) rune {
+		switch {
+		case unicode.IsLetter(character) || unicode.IsDigit(character):
+			readable = true
+			return character
+		case strings.ContainsRune(" .,:;'!?()-_%", character):
+			return character
+		default:
+			return ' '
+		}
+	}, message)
+	if !readable {
+		return ""
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	if apiKey != "" {
+		message = strings.ReplaceAll(message, apiKey, placeholder)
+	}
+	message = strings.ReplaceAll(message, placeholder, "[redacted]")
+	if runes := []rune(message); len(runes) > maxRejectionExcerpt {
+		message = strings.TrimSpace(string(runes[:maxRejectionExcerpt]))
+	}
+	return message
+}
+
 func isNoResult(message string) bool {
 	switch strings.ToLower(strings.TrimSpace(message)) {
-	case "can't find film", "film not found", "no subtitles", "no subtitles found", "no subtitle found":
+	case "can't find film", "can't find movie or tv", "film not found", "no subtitles", "no subtitles found", "no subtitle found":
 		return true
 	default:
 		return false
