@@ -855,7 +855,7 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		}
 		query += ` AND NOT (` + strings.Join(conditions, ` OR `) + `)`
 	}
-	query += ` ORDER BY priority DESC, instance_rank DESC, queue_order_ns, next_attempt_at_ns, media_id, language LIMIT ?`
+	query += ` ORDER BY priority DESC, instance_rank DESC, queue_order_ns, next_attempt_at_ns, sort_title, sort_season, sort_episode, media_id, language LIMIT ?`
 	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
