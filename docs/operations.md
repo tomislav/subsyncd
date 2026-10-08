@@ -68,7 +68,7 @@ Reconciliation also retires movies and series that are missing from Arr's curren
 
 After starting the daemon, subsyncd imports the existing Sonarr and Radarr libraries in the background once per instance. This also happens for already-configured instances after upgrading to a version with full-library discovery. It discovers movies and episode files within your path mappings even when their import history is gone, and queues subtitle checks for configured languages. Files already indexed keep their existing searches and installation records; suitable embedded or sidecar subtitles can satisfy checks without a download. Files containing several consecutive episodes of one season are searched as one range and only accept a subtitle covering all of them; other multi-episode files remain unsupported.
 
-Searches run in a fixed order: imports and renames first, then missing subtitles, then upgrade checks. Within each of those, instances with a higher `queue_priority` go first, then the oldest queued work. For example, to cover the main libraries before lower-quality copies:
+Searches run in a fixed order: imports and renames first, then missing subtitles, then upgrade checks. Within each of those, instances with a higher `queue_priority` go first, then the oldest queued work. Work queued together, such as a library scan or a newly added language, runs show by show from S01E01 with specials last, and movies alphabetically (remakes oldest first). Titles are compared ignoring case for unaccented letters only, so a title starting with an accented letter sorts after Z. For example, to cover the main libraries before lower-quality copies:
 
 ```yaml
 instances:
