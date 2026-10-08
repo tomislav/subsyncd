@@ -80,7 +80,10 @@ func TestSeriesMigrationPreservesLegacyMediaAndSearches(t *testing.T) {
 	if err := repo.UpsertSearchStateWithPriority(ctx, id, "en", now, SearchPriorityImport); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.db.Exec(`DROP INDEX media_series_idx; ALTER TABLE media DROP COLUMN series_id; ALTER TABLE events DROP COLUMN series_id; DELETE FROM schema_migrations WHERE version='004_sonarr_series.sql'`); err != nil {
+	// Recreate a pre-004 schema. Migration 017's triggers read media.series_id, and
+	// SQLite refuses to drop a column a trigger references, so drop them first; they
+	// play no part in what this test checks.
+	if _, err := db.db.Exec(`DROP TRIGGER search_states_queue_order; DROP TRIGGER media_search_order; DROP INDEX media_series_idx; ALTER TABLE media DROP COLUMN series_id; ALTER TABLE events DROP COLUMN series_id; DELETE FROM schema_migrations WHERE version='004_sonarr_series.sql'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
