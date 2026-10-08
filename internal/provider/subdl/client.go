@@ -6,16 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/pack"
 	baseprovider "subsyncd/internal/provider"
 )
@@ -25,6 +29,9 @@ type Client struct {
 	config    Config
 	transport baseprovider.Client
 	clock     baseprovider.Clock
+	// events receives warnings about SubDL answers the client doesn't recognise;
+	// nil discards them.
+	events *observability.Emitter
 }
 
 func New(config Config, transport baseprovider.Client, clock baseprovider.Clock) (*Client, error) {
@@ -56,7 +63,12 @@ func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) 
 	}
 	dependencies.Gate.Configure(id, config.RequestsPerSecond, config.Burst, config.MaxConcurrent, "subdl")
 	transport := baseprovider.Client{HTTP: dependencies.HTTPClient, Gate: dependencies.Gate, Clock: clock, ProviderID: id, ProviderType: "subdl"}
-	return New(config, transport, clock)
+	client, err := New(config, transport, clock)
+	if err != nil {
+		return nil, err
+	}
+	client.events = dependencies.Events.For("provider")
+	return client, nil
 }
 
 func (c *Client) ID() string { return c.id }
@@ -260,7 +272,22 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		if limitErr := c.payloadLimit(ctx, baseprovider.OperationSearch, decoded.Error, time.Time{}); limitErr != nil {
 			return nil, limitErr
 		}
-		return nil, fmt.Errorf("SubDL search was rejected")
+		// Any other status-false answer is treated as an empty result rather than a
+		// failed search: SubDL rewords its not-found message from time to time, and
+		// a failure would put no-result titles on the technical retry schedule. The
+		// warning carries a short, sanitized excerpt so a new wording is visible;
+		// SubDL's text is kept out of the error, whose wording classifies failures.
+		attrs := []slog.Attr{slog.String("provider", c.id), slog.String("operation", string(baseprovider.OperationSearch))}
+		if excerpt := rejectionExcerpt(decoded.Error, c.config.APIKey); excerpt != "" {
+			attrs = append(attrs, slog.String("excerpt", excerpt))
+		}
+		if isCredentialProblem(decoded.Error) {
+			// A bad or missing key must stay a visible failure, not an empty library.
+			c.events.Log(ctx, slog.LevelWarn, "provider.response_unrecognized", "SubDL rejected the search with a credential message", attrs...)
+			return nil, fmt.Errorf("SubDL search was rejected")
+		}
+		c.events.Log(ctx, slog.LevelWarn, "provider.response_unrecognized", "SubDL answered with an unrecognised message; treating it as no result", attrs...)
+		return nil, nil
 	}
 	if len(decoded.Results) != 0 {
 		for index := range decoded.Subtitles {
@@ -411,9 +438,122 @@ func cloneValues(source url.Values) url.Values {
 	return copy
 }
 
+// maxRejectionExcerpt bounds how much of an unrecognised SubDL message a warning
+// may carry, not counting the truncation marker.
+const maxRejectionExcerpt = 80
+
+// keySentinel stands in for the configured API key while the message is
+// filtered; it is a private-use rune, so SubDL text cannot produce it.
+const keySentinel = '\uE000'
+
+// rejectionExcerpt reduces an unrecognised SubDL message to a short, single-line,
+// plain-text excerpt for a log field. Event fields bypass the error redaction, so
+// it redacts on its own: the configured API key, and any token that looks like a
+// credential (mixed letters and digits of 16+, or a 24+ alphanumeric run). It
+// keeps letters, digits and basic punctuation, collapses whitespace, never cuts
+// a "[redacted]" marker, and ends a shortened excerpt with "…". It returns ""
+// when nothing readable remains.
+func rejectionExcerpt(message, apiKey string) string {
+	if apiKey != "" {
+		message = strings.ReplaceAll(message, apiKey, " "+string(keySentinel)+" ")
+	}
+	message = strings.Map(func(character rune) rune {
+		switch {
+		case character == keySentinel, unicode.IsLetter(character), unicode.IsDigit(character):
+			return character
+		case strings.ContainsRune(".,:;'!?()-_%", character):
+			return character
+		default:
+			return ' '
+		}
+	}, observability.SafeText(message))
+	var tokens []string
+	readable := false
+	for _, token := range strings.Fields(message) {
+		if strings.ContainsRune(token, keySentinel) || looksLikeCredential(token) {
+			token = "[redacted]"
+		} else if strings.IndexFunc(token, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0 {
+			readable = true
+		}
+		tokens = append(tokens, token)
+	}
+	if !readable && !containsToken(tokens, "[redacted]") {
+		return ""
+	}
+	var excerpt strings.Builder
+	length := 0
+	for i, token := range tokens {
+		width := utf8.RuneCountInString(token)
+		if i > 0 {
+			width++
+		}
+		if length+width > maxRejectionExcerpt {
+			if length == 0 && token != "[redacted]" {
+				excerpt.WriteString(string([]rune(token)[:maxRejectionExcerpt]))
+			}
+			excerpt.WriteString("\u2026")
+			return excerpt.String()
+		}
+		if i > 0 {
+			excerpt.WriteByte(' ')
+		}
+		excerpt.WriteString(token)
+		length += width
+	}
+	return excerpt.String()
+}
+
+// looksLikeCredential reports a token that could be a key or token echoed back
+// in another form: 16+ letters and digits mixing both (ignoring separators), or
+// an unbroken alphanumeric run of 24+.
+func looksLikeCredential(token string) bool {
+	letters, digits, run, longest := 0, 0, 0, 0
+	for _, character := range token {
+		switch {
+		case unicode.IsLetter(character):
+			letters++
+			run++
+		case unicode.IsDigit(character):
+			digits++
+			run++
+		default:
+			run = 0
+		}
+		if run > longest {
+			longest = run
+		}
+	}
+	return (letters > 0 && digits > 0 && letters+digits >= 16) || longest >= 24
+}
+
+func containsToken(tokens []string, want string) bool {
+	for _, token := range tokens {
+		if token == want {
+			return true
+		}
+	}
+	return false
+}
+
+// isCredentialProblem reports a status-false message about the API key or
+// authorisation, which must fail the search instead of reading as no result.
+func isCredentialProblem(message string) bool {
+	message = strings.ToLower(message)
+	for _, marker := range []string{"api key", "api_key", "apikey", "unauthor", "forbidden", "token"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isNoResult reports SubDL's not-found messages, ignoring case, surrounding and
+// repeated whitespace, curly apostrophes and trailing punctuation.
 func isNoResult(message string) bool {
-	switch strings.ToLower(strings.TrimSpace(message)) {
-	case "can't find film", "film not found", "no subtitles", "no subtitles found", "no subtitle found":
+	normalized := strings.NewReplacer("\u2019", "'", "\u2018", "'").Replace(strings.ToLower(message))
+	normalized = strings.TrimRight(strings.Join(strings.Fields(normalized), " "), ".!")
+	switch strings.TrimSpace(normalized) {
+	case "can't find film", "can't find movie or tv", "film not found", "no subtitles", "no subtitles found", "no subtitle found":
 		return true
 	default:
 		return false
