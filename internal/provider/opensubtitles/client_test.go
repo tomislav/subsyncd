@@ -101,21 +101,35 @@ func TestSearchAuthenticatesPaginatesAndNormalizesExactCandidates(t *testing.T) 
 	}
 }
 
-func TestSearchExcludesAIAndMachineTranslationsOnEveryPage(t *testing.T) {
+// OpenSubtitles answers a search whose query is not in canonical form with a 301 to
+// the canonical URL. Parameters equal to a server default (page=1,
+// machine_translated=exclude) are not canonical, and API requests never follow
+// redirects, so a non-canonical query fails the whole search.
+func TestSearchSendsCanonicalQueryOnEveryPage(t *testing.T) {
 	for _, mode := range []baseprovider.SearchMode{baseprovider.SearchExactHash, baseprovider.SearchBroad} {
 		t.Run(string(mode), func(t *testing.T) {
-			pages := 0
+			var pages []string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/api/v1/login":
 					io.WriteString(w, `{"token":"token","expires_in":3600}`)
 				case "/api/v1/subtitles":
-					pages++
-					for _, flag := range []string{"ai_translated", "machine_translated"} {
-						if got := r.URL.Query().Get(flag); got != "exclude" {
-							t.Errorf("page %s: %s = %q, want exclude", r.URL.Query().Get("page"), flag, got)
+					query := r.URL.Query()
+					if query.Has("machine_translated") || query.Get("page") == "1" {
+						query.Del("machine_translated")
+						if query.Get("page") == "1" {
+							query.Del("page")
 						}
+						http.Redirect(w, r, "/api/v1/subtitles?"+query.Encode(), http.StatusMovedPermanently)
+						return
 					}
+					if r.URL.RawQuery != query.Encode() {
+						t.Errorf("query %q is not sorted canonically", r.URL.RawQuery)
+					}
+					if got := query.Get("ai_translated"); got != "exclude" {
+						t.Errorf("ai_translated = %q, want exclude", got)
+					}
+					pages = append(pages, query.Get("page"))
 					io.WriteString(w, `{"total_pages":2,"data":[]}`)
 				default:
 					http.NotFound(w, r)
@@ -126,10 +140,38 @@ func TestSearchExcludesAIAndMachineTranslationsOnEveryPage(t *testing.T) {
 			if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: mode}); err != nil {
 				t.Fatal(err)
 			}
-			if pages != 2 {
-				t.Fatalf("search pages = %d, want 2", pages)
+			if len(pages) != 2 || pages[0] != "" || pages[1] != "2" {
+				t.Fatalf("search pages = %q, want [\"\" \"2\"]", pages)
 			}
 		})
+	}
+}
+
+// machine_translated=exclude is the server default and cannot be sent, so the
+// client drops flagged results itself instead of trusting that default.
+func TestSearchDropsAIAndMachineTranslatedResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/login":
+			io.WriteString(w, `{"token":"token","expires_in":3600}`)
+		case "/api/v1/subtitles":
+			io.WriteString(w, `{"total_pages":1,"data":[
+				{"id":"1","attributes":{"language":"en","release":"Human","files":[{"file_id":601,"file_name":"human.srt"}]}},
+				{"id":"2","attributes":{"language":"en","release":"Machine","machine_translated":true,"files":[{"file_id":602,"file_name":"machine.srt"}]}},
+				{"id":"3","attributes":{"language":"en","release":"AI","ai_translated":true,"files":[{"file_id":603,"file_name":"ai.srt"}]}}
+			]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, staticHasher{result: FileHash{MovieHash: "0123456789abcdef", ByteSize: 196608}}, 1024)
+	candidates, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ResultID != "601" {
+		t.Fatalf("candidates = %#v, want only file 601", candidates)
 	}
 }
 

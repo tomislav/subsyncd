@@ -120,8 +120,11 @@ func (c *Client) SupportsLanguage(language domain.Language) bool {
 func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]domain.Candidate, error) {
 	parameters := url.Values{}
 	parameters.Set("languages", openSubtitlesLanguage(query.Language))
+	// OpenSubtitles redirects a query that is not in canonical form, and API
+	// requests never follow redirects. Parameters equal to a server default are
+	// not canonical, so machine_translated=exclude and page=1 are left out;
+	// normalizeCandidates drops AI and machine translations itself.
 	parameters.Set("ai_translated", "exclude")
-	parameters.Set("machine_translated", "exclude")
 	if query.Mode == baseprovider.SearchExactHash {
 		hash, err := c.fileHash(ctx, query.Media)
 		if err != nil {
@@ -135,7 +138,9 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 
 	var candidates []domain.Candidate
 	for page := 1; page <= maxSearchPages; page++ {
-		parameters.Set("page", strconv.Itoa(page))
+		if page > 1 {
+			parameters.Set("page", strconv.Itoa(page))
+		}
 		var response searchResponse
 		if err := c.getJSONWithRefresh(ctx, "/subtitles?"+parameters.Encode(), &response); err != nil {
 			return nil, err
@@ -389,15 +394,17 @@ type searchResponse struct {
 type searchItem struct {
 	ID         string `json:"id"`
 	Attributes struct {
-		Language         string  `json:"language"`
-		ForeignPartsOnly bool    `json:"foreign_parts_only"`
-		HearingImpaired  bool    `json:"hearing_impaired"`
-		Ratings          float64 `json:"ratings"`
-		Votes            int64   `json:"votes"`
-		DownloadCount    int64   `json:"download_count"`
-		Release          string  `json:"release"`
-		MovieHashMatch   bool    `json:"moviehash_match"`
-		FeatureDetails   struct {
+		Language          string  `json:"language"`
+		ForeignPartsOnly  bool    `json:"foreign_parts_only"`
+		AITranslated      bool    `json:"ai_translated"`
+		MachineTranslated bool    `json:"machine_translated"`
+		HearingImpaired   bool    `json:"hearing_impaired"`
+		Ratings           float64 `json:"ratings"`
+		Votes             int64   `json:"votes"`
+		DownloadCount     int64   `json:"download_count"`
+		Release           string  `json:"release"`
+		MovieHashMatch    bool    `json:"moviehash_match"`
+		FeatureDetails    struct {
 			MovieName     string `json:"movie_name"`
 			Title         string `json:"title"`
 			Year          int    `json:"year"`
@@ -418,6 +425,9 @@ type searchItem struct {
 func normalizeCandidates(providerID string, query baseprovider.SearchQuery, items []searchItem) []domain.Candidate {
 	var candidates []domain.Candidate
 	for _, item := range items {
+		if item.Attributes.AITranslated || item.Attributes.MachineTranslated {
+			continue
+		}
 		language, err := fromOpenSubtitlesLanguage(item.Attributes.Language)
 		if err != nil {
 			continue
