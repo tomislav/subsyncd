@@ -162,18 +162,22 @@ docker compose exec subsyncd subsyncd doctor
 
 To stay on a particular build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. Back up `data/` with the service stopped before upgrading; it holds search history, caches, and records of installed subtitles.
 
-Logs are available through `docker compose logs`. Set `logging.level: debug` in your configuration and restart for more detail while troubleshooting. See [logging](docs/logging.md) for available levels and troubleshooting details.
+## Logs and troubleshooting
 
-## Documentation and development
+Logs are available through `docker compose logs`. Set `logging.level: debug` in your configuration and restart for more detail while troubleshooting. See the [logging guide](docs/logging.md) for levels and how to follow one search, and the [operations guide](docs/operations.md#troubleshooting) for common problems.
+
+## Documentation
 
 - [Configuration example](config.example.yaml) — all settings in one place.
-- [Operations guide](docs/operations.md) — manual searches, diagnostics, Silo setup, backups, and troubleshooting.
+- [Operations guide](docs/operations.md) — commands, manual searches, diagnostics, Silo setup, backups, and troubleshooting.
 - [Provider guide](docs/providers.md) — language support, matching, synchronization, and retry schedules.
-- [Logging guide](docs/logging.md) — log levels, workflow tracing, and safe diagnostic sharing.
+- [Logging guide](docs/logging.md) — log levels, workflow tracing, warnings, and safe diagnostic sharing.
 - [Architecture](docs/architecture.md) — system boundaries and durable processing flow.
 - [Developer references](docs/development/) — current implementation contracts for operations, providers, and logging.
 
-To build from source, install Go 1.27.1, FFprobe, and LAPSE v2.2.4. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
+## Build from source
+
+Install Go 1.27.1, FFprobe, and LAPSE v2.2.4. Set absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built Docker images also need an OpenSubtitles application key in the provider’s `api_key` setting; published images include it.
 
 ```bash
 go build -trimpath -o subsyncd ./cmd/subsyncd
@@ -188,11 +192,13 @@ To build a local Docker image:
 docker build --build-arg VERSION=dev -t subsyncd:local .
 ```
 
-For contributions, read [AGENTS.md](AGENTS.md) and run the local test suite. Ordinary tests use local fixtures and fake services; they do not contact your library or subtitle providers.
+## Contributing
+
+Read [AGENTS.md](AGENTS.md) and the [developer references](docs/development/) first, then run the test suite. Ordinary tests use local fixtures and fake services; they do not contact your library or subtitle providers.
 
 ```bash
-GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go test ./... -race
-GOCACHE=/tmp/subsyncd-gocache GOMODCACHE=/tmp/subsyncd-gomodcache go vet ./...
+go test -race ./...
+go vet ./...
 ```
 
 ## License

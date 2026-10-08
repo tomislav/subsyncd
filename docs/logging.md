@@ -53,13 +53,20 @@ A `provider.download_completed` success confirms only the transfer. `archive.mem
 
 Already-active download cooldowns suppress provider searches and downloads. Search-only cooldowns suppress fresh searches while usable cached results remain available. These skips appear only at debug as `provider.search_skipped` and `provider.download_skipped`; the workflow completion retains the throttled outcome and retry time when acquisition is blocked. If the transport gate discovers a cooldown after preflight, its locally suppressed provider completion is also debug-only.
 
-When every provider for a language is unavailable, `queue.route_paused` (warn) reports the language, media kind and `reset_at`, and no searches for it start until `queue.route_resumed`.
-
-`reconcile.deferred` (warn) means an Arr instance reported a file subsyncd cannot read; `deferred_media` names the movies or episodes. It repeats hourly until the file is readable or replaced in Arr. `config.weak_webhook_token` (warn, at daemon startup) names an instance whose `webhook_token` is shorter than 16 characters; replace it with the output of `openssl rand -hex 32` and update the Arr webhook URL. `reconcile.snapshot_deletions_withheld` (warn) means Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied; check that the instance URL and Arr database are correct. `reconcile.failed` (error) is reserved for real reconciliation failures. See [Operations](operations.md).
-
 Use [`explain`](operations.md#inspect-or-search-one-file) for the saved result and next search time. Successful health checks are deliberately quiet.
 
 At debug level, `archive.classified` reports archive type, subtitle-member count, and `single`, `provider_pack`, or `runtime_pack` classification. `pack_cache.publication` reports whether caching succeeded, failed, was disabled, or lacked safe identity; `pack_cache.lookup` reports a hit, miss, or error and whether the selected entry is a runtime pack. These events omit member filenames, paths, and download references.
+
+## Warnings that need attention
+
+| Event | Meaning |
+| --- | --- |
+| `queue.route_paused` | Every provider for a language and media kind is unavailable, so no searches for it start until `queue.route_resumed`. The record includes the language, media kind, and `reset_at`. |
+| `reconcile.deferred` | Sonarr or Radarr reported a file subsyncd cannot read; `deferred_media` names the movies or episodes. It repeats hourly until the file is readable or replaced in Arr. |
+| `reconcile.snapshot_deletions_withheld` | Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied. |
+| `config.weak_webhook_token` | Logged at daemon startup for an instance whose `webhook_token` is shorter than 16 characters. |
+
+`reconcile.failed` (error) is reserved for real reconciliation failures. The [troubleshooting table](operations.md#troubleshooting) says what to do about each warning.
 
 ## Sharing logs
 

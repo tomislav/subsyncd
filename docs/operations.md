@@ -42,25 +42,9 @@ Temporary downloads and synchronization files use `/tmp`. Keep it separate from 
 
 ## Sonarr and Radarr setup
 
-Each instance in `config/config.yaml` needs a unique name, reachable URL, API key, webhook secret, and path mapping. Replace the quoted API-key and webhook-secret placeholders directly in that file. The remote path is what Sonarr or Radarr reports; the local path is where the same folder appears inside subsyncd.
+Instance settings, path mappings, and webhooks are set up during installation: see [set paths and credentials](../README.md#2-set-paths-and-credentials) and [add Sonarr and Radarr webhooks](../README.md#4-add-sonarr-and-radarr-webhooks). Each instance needs a unique name, reachable URL, API key, webhook secret, and path mapping.
 
-For example:
-
-```yaml
-path_mappings:
-  - remote: /data/tv
-    local: /media/tv
-```
-
-In each application's **Settings → Connect**, add a webhook:
-
-```text
-http://subsyncd:8097/webhooks/INSTANCE_NAME?token=YOUR_WEBHOOK_SECRET
-```
-
-Use the instance name and secret from your configuration. Generate each secret with `openssl rand -hex 32`. A `webhook_token` shorter than 16 characters still works, but the daemon logs `config.weak_webhook_token` at startup for that instance. If the application runs outside Docker, use the Docker host address and a published port instead.
-
-Enable import/download, upgrade, rename, and file-delete events where available. Radarr movie-delete and Sonarr series-delete events are also supported. Test the connection. Test events do not start searches. Sonarr per-file imports/upgrades (`episodeFile`) and import-complete batches (`episodeFiles`) are both accepted.
+Besides import/download, upgrade, rename, and file-delete events, Radarr movie-delete and Sonarr series-delete events are supported. Sonarr per-file imports/upgrades (`episodeFile`) and import-complete batches (`episodeFiles`) are both accepted. Test events do not start searches.
 
 Whole-movie and whole-series deletion retires indexed media and its searches even when you keep the files on disk. Sonarr series deletion requires the stored Sonarr series ID: episode records created before this feature acquire it on their next normal import, rename, manual search, or history hydration. Until then, file-delete events and history reconciliation retain their existing behavior; series deletion does not guess ownership from titles or paths. Startup does not scan the library to backfill these IDs.
 
@@ -97,19 +81,15 @@ After adding an instance, provider, or language, restart subsyncd. A new languag
 
 subsyncd checks embedded tracks and separate subtitle files before searching. A full matching subtitle can satisfy a language; forced-only tracks cannot. Hearing-impaired tracks count only when `allow_hearing_impaired: true` is enabled.
 
-Embedded tracks also count as forced when their title contains an explicit label such as `English [Forced]`, even if the container's forced disposition is absent. Negated labels such as `not forced` and `forced subtitles removed` do not add forced status; a container's explicit forced disposition always takes precedence. Migration `008_forced_track_probe_refresh.sql` invalidates old completed-probe markers once because stored tracks do not retain their original titles. Files are probed again on their next scheduled or manual search. This preserves installations, leases and schedules; already terminal searches are not reopened automatically.
+Embedded tracks also count as forced when their title contains an explicit label such as `English [Forced]`, even if the container's forced disposition is absent.
 
 When nothing suitable is found, searches continue automatically with longer intervals. Known deterministic rejections are retained without expiry; searches can try new candidates but do not periodically redownload rejected ones. Provider limits and outages can delay them. A scheduled check may reuse recent results rather than contact a provider again.
 
-subsyncd can upgrade subtitles it installed when a better match becomes available. Manually added or edited subtitles are protected. Unsuccessful upgrade checks retain the installed subtitle and gradually back off to approximately 90 days, with jitter to spread searches. If you delete a managed subtitle, it can be downloaded again on a later search; unsuccessful reacquisition restarts the normal missing-subtitle retries. TV files containing multiple episodes are currently skipped.
+subsyncd can upgrade subtitles it installed when a better match becomes available. Manually added or edited subtitles are protected. Unsuccessful upgrade checks retain the installed subtitle and gradually back off to approximately 90 days, with jitter to spread searches. If you delete a managed subtitle, it can be downloaded again on a later search; unsuccessful reacquisition restarts the normal missing-subtitle retries.
 
 Optional per-language `fallback_providers` supply subtitles when preferred providers have no installable result or are unavailable. Fallback installations get weekly preferred-provider checks, including exact matches; a known preferred cooldown can bring the first check forward. `explain` displays the stored `fallback` flag. See [provider tiers](providers.md#choose-languages) for configuration and promotion rules.
 
-Initial backfill searches that could not run every applicable provider because of a known cooldown retry after that provider reset instead of aging into the ordinary missing-result backoff. While waiting, subsyncd persists the clean-empty providers from the configured route and, after restart or reset, calls only the providers that were unfinished. A provider is clean-empty only after broad search completed without candidates and, when applicable, exact search also completed without candidates; candidate-bearing, unavailable, or technically failed providers remain pending. Preferred and fallback tiers still run in their configured order before a throttled result is returned.
-
-Saved progress is tied to the ordered route and exact media fingerprint through an opaque digest. Live file replacement invalidates all language progress, including exclusions already copied by the running workflow. Route changes and path-only renames may repeat providers once. The accepted route determines the persistence bound; larger valid provider configurations remain supported. `job.completed` reports the count actually retained by SQLite, including zero after concurrent deletion, replacement, or a requested rerun.
-
-Migration 011 makes existing active, uninstalled `no_result` backfill rows immediately eligible once. Migration 012 makes the corresponding active, uninstalled, missing-priority `throttled` rows immediately eligible once, so they can capture this provider-specific progress. These migrations do not contact a provider themselves, alter attempts, leases, installations, provider cooldowns, rejection evidence, or the ordinary six-hour provider cache TTL. Normal capacity limits and provider cooldown gates still control actual dispatch and remote requests.
+A first search that could not try every provider because one was in a cooldown is retried after that cooldown resets, and only the providers that had not yet finished are asked again. See [retries and provider limits](providers.md#retries-and-provider-limits).
 
 See [matching and upgrades](providers.md#matching-and-upgrades) for more about selection and timing checks.
 
@@ -128,6 +108,29 @@ subsyncd removes expired profiles at mutating startup and checks hourly while se
 
 Expired profiles rebuild automatically when needed. This may require another media scan, but it does not remove installed subtitles, reset search schedules, or clear candidate rejections. Restart after changing the configuration.
 
+## Commands
+
+The container runs `serve` by default. The other commands are run through Compose. Commands that change saved state need the daemon stopped, because only one process may write at a time; read-only commands work while it runs.
+
+| Command | What it does | Daemon |
+| --- | --- | --- |
+| `doctor` | Checks configuration, database, media folders, and bundled tools. | May run |
+| `explain` | Shows what subsyncd knows about one file and language: existing subtitles, candidates, rejections, installation, and the next search. | May run |
+| `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
+| `search` | Searches one file and language now. | Stop first |
+| `scan` | Discovers unindexed files in one instance's library and reconciles its history. Add `--force-probe` to reread embedded subtitle tracks. | Stop first |
+| `retry` | Clears one provider's saved cooldown and authentication state. | Stop first |
+
+Run read-only commands with `docker compose exec subsyncd subsyncd COMMAND ...`, and the others with the stop/run/start sequence shown below. File paths given to `analyze-sync` are paths inside the container. Put the subtitle you want to test in the host `data/` folder rather than beside the media, where subsyncd would treat it as your own subtitle and protect it:
+
+```bash
+docker compose exec subsyncd subsyncd analyze-sync --media /media/movies/Movie/Movie.mkv --subtitle /data/candidate.srt
+```
+
+Delete the test file from `data/` afterwards.
+
+Exit status is 0 for success, 1 for an operational failure, and 2 for invalid command usage. `subsyncd --version` prints the build version.
+
 ## Inspect or search one file
 
 To see why a subtitle was installed, skipped, or delayed:
@@ -137,6 +140,14 @@ docker compose exec subsyncd subsyncd explain --instance radarr-main --kind movi
 ```
 
 Replace the example values with your configured instance, Arr **media-file ID**, and language. For TV, use `--kind episode` and the episode-file ID. These are file IDs, not movie or series IDs.
+
+To find a file ID, search the logs for its title. The `job.started` record for that file carries `instance`, `media_kind`, and `file_id`:
+
+```bash
+docker compose logs subsyncd | grep job.started | grep 'Show Name - S01E02'
+```
+
+Movies appear as `Title (Year)` and episodes as `Show - S01E02 - Episode Title`. You can also read the ID from the Sonarr or Radarr API (`/api/v3/episodefile` or `/api/v3/moviefile`).
 
 `explain` can run while the daemon is active. Manual searches need it stopped so two processes cannot write at once:
 
@@ -168,11 +179,7 @@ Use Silo's reachable native API address and an admin API key. The mapping transl
 
 A failed Silo refresh does not undo an installed subtitle. This integration requires Silo API v2 and sends `POST /api/v2/scan`; v1 is not supported. Set `silo.url` to the server base URL without `/api/v2`. Existing URL, admin-key, and path-mapping settings remain valid when upgrading. See [the API contract](references/silo.md).
 
-Replacing a movie or episode file queues a fresh refresh when subsyncd installs
-its subtitle, even when the subtitle bytes match the previous installation.
-Repeated notifications for the same media fingerprint, subtitle destination,
-language and content are deduplicated. This does not replay previously suppressed
-notifications; an already affected title needs a targeted Silo folder scan.
+Replacing a movie or episode file queues a fresh refresh when subsyncd installs its subtitle, even when the subtitle bytes match the previous installation. Repeated notifications for the same media file, subtitle destination, language and content are sent once.
 
 ## Back up and update
 
@@ -186,7 +193,7 @@ docker compose up -d
 docker compose exec subsyncd subsyncd doctor
 ```
 
-To pin a build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or SHA tag. For rollback, use the matching image and complete stopped-data backup together. Check the notes for the published release before upgrading older builds; unsupported pre-release databases require a fresh data directory.
+To pin a build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or SHA tag. For rollback, use the matching image and complete stopped-data backup together: an older image refuses a database that a newer one has upgraded. Databases from unsupported pre-release builds are rejected at startup and need a fresh data directory.
 
 Allow the container to stop fully before starting another process against the same media. The supplied Compose file allows 75 seconds for shutdown, which covers both fixed 30-second shutdown windows; do not lower it.
 
@@ -203,6 +210,10 @@ Allow the container to stop fully before starting another process against the sa
 | Media file is missing | The file disappeared after inventory refresh. The search stops before further candidate work and retries with technical-failure backoff; check Arr renames/deletions and filesystem availability. |
 | LAPSE reports `unsure` or `nothing` | The candidate did not pass timing verification; subsyncd will consider other matches. |
 | Silo does not refresh | Check the API address, admin key, path mapping, and notification logs. |
+| `queue.route_paused` warning | Every provider for that language and media kind is in a cooldown, out of quota, or has rejected credentials. Searches resume after `reset_at`; for rejected credentials, fix them and run `retry`. |
+| `reconcile.deferred` warning | Sonarr or Radarr reports a file subsyncd cannot read, such as a broken symlink. Fix or replace the file in Arr; the check repeats hourly. |
+| `reconcile.snapshot_deletions_withheld` warning | Arr reported a library missing most of what subsyncd tracks, so the deletions were not applied. Check the instance URL and the Arr database. |
+| `config.weak_webhook_token` warning | That instance's webhook secret is shorter than 16 characters. Replace it with `openssl rand -hex 32` output and update the Arr webhook URL. |
 
 After fixing credentials, clear the named provider's saved authentication and cooldown state:
 

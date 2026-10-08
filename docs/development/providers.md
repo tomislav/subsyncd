@@ -164,6 +164,8 @@ Nonexact episode packs may supply up to three distinct-content versions identifi
 
 Episode tokens accept an optional dot between season and episode (`S01.E02`) and require complete token boundaries. Malformed episode-shaped names cannot use generic singleton or title-only fallback. Episode ranges are recognized only through complete hyphenated tokens (with the same optional dot): `S01E01-E03`, same-season `S01E01-S01E03`, or same-season `1x01-1x03`. Cross-season, reversed, chained, incomplete, and suffix-contaminated forms fail closed. Release suffixes such as `S01E01.1080p` remain single-episode evidence rather than becoming a range. Forced-only policy applies to every selected archive member, including a plain one-member movie payload.
 
+Movie archives may contain duplicate copies of one subtitle. After forced-subtitle filtering, identical normalized content counts as one choice; distinct eligible versions remain ambiguous and are rejected as `pack_selection`. Archive selection logs include the archive type, original subtitle count, selection rule, and selected or matching count, without member filenames.
+
 Candidate rejections are not provider blacklists. They are scoped to one media/language/provider result and do not expire with time. Media fingerprint, stable release metadata, Sonarr season/episode/absolute numbering or episode title, selected member checksum, LAPSE compatibility version, or synchronization-policy changes invalidate the applicable match. Volatile provider rating, popularity, download counts, and temporary download URLs deliberately do not change the rejection identity. Set-like release names and direct-member evidence are sorted and deduplicated before hashing, without mutating provider results. A downloaded archive with no unique member for the requested episode is recorded as `pack_selection`; the workflow continues through its remaining shortlist without opening a provider cooldown.
 
 ## Score model
@@ -228,6 +230,12 @@ When the provider supplies no reset, compiled fallbacks are:
 | SubDL service busy | 1 hour |
 
 These are policy constants, not YAML settings. `subsyncd retry --provider NAME` clears all persisted scopes for one configured provider.
+
+### Cooldown resume progress
+
+For a first-install search, a provider skipped because of a known search or download cooldown keeps the work unfinished even when another configured provider searched successfully but found no installable result. The search is retried after the earliest applicable provider reset, with random positive jitter of up to 10% of the remaining cooldown, without advancing missing-result or technical-failure attempts. During that unfinished cycle the search row durably holds a configured-order list of clean-empty provider IDs. A provider is clean-empty only after broad search completed without candidates and, when applicable, exact-hash search also completed without candidates. Candidate-bearing, disabled, throttled, canceled, and technically failed providers remain pending. On the reset retry only the clean-empty providers are skipped; unfinished providers and any required fallback tier still run in configured order. The state survives a daemon restart but never extends the ordinary six-hour provider-result cache TTL.
+
+Saved progress is bound to an opaque digest of the canonical language/ordered-tier route together with the media path, file ID, size, and nanosecond mtime. Changing the route invalidates it, so a newly added provider or one moved between tiers always runs. Live inventory replacement clears progress for every language and rechecks progress already copied into a running search; a path-only change may repeat providers once. Configured provider IDs retain their exact identity, including surrounding whitespace, and the persisted list is bounded by the accepted route rather than a separate provider-count limit. Imports, replacements, renames, successful or ordinary terminal outcomes, and manual searches clear it, so a manual `search` always runs the complete current route. `job.completed` reports the count actually retained by SQLite as `resume_provider_count`, including zero after concurrent deletion, replacement, or a requested rerun; the provider list and route signature are never logged.
 
 ## Search and upgrade schedules
 
