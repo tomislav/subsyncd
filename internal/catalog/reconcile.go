@@ -83,6 +83,7 @@ func (r Reconciler) Run(ctx context.Context) error {
 			Languages: r.Languages,
 			At:        change.OccurredAt,
 			Priority:  store.SearchPriorityMissing,
+			Replay:    true,
 		})
 	}
 	mutations = append(mutations, r.recheckLegacyMultiEpisode(ctx)...)

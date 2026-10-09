@@ -301,6 +301,12 @@ type MediaEventMutation struct {
 	Languages []domain.Language
 	At        time.Time
 	Priority  SearchPriority
+	// Replay marks an event read back from Arr history by reconciliation. Arr
+	// history also holds every change its webhooks already delivered under a
+	// different event ID, so a replayed import or rename of a file that an
+	// earlier event already brought to this exact state does not reopen its
+	// searches.
+	Replay bool
 }
 
 func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64, bool, error) {
@@ -1660,6 +1666,13 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 		if mutation.Media.Ref != mutation.Ref {
 			return false, fmt.Errorf("media event reference does not match hydrated media")
 		}
+		alreadyApplied := false
+		if mutation.Replay {
+			alreadyApplied, err = replayOfAppliedImportTx(ctx, tx, mutation)
+			if err != nil {
+				return false, err
+			}
+		}
 		mediaID, contentChanged, err := upsertMediaTx(ctx, tx, mutation.Media, mutation.At)
 		if err != nil {
 			return false, err
@@ -1672,9 +1685,11 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 				return false, err
 			}
 		}
-		for _, language := range mutation.Languages {
-			if err := scheduleMediaSearchTx(ctx, tx, mediaID, language, mutation.At, mutation.Priority, mutation.Media.UnsupportedReason); err != nil {
-				return false, fmt.Errorf("reset media search: %w", err)
+		if !alreadyApplied {
+			for _, language := range mutation.Languages {
+				if err := scheduleMediaSearchTx(ctx, tx, mediaID, language, mutation.At, mutation.Priority, mutation.Media.UnsupportedReason); err != nil {
+					return false, fmt.Errorf("reset media search: %w", err)
+				}
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE events SET media_id=? WHERE event_id=?`, mediaID, mutation.EventID); err != nil {
@@ -1761,6 +1776,33 @@ func validateMediaMutation(mutation MediaEventMutation) error {
 		return fmt.Errorf("unsupported media event type %q", mutation.Type)
 	}
 	return nil
+}
+
+// replayOfAppliedImportTx reports whether a replayed import or rename finds
+// its file already recorded at the same path and size, active, and brought
+// there by an earlier import or rename event. Any difference, or no earlier
+// event, means the replay carries news and reopens searches as usual.
+func replayOfAppliedImportTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMutation) (bool, error) {
+	var mediaID, entityID, size int64
+	var path string
+	var deleted bool
+	err := tx.QueryRowContext(ctx, `SELECT id, entity_id, path, size, deleted FROM media WHERE instance=? AND kind=? AND file_id=?`, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID).Scan(&mediaID, &entityID, &path, &size, &deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find replayed media: %w", err)
+	}
+	fingerprint := mutation.Media.Fingerprint
+	if deleted || entityID != mutation.EntityID || path != fingerprint.Path || size != fingerprint.Size {
+		return false, nil
+	}
+	var earlier bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE media_id=? AND instance=? AND kind=? AND file_id=? AND event_type IN ('import', 'rename') AND event_id<>?)`, mediaID, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID, mutation.EventID).Scan(&earlier)
+	if err != nil {
+		return false, fmt.Errorf("find earlier media event: %w", err)
+	}
+	return earlier, nil
 }
 
 func scheduleMediaSearchTx(ctx context.Context, tx *sql.Tx, mediaID int64, language domain.Language, at time.Time, priority SearchPriority, unsupported domain.UnsupportedReason) error {
