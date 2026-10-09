@@ -217,9 +217,11 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 	if media.IsEpisodeRange() && !candidate.ExactHash && !selectedMember && !coversTarget(media, candidate, releases) {
 		reasons = append(reasons, "candidate episode range does not cover target")
 	}
-	if media.Edition != "" && !candidate.ExactHash {
+	// A file edition that names no cut (only IMAX, Remastered and the like)
+	// cannot conflict with any candidate.
+	wantedEdition := comparable(normalizeEdition(media.Edition, "", false, false, false))
+	if wantedEdition != "" && !candidate.ExactHash {
 		known, matched := false, false
-		wantedEdition := comparable(normalizeEdition(media.Edition, "", false, false, false))
 		for _, release := range releases {
 			if release.Edition != "" {
 				known = true
@@ -234,7 +236,7 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 }
 
 func HasMatchingEdition(media domain.Media, candidate domain.Candidate) bool {
-	if strings.TrimSpace(media.Edition) == "" {
+	if normalizeEdition(media.Edition, "", false, false, false) == "" {
 		return true
 	}
 	releases := candidateReleases(candidate)

@@ -170,7 +170,7 @@ Candidate rejections are not provider blacklists. They are scoped to one media/l
 
 ## Score model
 
-Known identity conflicts reject before points are considered. Conflicts include language, media kind, forced-only results for a full-language request, external IDs, movie year beyond ±1 without an exact external ID, season/episode outside pack scope, and a different known edition/cut. A verified exact file hash overrides only a conflicting textual edition label; all other identity gates remain active. Unknown evidence is normally neutral.
+Known identity conflicts reject before points are considered. Conflicts include language, media kind, forced-only results for a full-language request, external IDs, movie year beyond ±1 without an exact external ID, season/episode outside pack scope, and a different known edition/cut. Edition means the cut only (directors, final, ultimate cut, ultimate edition, special, anniversary, redux, extended, unrated, theatrical, or another named cut); picture or format variants (remastered, restored, IMAX, open matte) are removed from both the file's and the candidate's edition before comparison, so `Ultimate Edition Remastered` compares as `ultimate edition` and a file labelled only `IMAX` names no cut and conflicts with nothing. A verified exact file hash overrides only a conflicting textual edition label; all other identity gates remain active. Unknown evidence is normally neutral.
 
 | Signal | Points |
 | --- | ---: |

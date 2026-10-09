@@ -133,7 +133,13 @@ func normalizeSource(value, raw string) string {
 	return NormalizeIdentity(value)
 }
 
-func normalizeEdition(value, raw string, extended, remastered, unrated bool) string {
+// normalizeEdition returns the cut a release or file names, or "" when it
+// names none. Only the cut changes subtitle timing, so labels for picture or
+// format variants (remastered, restored, IMAX, open matte) are not editions:
+// they are dropped before comparison instead of hiding or replacing the cut.
+// The remastered flag from the release parser is accepted but deliberately
+// ignored for the same reason.
+func normalizeEdition(value, raw string, extended, _, unrated bool) string {
 	joined := strings.ToLower(value + " " + editionDescriptor(raw))
 	switch {
 	case strings.Contains(joined, "director's cut") || strings.Contains(joined, "directors cut") || strings.Contains(joined, "director cut"):
@@ -142,6 +148,8 @@ func normalizeEdition(value, raw string, extended, remastered, unrated bool) str
 		return "final cut"
 	case strings.Contains(joined, "ultimate cut"):
 		return "ultimate cut"
+	case strings.Contains(joined, "ultimate edition"):
+		return "ultimate edition"
 	case strings.Contains(joined, "special edition"):
 		return "special edition"
 	case strings.Contains(joined, "anniversary edition"):
@@ -150,14 +158,23 @@ func normalizeEdition(value, raw string, extended, remastered, unrated bool) str
 		return "redux"
 	case extended || strings.Contains(joined, "extended"):
 		return "extended"
-	case remastered || strings.Contains(joined, "remaster"):
-		return "remastered"
 	case unrated || strings.Contains(joined, "unrated"):
 		return "unrated"
 	case strings.Contains(joined, "theatrical"):
 		return "theatrical"
 	}
-	return NormalizeIdentity(value)
+	return withoutVariantLabels(NormalizeIdentity(value))
+}
+
+// variantLabels name picture or format variants that keep the cut's timing.
+var variantLabels = []string{"remastered", "remaster", "restored", "imax", "open matte"}
+
+func withoutVariantLabels(edition string) string {
+	for _, label := range variantLabels {
+		edition = strings.ReplaceAll(" "+edition+" ", " "+label+" ", " ")
+		edition = strings.TrimSpace(edition)
+	}
+	return strings.Join(strings.Fields(edition), " ")
 }
 
 func editionDescriptor(raw string) string {
