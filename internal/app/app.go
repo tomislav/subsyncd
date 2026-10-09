@@ -260,7 +260,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	if err != nil {
 		return nil, err
 	}
-	lapse, err := syncer.New(syncer.Options{Path: cfg.Sync.LapsePath, CacheDir: filepath.Join(cfg.DataDir, "lapse-cache"), AnalyzeTimeout: cfg.Sync.Timeout, SynchronizeTimeout: cfg.Sync.Timeout, MinReadRate: cfg.Sync.MinReadRate, MediaRoots: cfg.MediaRoots, Runner: options.LapseRunner})
+	lapse, err := syncer.New(syncer.Options{Path: cfg.Sync.LapsePath, CacheDir: filepath.Join(cfg.DataDir, "lapse-cache"), AnalyzeTimeout: cfg.Sync.Timeout, SynchronizeTimeout: cfg.Sync.Timeout, MinReadRate: cfg.Sync.MinReadRate, MaxTimeout: cfg.Sync.MaxTimeout, MediaRoots: cfg.MediaRoots, Runner: options.LapseRunner})
 	if err != nil {
 		return nil, err
 	}
@@ -845,7 +845,7 @@ func (a *App) AnalyzeSync(ctx context.Context, mediaPath, subtitlePath string) (
 		return "", err
 	}
 	defer os.RemoveAll(workspace)
-	lapse, err := syncer.New(syncer.Options{Path: a.Config.Sync.LapsePath, CacheDir: filepath.Join(workspace, "speech"), AnalyzeTimeout: a.Config.Sync.Timeout, MinReadRate: a.Config.Sync.MinReadRate, MediaRoots: a.Config.MediaRoots, Runner: a.LapseRunner})
+	lapse, err := syncer.New(syncer.Options{Path: a.Config.Sync.LapsePath, CacheDir: filepath.Join(workspace, "speech"), AnalyzeTimeout: a.Config.Sync.Timeout, MinReadRate: a.Config.Sync.MinReadRate, MaxTimeout: a.Config.Sync.MaxTimeout, MediaRoots: a.Config.MediaRoots, Runner: a.LapseRunner})
 	if err != nil {
 		return "", err
 	}

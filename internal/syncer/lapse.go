@@ -23,6 +23,7 @@ import (
 const (
 	CompatibilityVersion   = "2.2.4"
 	defaultTimeout         = 30 * time.Minute
+	defaultMaxTimeout      = 4 * time.Hour
 	maximumSubtitleBytes   = 100 << 20
 	maximumSubtitleCues    = 100_000
 	speechCacheEnvVariable = "LAPSE_CACHE"
@@ -40,8 +41,11 @@ type Options struct {
 	// file gets size/MinReadRate when that exceeds the configured timeout.
 	// Zero or less disables the scaling.
 	MinReadRate int64
-	MediaRoots  []string
-	Runner      Runner
+	// MaxTimeout caps the size-scaled limit; it never lowers the configured
+	// timeouts. Zero or less uses four hours.
+	MaxTimeout time.Duration
+	MediaRoots []string
+	Runner     Runner
 }
 
 type Lapse struct {
@@ -51,6 +55,7 @@ type Lapse struct {
 	analyzeTimeout     time.Duration
 	synchronizeTimeout time.Duration
 	minReadRate        int64
+	maxTimeout         time.Duration
 	mediaRoots         []string
 	runner             Runner
 }
@@ -123,6 +128,9 @@ func New(options Options) (*Lapse, error) {
 	if options.SynchronizeTimeout <= 0 {
 		options.SynchronizeTimeout = defaultTimeout
 	}
+	if options.MaxTimeout <= 0 {
+		options.MaxTimeout = defaultMaxTimeout
+	}
 	cacheDir, err := filepath.Abs(options.CacheDir)
 	if err != nil || strings.TrimSpace(options.CacheDir) == "" {
 		return nil, fmt.Errorf("LAPSE speech cache directory is required")
@@ -138,7 +146,7 @@ func New(options Options) (*Lapse, error) {
 		}
 		roots = append(roots, filepath.Clean(absolute))
 	}
-	return &Lapse{path: options.Path, cacheDir: cacheDir, analyzeTimeout: options.AnalyzeTimeout, synchronizeTimeout: options.SynchronizeTimeout, minReadRate: options.MinReadRate, mediaRoots: roots, runner: options.Runner}, nil
+	return &Lapse{path: options.Path, cacheDir: cacheDir, analyzeTimeout: options.AnalyzeTimeout, synchronizeTimeout: options.SynchronizeTimeout, minReadRate: options.MinReadRate, maxTimeout: options.MaxTimeout, mediaRoots: roots, runner: options.Runner}, nil
 }
 
 func (l *Lapse) AnalyzeCandidate(ctx context.Context, candidate domain.Candidate, mediaPath, subtitlePath string) (domain.SyncResult, error) {
@@ -238,9 +246,10 @@ func (l *Lapse) execute(ctx context.Context, timeout time.Duration, command Comm
 	return execution, fmt.Errorf("LAPSE command could not start or complete")
 }
 
-// timeoutFor gives a run on mediaPath at least the time needed to read the
-// whole file at minReadRate. An unreadable size keeps the configured timeout;
-// LAPSE reports the read failure itself.
+// timeoutFor gives a run on mediaPath the time needed to read the whole file
+// at minReadRate, capped at maxTimeout, but never less than the configured
+// timeout. An unreadable size keeps the configured timeout; LAPSE reports the
+// read failure itself.
 func (l *Lapse) timeoutFor(mediaPath string, configured time.Duration) time.Duration {
 	if l.minReadRate <= 0 {
 		return configured
@@ -249,8 +258,13 @@ func (l *Lapse) timeoutFor(mediaPath string, configured time.Duration) time.Dura
 	if err != nil {
 		return configured
 	}
-	readTime := time.Duration(float64(info.Size()) / float64(l.minReadRate) * float64(time.Second))
-	return max(configured, readTime)
+	// Compare in seconds before converting, so a huge size or tiny rate cannot
+	// overflow time.Duration.
+	readSeconds := float64(info.Size()) / float64(l.minReadRate)
+	if readSeconds >= l.maxTimeout.Seconds() {
+		return max(configured, l.maxTimeout)
+	}
+	return max(configured, time.Duration(readSeconds*float64(time.Second)))
 }
 
 func (l *Lapse) interpret(execution Execution) (domain.SyncResult, lapseReport, error) {

@@ -31,6 +31,8 @@ const (
 	defaultSyncPolicy                      = "confidence"
 	defaultSyncBypassScore                 = 75
 	defaultSyncMinReadRateMiB              = 4.0
+	defaultSyncMaxTimeout                  = 4 * time.Hour
+	maximumSyncMinReadRateMiB              = 1 << 20
 	defaultWorkerMaxConcurrent             = 1
 	defaultLogLevel                        = "info"
 )
@@ -120,6 +122,7 @@ type SyncConfig struct {
 	LapsePath              string
 	Timeout                time.Duration
 	MinReadRate            int64 // bytes per second; 0 disables size scaling
+	MaxTimeout             time.Duration
 	Policy                 string
 	BypassScore            int
 	RequireIdentityAnchor  bool
@@ -187,6 +190,7 @@ type rawSyncConfig struct {
 	LapsePath              string    `yaml:"lapse_path"`
 	Timeout                *duration `yaml:"timeout"`
 	MinReadRate            *float64  `yaml:"min_read_rate"`
+	MaxTimeout             *duration `yaml:"max_timeout"`
 	Policy                 string    `yaml:"policy"`
 	BypassScore            int       `yaml:"bypass_score"`
 	RequireIdentityAnchor  *bool     `yaml:"require_identity_anchor"`
@@ -381,8 +385,22 @@ func normalize(raw rawConfig) (Config, error) {
 	if raw.Sync.MinReadRate != nil {
 		minReadRateMiB = *raw.Sync.MinReadRate
 	}
-	if math.IsNaN(minReadRateMiB) || math.IsInf(minReadRateMiB, 0) || minReadRateMiB > 1<<20 {
+	if math.IsNaN(minReadRateMiB) || math.IsInf(minReadRateMiB, 0) {
 		return Config{}, fmt.Errorf("sync min_read_rate must be a finite number of MiB per second")
+	}
+	if minReadRateMiB > maximumSyncMinReadRateMiB {
+		return Config{}, fmt.Errorf("sync min_read_rate must be at most %d MiB per second", maximumSyncMinReadRateMiB)
+	}
+	minReadRate := int64(minReadRateMiB * (1 << 20))
+	if minReadRateMiB > 0 && minReadRate == 0 {
+		return Config{}, fmt.Errorf("sync min_read_rate must be 0 or at least 1 byte per second")
+	}
+	maxTimeout := max(defaultSyncMaxTimeout, syncTimeout)
+	if raw.Sync.MaxTimeout != nil {
+		maxTimeout = time.Duration(*raw.Sync.MaxTimeout)
+		if maxTimeout <= 0 {
+			return Config{}, fmt.Errorf("sync max_timeout must be positive")
+		}
 	}
 	syncPolicy := raw.Sync.Policy
 	if syncPolicy == "" {
@@ -395,7 +413,8 @@ func normalize(raw rawConfig) (Config, error) {
 	cfg.Sync = SyncConfig{
 		LapsePath:              raw.Sync.LapsePath,
 		Timeout:                syncTimeout,
-		MinReadRate:            int64(minReadRateMiB * (1 << 20)),
+		MinReadRate:            minReadRate,
+		MaxTimeout:             maxTimeout,
 		Policy:                 syncPolicy,
 		BypassScore:            bypassScore,
 		RequireIdentityAnchor:  boolDefaultTrue(raw.Sync.RequireIdentityAnchor),
@@ -575,6 +594,10 @@ func (c Config) Validate() error {
 	}
 	if c.Sync.MinReadRate < 0 {
 		return fmt.Errorf("sync min_read_rate must not be negative")
+	}
+	// Zero leaves the cap to the syncer's default; Load always sets it.
+	if c.Sync.MaxTimeout != 0 && c.Sync.MaxTimeout < c.Sync.Timeout {
+		return fmt.Errorf("sync max_timeout must not be shorter than timeout")
 	}
 	if c.Sync.Policy != "" && c.Sync.Policy != "always" && c.Sync.Policy != "confidence" && c.Sync.Policy != "never" {
 		return fmt.Errorf("sync policy must be always, confidence, or never")

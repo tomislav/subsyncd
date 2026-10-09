@@ -370,6 +370,8 @@ func TestTimeoutScalesWithMediaSize(t *testing.T) {
 		{"small media keeps the configured timeout", 1 << 20, 1 << 20, time.Minute},
 		{"large media gets size divided by read rate", 300 << 20, 1 << 20, 300 * time.Second},
 		{"no read rate keeps the configured timeout", 300 << 20, 0, time.Minute},
+		{"scaling stops at the maximum", 1 << 30, 1 << 20, 10 * time.Minute},
+		{"a tiny rate cannot overflow past the maximum", 1 << 40, 1, 10 * time.Minute},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -386,7 +388,7 @@ func TestTimeoutScalesWithMediaSize(t *testing.T) {
 				got = time.Until(deadline)
 				return Execution{}, context.DeadlineExceeded
 			})
-			lapse, err := New(Options{Path: "/usr/local/bin/lapse", CacheDir: filepath.Join(t.TempDir(), "speech-cache"), AnalyzeTimeout: time.Minute, SynchronizeTimeout: time.Minute, MinReadRate: test.rate, MediaRoots: []string{filepath.Dir(media)}, Runner: runner})
+			lapse, err := New(Options{Path: "/usr/local/bin/lapse", CacheDir: filepath.Join(t.TempDir(), "speech-cache"), AnalyzeTimeout: time.Minute, SynchronizeTimeout: time.Minute, MinReadRate: test.rate, MaxTimeout: 10 * time.Minute, MediaRoots: []string{filepath.Dir(media)}, Runner: runner})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"subsyncd/internal/domain"
 )
@@ -584,4 +585,47 @@ func TestLoadParsesLapseMinimumReadRate(t *testing.T) {
 	}
 	_, err := loadText(t, strings.Replace(base, sync, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, min_read_rate: -1}", 1))
 	assertErrorContains(t, err, "min_read_rate")
+}
+
+func TestLoadParsesLapseMaximumTimeout(t *testing.T) {
+	root := t.TempDir()
+	base := validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n")
+	const sync = "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m}"
+	cfg, err := loadText(t, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.MaxTimeout != 4*time.Hour {
+		t.Fatalf("default MaxTimeout = %v, want 4h", cfg.Sync.MaxTimeout)
+	}
+	cfg, err = loadText(t, strings.Replace(base, sync, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, max_timeout: 2h}", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.MaxTimeout != 2*time.Hour {
+		t.Fatalf("MaxTimeout = %v, want 2h", cfg.Sync.MaxTimeout)
+	}
+	_, err = loadText(t, strings.Replace(base, sync, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, max_timeout: 10m}", 1))
+	assertErrorContains(t, err, "max_timeout")
+	_, err = loadText(t, strings.Replace(base, sync, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, max_timeout: 0s}", 1))
+	assertErrorContains(t, err, "max_timeout")
+	// A timeout above the default cap raises the cap with it.
+	cfg, err = loadText(t, strings.Replace(base, sync, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 6h}", 1))
+	if err != nil || cfg.Sync.MaxTimeout != 6*time.Hour {
+		t.Fatalf("MaxTimeout with timeout 6h = %v, %v; want 6h", cfg.Sync.MaxTimeout, err)
+	}
+}
+
+func TestLoadRejectsUnusableLapseMinimumReadRate(t *testing.T) {
+	root := t.TempDir()
+	base := validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n")
+	const sync = "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m}"
+	for value, want := range map[string]string{
+		"0.0000001": "at least 1 byte",
+		"2000000":   "at most",
+		".nan":      "finite",
+	} {
+		_, err := loadText(t, strings.Replace(base, sync, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, min_read_rate: "+value+"}", 1))
+		assertErrorContains(t, err, want)
+	}
 }

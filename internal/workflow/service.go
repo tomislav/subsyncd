@@ -38,6 +38,7 @@ const (
 type Request struct {
 	memberScope          string
 	attemptedArtifacts   map[candidateArtifactIdentity]struct{}
+	lapseTimeout         *lapseTimeoutLatch
 	MediaID              int64
 	Media                domain.Media
 	Language             domain.Language
@@ -89,6 +90,10 @@ type PackCache interface {
 	Find(context.Context, domain.Media, domain.Language) (pack.CachedMember, bool, error)
 	Put(context.Context, pack.Manifest, time.Time) error
 }
+
+// lapseTimeoutLatch remembers, for one workflow attempt, the first LAPSE run
+// that hit its time limit.
+type lapseTimeoutLatch struct{ err *syncer.TimeoutError }
 
 type CandidateSynchronizer interface {
 	SynchronizeCandidate(context.Context, domain.Candidate, string, string, string) (domain.SyncResult, error)
@@ -278,6 +283,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		}
 	}
 	request.attemptedArtifacts = make(map[candidateArtifactIdentity]struct{})
+	request.lapseTimeout = &lapseTimeoutLatch{}
 
 	result, runErr = s.runProviderTiers(ctx, request, existing, activeInstallation, &candidateCount)
 	if runErr == nil && activeInstallation && InstallationMatchesMedia(existing, request.Media) &&
@@ -896,14 +902,6 @@ func lapseFailureDecision(failure error) string {
 }
 
 func (s *Service) handleCandidateFailure(ctx context.Context, request Request, candidate domain.Candidate, path string, failure error, candidateFailures *[]error) error {
-	// A LAPSE timeout is spent reading the media, not judging the subtitle,
-	// and LAPSE caches nothing from a run it did not finish. Every other
-	// candidate for this file would time out the same way, so stop here and
-	// let technical-failure backoff retry the search.
-	var timeout *syncer.TimeoutError
-	if errors.As(failure, &timeout) {
-		return failure
-	}
 	checksum, checksumErr := fileChecksum(path)
 	if checksumErr != nil {
 		return checksumErr
@@ -1324,9 +1322,22 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 			}
 		}
 	}()
+	// A LAPSE timeout is spent reading the media, not judging the subtitle,
+	// and LAPSE caches nothing from a run it did not finish, so every later
+	// LAPSE run for this file in the same attempt would time out the same way.
+	// Reuse the timeout for those; exact-hash candidates never read the media
+	// and still run, as do candidates that bypass LAPSE before this point.
+	latch := request.lapseTimeout
+	if latch != nil && latch.err != nil && !item.candidate.ExactHash {
+		return preparedCandidate{}, latch.err
+	}
 	s.logLapseStarted(ctx, "sync", item.candidate)
 	startedAt := time.Now()
 	synchronized, err := s.Synchronizer.SynchronizeCandidate(ctx, item.candidate, request.Media.Fingerprint.Path, item.path, output)
+	var timeout *syncer.TimeoutError
+	if latch != nil && errors.As(err, &timeout) {
+		latch.err = timeout
+	}
 	if err != nil {
 		s.logLapseFailure(ctx, "sync", item.candidate, time.Since(startedAt), err)
 		return preparedCandidate{}, err
