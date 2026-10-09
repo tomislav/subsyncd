@@ -219,7 +219,7 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 	}
 	// A file edition that names no cut (only IMAX, Remastered and the like)
 	// cannot conflict with any candidate.
-	wantedEdition := comparable(normalizeEdition(media.Edition, "", false, false, false))
+	wantedEdition := comparable(normalizeEdition(media.Edition, "", false, false))
 	if wantedEdition != "" && !candidate.ExactHash {
 		known, matched := false, false
 		for _, release := range releases {
@@ -236,7 +236,7 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 }
 
 func HasMatchingEdition(media domain.Media, candidate domain.Candidate) bool {
-	if normalizeEdition(media.Edition, "", false, false, false) == "" {
+	if normalizeEdition(media.Edition, "", false, false) == "" && editionVariants(media.Edition) == 0 {
 		return true
 	}
 	releases := candidateReleases(candidate)
@@ -325,13 +325,23 @@ func releaseSourceMatches(releases []Release, wanted string) bool {
 	return releaseFieldMatches(releases, normalizeSource(wanted, ""), func(r Release) string { return r.Source })
 }
 
-func editionMatches(releases []Release, wanted string) bool {
-	wanted = comparable(normalizeEdition(wanted, "", false, false, false))
-	if wanted == "" {
+// editionMatches reports whether a release names the file's cut or, when the
+// file names no cut, carries every picture variant label the file has.
+func editionMatches(releases []Release, edition string) bool {
+	if wanted := comparable(normalizeEdition(edition, "", false, false)); wanted != "" {
+		for _, release := range releases {
+			if comparable(release.Edition) == wanted {
+				return true
+			}
+		}
+		return false
+	}
+	variants := editionVariants(edition)
+	if variants == 0 {
 		return false
 	}
 	for _, release := range releases {
-		if comparable(release.Edition) == wanted {
+		if release.Variants&variants == variants {
 			return true
 		}
 	}

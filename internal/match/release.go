@@ -2,6 +2,7 @@ package match
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -22,10 +23,13 @@ type Release struct {
 	AbsoluteEpisodeEnd int
 	Group              string
 	Source             string
-	Edition            string
-	Service            string
-	Resolution         string
-	Complete           bool
+	// Edition is the cut the release names, or "" (see normalizeEdition).
+	Edition string
+	// Variants are picture or format labels that keep the cut's timing.
+	Variants   editionVariant
+	Service    string
+	Resolution string
+	Complete   bool
 }
 
 var releaseAlternativeSeparator = regexp.MustCompile(`[[:space:]\p{Z}]+/[[:space:]\p{Z}]+`)
@@ -64,7 +68,7 @@ func ParseRelease(raw string) Release {
 		release.EpisodeEnd = parsed.EpisodeEnd
 		release.Group = NormalizeIdentity(parsed.Group)
 		release.Source = normalizeSource(firstNonEmpty(parsed.Quality, parsed.Source), raw)
-		release.Edition = normalizeEdition(parsed.Edition, raw, parsed.Extended, parsed.Remastered, parsed.Unrated)
+		release.Edition = normalizeEdition(parsed.Edition, raw, parsed.Extended, parsed.Unrated)
 		release.Resolution = strings.ToLower(parsed.Resolution)
 		release.Complete = parsed.Complete
 	}
@@ -91,8 +95,9 @@ func ParseRelease(raw string) Release {
 		release.Source = normalizeSource("", raw)
 	}
 	if release.Edition == "" {
-		release.Edition = normalizeEdition("", raw, false, false, false)
+		release.Edition = normalizeEdition("", raw, false, false)
 	}
+	release.Variants = editionVariants(editionDescriptor(raw))
 	return release
 }
 
@@ -134,12 +139,13 @@ func normalizeSource(value, raw string) string {
 }
 
 // normalizeEdition returns the cut a release or file names, or "" when it
-// names none. Only the cut changes subtitle timing, so labels for picture or
-// format variants (remastered, restored, IMAX, open matte) are not editions:
-// they are dropped before comparison instead of hiding or replacing the cut.
-// The remastered flag from the release parser is accepted but deliberately
-// ignored for the same reason.
-func normalizeEdition(value, raw string, extended, _, unrated bool) string {
+// names none. Only the cut changes subtitle timing, so only recognised cut
+// names, and other labels that call themselves a cut (such as "Assembly Cut"),
+// count. Everything else the release parser or Radarr reports as an edition
+// (Hybrid, Dual Audio, Dubbed, IMAX Enhanced, Remastered, Criterion...) names
+// no cut and is neutral evidence; picture variants are tracked separately by
+// editionVariants.
+func normalizeEdition(value, raw string, extended, unrated bool) string {
 	joined := strings.ToLower(value + " " + editionDescriptor(raw))
 	switch {
 	case strings.Contains(joined, "director's cut") || strings.Contains(joined, "directors cut") || strings.Contains(joined, "director cut"):
@@ -163,18 +169,45 @@ func normalizeEdition(value, raw string, extended, _, unrated bool) string {
 	case strings.Contains(joined, "theatrical"):
 		return "theatrical"
 	}
-	return withoutVariantLabels(NormalizeIdentity(value))
+	if named := NormalizeIdentity(value); slices.Contains(strings.Fields(named), "cut") {
+		return named
+	}
+	return ""
 }
 
-// variantLabels name picture or format variants that keep the cut's timing.
-var variantLabels = []string{"remastered", "remaster", "restored", "imax", "open matte"}
+// editionVariant is a set of picture or format labels that keep the cut's
+// timing. They are weak evidence of the same release family: matching labels
+// earn edition points when the file names no cut, but never conflict.
+type editionVariant uint8
 
-func withoutVariantLabels(edition string) string {
-	for _, label := range variantLabels {
-		edition = strings.ReplaceAll(" "+edition+" ", " "+label+" ", " ")
-		edition = strings.TrimSpace(edition)
+const (
+	variantIMAX editionVariant = 1 << iota
+	variantRemastered
+	variantRestored
+	variantOpenMatte
+	variantHybrid
+)
+
+func editionVariants(text string) editionVariant {
+	words := " " + NormalizeIdentity(text) + " "
+	var variants editionVariant
+	for _, label := range []struct {
+		variant editionVariant
+		words   []string
+	}{
+		{variantIMAX, []string{"imax"}},
+		{variantRemastered, []string{"remastered", "remaster", "rm4k"}},
+		{variantRestored, []string{"restored", "restoration"}},
+		{variantOpenMatte, []string{"open matte"}},
+		{variantHybrid, []string{"hybrid"}},
+	} {
+		for _, word := range label.words {
+			if strings.Contains(words, " "+word+" ") {
+				variants |= label.variant
+			}
+		}
 	}
-	return strings.Join(strings.Fields(edition), " ")
+	return variants
 }
 
 func editionDescriptor(raw string) string {
