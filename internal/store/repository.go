@@ -301,11 +301,11 @@ type MediaEventMutation struct {
 	Languages []domain.Language
 	At        time.Time
 	Priority  SearchPriority
-	// Replay marks an event read back from Arr history by reconciliation. Arr
-	// history also holds every change its webhooks already delivered under a
-	// different event ID, so a replayed import or rename of a file that an
-	// earlier event already brought to this exact state does not reopen its
-	// searches.
+	// Replay marks an import or rename read back from Arr history by
+	// reconciliation. Arr history also holds every change its webhooks already
+	// delivered under a different event ID, so a replay of a file that a change
+	// at or after the record's time already brought to this exact state does
+	// not reopen its searches. Ignored for deletes.
 	Replay bool
 }
 
@@ -1779,30 +1779,24 @@ func validateMediaMutation(mutation MediaEventMutation) error {
 }
 
 // replayOfAppliedImportTx reports whether a replayed import or rename finds
-// its file already recorded at the same path and size, active, and brought
-// there by an earlier import or rename event. Any difference, or no earlier
-// event, means the replay carries news and reopens searches as usual.
+// its file already recorded as it describes (active, same entity, path, size
+// and support status) by a change applied at or after the history record's
+// time, such as the webhook that delivered the same change. Any difference
+// means the replay carries news and reopens searches as usual.
 func replayOfAppliedImportTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMutation) (bool, error) {
-	var mediaID, entityID, size int64
-	var path string
+	var entityID, size, updatedAt int64
+	var path, unsupported string
 	var deleted bool
-	err := tx.QueryRowContext(ctx, `SELECT id, entity_id, path, size, deleted FROM media WHERE instance=? AND kind=? AND file_id=?`, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID).Scan(&mediaID, &entityID, &path, &size, &deleted)
+	err := tx.QueryRowContext(ctx, `SELECT entity_id, path, size, unsupported_reason, deleted, updated_at_ns FROM media WHERE instance=? AND kind=? AND file_id=?`, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID).Scan(&entityID, &path, &size, &unsupported, &deleted, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("find replayed media: %w", err)
 	}
-	fingerprint := mutation.Media.Fingerprint
-	if deleted || entityID != mutation.EntityID || path != fingerprint.Path || size != fingerprint.Size {
-		return false, nil
-	}
-	var earlier bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE media_id=? AND instance=? AND kind=? AND file_id=? AND event_type IN ('import', 'rename') AND event_id<>?)`, mediaID, mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID, mutation.EventID).Scan(&earlier)
-	if err != nil {
-		return false, fmt.Errorf("find earlier media event: %w", err)
-	}
-	return earlier, nil
+	media := mutation.Media
+	return !deleted && entityID == mutation.EntityID && path == media.Fingerprint.Path && size == media.Fingerprint.Size &&
+		unsupported == string(media.UnsupportedReason) && updatedAt >= mutation.At.UnixNano(), nil
 }
 
 func scheduleMediaSearchTx(ctx context.Context, tx *sql.Tx, mediaID int64, language domain.Language, at time.Time, priority SearchPriority, unsupported domain.UnsupportedReason) error {
@@ -1850,7 +1844,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 			return 0, false, fmt.Errorf("read media ID for event: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, series_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, episode_end=?, absolute_episode_end=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=? WHERE id=?`, media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), at.UnixNano(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, series_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, episode_end=?, absolute_episode_end=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, updated_at_ns=MAX(updated_at_ns, ?) WHERE id=?`, media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), at.UnixNano(), id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}

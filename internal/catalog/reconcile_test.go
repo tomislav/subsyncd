@@ -266,7 +266,7 @@ func TestReconcilerConvertsEntityHistoryStates(t *testing.T) {
 	if first.EventID != "reconcile:sonarr-main:41" || first.Type != "import" || first.Ref != media.Ref || first.Media.Ref != media.Ref || !first.At.Equal(changes[0].OccurredAt) || first.Priority != store.SearchPriorityMissing || len(first.Languages) != 2 || !first.Replay {
 		t.Fatalf("first mutation = %#v", first)
 	}
-	if second.EventID != "reconcile:sonarr-main:42" || second.Type != "delete" || second.EntityID != 102 || second.Ref.Kind != domain.MediaEpisode || second.Ref.FileID != 0 || second.Media.Ref.FileID != 0 || !second.At.Equal(changes[1].OccurredAt) || second.Priority != store.SearchPriorityMissing {
+	if second.EventID != "reconcile:sonarr-main:42" || second.Type != "delete" || second.EntityID != 102 || second.Ref.Kind != domain.MediaEpisode || second.Ref.FileID != 0 || second.Media.Ref.FileID != 0 || !second.At.Equal(changes[1].OccurredAt) || second.Priority != store.SearchPriorityMissing || second.Replay {
 		t.Fatalf("second mutation = %#v", second)
 	}
 	third := backend.mutations[2]
