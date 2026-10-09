@@ -557,3 +557,31 @@ instances:
 		assertErrorContains(t, err, "sonarr-main", "queue_priority")
 	}
 }
+
+func TestLoadParsesLapseMinimumReadRate(t *testing.T) {
+	root := t.TempDir()
+	base := validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n")
+	const sync = "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m}"
+	tests := []struct {
+		name        string
+		replacement string
+		want        int64
+	}{
+		{"default", sync, 4 << 20},
+		{"configured", "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, min_read_rate: 2.5}", 5 << 19},
+		{"disabled", "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, min_read_rate: 0}", 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := loadText(t, strings.Replace(base, sync, test.replacement, 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Sync.MinReadRate != test.want {
+				t.Fatalf("MinReadRate = %d, want %d", cfg.Sync.MinReadRate, test.want)
+			}
+		})
+	}
+	_, err := loadText(t, strings.Replace(base, sync, "sync: {lapse_path: /usr/local/bin/lapse, timeout: 30m, min_read_rate: -1}", 1))
+	assertErrorContains(t, err, "min_read_rate")
+}

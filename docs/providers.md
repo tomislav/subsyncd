@@ -129,6 +129,8 @@ sync:
 
 Set `sync.policy: always` to run LAPSE for every nonexact candidate. Exact file matches still skip it. LAPSE can read much of the media file on its first run, so this may increase processing time and network-storage traffic.
 
+LAPSE decodes the media file's whole audio track on its first run for that file, and saves the result so later checks of the same file take about a second. Each run is limited to `sync.timeout` (30 minutes by default), extended for large files to the time needed to read the whole file at `sync.min_read_rate` MiB per second (default 4; `0` turns the extension off). On network storage such as a FUSE mount, set `min_read_rate` below the read speed you actually get. A run that times out saves nothing, so subsyncd doesn't try the other candidates for that file, which would time out the same way: the search fails and is retried with the normal failure delays.
+
 Set `sync.policy: never` to download subtitles without synchronization. Every candidate that reaches `minimum_release_score` is installed with the timing it was downloaded with, including season packs and upgrades; `bypass_score` and the other `sync` switches are ignored. Timing is not verified, so the release score is the only protection against an out-of-sync subtitle: raise `minimum_release_score` (60 is a reasonable start; 75 effectively requires a release-group match). A pack containing several versions of the requested episode is skipped, because without LAPSE there is no safe way to choose between them. Switching policy lets candidates previously rejected for failed timing be reconsidered.
 
 ## Retries and provider limits

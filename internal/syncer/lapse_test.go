@@ -359,3 +359,61 @@ type runnerFunc func(context.Context, Command) (Execution, error)
 func (function runnerFunc) Run(ctx context.Context, command Command) (Execution, error) {
 	return function(ctx, command)
 }
+
+func TestTimeoutScalesWithMediaSize(t *testing.T) {
+	tests := []struct {
+		name      string
+		mediaSize int64
+		rate      int64
+		want      time.Duration
+	}{
+		{"small media keeps the configured timeout", 1 << 20, 1 << 20, time.Minute},
+		{"large media gets size divided by read rate", 300 << 20, 1 << 20, 300 * time.Second},
+		{"no read rate keeps the configured timeout", 300 << 20, 0, time.Minute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			media, subtitle := testFiles(t)
+			if err := os.Truncate(media, test.mediaSize); err != nil {
+				t.Fatal(err)
+			}
+			var got time.Duration
+			runner := runnerFunc(func(ctx context.Context, _ Command) (Execution, error) {
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					t.Fatal("LAPSE context has no deadline")
+				}
+				got = time.Until(deadline)
+				return Execution{}, context.DeadlineExceeded
+			})
+			lapse, err := New(Options{Path: "/usr/local/bin/lapse", CacheDir: filepath.Join(t.TempDir(), "speech-cache"), AnalyzeTimeout: time.Minute, SynchronizeTimeout: time.Minute, MinReadRate: test.rate, MediaRoots: []string{filepath.Dir(media)}, Runner: runner})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+			if got > test.want || got < test.want-5*time.Second {
+				t.Fatalf("timeout = %v, want about %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTimeoutIsTypedAndParentCancellationIsNot(t *testing.T) {
+	media, subtitle := testFiles(t)
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{}, context.DeadlineExceeded
+	}), filepath.Dir(media))
+	_, err := lapse.Analyze(context.Background(), media, subtitle)
+	var timeout *TimeoutError
+	if !errors.As(err, &timeout) || !errors.Is(err, context.DeadlineExceeded) || timeout.Limit != time.Second {
+		t.Fatalf("Analyze() error = %T %v, want TimeoutError after 1s", err, err)
+	}
+
+	parent, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-parent.Done()
+	_, err = lapse.Analyze(parent, media, subtitle)
+	if errors.As(err, &timeout) {
+		t.Fatalf("Analyze() with an expired parent = %v, want no TimeoutError", err)
+	}
+}

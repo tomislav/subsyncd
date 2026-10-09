@@ -665,6 +665,10 @@ func (s *Service) workflowEvents() *observability.Emitter {
 }
 
 func workflowCompletion(result Result, err error) (string, string, slog.Level) {
+	var timeout *syncer.TimeoutError
+	if errors.As(err, &timeout) {
+		return "failed", "lapse_timeout", slog.LevelError
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "canceled", "canceled", slog.LevelWarn
@@ -892,6 +896,14 @@ func lapseFailureDecision(failure error) string {
 }
 
 func (s *Service) handleCandidateFailure(ctx context.Context, request Request, candidate domain.Candidate, path string, failure error, candidateFailures *[]error) error {
+	// A LAPSE timeout is spent reading the media, not judging the subtitle,
+	// and LAPSE caches nothing from a run it did not finish. Every other
+	// candidate for this file would time out the same way, so stop here and
+	// let technical-failure backoff retry the search.
+	var timeout *syncer.TimeoutError
+	if errors.As(failure, &timeout) {
+		return failure
+	}
 	checksum, checksumErr := fileChecksum(path)
 	if checksumErr != nil {
 		return checksumErr

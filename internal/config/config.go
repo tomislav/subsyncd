@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -29,6 +30,7 @@ const (
 	defaultPackCacheMaxBytes         int64 = 512 * 1024 * 1024
 	defaultSyncPolicy                      = "confidence"
 	defaultSyncBypassScore                 = 75
+	defaultSyncMinReadRateMiB              = 4.0
 	defaultWorkerMaxConcurrent             = 1
 	defaultLogLevel                        = "info"
 )
@@ -117,6 +119,7 @@ type PackCacheConfig struct {
 type SyncConfig struct {
 	LapsePath              string
 	Timeout                time.Duration
+	MinReadRate            int64 // bytes per second; 0 disables size scaling
 	Policy                 string
 	BypassScore            int
 	RequireIdentityAnchor  bool
@@ -183,6 +186,7 @@ type rawPackCacheConfig struct {
 type rawSyncConfig struct {
 	LapsePath              string    `yaml:"lapse_path"`
 	Timeout                *duration `yaml:"timeout"`
+	MinReadRate            *float64  `yaml:"min_read_rate"`
 	Policy                 string    `yaml:"policy"`
 	BypassScore            int       `yaml:"bypass_score"`
 	RequireIdentityAnchor  *bool     `yaml:"require_identity_anchor"`
@@ -373,6 +377,13 @@ func normalize(raw rawConfig) (Config, error) {
 	if raw.Sync.Timeout != nil {
 		syncTimeout = time.Duration(*raw.Sync.Timeout)
 	}
+	minReadRateMiB := defaultSyncMinReadRateMiB
+	if raw.Sync.MinReadRate != nil {
+		minReadRateMiB = *raw.Sync.MinReadRate
+	}
+	if math.IsNaN(minReadRateMiB) || math.IsInf(minReadRateMiB, 0) || minReadRateMiB > 1<<20 {
+		return Config{}, fmt.Errorf("sync min_read_rate must be a finite number of MiB per second")
+	}
 	syncPolicy := raw.Sync.Policy
 	if syncPolicy == "" {
 		syncPolicy = defaultSyncPolicy
@@ -384,6 +395,7 @@ func normalize(raw rawConfig) (Config, error) {
 	cfg.Sync = SyncConfig{
 		LapsePath:              raw.Sync.LapsePath,
 		Timeout:                syncTimeout,
+		MinReadRate:            int64(minReadRateMiB * (1 << 20)),
 		Policy:                 syncPolicy,
 		BypassScore:            bypassScore,
 		RequireIdentityAnchor:  boolDefaultTrue(raw.Sync.RequireIdentityAnchor),
@@ -560,6 +572,9 @@ func (c Config) Validate() error {
 	}
 	if c.Sync.Timeout <= 0 {
 		return fmt.Errorf("sync timeout must be positive")
+	}
+	if c.Sync.MinReadRate < 0 {
+		return fmt.Errorf("sync min_read_rate must not be negative")
 	}
 	if c.Sync.Policy != "" && c.Sync.Policy != "always" && c.Sync.Policy != "confidence" && c.Sync.Policy != "never" {
 		return fmt.Errorf("sync policy must be always, confidence, or never")

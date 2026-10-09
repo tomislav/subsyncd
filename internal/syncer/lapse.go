@@ -35,8 +35,13 @@ type Options struct {
 	CacheDir           string
 	AnalyzeTimeout     time.Duration
 	SynchronizeTimeout time.Duration
-	MediaRoots         []string
-	Runner             Runner
+	// MinReadRate is the slowest media read rate, in bytes per second, that a
+	// LAPSE run is allowed. LAPSE decodes the whole file, so a run on a large
+	// file gets size/MinReadRate when that exceeds the configured timeout.
+	// Zero or less disables the scaling.
+	MinReadRate int64
+	MediaRoots  []string
+	Runner      Runner
 }
 
 type Lapse struct {
@@ -45,9 +50,20 @@ type Lapse struct {
 	cacheDir           string
 	analyzeTimeout     time.Duration
 	synchronizeTimeout time.Duration
+	minReadRate        int64
 	mediaRoots         []string
 	runner             Runner
 }
+
+// TimeoutError reports that a LAPSE run used its whole time limit. It is not
+// returned when the caller's context ended first.
+type TimeoutError struct{ Limit time.Duration }
+
+func (e *TimeoutError) Error() string {
+	return "LAPSE command timed out after " + e.Limit.Round(time.Second).String()
+}
+
+func (e *TimeoutError) Unwrap() error { return context.DeadlineExceeded }
 
 // InvalidOutputError identifies deterministic content validation failure in a
 // generated subtitle. Process, protocol, and filesystem failures never use it.
@@ -122,7 +138,7 @@ func New(options Options) (*Lapse, error) {
 		}
 		roots = append(roots, filepath.Clean(absolute))
 	}
-	return &Lapse{path: options.Path, cacheDir: cacheDir, analyzeTimeout: options.AnalyzeTimeout, synchronizeTimeout: options.SynchronizeTimeout, mediaRoots: roots, runner: options.Runner}, nil
+	return &Lapse{path: options.Path, cacheDir: cacheDir, analyzeTimeout: options.AnalyzeTimeout, synchronizeTimeout: options.SynchronizeTimeout, minReadRate: options.MinReadRate, mediaRoots: roots, runner: options.Runner}, nil
 }
 
 func (l *Lapse) AnalyzeCandidate(ctx context.Context, candidate domain.Candidate, mediaPath, subtitlePath string) (domain.SyncResult, error) {
@@ -146,7 +162,7 @@ func (l *Lapse) Analyze(ctx context.Context, mediaPath, subtitlePath string) (do
 	}
 	defer os.RemoveAll(workspace)
 	arguments := []string{mediaPath, copiedSubtitle, "--dry-run", "--json", "--strict", "--no-sidecar"}
-	execution, err := l.execute(ctx, l.analyzeTimeout, Command{Path: l.path, Args: arguments, Dir: workspace, Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
+	execution, err := l.execute(ctx, l.timeoutFor(mediaPath, l.analyzeTimeout), Command{Path: l.path, Args: arguments, Dir: workspace, Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
@@ -175,7 +191,7 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 		}
 	}()
 	arguments := []string{mediaPath, subtitlePath, "--output", outputPath, "--no-backup", "--json", "--strict", "--no-sidecar"}
-	execution, err := l.execute(ctx, l.synchronizeTimeout, Command{Path: l.path, Args: arguments, Dir: filepath.Dir(outputPath), Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
+	execution, err := l.execute(ctx, l.timeoutFor(mediaPath, l.synchronizeTimeout), Command{Path: l.path, Args: arguments, Dir: filepath.Dir(outputPath), Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
@@ -210,13 +226,31 @@ func (l *Lapse) execute(ctx context.Context, timeout time.Duration, command Comm
 	if err == nil {
 		return execution, nil
 	}
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return execution, &TimeoutError{Limit: timeout}
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return execution, fmt.Errorf("LAPSE command timed out: %w", context.DeadlineExceeded)
+		return execution, fmt.Errorf("LAPSE command canceled: %w", ctx.Err())
 	}
 	if errors.Is(err, context.Canceled) {
 		return execution, fmt.Errorf("LAPSE command canceled: %w", context.Canceled)
 	}
 	return execution, fmt.Errorf("LAPSE command could not start or complete")
+}
+
+// timeoutFor gives a run on mediaPath at least the time needed to read the
+// whole file at minReadRate. An unreadable size keeps the configured timeout;
+// LAPSE reports the read failure itself.
+func (l *Lapse) timeoutFor(mediaPath string, configured time.Duration) time.Duration {
+	if l.minReadRate <= 0 {
+		return configured
+	}
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		return configured
+	}
+	readTime := time.Duration(float64(info.Size()) / float64(l.minReadRate) * float64(time.Second))
+	return max(configured, readTime)
 }
 
 func (l *Lapse) interpret(execution Execution) (domain.SyncResult, lapseReport, error) {

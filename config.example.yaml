@@ -151,6 +151,11 @@ sync:
   lapse_path: /opt/lapse/lapse
   # Longest a single LAPSE run may take. Default: 30m.
   timeout: 30m
+  # Slowest media read, in MiB per second, that LAPSE is allowed. LAPSE decodes
+  # the whole file, so a file too large to read at this rate within timeout
+  # gets size / min_read_rate instead (a 19 GiB film: about 80 minutes).
+  # 0 turns this off. Default: 4.
+  min_read_rate: 4
   # When to check and fix subtitle timing with LAPSE. Default: confidence.
   #   confidence  Skip LAPSE only for a strong match (see bypass_score and the
   #               switches below); check everything else.
