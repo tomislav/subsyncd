@@ -32,6 +32,11 @@ install:
   # gid: 1000
 ```
 
+
+### Unreadable media
+
+`workflow.MediaUnavailable` classifies failures whose cause is `ENOENT`, `ENOTCONN`, `EIO` or `ESTALE`: the inventory refresh's stat and the later `checkMediaAvailable` checks keep that errno (never the path). Such a failure still takes the technical-failure backoff (1 minute first) but completes with `PreserveQueueOrder`, so a storage blip does not send searches to the back of the queue. The worker counts consecutive such failures; any other completion resets the count. At three it holds all leasing, daemon dispatch and `RunOnce` alike, for one minute and logs `queue.media_paused`. It does no filesystem probing of its own, so a hung mount cannot block the dispatcher, and a run of genuinely deleted files costs at most a one-minute pause.
+
 ## Temporary processing files
 
 Downloads, extracted subtitles, and LAPSE synchronization output use a private `.subsyncd-work-*` directory in the system temporary directory (`TMPDIR` when set, otherwise `/tmp` in the Linux container). Standalone diagnostic LAPSE analysis uses its own private temporary copy there too. Normal workflow completion, rejection, errors, and cancellation remove the workflow directory. Rejected-candidate artifacts are released as processing advances so an uncapped exact search does not retain every attempted download.

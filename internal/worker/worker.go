@@ -98,6 +98,9 @@ type Worker struct {
 	reconcileAttempts map[string]reconcileAttempt
 	routeMu           sync.Mutex
 	pausedRoutes      map[store.RouteKey]RoutePause
+	breakerMu         sync.Mutex
+	mediaFailures     int
+	mediaPausedUntil  time.Time
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -119,7 +122,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			return
 		}
 		available := w.MaxWorkflows - activeSearches
-		if available <= 0 {
+		if available <= 0 || w.mediaPaused() {
 			return
 		}
 		paused, err := w.pausedRouteKeys(ctx)
@@ -214,7 +217,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	}
 	var searches []store.SearchLease
 	paused, err := w.pausedRouteKeys(ctx)
-	if err == nil {
+	if err == nil && !w.mediaPaused() {
 		searches, err = w.Repository.LeaseDueSearchesExcept(ctx, w.Clock.Now(), w.SearchBatch, w.LeaseDuration, paused)
 	}
 	if err != nil {
@@ -332,8 +335,11 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, len(lease.ResumeProviders), nil)
 		return jobCtx.Err()
 	}
+	w.recordSearchResult(jobCtx, err)
 	if err != nil {
 		completion := schedule.Scheduler{Clock: w.Clock}.Failure(lease.JobID, lease.FailureAttempt, "workflow_error")
+		// Unreadable media is usually storage, not this search: keep its place.
+		completion.PreserveQueueOrder = workflow.MediaUnavailable(err)
 		preserveProviderResume(lease, result, &completion)
 		completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
 		if completionErr != nil {

@@ -1160,6 +1160,7 @@ type workerWorkflow struct {
 	outcome         workflow.Result
 	outcomes        []workflow.Result
 	err             error
+	errs            []error // per call, overriding err
 	requests        []workflow.Request
 }
 
@@ -1266,6 +1267,10 @@ func (w *workerWorkflow) Run(ctx context.Context, request workflow.Request) (wor
 	if call <= len(w.outcomes) {
 		result = w.outcomes[call-1]
 	}
+	err := w.err
+	if call <= len(w.errs) {
+		err = w.errs[call-1]
+	}
 	if w.active > w.maxActive {
 		w.maxActive = w.active
 	}
@@ -1300,7 +1305,7 @@ func (w *workerWorkflow) Run(ctx context.Context, request workflow.Request) (wor
 		w.installOutcomes++
 		w.mu.Unlock()
 	}
-	return result, w.err
+	return result, err
 }
 
 type workerNotifier struct {
