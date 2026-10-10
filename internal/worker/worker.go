@@ -100,6 +100,7 @@ type Worker struct {
 	pausedRoutes      map[store.RouteKey]RoutePause
 	breakerMu         sync.Mutex
 	mediaFailures     int
+	mediaPause        time.Duration
 	mediaPausedUntil  time.Time
 }
 

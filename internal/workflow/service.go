@@ -241,6 +241,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	}
 	result = Result{ProviderErrors: map[string]error{}}
 	current, err := s.Inventory.Refresh(ctx, request.MediaID, request.Media, request.ForceProbe)
+	err = markIfMediaUnreadable(err, request.Media)
 	if err != nil {
 		events.Log(ctx, slog.LevelError, "inventory.refresh_failed", "subtitle inventory refresh failed", events.ErrorAttrs("inventory", err)...)
 		runErr = fmt.Errorf("refresh subtitle inventory: %w", err)
