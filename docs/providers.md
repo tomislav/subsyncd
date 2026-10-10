@@ -84,6 +84,8 @@ Provider tier membership is evaluated from current configuration. The stored fla
 
 OpenSubtitles and SubDL support multiple languages. Titlovi supports Bosnian (`bs`), Croatian (`hr`), English (`en`), Macedonian (`mk`), Serbian (`sr` and `sr-Cyrl`), and Slovenian (`sl`). subsyncd validates each language/provider combination at startup.
 
+Many Titlovi subtitles carry a cue that is nothing but the site's address (`www.titlovi.com`). subsyncd drops such cues from SRT subtitles when it installs them and renumbers the rest; cues that only mention the site, such as translator credits, are kept. Subtitles installed before this change keep the cue until they are replaced.
+
 Restart after changing languages or provider settings. Adding a language schedules checks for media subsyncd already indexes. Removing a language stops its future searches without deleting installed subtitles. Restart with `docker compose restart subsyncd` after changing credentials in the configuration file.
 
 Hearing-impaired subtitles (SDH/HI) are excluded by default. To include them, add this at the configuration root:

@@ -98,6 +98,9 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err != nil {
 		return store.Installation{}, err
 	}
+	// The recorded checksum is of the stripped text, so the installed file
+	// still counts as managed and unedited.
+	payload = stripSiteWatermarks(filepath.Ext(request.SourcePath), payload)
 	existing, found, err := i.Repository.GetInstallation(ctx, request.MediaID, request.Language)
 	if err != nil {
 		return store.Installation{}, fmt.Errorf("read existing installation: %w", err)
