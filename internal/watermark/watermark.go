@@ -23,6 +23,31 @@ var openSubtitlesAdvert = regexp.MustCompile(`(?i)opensubtitles\s*\.\s*(?:org|co
 
 var cueMarkup = regexp.MustCompile(`<[^>]*>|\{[^}]*\}`)
 
+// signatureCredit matches the credit line of a site signature cue, such as
+// Addic7ed's "Synced and corrected by <name>" or "Subtitles by <name>". It
+// only counts together with a site address line in the same cue, so a
+// credit on its own, or dialogue such as "corrected by now.", is kept.
+var signatureCredit = regexp.MustCompile(`(?i)^(?:(?:re-?)?sync(?:ed)?|subtitles?|corrections?|corrected)(?:\s*(?:and|&)\s*correct(?:ed|ions))?\s+by\s+\S`)
+
+// isSignature reports whether every line of a cue is a site address or a
+// signature credit, with at least one address: Addic7ed's
+// "- Synced and corrected by X -" / "- www.addic7ed.com -" pair.
+func isSignature(lines []string) bool {
+	address := false
+	for _, line := range lines {
+		line = strings.Trim(strings.TrimSpace(cueMarkup.ReplaceAllString(line, "")), "- \t")
+		switch {
+		case line == "":
+		case siteWatermark.MatchString(line):
+			address = true
+		case signatureCredit.MatchString(line):
+		default:
+			return false
+		}
+	}
+	return address
+}
+
 // Strip removes watermark cues from an SRT subtitle and renumbers the rest.
 // Cues are separated by any whitespace-only line; line endings and a leading
 // byte order mark are kept. Other formats, a subtitle that would be left
@@ -59,7 +84,7 @@ func Strip(extension string, payload []byte) []byte {
 	for _, lines := range blocks {
 		if len(lines) >= 3 && strings.Contains(lines[1], "-->") {
 			cue := strings.TrimSpace(cueMarkup.ReplaceAllString(strings.Join(lines[2:], " "), ""))
-			if siteWatermark.MatchString(cue) || openSubtitlesAdvert.MatchString(cue) {
+			if siteWatermark.MatchString(cue) || openSubtitlesAdvert.MatchString(cue) || isSignature(lines[2:]) {
 				continue
 			}
 		}

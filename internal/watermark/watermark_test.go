@@ -106,3 +106,32 @@ func TestStripKeepsCreditsAndDialogue(t *testing.T) {
 		}
 	}
 }
+
+func TestStripRemovesAddic7edSignatureCues(t *testing.T) {
+	for _, text := range []string{
+		"- Synced and corrected by medvidecek007 -\n- www.addic7ed.com -",
+		"- Synced and corrected by <font color=\"#009BCB\"><b>chamallow</b></font> -\n- www.addic7ed.com -",
+		"- Synced and corrected by<font color=\"#00BFFF\"> Firefly</font> -\n- <font color=\"#00ffff\">www.addic7ed.com</font> -",
+		"Sync & corrections by honeybunny\nwww.addic7ed.com",
+		"Subtitles by explosiveskull\nwww.addic7ed.com",
+		"- www.addic7ed.com -",
+	} {
+		if !cueStripped(text) {
+			t.Errorf("cue %q was kept; want it removed", text)
+		}
+	}
+}
+
+func TestStripKeepsCreditsWithoutASiteAndDialogue(t *testing.T) {
+	for _, text := range []string{
+		"- Synced and corrected by medvidecek007 -",
+		"Subtitles by explosiveskull",
+		"corrected by now.",
+		"- Who synced this?\n- www.addic7ed.com, I think.",
+		"It was corrected by the lab\nwww.addic7ed.com",
+	} {
+		if cueStripped(text) {
+			t.Errorf("cue %q was removed; want it kept", text)
+		}
+	}
+}
