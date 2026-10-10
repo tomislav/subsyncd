@@ -1397,6 +1397,16 @@ func TestUpgradeCompletionAdvancesOnlyUnchangedChecks(t *testing.T) {
 	}
 }
 
+func TestUpgradeCompletionEndsChecksWhenTheWorkflowSchedulesNoMore(t *testing.T) {
+	now := time.Now()
+	w := &Worker{Clock: testutil.NewClock(now)}
+	lease := store.SearchLease{JobID: "upgrade", Priority: store.SearchPriorityUpgrade, Attempt: 3}
+	done, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeSatisfied})
+	if err != nil || !done.NextAttemptAt.IsZero() || done.AdvanceUpgradeAttempt || !done.ResetMissingAttempt {
+		t.Fatalf("completion=%#v err=%v; want a terminal completion with no next attempt", done, err)
+	}
+}
+
 func TestUpgradeLeasePassesPersistedAttemptToWorkflow(t *testing.T) {
 	now := time.Now()
 	repo := newWorkerRepository(1, now)

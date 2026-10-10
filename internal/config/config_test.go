@@ -629,3 +629,34 @@ func TestLoadRejectsUnusableLapseMinimumReadRate(t *testing.T) {
 		assertErrorContains(t, err, want)
 	}
 }
+
+func TestUpgradeChecksDefaultsAcceptsZeroAndRejectsOutOfRange(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name  string
+		block string
+		want  int
+	}{
+		{name: "omitted", want: 4},
+		{name: "explicit", block: "upgrade_checks: 2\n", want: 2},
+		{name: "unlimited", block: "upgrade_checks: 0\n", want: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := loadText(t, validConfig(root, test.block+`languages:
+  en: {providers: [subdl-main]}
+`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.UpgradeChecks != test.want {
+				t.Fatalf("upgrade_checks = %d, want %d", cfg.UpgradeChecks, test.want)
+			}
+		})
+	}
+	for _, value := range []int{-1, 101} {
+		t.Run(fmt.Sprintf("value_%d", value), func(t *testing.T) {
+			_, err := loadText(t, validConfig(root, fmt.Sprintf("upgrade_checks: %d\nlanguages:\n  en: {providers: [subdl-main]}\n", value)))
+			assertErrorContains(t, err, "upgrade_checks", "0", "100")
+		})
+	}
+}

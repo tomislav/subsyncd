@@ -295,7 +295,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			Synchronizer: lapse, Installer: installer, Repository: repository, Providers: providers, ProviderOrder: append([]string(nil), providerIDs...),
 			MinimumScore: cfg.MinimumReleaseScore, MinimumUpgradeDelta: workflow.DefaultMinimumUpgradeDelta, PackTTL: cfg.PackCache.TTL,
 			LapsePolicy:          workflow.LapsePolicy{Mode: cfg.Sync.Policy, BypassScore: cfg.Sync.BypassScore, RequireIdentityAnchor: cfg.Sync.RequireIdentityAnchor, RequireEpisodeEvidence: cfg.Sync.RequireEpisodeEvidence, RequireReleaseGroup: cfg.Sync.RequireReleaseGroup, LapseForPacks: cfg.Sync.LapseForPacks, LapseForUpgrades: cfg.Sync.LapseForUpgrades},
-			AllowHearingImpaired: cfg.AllowHearingImpaired, Clock: clock, Events: events,
+			AllowHearingImpaired: cfg.AllowHearingImpaired, MaxUpgradeChecks: cfg.UpgradeChecks, Clock: clock, Events: events,
 		}
 		if len(route.FallbackProviders) > 0 {
 			fallback := make([]provider.Provider, 0, len(route.FallbackProviders))

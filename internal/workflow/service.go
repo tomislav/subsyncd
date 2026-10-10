@@ -157,9 +157,13 @@ type Service struct {
 	PackTTL                time.Duration
 	LapsePolicy            LapsePolicy
 	AllowHearingImpaired   bool
-	Clock                  WorkflowClock
-	RandomUnit             func() float64
-	Events                 *observability.Emitter
+	// MaxUpgradeChecks stops upgrade checks after this many in a row keep
+	// the installed subtitle; 0 never stops them. Fallback installations keep
+	// checking for a preferred provider.
+	MaxUpgradeChecks int
+	Clock            WorkflowClock
+	RandomUnit       func() float64
+	Events           *observability.Emitter
 }
 
 type downloadedCandidate struct {

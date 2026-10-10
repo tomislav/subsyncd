@@ -136,6 +136,12 @@ allow_hearing_impaired: false
 # stricter. Default: 35. Raise it (60 is a good start) if sync.policy is never.
 minimum_release_score: 35
 
+# How many upgrade checks in a row may find nothing better before subsyncd
+# stops looking for a better subtitle. Checks back off from 7-90 days to 90
+# days, so 4 covers roughly 4 to 12 months. Subtitles from fallback providers
+# keep checking for a preferred one. 0 checks forever. Default: 4.
+upgrade_checks: 4
+
 pack_cache:
   # Season-pack downloads are kept so later episodes need no new download.
   ttl: 24h                 # How long a pack is kept. Default: 24h.

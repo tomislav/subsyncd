@@ -76,7 +76,7 @@ func installedScore(installation store.Installation) (domain.Score, bool, error)
 }
 
 // scheduleUpgrade spreads ordinary checks and lengthens repeated unchanged
-// assessments. A preferred-provider reset earlier than the base interval remains
+// assessments, and ends them after MaxUpgradeChecks unchanged checks. A preferred-provider reset earlier than the base interval remains
 // authoritative, without jitter or backoff delaying its recovery check.
 func (s *Service) scheduleUpgrade(result *Result, attempt int) {
 	if result.NextUpgrade.IsZero() {
@@ -89,6 +89,10 @@ func (s *Service) scheduleUpgrade(result *Result, attempt int) {
 	}
 	if result.Outcome != OutcomeSatisfied {
 		attempt = 0
+	}
+	if s.MaxUpgradeChecks > 0 && attempt >= s.MaxUpgradeChecks && !s.isFallbackProvider(result.Candidate.ProviderID) {
+		result.NextUpgrade = time.Time{}
+		return
 	}
 	for _, days := range []int{14, 30, 60, 90} {
 		delay := time.Duration(days) * 24 * time.Hour

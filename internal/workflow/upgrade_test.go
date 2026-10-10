@@ -136,3 +136,39 @@ func TestUpgradeSchedulingBackoffJitterAndRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestUpgradeChecksStopAfterTheConfiguredNumberOfUnchangedChecks(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name            string
+		limit, attempt  int
+		outcome         Outcome
+		provider        string
+		wantDays        float64
+		wantNoMoreCheck bool
+	}{
+		{"before the limit", 4, 3, OutcomeSatisfied, "preferred", 60, false},
+		{"at the limit", 4, 4, OutcomeSatisfied, "preferred", 0, true},
+		{"past the limit", 4, 9, OutcomeSatisfied, "preferred", 0, true},
+		{"replacement restarts the count", 4, 4, OutcomeInstalled, "preferred", 7, false},
+		{"fallback keeps checking", 4, 9, OutcomeSatisfied, "fallback", 90, false},
+		{"zero means unlimited", 0, 99, OutcomeSatisfied, "preferred", 90, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Service{Clock: fixedWorkflowClock{at: now}, RandomUnit: func() float64 { return 0.5 }, FallbackProviderOrder: []string{"fallback"}, MaxUpgradeChecks: tc.limit}
+			c := domain.Candidate{ProviderID: tc.provider}
+			result := Result{Outcome: tc.outcome, Score: domain.Score{Total: 35}, Candidate: c}
+			result.NextUpgrade = s.nextUpgradeAt(now, result.Score, c)
+			s.scheduleUpgrade(&result, tc.attempt)
+			if tc.wantNoMoreCheck {
+				if !result.NextUpgrade.IsZero() {
+					t.Fatalf("next=%v, want no further upgrade check", result.NextUpgrade)
+				}
+				return
+			}
+			if want := now.Add(time.Duration(tc.wantDays * float64(24*time.Hour))); !result.NextUpgrade.Equal(want) {
+				t.Fatalf("next=%v want=%v", result.NextUpgrade, want)
+			}
+		})
+	}
+}

@@ -21,6 +21,8 @@ import (
 const (
 	defaultListen                          = "0.0.0.0:8097"
 	defaultMinimumReleaseScore             = 35
+	defaultUpgradeChecks                   = 4
+	maxUpgradeChecks                       = 100
 	maxQueuePriority                       = 1000
 	defaultRequestsPerSecond               = 1
 	defaultBurst                           = 1
@@ -48,12 +50,15 @@ type Config struct {
 	Languages            map[domain.Language]LanguageConfig
 	AllowHearingImpaired bool
 	MinimumReleaseScore  int
-	ProviderHTTP         ProviderHTTPConfig
-	LapseCache           LapseCacheConfig
-	PackCache            PackCacheConfig
-	Sync                 SyncConfig
-	Install              InstallConfig
-	Silo                 SiloConfig
+	// UpgradeChecks is how many upgrade checks in a row may keep the installed
+	// subtitle before its upgrade checks stop; 0 never stops them.
+	UpgradeChecks int
+	ProviderHTTP  ProviderHTTPConfig
+	LapseCache    LapseCacheConfig
+	PackCache     PackCacheConfig
+	Sync          SyncConfig
+	Install       InstallConfig
+	Silo          SiloConfig
 }
 
 type ServerConfig struct {
@@ -161,6 +166,7 @@ type rawConfig struct {
 	Languages            map[string]LanguageConfig `yaml:"languages"`
 	AllowHearingImpaired *bool                     `yaml:"allow_hearing_impaired"`
 	MinimumReleaseScore  int                       `yaml:"minimum_release_score"`
+	UpgradeChecks        *int                      `yaml:"upgrade_checks"`
 	ProviderHTTP         rawProviderHTTPConfig     `yaml:"provider_http"`
 	LapseCache           rawLapseCacheConfig       `yaml:"lapse_cache"`
 	PackCache            rawPackCacheConfig        `yaml:"pack_cache"`
@@ -350,6 +356,10 @@ func normalize(raw rawConfig) (Config, error) {
 	if cfg.MinimumReleaseScore == 0 {
 		cfg.MinimumReleaseScore = defaultMinimumReleaseScore
 	}
+	cfg.UpgradeChecks = defaultUpgradeChecks
+	if raw.UpgradeChecks != nil {
+		cfg.UpgradeChecks = *raw.UpgradeChecks
+	}
 	workerMaxConcurrent := defaultWorkerMaxConcurrent
 	if raw.Worker.MaxConcurrent != nil {
 		workerMaxConcurrent = *raw.Worker.MaxConcurrent
@@ -512,6 +522,9 @@ func (c Config) Validate() error {
 	}
 	if c.MinimumReleaseScore < 1 || c.MinimumReleaseScore > 100 {
 		return fmt.Errorf("minimum_release_score must be between 1 and 100")
+	}
+	if c.UpgradeChecks < 0 || c.UpgradeChecks > maxUpgradeChecks {
+		return fmt.Errorf("upgrade_checks must be between 0 and %d", maxUpgradeChecks)
 	}
 	if c.Install.FileMode.Perm() == 0 || c.Install.FileMode.Perm()&0o111 != 0 {
 		return fmt.Errorf("install file_mode must be a nonzero octal mode without execute bits")
