@@ -115,6 +115,9 @@ func TestStripRemovesAddic7edSignatureCues(t *testing.T) {
 		"Sync & corrections by honeybunny\nwww.addic7ed.com",
 		"Subtitles by explosiveskull\nwww.addic7ed.com",
 		"- www.addic7ed.com -",
+		"- provided by kabubuki / corrected by chamallow -\n- www.addic7ed.com -",
+		"Sync and corrections by <font color=\"#00ffff\">explosiveskull</font>\nWEB-DL resync by <font color=\"#ff0000\">GoldenBeard</font>\nwww.addic7ed.com",
+		"http://www.divx-titlovi.com",
 	} {
 		if !cueStripped(text) {
 			t.Errorf("cue %q was kept; want it removed", text)
@@ -128,10 +131,34 @@ func TestStripKeepsCreditsWithoutASiteAndDialogue(t *testing.T) {
 		"Subtitles by explosiveskull",
 		"corrected by now.",
 		"- Who synced this?\n- www.addic7ed.com, I think.",
-		"It was corrected by the lab\nwww.addic7ed.com",
+		"Provided by the state.",
 	} {
 		if cueStripped(text) {
 			t.Errorf("cue %q was removed; want it kept", text)
 		}
+	}
+}
+
+func TestStripDropsAddressLinesFromCuesWithOtherText(t *testing.T) {
+	for text, want := range map[string]string{
+		"Preveo: Exaybachay\nwww.titlovi.com":                                "Preveo: Exaybachay",
+		"Za BRrip.x264 uskladio: australopitek\nwww.titlovi.com":             "Za BRrip.x264 uskladio: australopitek",
+		"Preuzeto sa www.titlovi.com\nPrilagodba za BRRip Marko1984":         "Prilagodba za BRRip Marko1984",
+		"English - US - SDH\nSync And Corrected By pacifier...:)\n@SUBSCENE": "English - US - SDH\nSync And Corrected By pacifier...:)",
+		"It was corrected by the lab\n<i>www.addic7ed.com</i>":               "It was corrected by the lab",
+	} {
+		srt := "1\n00:00:01,000 --> 00:00:02,000\n" + text + "\n\n2\n00:00:03,000 --> 00:00:04,000\nDialogue\n"
+		expected := "1\n00:00:01,000 --> 00:00:02,000\n" + want + "\n\n2\n00:00:03,000 --> 00:00:04,000\nDialogue\n"
+		if got := string(Strip(".srt", []byte(srt))); got != expected {
+			t.Errorf("cue %q:\n got %q\nwant %q", text, got, expected)
+		}
+	}
+}
+
+func TestStripKeepsCRLFWhenDroppingAnAddressLine(t *testing.T) {
+	in := "1\r\n00:00:01,000 --> 00:00:02,000\r\nPreveo: Ivan\r\nwww.titlovi.com\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nA\r\n"
+	want := "1\r\n00:00:01,000 --> 00:00:02,000\r\nPreveo: Ivan\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nA\r\n"
+	if got := string(Strip(".srt", []byte(in))); got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
 	}
 }
