@@ -1,4 +1,5 @@
-package workflow
+// Package watermark removes subtitle-site advert cues from SRT subtitles.
+package watermark
 
 import (
 	"bytes"
@@ -15,10 +16,11 @@ var siteWatermark = regexp.MustCompile(`(?i)^(?:https?://)?(?:www\.)?titlovi\.co
 
 var cueMarkup = regexp.MustCompile(`<[^>]*>|\{[^}]*\}`)
 
-// stripSiteWatermarks removes watermark cues from an SRT subtitle and
-// renumbers the rest. Other formats, and a subtitle that would be left empty,
-// are returned unchanged; so is any payload with nothing to remove.
-func stripSiteWatermarks(extension string, payload []byte) []byte {
+// Strip removes watermark cues from an SRT subtitle and renumbers the rest.
+// Cues are separated by any whitespace-only line; line endings and a leading
+// byte order mark are kept. Other formats, a subtitle that would be left
+// empty, and any payload with nothing to remove are returned unchanged.
+func Strip(extension string, payload []byte) []byte {
 	if strings.ToLower(extension) != ".srt" {
 		return payload
 	}
@@ -27,23 +29,40 @@ func stripSiteWatermarks(extension string, payload []byte) []byte {
 		newline = "\r\n"
 	}
 	text := strings.ReplaceAll(string(payload), "\r\n", "\n")
+	bom := ""
+	if strings.HasPrefix(text, "\ufeff") {
+		bom, text = "\ufeff", strings.TrimPrefix(text, "\ufeff")
+	}
+	var blocks [][]string
+	var current []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "" {
+			if len(current) > 0 {
+				blocks = append(blocks, current)
+				current = nil
+			}
+			continue
+		}
+		current = append(current, line)
+	}
+	if len(current) > 0 {
+		blocks = append(blocks, current)
+	}
 	var kept [][]string
-	removed := false
-	for _, block := range strings.Split(strings.Trim(text, "\n"), "\n\n") {
-		lines := strings.Split(block, "\n")
+	for _, lines := range blocks {
 		if len(lines) >= 3 && strings.Contains(lines[1], "-->") {
 			cue := strings.TrimSpace(cueMarkup.ReplaceAllString(strings.Join(lines[2:], " "), ""))
 			if siteWatermark.MatchString(cue) {
-				removed = true
 				continue
 			}
 		}
 		kept = append(kept, lines)
 	}
-	if !removed || len(kept) == 0 {
+	if len(kept) == len(blocks) || len(kept) == 0 {
 		return payload
 	}
 	var out strings.Builder
+	out.WriteString(bom)
 	for index, lines := range kept {
 		if _, err := strconv.Atoi(strings.TrimSpace(lines[0])); err == nil && len(lines) >= 2 && strings.Contains(lines[1], "-->") {
 			lines[0] = strconv.Itoa(index + 1)

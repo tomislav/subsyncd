@@ -21,6 +21,7 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
+	"subsyncd/internal/watermark"
 )
 
 const maximumInstallBytes int64 = 100 << 20
@@ -100,7 +101,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	// The recorded checksum is of the stripped text, so the installed file
 	// still counts as managed and unedited.
-	payload = stripSiteWatermarks(filepath.Ext(request.SourcePath), payload)
+	payload = watermark.Strip(filepath.Ext(request.SourcePath), payload)
 	existing, found, err := i.Repository.GetInstallation(ctx, request.MediaID, request.Language)
 	if err != nil {
 		return store.Installation{}, fmt.Errorf("read existing installation: %w", err)
