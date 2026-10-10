@@ -22,6 +22,10 @@ var siteWatermark = regexp.MustCompile(`(?i)^(?:preuzeto\s+sa?\s+)?(?:@|(?:https
 // in any language: they all name the site, which dialogue never does.
 var openSubtitlesAdvert = regexp.MustCompile(`(?i)opensubtitles\s*\.\s*(?:org|com)`)
 
+// downloadedFrom matches a "Preuzeto sa" line that introduces the site
+// address on the next line.
+var downloadedFrom = regexp.MustCompile(`(?i)^preuzeto\s+sa?$`)
+
 var cueMarkup = regexp.MustCompile(`<[^>]*>|\{[^}]*\}`)
 
 // signatureCredit matches the credit line of a site signature cue, such as
@@ -56,14 +60,19 @@ func plainLine(line string) string {
 }
 
 // withoutAddressLines drops the lines of a cue that are only a site address,
-// such as "www.titlovi.com" under a translator credit. It reports false when
-// no line was dropped or when nothing would be left.
+// such as "www.titlovi.com" under a translator credit, together with a
+// "Preuzeto sa" line just above one. It reports false when no line was
+// dropped or when nothing would be left.
 func withoutAddressLines(lines []string) ([]string, bool) {
 	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if !siteWatermark.MatchString(plainLine(line)) {
-			kept = append(kept, line)
+	for index, line := range lines {
+		if siteWatermark.MatchString(plainLine(line)) {
+			continue
 		}
+		if downloadedFrom.MatchString(plainLine(line)) && index+1 < len(lines) && siteWatermark.MatchString(plainLine(lines[index+1])) {
+			continue
+		}
+		kept = append(kept, line)
 	}
 	if len(kept) == len(lines) || len(kept) == 0 {
 		return lines, false
@@ -74,8 +83,9 @@ func withoutAddressLines(lines []string) ([]string, bool) {
 // Strip removes watermark cues from an SRT subtitle and renumbers the rest.
 // A site address line in a cue that also has other text, such as a
 // translator credit, is dropped on its own. Cues are separated by any
-// whitespace-only line; line endings and a leading byte order mark are kept. Other formats, a subtitle that would be left
-// empty, and any payload with nothing to remove are returned unchanged.
+// whitespace-only line; line endings and a leading byte order mark are
+// kept. Other formats, a subtitle that would be left empty, and any payload
+// with nothing to remove are returned unchanged.
 func Strip(extension string, payload []byte) []byte {
 	if strings.ToLower(extension) != ".srt" {
 		return payload

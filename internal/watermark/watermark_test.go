@@ -146,6 +146,8 @@ func TestStripDropsAddressLinesFromCuesWithOtherText(t *testing.T) {
 		"Preuzeto sa www.titlovi.com\nPrilagodba za BRRip Marko1984":         "Prilagodba za BRRip Marko1984",
 		"English - US - SDH\nSync And Corrected By pacifier...:)\n@SUBSCENE": "English - US - SDH\nSync And Corrected By pacifier...:)",
 		"It was corrected by the lab\n<i>www.addic7ed.com</i>":               "It was corrected by the lab",
+		"Preuzeto sa\nwww.titlovi.com\nPrilagodba: Marko1984":                "Prilagodba: Marko1984",
+		"Preuzeto sa\nPrilagodba: Marko1984":                                 "Preuzeto sa\nPrilagodba: Marko1984",
 	} {
 		srt := "1\n00:00:01,000 --> 00:00:02,000\n" + text + "\n\n2\n00:00:03,000 --> 00:00:04,000\nDialogue\n"
 		expected := "1\n00:00:01,000 --> 00:00:02,000\n" + want + "\n\n2\n00:00:03,000 --> 00:00:04,000\nDialogue\n"
