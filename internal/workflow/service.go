@@ -59,6 +59,9 @@ type Decision struct {
 	ArchiveType         string
 	SubtitleMemberCount int
 	MatchingMemberCount int
+	// Confidence and SkippedCount describe an early_accept decision.
+	Confidence   float64
+	SkippedCount int
 }
 
 type Result struct {
@@ -615,7 +618,7 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 			if best, ok := excellentSync(prepared); ok && index+1 < tierEnd {
 				// Every candidate in a tier has the same score, so a result this
 				// clear would win the comparison anyway; skip LAPSE on the rest.
-				result.Decisions = append(result.Decisions, Decision{Stage: "early_accept", ProviderID: best.candidate.ProviderID, ResultID: best.candidate.ResultID, Reason: fmt.Sprintf("LAPSE confidence %.3f; %d tied candidates not checked", best.sync.Confidence, tierEnd-index-1)})
+				result.Decisions = append(result.Decisions, Decision{Stage: "early_accept", ProviderID: best.candidate.ProviderID, ResultID: best.candidate.ResultID, Reason: fmt.Sprintf("LAPSE confidence %.3f; %d tied candidates not checked", best.sync.Confidence, tierEnd-index-1), Confidence: best.sync.Confidence, SkippedCount: tierEnd - index - 1})
 				break
 			}
 		}
@@ -809,6 +812,9 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 			slog.Int("subtitle_member_count", decision.SubtitleMemberCount),
 			slog.Int("matching_member_count", decision.MatchingMemberCount),
 		)
+	}
+	if decision.Stage == "early_accept" {
+		attrs = append(attrs, slog.Float64("confidence", decision.Confidence), slog.Int("skipped_count", decision.SkippedCount))
 	}
 	s.workflowEvents().Log(ctx, level, event, "subtitle candidate decision", attrs...)
 }
