@@ -97,6 +97,8 @@ func (e *ProcessExitError) Error() string {
 type VerdictError struct {
 	Verdict string
 	Reason  string
+	// Result holds the metrics LAPSE reported with the verdict, for logging.
+	Result domain.SyncResult
 }
 
 func (e *VerdictError) Error() string {
@@ -179,7 +181,7 @@ func (l *Lapse) Analyze(ctx context.Context, mediaPath, subtitlePath string) (do
 		return domain.SyncResult{}, err
 	}
 	if report.Verdict != "solid" {
-		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict}
+		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict, Result: result}
 	}
 	return result, nil
 }
@@ -208,7 +210,7 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 		return domain.SyncResult{}, err
 	}
 	if report.Verdict != "solid" {
-		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict}
+		return domain.SyncResult{}, &VerdictError{Verdict: report.Verdict, Result: result}
 	}
 	if !report.Written {
 		return domain.SyncResult{}, fmt.Errorf("LAPSE reported a solid result without writing output")

@@ -868,7 +868,8 @@ func (s *Service) logLapseFailure(ctx context.Context, phase string, candidate d
 	level := slog.LevelError
 	var verdict *syncer.VerdictError
 	if !hasProcessExitError(err) && errors.As(err, &verdict) {
-		result.Verdict = observability.SafeText(verdict.Verdict)
+		result = verdict.Result
+		result.Verdict = verdict.Verdict
 		level = slog.LevelWarn
 	}
 	attrs := lapseAttrs(s, phase, candidate, result, duration)
@@ -885,6 +886,7 @@ func lapseAttrs(s *Service, phase string, candidate domain.Candidate, result dom
 		slog.Int64("duration_ms", duration.Milliseconds()),
 		slog.String("verdict", observability.SafeText(result.Verdict)),
 		slog.String("mode", observability.SafeText(result.Mode)),
+		slog.String("reference", observability.SafeText(result.Reference)),
 		slog.Int64("offset_ms", result.OffsetMS),
 		slog.Float64("ratio", result.Ratio),
 		slog.Float64("confidence", result.Confidence),

@@ -13,6 +13,7 @@ import (
 	"subsyncd/internal/inventory"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
+	"subsyncd/internal/syncer"
 )
 
 func TestWorkflowLogsSatisfiedInventoryWithoutPaths(t *testing.T) {
@@ -231,6 +232,28 @@ func TestWorkflowLogsLapseFailureOnceAndSanitizesIt(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "secret output") || strings.Contains(logs.String(), request.Media.Fingerprint.Path) {
 		t.Fatalf("failure logs leaked sensitive text: %s", logs.String())
+	}
+}
+
+func TestWorkflowLogsLapseVerdictMetrics(t *testing.T) {
+	request := serviceRequest(t)
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := broadCandidate("weak")
+	rejection := &syncer.VerdictError{Verdict: "nothing", Result: domain.SyncResult{Verdict: "nothing", Mode: "auto/shifted", Reference: "embedded", OffsetMS: -199731, Ratio: 1, Confidence: 0.49, Coverage: 1, Parts: 1}}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{synchronizeErr: rejection}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	service.Events = events
+
+	if _, err := service.Run(context.Background(), request); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	failed := workflowEvents(workflowLogRecords(t, logs.String()), "lapse.failed")
+	if len(failed) != 1 || failed[0]["level"] != "warn" || failed[0]["verdict"] != "nothing" || failed[0]["reference"] != "embedded" || failed[0]["mode"] != "auto/shifted" || failed[0]["offset_ms"] != float64(-199731) || failed[0]["confidence"] != 0.49 || failed[0]["coverage"] != float64(1) {
+		t.Fatalf("LAPSE verdict failure = %#v", failed)
 	}
 }
 
