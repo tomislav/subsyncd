@@ -9,10 +9,17 @@ import (
 )
 
 // siteWatermark matches a cue whose whole text, without markup, is a
-// subtitle site's address. Titlovi adds one ("www.titlovi.com") to many of
-// its subtitles. Cues that merely mention the site, such as translator
-// credits, are not matched.
-var siteWatermark = regexp.MustCompile(`(?i)^(?:https?://)?(?:www\.)?titlovi\.com/?$`)
+// subtitle site's address or "downloaded from" line: Titlovi adds
+// "www.titlovi.com" and "Preuzeto sa www.titlovi.com" to many of its
+// subtitles, and re-uploads elsewhere carry them along. Spaced-out dots and
+// a "@" handle form are accepted. Cues that merely mention a site, such as
+// translator credits ("Preveo: ... za www.titlovi.com"), are not matched.
+var siteWatermark = regexp.MustCompile(`(?i)^(?:preuzeto\s+sa?\s+)?(?:@|(?:https?://)?(?:www\s*\.\s*)?)(?:tit?lovi\s*\.\s*com|addic7ed\s*\.\s*com|subscene(?:\s*\.\s*com)?|prijevodi-online\s*\.\s*org)/?$`)
+
+// openSubtitlesAdvert matches the adverts OpenSubtitles inserts ("Advertise
+// your product or brand here", "become VIP member", "rate this subtitle"),
+// in any language: they all name the site, which dialogue never does.
+var openSubtitlesAdvert = regexp.MustCompile(`(?i)opensubtitles\s*\.\s*(?:org|com)`)
 
 var cueMarkup = regexp.MustCompile(`<[^>]*>|\{[^}]*\}`)
 
@@ -52,7 +59,7 @@ func Strip(extension string, payload []byte) []byte {
 	for _, lines := range blocks {
 		if len(lines) >= 3 && strings.Contains(lines[1], "-->") {
 			cue := strings.TrimSpace(cueMarkup.ReplaceAllString(strings.Join(lines[2:], " "), ""))
-			if siteWatermark.MatchString(cue) {
+			if siteWatermark.MatchString(cue) || openSubtitlesAdvert.MatchString(cue) {
 				continue
 			}
 		}

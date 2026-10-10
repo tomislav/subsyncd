@@ -40,7 +40,7 @@ install:
 
 ### Site watermark cues
 
-`Installer.Install` passes the validated SRT payload through `watermark.Strip` before anything is compared or written: whole cues (separated by any whitespace-only line) whose text, without `<...>`/`{...}` markup, is only `titlovi.com` (optionally with `www.` or a scheme) are dropped and the remaining cues renumbered, keeping the file's line endings and a leading byte order mark. Other formats, payloads with nothing to remove, and a subtitle that would be left empty are untouched. The recorded checksum is of the stripped bytes, so ownership checks still see the file as managed and unedited. LAPSE input, candidate artifacts and rejection identities are unchanged, so no candidate is reconsidered.
+`Installer.Install` passes the validated SRT payload through `watermark.Strip` before anything is compared or written: whole cues (separated by any whitespace-only line) whose text, without `<...>`/`{...}` markup, is only a subtitle-site address (`titlovi.com`, `addic7ed.com`, `subscene`, `prijevodi-online.org`, optionally with `www.`, a scheme, `@`, spaced dots or a `Preuzeto sa`/`s` prefix), or that names `opensubtitles.org`/`.com` anywhere (its inserted adverts, in any language), are dropped and the remaining cues renumbered, keeping the file's line endings and a leading byte order mark. Other formats, payloads with nothing to remove, and a subtitle that would be left empty are untouched. The recorded checksum is of the stripped bytes, so ownership checks still see the file as managed and unedited. LAPSE input, candidate artifacts and rejection identities are unchanged, so no candidate is reconsidered.
 
 ## Temporary processing files
 

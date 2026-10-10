@@ -61,3 +61,48 @@ func TestStripHandlesIrregularBlankLinesByteOrderMarkAndCRLF(t *testing.T) {
 		}
 	}
 }
+
+func cueStripped(text string) bool {
+	srt := "1\n00:00:01,000 --> 00:00:02,000\n" + text + "\n\n2\n00:00:03,000 --> 00:00:04,000\nDialogue\n"
+	return string(Strip(".srt", []byte(srt))) != srt
+}
+
+func TestStripRemovesSiteAdvertsSeenInTheLibrary(t *testing.T) {
+	for _, text := range []string{
+		"Preuzeto sa www.titlovi.com",
+		"Preuzeto s www.titlovi.com",
+		"Preuzeto sa\nwww.titlovi.com",
+		"www. titlovi. com",
+		"Preuzeto sa www. titlovi. com",
+		"www.tilovi.com",
+		"www.addic7ed.com",
+		"@SUBSCENE",
+		"www.prijevodi-online.org",
+		"Advertise your product or brand here\ncontact www.OpenSubtitles.org today",
+		"Support us and become VIP member\nto remove all ads from www.OpenSubtitles.org",
+		"Подржите нас и постаните VIP члан да бисте уклонили све огласе са www.OpenSubtitles.org",
+		"Please rate this subtitle at www.osdb.link/abc\nHelp other users to choose the best subtitles from OpenSubtitles.com",
+	} {
+		if !cueStripped(text) {
+			t.Errorf("cue %q was kept; want it removed", text)
+		}
+	}
+}
+
+func TestStripKeepsCreditsAndDialogue(t *testing.T) {
+	for _, text := range []string{
+		"Subtitles by explosiveskull",
+		"Synced & corrected by -robtor-",
+		"WEB-DL resync by GoldenBeard",
+		"lesaigneur@hotmail.com",
+		"Monster.com.",
+		"Travelocity.com?",
+		"ovdje u Crypto.com areni.",
+		"Preveo: Ivan za www.titlovi.com",
+		"ko-fi.com/pearlfansub",
+	} {
+		if cueStripped(text) {
+			t.Errorf("cue %q was removed; want it kept", text)
+		}
+	}
+}
