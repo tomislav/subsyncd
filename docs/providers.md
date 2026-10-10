@@ -96,7 +96,7 @@ allow_hearing_impaired: true
 
 subsyncd first checks whether a suitable subtitle already exists. It then looks for exact file matches where supported, followed by searches using movie or episode details. It skips unusable results and tries other candidates.
 
-Candidates are scored against the media's identity and release details: title, episode, release group, source, edition, and resolution. Ratings contribute only a small part of the score. A known wrong language, episode, or movie identity is rejected even if other details look promising.
+Candidates are scored against the media's identity and release details: title, episode, release group, source, edition, and resolution. Subtitles for one disc of an old multi-CD rip (CD1, CD2, 2cd) are skipped, since they cover only part of the film. Ratings contribute only a small part of the score. A known wrong language, episode, or movie identity is rejected even if other details look promising.
 
 When timing needs verification, [LAPSE](https://github.com/Schwponaco-org/lapse) checks and adjusts the subtitle before installation. By default:
 

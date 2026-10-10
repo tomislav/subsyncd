@@ -3,6 +3,8 @@ package match
 import (
 	"fmt"
 	"math"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -232,8 +234,18 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 			reasons = append(reasons, "candidate edition conflicts with target")
 		}
 	}
+	// A subtitle for one disc of an old multi-CD rip covers only part of the
+	// film, so it can never be timed to a single media file; reject it before
+	// anything is downloaded or checked with LAPSE.
+	if !candidate.ExactHash && slices.ContainsFunc(releases, func(release Release) bool { return multiDiscLabel.MatchString(release.Raw) }) {
+		reasons = append(reasons, "candidate is one disc of a multi-disc release")
+	}
 	return reasons
 }
+
+// multiDiscLabel matches disc markers such as "CD1", "(CD 2)", "-CD1", "2cd"
+// or "2CDs" as whole tokens, never "CDDHD" or "CDR".
+var multiDiscLabel = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:cd ?[1-9]|[2-9] ?cds?)(?:[^a-z0-9]|$)`)
 
 func HasMatchingEdition(media domain.Media, candidate domain.Candidate) bool {
 	if normalizeEdition(media.Edition, "", false, false) == "" && editionVariants(media.Edition) == 0 {
