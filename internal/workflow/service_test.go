@@ -1735,6 +1735,7 @@ type fakeSynchronizer struct {
 	synchronized      []string
 	synchronizeErrors map[string]error
 	synchronizeHook   func(domain.Candidate)
+	fullAgreement     bool // report agreement and coverage of 1
 }
 
 func (f *fakeSynchronizer) AnalyzeCandidate(ctx context.Context, candidate domain.Candidate, _ string, subtitle string) (domain.SyncResult, error) {
@@ -1785,7 +1786,11 @@ func (f *fakeSynchronizer) syncResult(payload []byte) domain.SyncResult {
 			confidence = value
 		}
 	}
-	return domain.SyncResult{Verdict: "solid", Confidence: confidence, Ratio: 1, Parts: 1}
+	result := domain.SyncResult{Verdict: "solid", Confidence: confidence, Ratio: 1, Parts: 1}
+	if f.fullAgreement {
+		result.Agreement, result.Coverage = 1, 1
+	}
+	return result
 }
 
 type fakeInstaller struct {

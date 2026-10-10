@@ -612,6 +612,12 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 				return result, prepareErr
 			}
 			preparedTier = append(preparedTier, prepared...)
+			if best, ok := excellentSync(prepared); ok && index+1 < tierEnd {
+				// Every candidate in a tier has the same score, so a result this
+				// clear would win the comparison anyway; skip LAPSE on the rest.
+				result.Decisions = append(result.Decisions, Decision{Stage: "early_accept", ProviderID: best.candidate.ProviderID, ResultID: best.candidate.ResultID, Reason: fmt.Sprintf("LAPSE confidence %.3f; %d tied candidates not checked", best.sync.Confidence, tierEnd-index-1)})
+				break
+			}
 		}
 		sortPrepared(preparedTier)
 		for index, prepared := range preparedTier {
@@ -782,6 +788,9 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 		event = "candidate.tier_started"
 	case "fallback":
 		event = "candidate.fallback"
+	case "early_accept":
+		event = "candidate.early_accepted"
+		level = slog.LevelInfo
 	case "early_stop":
 		event = "candidate.early_stopped"
 	}
@@ -1568,6 +1577,23 @@ func credentialFreeResultID(value string) string {
 	value, _, _ = strings.Cut(value, "?")
 	value, _, _ = strings.Cut(value, "#")
 	return value
+}
+
+// earlyAcceptConfidence is the LAPSE confidence at which a solid result with
+// full agreement and coverage is accepted without checking the remaining
+// candidates of its score tier.
+const earlyAcceptConfidence = 0.9
+
+// excellentSync returns the first prepared candidate whose LAPSE result is
+// clear enough to accept without comparing the rest of its tier.
+func excellentSync(prepared []preparedCandidate) (preparedCandidate, bool) {
+	for _, candidate := range prepared {
+		sync := candidate.sync
+		if sync.Verdict == "solid" && sync.Confidence >= earlyAcceptConfidence && sync.Agreement >= 1 && sync.Coverage >= 1 {
+			return candidate, true
+		}
+	}
+	return preparedCandidate{}, false
 }
 
 func sortPrepared(candidates []preparedCandidate) {
