@@ -19,6 +19,7 @@ import (
 	"github.com/asticode/go-astisub"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/langcheck"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 	"subsyncd/internal/watermark"
@@ -471,6 +472,20 @@ func parseSubtitlePayload(path string, payload []byte) (subtitles *astisub.Subti
 		return nil, false, nil
 	}
 	return subtitles, true, err
+}
+
+// checkSubtitleLanguage rejects a subtitle whose text is in a different
+// language from the request's (see langcheck). Unreadable files are left to
+// the normal validation.
+func checkSubtitleLanguage(path string, language domain.Language) error {
+	payload, err := os.ReadFile(path)
+	if err != nil || int64(len(payload)) > maximumInstallBytes {
+		return nil
+	}
+	if reason, mismatch := langcheck.Check(language.String(), string(payload)); mismatch {
+		return &subtitleValidationError{code: "language_mismatch", reason: "subtitle text does not match " + language.String() + ": " + reason}
+	}
+	return nil
 }
 
 func rangeCoverageError(last time.Duration, media domain.Media) error {

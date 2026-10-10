@@ -780,7 +780,7 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 		event = "candidate.skipped"
 		level = slog.LevelInfo
 		switch decision.Reason {
-		case "pack_selection", "invalid_subtitle", "partial_coverage", "lapse_unsure", "lapse_nothing", "lapse_invalid_output":
+		case "pack_selection", "invalid_subtitle", "partial_coverage", "language_mismatch", "lapse_unsure", "lapse_nothing", "lapse_invalid_output":
 			decision.ReasonCode = decision.Reason
 		default:
 			decision.ReasonCode = "retained_rejection"
@@ -1310,6 +1310,11 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 			}
 			return preparedCandidate{}, fmt.Errorf("candidate does not satisfy upgrade policy")
 		}
+	}
+	// A subtitle in another language than its tag (Serbian uploaded as
+	// Croatian) is rejected before LAPSE, which would time it fine.
+	if err := checkSubtitleLanguage(item.path, request.Language); err != nil {
+		return preparedCandidate{}, err
 	}
 	if !item.candidate.ExactHash {
 		// Reject a partial subtitle for a multi-episode file before LAPSE reads the media.
