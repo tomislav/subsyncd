@@ -124,7 +124,6 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 		slog.Int("language_count", len(cfg.Languages)),
 		slog.Int("max_concurrent", cfg.Worker.MaxConcurrent),
 		slog.Bool("silo_enabled", cfg.Silo.Enabled),
-		slog.Bool("strip_watermarks", cfg.Install.StripWatermarks),
 	)
 	if options.Command == "serve" {
 		warnWeakWebhookTokens(ctx, appEvents, cfg)
