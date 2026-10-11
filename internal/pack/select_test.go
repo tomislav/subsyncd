@@ -283,16 +283,16 @@ func TestEpisodeRangeAndSelectionRejectMarkedNumericContinuations(t *testing.T) 
 	}
 }
 
-func TestSelectSingleMovieEnforcesForcedPolicy(t *testing.T) {
+func TestSelectMovieAlternativesEnforcesForcedPolicy(t *testing.T) {
 	manifest := Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.forced.srt", Forced: true}}}
-	_, err := SelectSingleMovie(manifest, domain.Candidate{Forced: true}, false)
+	_, err := SelectMovieAlternatives(manifest, domain.Candidate{Forced: true}, false)
 	var selection *SelectionError
 	if !errors.As(err, &selection) || selection.Rule != "forced_policy" {
 		t.Fatalf("error = %T %v", err, err)
 	}
 
-	selected, err := SelectSingleMovie(Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.srt"}}}, domain.Candidate{}, false)
-	if err != nil || selected.SelectionRule != "single_movie" {
+	selected, err := SelectMovieAlternatives(Manifest{ArchiveType: "plain", Members: []Member{{SafeName: "Movie.srt"}}}, domain.Candidate{}, false)
+	if err != nil || len(selected) != 1 || selected[0].SelectionRule != "single_movie" {
 		t.Fatalf("selection = %#v, %v", selected, err)
 	}
 }

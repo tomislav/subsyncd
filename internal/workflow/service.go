@@ -1265,7 +1265,7 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 			return nil, runtimePack, nil, err
 		}
 	} else {
-		member, err = pack.SelectSingleMovie(manifest, extractionCandidate, false)
+		members, err = pack.SelectMovieAlternatives(manifest, extractionCandidate, false)
 		if err != nil {
 			return nil, runtimePack, nil, err
 		}
@@ -1336,7 +1336,9 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 	if s.LapsePolicy.syncDisabled() {
 		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "sync_disabled", Mode: "bypass", Reference: "policy"}, bypass: true}, nil
 	}
-	if !item.runtimePack && canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
+	// A score is the same for every version of an archive, so versions are
+	// always ranked by LAPSE.
+	if !item.runtimePack && item.memberScope == "" && canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
 		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
 	// Cached preparation uses a negative range; broad candidates each reserve

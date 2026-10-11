@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/asticode/go-astisub"
@@ -21,6 +22,8 @@ import (
 	"golang.org/x/text/transform"
 
 	"subsyncd/internal/domain"
+
+	"subsyncd/internal/subtitleorder"
 )
 
 var (
@@ -81,9 +84,13 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 	}()
 
 	seen := map[string]struct{}{}
+	var firstUnreadable error
 	for _, raw := range members {
 		if err := ctx.Err(); err != nil {
 			return Manifest{}, err
+		}
+		if macOSMetadata(raw.name) {
+			continue
 		}
 		safeName, err := safeMemberName(raw.name, limits.MaxDepth)
 		if err != nil {
@@ -96,7 +103,13 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		seen[lower] = struct{}{}
 		text, extension, err := normalizeSubtitle(raw.body, filepath.Ext(safeName))
 		if err != nil {
-			return Manifest{}, &ContentError{Err: fmt.Errorf("validate subtitle %q: %w", safeName, err)}
+			// One unreadable file must not cost the other episodes in a
+			// season pack; selection decides whether the target is here.
+			manifest.SkippedMembers++
+			if firstUnreadable == nil {
+				firstUnreadable = fmt.Errorf("validate subtitle %q: %w", safeName, err)
+			}
+			continue
 		}
 		if filepath.Ext(safeName) == "" {
 			safeName += extension
@@ -112,6 +125,9 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		manifest.Members = append(manifest.Members, member)
 	}
 	if len(manifest.Members) == 0 {
+		if firstUnreadable != nil {
+			return Manifest{}, &ContentError{Err: firstUnreadable}
+		}
 		return Manifest{}, &ContentError{Err: fmt.Errorf("payload contains no supported subtitle files")}
 	}
 	if _, err := os.Lstat(dst); err == nil {
@@ -388,14 +404,33 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 	if len(subtitles.Items) > 100_000 {
 		return nil, "", fmt.Errorf("subtitle contains too many cues")
 	}
-	previous := subtitles.Items[0].StartAt
+	starts := make([]time.Duration, 0, len(subtitles.Items))
 	for _, item := range subtitles.Items {
-		if item.StartAt < 0 || item.EndAt < item.StartAt || item.StartAt < previous {
-			return nil, "", fmt.Errorf("subtitle timestamps are not nonnegative and monotonic")
+		if item.StartAt < 0 || item.EndAt < item.StartAt {
+			return nil, "", fmt.Errorf("subtitle timestamps are invalid")
 		}
-		previous = item.StartAt
+		starts = append(starts, item.StartAt)
 	}
-	return text, extension, nil
+	// Uploads often carry a few overlapping or misplaced cues; put them in
+	// order rather than discard the subtitle. LAPSE still checks the timing.
+	ordered, err := subtitleorder.Reorder(text, extension, starts)
+	if err != nil {
+		return nil, "", fmt.Errorf("subtitle timestamps are out of order: %w", err)
+	}
+	return ordered, extension, nil
+}
+
+// macOSMetadata reports archive entries macOS adds beside real files: the
+// __MACOSX folder and AppleDouble "._name" resource forks, which carry a
+// subtitle's name but hold binary metadata.
+func macOSMetadata(name string) bool {
+	name = strings.ReplaceAll(name, "\\", "/")
+	for _, part := range strings.Split(name, "/") {
+		if part == "__MACOSX" || strings.HasPrefix(part, "._") {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeText(payload []byte) ([]byte, error) {

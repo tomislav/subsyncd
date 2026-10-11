@@ -118,6 +118,11 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 			return selected, err
 		}
 	}
+	if numbered := numberedEpisodeMatches(members, media); numbered != nil {
+		if selected, done, err := uniqueRule(manifest, numbered, "numbered_episode", fmt.Sprintf("numbered set without episode tokens identifies episode %d", media.Episode)); done {
+			return selected, err
+		}
+	}
 	if len([]rune(normalizeTitle(media.EpisodeTitle))) > 4 {
 		var titleMatches []Member
 		for _, member := range members {
@@ -162,32 +167,6 @@ func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media do
 		return selected, nil
 	}
 	return Member{}, err
-}
-
-// SelectSingleMovie requires one distinct eligible normalized subtitle.
-// Unknown checksums remain distinct; policy filtering precedes deduplication.
-func SelectSingleMovie(manifest Manifest, candidate domain.Candidate, wantForced bool) (Member, error) {
-	members := eligibleMembers(manifest.Members, wantForced)
-	if candidate.Forced && !wantForced || len(members) == 0 {
-		return Member{}, selectionError(manifest, "forced_policy", 0, "no members satisfy the forced-subtitle policy")
-	}
-	unique := make([]Member, 0, len(members))
-	seen := map[string]bool{}
-	for _, member := range members {
-		if member.Checksum != "" && seen[member.Checksum] {
-			continue
-		}
-		seen[member.Checksum] = true
-		unique = append(unique, member)
-	}
-	members = unique
-	if len(members) != 1 {
-		return Member{}, selectionError(manifest, "single_movie", len(members), "movie candidate must contain exactly one eligible subtitle member")
-	}
-	selected := members[0]
-	selected.SelectionRule = "single_movie"
-	selected.SelectionEvidence = "single movie subtitle member satisfies subtitle policy"
-	return selected, nil
 }
 
 func eligibleMembers(members []Member, wantForced bool) []Member {
@@ -336,6 +315,12 @@ func episodeContinuation(name string, offset int) bool {
 	})
 	match := episodeContinuationPattern.FindStringIndex(suffix)
 	if match == nil {
+		return false
+	}
+	// "S01E05 - E and E": a bare E after a spaced dash and followed by a
+	// space starts the episode title. "S01E05-E", "S01E05<tab>E." and a
+	// numbered "- E06" still read as range continuations.
+	if titleAfterSpacedDash.MatchString(name[offset:len(name)-len(suffix)]) && !strings.ContainsAny(suffix[match[0]:match[1]], "0123456789") && strings.HasPrefix(suffix[match[1]:], " ") {
 		return false
 	}
 	if match[1] == len(suffix) {
@@ -573,4 +558,60 @@ func contradictsRange(name string, media domain.Media) bool {
 		}
 	}
 	return false
+}
+
+var (
+	seasonEpisodePrefix  = regexp.MustCompile(`^(\d{1,2})-(\d{1,3})[\s._]`)
+	partNumber           = regexp.MustCompile(`(?i)(?:^|[\s._-])part[\s._-]*(\d{1,2})(?:[\s._-]|$)`)
+	titleAfterSpacedDash = regexp.MustCompile(`^ +- +$`)
+	leadingNumber        = regexp.MustCompile(`^(\d{1,3})\s*[-.]\s+\S`)
+)
+
+// numberedEpisode reads episode numbers that miniseries and documentary packs
+// use instead of SxxEyy: a "1-03 Title" prefix whose season must match, and,
+// for season 1 only, "Part 3" or a leading "3 - Title". Files with explicit
+// episode tokens are left to the stricter rules.
+func numberedEpisode(name string, season int) (int, bool) {
+	base := filepath.Base(strings.ReplaceAll(name, `\`, "/"))
+	if hasEpisodeEvidence(base) || hasInvalidOrAmbiguousRangeEvidence(base) {
+		return 0, false
+	}
+	if match := seasonEpisodePrefix.FindStringSubmatch(base); match != nil {
+		prefix, _ := strconv.Atoi(match[1])
+		episode, _ := strconv.Atoi(match[2])
+		return episode, prefix == season && episode > 0
+	}
+	if season != 1 {
+		return 0, false
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	for _, pattern := range []*regexp.Regexp{partNumber, leadingNumber} {
+		if match := pattern.FindStringSubmatch(stem); match != nil {
+			episode, _ := strconv.Atoi(match[1])
+			return episode, episode > 0
+		}
+	}
+	return 0, false
+}
+
+// numberedEpisodeMatches returns the members numbered as the target episode,
+// or nil when fewer than two members follow a numbering scheme: a lone
+// "Part 2" is not evidence of a numbered set.
+func numberedEpisodeMatches(members []Member, media domain.Media) []Member {
+	numbered := 0
+	var matches []Member
+	for _, member := range members {
+		episode, found := numberedEpisode(member.SafeName, media.Season)
+		if !found {
+			continue
+		}
+		numbered++
+		if episode == media.Episode {
+			matches = append(matches, member)
+		}
+	}
+	if numbered < 2 {
+		return nil
+	}
+	return matches
 }

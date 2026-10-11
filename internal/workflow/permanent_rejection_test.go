@@ -119,9 +119,10 @@ func TestEpisodeRejectionChangesWithSelectionEvidence(t *testing.T) {
 }
 
 func TestAmbiguousMovieArchiveIsRemembered(t *testing.T) {
+	// More versions than timing can rank (three) leave the archive ambiguous.
 	request := serviceRequest(t)
 	candidate := broadCandidate("ambiguous")
-	adapter := &fakeProvider{id: "provider", payloads: map[string][]byte{"ambiguous": workflowZIP(t, map[string]string{"first.srt": installSRT, "second.srt": strings.ReplaceAll(installSRT, "00:00:01", "00:00:02")})}, filenames: map[string]string{"ambiguous": "subs.zip"}}
+	adapter := &fakeProvider{id: "provider", payloads: map[string][]byte{"ambiguous": workflowZIP(t, map[string]string{"first.srt": installSRT, "second.srt": strings.ReplaceAll(installSRT, "00:00:01", "00:00:02"), "third.srt": strings.ReplaceAll(installSRT, "Hello", "Third"), "fourth.srt": strings.ReplaceAll(installSRT, "Hello", "Fourth")})}, filenames: map[string]string{"ambiguous": "subs.zip"}}
 	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
 	service.Providers = map[string]provider.Provider{"provider": adapter}
 	result, err := service.Run(context.Background(), request)

@@ -38,4 +38,7 @@ type Manifest struct {
 	ArchiveType string
 	Candidate   domain.Candidate
 	Members     []Member
+	// SkippedMembers counts subtitle files the archive held that could not
+	// be read; the readable ones are kept.
+	SkippedMembers int `json:",omitempty"`
 }
