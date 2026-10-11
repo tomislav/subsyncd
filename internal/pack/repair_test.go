@@ -200,3 +200,52 @@ func TestLayeredASSIsNotTreatedAsMerged(t *testing.T) {
 		t.Fatal("heavily overlapping SRT accepted")
 	}
 }
+
+func TestSameSubtitleInTwoEncodingFoldersIsKeptOnce(t *testing.T) {
+	// For All Mankind S02E03 on Titlovi ships "ANSI (CRLF_windows1250)/" and
+	// "UTF/" copies of one subtitle.
+	cp1250 := "1\r\n00:00:01,000 --> 00:00:02,000\r\n\x9eivjeli\r\n"
+	utf8 := "1\n00:00:01,000 --> 00:00:02,000\nživjeli\n"
+	manifest, _, err := extractZIP(t, []zipEntry{
+		{name: "ANSI (CRLF_windows1250)/For All Mankind_s02e03.srt", body: cp1250},
+		{name: "UTF/For All Mankind_s02e03.srt", body: utf8},
+	})
+	if err != nil || len(manifest.Members) != 1 || manifest.SkippedMembers != 0 {
+		t.Fatalf("members = %+v, skipped = %d, err = %v; want one copy", manifest.Members, manifest.SkippedMembers, err)
+	}
+}
+
+func TestDifferentSubtitlesWithOneNameKeepTheirFolders(t *testing.T) {
+	manifest, _, err := extractZIP(t, []zipEntry{
+		{name: "WEB/Show.S01E01.srt", body: validSRT},
+		{name: "BluRay/Show.S01E01.srt", body: strings.Replace(validSRT, "Hello", "Other", 1)},
+	})
+	if err != nil || len(manifest.Members) != 2 {
+		t.Fatalf("members = %+v, err = %v", manifest.Members, err)
+	}
+	if manifest.Members[1].SafeName != "BluRay - Show.S01E01.srt" {
+		t.Fatalf("second member name = %q", manifest.Members[1].SafeName)
+	}
+}
+
+func TestPrefixedDuplicateNameTooLongIsAContentRejection(t *testing.T) {
+	name := strings.Repeat("x", 240) + ".srt"
+	_, _, err := extractZIP(t, []zipEntry{
+		{name: "Original encoding/" + name, body: validSRT},
+		{name: "UTF-8 encoding/" + name, body: strings.Replace(validSRT, "Hello", "Other", 1)},
+	})
+	var content *ContentError
+	if !errors.As(err, &content) {
+		t.Fatalf("error = %T %v; want a content rejection", err, err)
+	}
+}
+
+func TestUnreadableAndReadableMembersWithOneNameKeepTheReadableOne(t *testing.T) {
+	manifest, _, err := extractZIP(t, []zipEntry{
+		{name: "Movie.srt", body: "\x00\x01binary"},
+		{name: "movie.srt", body: validSRT},
+	})
+	if err != nil || len(manifest.Members) != 1 || manifest.SkippedMembers != 1 {
+		t.Fatalf("members = %+v skipped = %d err = %v", manifest.Members, manifest.SkippedMembers, err)
+	}
+}

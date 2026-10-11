@@ -1482,7 +1482,13 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, Fallback: s.fallbackTier, SourcePath: prepared.output, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync})
 	if err != nil {
 		attrs := append([]slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}, s.workflowEvents().ErrorAttrs("installation", err)...)
-		s.workflowEvents().Log(ctx, slog.LevelError, "subtitle.install_failed", "subtitle installation failed", attrs...)
+		// A subtitle that fails installation validation is a candidate
+		// rejection (recorded and skipped), not an operational error.
+		level := slog.LevelError
+		if rejectionReasonCode(err) != "" {
+			level = slog.LevelWarn
+		}
+		s.workflowEvents().Log(ctx, level, "subtitle.install_failed", "subtitle installation failed", attrs...)
 		return result, err
 	}
 	checksum := observability.SafeText(installation.Checksum)

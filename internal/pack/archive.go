@@ -82,7 +82,8 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		}
 	}()
 
-	seen := map[string]struct{}{}
+	// seen maps each member's lower-cased name to its normalized checksum.
+	seen := map[string]string{}
 	var firstUnreadable error
 	for _, raw := range members {
 		if err := ctx.Err(); err != nil {
@@ -95,11 +96,6 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		if err != nil {
 			return Manifest{}, &ContentError{Err: err}
 		}
-		lower := strings.ToLower(safeName)
-		if _, exists := seen[lower]; exists {
-			return Manifest{}, &ContentError{Err: fmt.Errorf("archive contains duplicate subtitle name %q", safeName)}
-		}
-		seen[lower] = struct{}{}
 		memberExtension := filepath.Ext(safeName)
 		if strings.EqualFold(memberExtension, ".sub") {
 			decoded, err := decodeText(raw.body)
@@ -126,13 +122,28 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 			// Movie.srt shipped beside it.
 			safeName += extension
 		}
+		sum := checksum(text)
+		if existing, exists := seen[strings.ToLower(safeName)]; exists {
+			// Uploaders often ship one copy per encoding in separate folders
+			// (ANSI/ and UTF/): the same text once decoded is kept once.
+			if existing == sum {
+				continue
+			}
+			safeName = folderPrefix(raw.name) + safeName
+			// A name longer than filesystems allow could not be written; it is
+			// a content problem of this archive, not a reason to retry.
+			if _, clash := seen[strings.ToLower(safeName)]; clash || folderPrefix(raw.name) == "" || len(safeName) > 255 {
+				return Manifest{}, &ContentError{Err: fmt.Errorf("archive contains duplicate subtitle name %q", safeName)}
+			}
+		}
+		seen[strings.ToLower(safeName)] = sum
 		path := filepath.Join(staging, safeName)
 		if err := os.WriteFile(path, text, 0o600); err != nil {
 			return Manifest{}, fmt.Errorf("write normalized subtitle: %w", err)
 		}
 		member := memberEvidence(safeName, candidate.Title)
 		member.NormalizedPath = path
-		member.Checksum = checksum(text)
+		member.Checksum = sum
 		member.ByteSize = int64(len(text))
 		manifest.Members = append(manifest.Members, member)
 	}
@@ -355,6 +366,16 @@ func safeMemberName(name string, maxDepth int) (string, error) {
 		return "", fmt.Errorf("archive member has no safe name")
 	}
 	return base, nil
+}
+
+// folderPrefix names a member's folder as a file-name prefix ("UTF/x.srt" ->
+// "UTF - "), so different subtitles that share a name stay apart.
+func folderPrefix(name string) string {
+	folder := filepath.Base(filepath.Dir(strings.ReplaceAll(name, `\`, "/")))
+	if folder == "." || folder == "/" || folder == "" {
+		return ""
+	}
+	return folder + " - "
 }
 
 func isSubtitleExtension(name string) bool {

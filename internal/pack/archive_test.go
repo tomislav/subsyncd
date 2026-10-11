@@ -67,7 +67,7 @@ func TestExtractRejectsHostileOrInvalidZIPsWithoutPublication(t *testing.T) {
 		{"symlink", []zipEntry{{name: "link.srt", body: validSRT, mode: os.ModeSymlink | 0o777}}, testLimits()},
 		{"nested archive", []zipEntry{{name: "nested.zip", body: "PK\x03\x04"}}, testLimits()},
 		{"nested archive disguised", []zipEntry{{name: "nested.bin", body: "PK\x03\x04payload"}}, testLimits()},
-		{"duplicate", []zipEntry{{name: "Episode.srt", body: validSRT}, {name: "episode.srt", body: validSRT}}, testLimits()},
+		{"duplicate with different text", []zipEntry{{name: "Episode.srt", body: validSRT}, {name: "episode.srt", body: strings.Replace(validSRT, "Hello", "Other", 1)}}, testLimits()},
 		{"spoofed subtitle", []zipEntry{{name: "episode.srt", body: "\x00\x01binary"}}, testLimits()},
 		{"too many", []zipEntry{{name: "one.srt", body: validSRT}, {name: "two.srt", body: validSRT}}, Limits{MaxCompressed: 1 << 20, MaxExpanded: 1 << 20, MaxFiles: 1, MaxDepth: 1}},
 		{"too deep", []zipEntry{{name: "a/b/episode.srt", body: validSRT}}, Limits{MaxCompressed: 1 << 20, MaxExpanded: 1 << 20, MaxFiles: 10, MaxDepth: 1}},
