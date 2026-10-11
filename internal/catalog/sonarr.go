@@ -245,6 +245,7 @@ type sonarrSeries struct {
 	Year            int                 `json:"year"`
 	IMDbID          string              `json:"imdbId"`
 	TVDBID          int64               `json:"tvdbId"`
+	SeriesType      string              `json:"seriesType"`
 }
 
 func (s *Sonarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Media, error) {
@@ -337,6 +338,7 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 		Resolution:       resolutionName(file.Quality.Quality.Resolution),
 		Quality:          file.Quality.Quality.Name,
 		Duration:         parseRuntime(file.MediaInfo.RunTime),
+		SeriesType:       strings.ToLower(strings.TrimSpace(series.SeriesType)),
 	}
 	// A multi-episode file counts as released when its first episode aired.
 	media.ReleasedAt = episode.AirDateUTC.Time()

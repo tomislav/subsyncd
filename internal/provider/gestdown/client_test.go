@@ -213,6 +213,25 @@ func TestHeaderlessRateLimitHasFiniteRetry(t *testing.T) {
 	}
 }
 
+func TestRateLimitWithAResetThatIsNotAheadUsesTheFallback(t *testing.T) {
+	// "Retry-After: 0" or a past date must not save a cooldown that is
+	// already over, which would ask Gestdown again in a loop.
+	for name, retryAfter := range map[string]string{"zero": "0", "past date": "Mon, 01 Jan 2024 00:00:00 GMT"} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", retryAfter)
+				w.WriteHeader(http.StatusTooManyRequests)
+			})
+			now := time.Now()
+			_, err := c.Search(context.Background(), query())
+			var cooldown *base.CooldownError
+			if !errors.As(err, &cooldown) || cooldown.ResetAt.Before(now.Add(4*time.Minute)) || cooldown.ResetAt.After(now.Add(6*time.Minute)) {
+				t.Fatalf("error = %v; want the five-minute fallback", err)
+			}
+		})
+	}
+}
+
 func TestInvalidJSONAndCancellationRemainTechnical(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"secret":"do not expose"`) })
 	_, err := c.Search(context.Background(), query())

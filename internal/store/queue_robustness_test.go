@@ -239,6 +239,47 @@ func TestLateImportDoesNotReviveDeletedMedia(t *testing.T) {
 	}
 }
 
+func TestDeleteOfAnOlderFileDoesNotBlockTheNewFilesImport(t *testing.T) {
+	// A Sonarr upgrade: the new file's import (t1) failed to hydrate and is
+	// retried, while the old file's delete (t2 > t1) was applied first.
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	t0 := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	old := testMedia()
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "import-old", Type: "import", EntityID: old.EntityID, Ref: old.Ref, Media: old, Languages: []domain.Language{"en"}, At: t0}); err != nil {
+		t.Fatal(err)
+	}
+	t1 := t0.Add(time.Hour)
+	t2 := t1.Add(2 * time.Second)
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "delete-old", Type: "delete", EntityID: old.EntityID, Ref: old.Ref, At: t2}); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := old
+	upgraded.Ref.FileID = old.Ref.FileID + 1
+	upgraded.Fingerprint.FileID = upgraded.Ref.FileID
+	upgraded.Fingerprint.Path = "/media/show.2160p.mkv"
+	if applied, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "import-new", Type: "import", EntityID: upgraded.EntityID, Ref: upgraded.Ref, Media: upgraded, Languages: []domain.Language{"en"}, At: t1}); err != nil || !applied {
+		t.Fatalf("retried upgrade import applied=%t err=%v", applied, err)
+	}
+	if active, err := repo.MediaActive(ctx, upgraded.Ref); err != nil || !active {
+		t.Fatalf("upgraded episode active=%t err=%v", active, err)
+	}
+
+	// A delete of the whole episode (no file id) after the import still wins.
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "delete-entity", Type: "delete", EntityID: old.EntityID, Ref: domain.MediaRef{Instance: old.Ref.Instance, Kind: old.Ref.Kind}, At: t1.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	other := upgraded
+	other.Ref.FileID = upgraded.Ref.FileID + 1
+	other.Fingerprint.FileID = other.Ref.FileID
+	if applied, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "import-late", Type: "import", EntityID: other.EntityID, Ref: other.Ref, Media: other, Languages: []domain.Language{"en"}, At: t1.Add(30 * time.Minute)}); err != nil || applied {
+		t.Fatalf("import before the entity delete applied=%t err=%v", applied, err)
+	}
+	if active, err := repo.MediaActive(ctx, upgraded.Ref); err != nil || active {
+		t.Fatalf("entity-deleted episode active=%t err=%v", active, err)
+	}
+}
+
 func TestInPlaceReplacementSearchesInstalledLanguagesAgain(t *testing.T) {
 	repo := openTestRepository(t)
 	ctx := t.Context()

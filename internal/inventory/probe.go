@@ -122,6 +122,22 @@ func probeMount(mediaPath string, roots []string) string {
 	return filepath.Join(mount, strings.SplitN(relative, separator, 2)[0])
 }
 
+// probeLinkTimeout bounds reading a media path's symlink; the path itself may
+// sit on a hung mount.
+const probeLinkTimeout = 5 * time.Second
+
+// mediaMount names the mount mediaPath is read through. A media path that is
+// a symlink (library links into a FUSE mount such as /mnt/altmount) is read
+// through its target's mount, so its target names it: every link into one
+// mount shares one stuck-probe limit instead of one per show folder. Only the
+// link is read, never its target.
+func mediaMount(mediaPath string, roots []string) string {
+	if target, ok := domain.LinkTarget(mediaPath, probeLinkTimeout); ok {
+		return probeMount(target, roots)
+	}
+	return probeMount(mediaPath, roots)
+}
+
 type Probe struct {
 	Path   string
 	Runner CommandRunner
@@ -139,7 +155,7 @@ func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	run := &probeRun{path: mediaPath, mount: probeMount(mediaPath, p.MediaRoots)}
+	run := &probeRun{path: mediaPath, mount: mediaMount(mediaPath, p.MediaRoots)}
 	if stuckProbes.blocked(run) {
 		return nil, ErrProbeTimedOut
 	}

@@ -158,6 +158,17 @@ func TestUnsafeRepairDoesNotKeepADroppedCueOutOfOrder(t *testing.T) {
 	}
 }
 
+func TestUnsafeRepairDoesNotKeepADroppedCueEndingBeforeItStarts(t *testing.T) {
+	// The empty third cue is dropped, but it stays in the kept text, where
+	// it ends before it starts, which install would reject.
+	body := "1\n00:00:01,000 --> 00:00:02,000\nHello\nSecond\n00:00:03,000 --> 00:00:04,000\n<i>x\n\n3\n00:00:05,000 --> 00:00:04,500\n\n4\n00:00:06,000 --> 00:00:07,000\nBye\n"
+	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: body}})
+	var content *ContentError
+	if !errors.As(err, &content) {
+		t.Fatalf("error = %v; want a content rejection", err)
+	}
+}
+
 func TestUnsafeRetimeIsRejected(t *testing.T) {
 	// Two-digit milliseconds, colon milliseconds and no milliseconds parse,
 	// but such a timing cannot be rewritten: a cue that ends before it starts

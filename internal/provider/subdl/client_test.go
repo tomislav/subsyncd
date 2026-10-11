@@ -415,9 +415,105 @@ func TestLimitWordingNeedsAReachedDailyDownloadOrQuotaLimit(t *testing.T) {
 			t.Errorf("limitCode(%q) = %q, want no limit", message, got)
 		}
 	}
-	for _, message := range []string{"You have reached your daily download limit", "Daily download limit exceeded", "API quota exceeded", "You have reached your daily limit", "Download limit reached", "daily_limit", "Request limit reached", "You have reached your limit", "Quota exhausted"} {
+	for _, message := range []string{"You have reached your daily download limit", "Daily download limit exceeded", "API quota exceeded", "You have reached your daily limit", "Download limit reached", "daily_limit", "Quota exhausted"} {
 		if got := limitCode(message); got != "daily_limit" {
 			t.Errorf("limitCode(%q) = %q, want daily_limit", message, got)
+		}
+	}
+	// A reached limit that names neither the day, downloads nor a quota may
+	// be SubDL's per-minute limit, so it is a short rate-limit cooldown.
+	for _, message := range []string{"Request limit reached", "You have reached your limit", "Limit exceeded", "Too many requests", "rate_limit"} {
+		if got := limitCode(message); got != "rate_limit" {
+			t.Errorf("limitCode(%q) = %q, want rate_limit", message, got)
+		}
+	}
+}
+
+func TestRequestLimitReachedIsARateLimitNotTheDailyQuota(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"status":false,"error":"Request limit reached"}`)
+	}))
+	defer server.Close()
+	client, states := newTestClientWithState(t, server, 1<<20)
+	_, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+	want := client.clock.Now().Add(15 * time.Minute)
+	var cooldown *baseprovider.CooldownError
+	if !errors.As(err, &cooldown) || cooldown.Reason != string(baseprovider.CooldownRateLimit) || !cooldown.ResetAt.Equal(want) {
+		t.Fatalf("error = %T %v; want a rate-limit cooldown until %v", err, err, want)
+	}
+	if state, err := states.GetProviderState(context.Background(), "subdl-main", "search"); err != nil || !state.ResetAt.Equal(want) {
+		t.Fatalf("saved state = %#v, %v", state, err)
+	}
+}
+
+func TestRepeated403BacksOff(t *testing.T) {
+	// A Cloudflare block answers 403 every time; the circuit must escalate
+	// 1, 5, 15, then 60 minutes instead of restarting at one minute.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `<html>Access denied</html>`)
+	}))
+	defer server.Close()
+	client, _ := newTestClientWithState(t, server, 1<<20)
+	clock := client.clock.(*testutil.Clock)
+	for _, delay := range []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, time.Hour} {
+		_, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+		var cooldown *baseprovider.CooldownError
+		if !errors.As(err, &cooldown) || !cooldown.ResetAt.Equal(clock.Now().Add(delay)) {
+			t.Fatalf("error = %T %v; want a cooldown of %v", err, err, delay)
+		}
+		clock.Advance(delay + time.Second)
+	}
+}
+
+func Test401IsReadLikeA403(t *testing.T) {
+	reset := time.Date(2026, 9, 5, 0, 15, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name, body string
+		check      func(t *testing.T, err error, disabled bool)
+	}{
+		{"daily limit", `{"status":false,"error":"Daily limit reached"}`, func(t *testing.T, err error, disabled bool) {
+			var quota *baseprovider.QuotaError
+			if !errors.As(err, &quota) || !quota.ResetAt.Equal(reset) || disabled {
+				t.Fatalf("error = %T %v, disabled = %t; want the daily quota", err, err, disabled)
+			}
+		}},
+		{"other message", `{"status":false,"error":"Temporarily blocked"}`, func(t *testing.T, err error, disabled bool) {
+			var cooldown *baseprovider.CooldownError
+			if !errors.As(err, &cooldown) || cooldown.Reason != "transient_http_401" || disabled {
+				t.Fatalf("error = %T %v, disabled = %t; want the transient circuit", err, err, disabled)
+			}
+		}},
+		{"rejected key", `{"status":false,"error":"Invalid API key"}`, func(t *testing.T, err error, disabled bool) {
+			var authentication *baseprovider.AuthenticationError
+			if !errors.As(err, &authentication) || !disabled {
+				t.Fatalf("error = %T %v, disabled = %t; want the provider disabled", err, err, disabled)
+			}
+		}},
+		{"html page", `<html>401</html>`, func(t *testing.T, err error, disabled bool) {
+			if !disabled {
+				t.Fatalf("error = %T %v; want the provider disabled", err, err)
+			}
+		}},
+	} {
+		for _, operation := range []string{"search", "download"} {
+			t.Run(operation+"/"+tt.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					io.WriteString(w, tt.body)
+				}))
+				defer server.Close()
+				client, states := newTestClientWithState(t, server, 1<<20)
+				var err error
+				if operation == "search" {
+					_, err = client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+				} else {
+					_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/example.zip"}, io.Discard)
+				}
+				state, stateErr := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth))
+				tt.check(t, err, stateErr == nil && state.Disabled)
+			})
 		}
 	}
 }

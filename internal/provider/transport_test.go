@@ -833,3 +833,58 @@ func TestResponseEOFReleasesPermitsWhenRecoveryPersistenceFails(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRefusalStatusesKeepTheTransientFailureCount(t *testing.T) {
+	// A 401, 403 or 429 proves the provider answered, not that it recovered:
+	// a provider that counts its own 403 as a transient failure (SubDL) must
+	// escalate its backoff. A 404 is an ordinary answer and clears it.
+	for status, keeps := range map[int]bool{http.StatusUnauthorized: true, http.StatusForbidden: true, http.StatusTooManyRequests: true, http.StatusNotFound: false} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+			clock := testutil.NewClock(now)
+			states := &memoryStateStore{states: map[string]store.ProviderState{
+				"p/search": {ProviderID: "p", Scope: "search", Reason: "transient_http_403", Remaining: 0, ResetAt: now.Add(-time.Second), FailureAttempt: 2},
+			}}
+			gate := NewGate(states, clock, 1)
+			gate.Configure("p", 1000, 10, 1)
+			client := Client{Gate: gate, Clock: clock, ProviderID: "p", ProviderType: "gestdown", HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})}}
+			request, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
+			response, _ := client.Do(context.Background(), OperationSearch, request)
+			if response != nil {
+				response.Body.Close()
+			}
+			state, err := states.GetProviderState(context.Background(), "p", "search")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept := state.FailureAttempt == 2; kept != keeps {
+				t.Fatalf("failure attempt = %d after HTTP %d; want kept = %t", state.FailureAttempt, status, keeps)
+			}
+		})
+	}
+}
+
+func TestPersistCooldownNeverSavesAResetThatIsOver(t *testing.T) {
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		providerType string
+		kind         CooldownKind
+		want         time.Duration
+	}{
+		{"titlovi", CooldownRateLimit, 5 * time.Minute},
+		{"opensubtitles", CooldownRateLimit, time.Minute},
+		{"subdl", CooldownRateLimit, 15 * time.Minute},
+		{"subsource", CooldownRateLimit, time.Minute},
+		{"gestdown", CooldownRateLimit, defaultCooldown},
+	} {
+		for _, reset := range []time.Time{{}, now, now.Add(-time.Hour)} {
+			client := Client{Gate: NewGate(&memoryStateStore{states: map[string]store.ProviderState{}}, testutil.NewClock(now), 1), Clock: testutil.NewClock(now), ProviderID: "p", ProviderType: tt.providerType}
+			got, err := client.PersistCooldown(context.Background(), OperationSearch, tt.kind, reset)
+			if err != nil || !got.Equal(now.Add(tt.want)) {
+				t.Errorf("%s reset %v: got %v/%v; want %v", tt.providerType, reset, got, err, now.Add(tt.want))
+			}
+		}
+	}
+}

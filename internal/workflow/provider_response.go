@@ -25,15 +25,18 @@ import (
 // ProviderResponseError is a download that delivered the provider's own
 // message instead of a subtitle: an HTML login or limit page, a JSON error
 // body, or Titlovi's placeholder subtitle. It is a provider problem that is
-// retried, never a rejection of the candidate. Refusal marks a limit or login
-// message, which pauses the provider's downloads once a second candidate of
-// the same provider confirms it (see RefusalLedger); Limit marks an
-// unambiguous refusal, an explicit limit or quota in a JSON body or Titlovi's
-// placeholder, which pauses them at once.
+// retried, never a rejection of the candidate. Refusal marks a limit, login
+// or client-block message, which pauses the provider's downloads once a
+// second candidate of the same provider confirms it (see RefusalLedger);
+// Limit marks an unambiguous refusal, an explicit limit or quota in a JSON
+// body, which pauses them at once. Cooldown is the kind of pause a refusal
+// records: a rate limit for "too many requests" wording, a client block for
+// Titlovi's placeholder, otherwise the download quota.
 type ProviderResponseError struct {
-	Reason  string
-	Refusal bool
-	Limit   bool
+	Reason   string
+	Refusal  bool
+	Limit    bool
+	Cooldown provider.CooldownKind
 	// confirmed is the download cooldown a later refusal of another
 	// candidate recorded, so this failure also counts as the provider being
 	// unavailable rather than as a candidate failure.
@@ -47,7 +50,8 @@ func (e *ProviderResponseError) Error() string {
 func (e *ProviderResponseError) Unwrap() error { return e.confirmed }
 
 // titloviPlaceholder is the only member of the archive Titlovi serves when it
-// does not authorize a download; its one cue tells the viewer to log in.
+// does not authorize a download; its one cue says the viewer uses a plugin
+// Titlovi does not support and should install the official one.
 const titloviPlaceholder = "titlovi_titl_plugin_message.srt"
 
 // sniffLimit bounds how much of a download is read to recognize an error body.
@@ -78,7 +82,8 @@ func checkProviderResponse(payloadPath, contentType string) error {
 		// Only a whole HTML document is read for a refusal; a fragment, or
 		// other markup served as text/html, may be a subtitle in another
 		// format (SAMI) whose dialogue reads like one.
-		return &ProviderResponseError{Reason: "HTML page", Refusal: refusalDocument(text)}
+		refusal, cooldown := refusalDocument(text)
+		return &ProviderResponseError{Reason: "HTML page", Refusal: refusal, Cooldown: cooldown}
 	case strings.HasPrefix(lower, "<head") || strings.HasPrefix(lower, "<body"):
 		return &ProviderResponseError{Reason: "HTML page"}
 	case mediaType == "text/html" && strings.HasPrefix(lower, "<"):
@@ -86,7 +91,7 @@ func checkProviderResponse(payloadPath, contentType string) error {
 	case len(head) <= sniffLimit && (strings.HasPrefix(lower, "{") || strings.HasPrefix(lower, "[")) && json.Valid(text):
 		message := strings.ReplaceAll(strings.ToLower(jsonMessage(text)), "_", " ")
 		limit := limitPhrases.MatchString(message)
-		return &ProviderResponseError{Reason: "JSON body", Refusal: limit || loginPhrases.MatchString(message) || unauthorizedAccess.MatchString(message), Limit: limit}
+		return &ProviderResponseError{Reason: "JSON body", Refusal: limit || loginPhrases.MatchString(message) || unauthorizedAccess.MatchString(message), Limit: limit, Cooldown: refusalCooldown(message)}
 	}
 	return nil
 }
@@ -149,7 +154,12 @@ func phrasePattern(phrases ...string) *regexp.Regexp {
 // ("Unauthorized reproduction prohibited"). Underscores in the message count
 // as spaces, so "limit_exceeded" is "limit exceeded".
 var (
-	limitPhrases       = phrasePattern("download limit", "daily limit", "limit reached", "limit exceeded", "quota", "too many requests", "too many downloads")
+	limitPhrases = phrasePattern("download limit", "daily limit", "limit reached", "limit exceeded", "quota", "too many requests", "too many downloads")
+	// rateLimitPhrases mark a limit on how fast requests come, and
+	// quotaPhrases one on how much may be downloaded: a message with the
+	// first and none of the second is a short rate limit, not the quota.
+	rateLimitPhrases   = phrasePattern("too many requests", "rate limit", "rate limited")
+	quotaPhrases       = phrasePattern("download limit", "daily limit", "quota", "too many downloads")
 	loginPhrases       = phrasePattern("not authorized", "log in to", "login required", "please log in", "please login", "sign in to")
 	unauthorizedAccess = regexp.MustCompile(`\bunauthori[sz]ed(?:\s+\S+){0,2}?\s+(?:access|download|downloads|downloading)\b|\b(?:access|download|downloads|downloading)(?:\s+\S+){0,2}?\s+unauthori[sz]ed\b`)
 	// passwordField is an <input> whose type is password.
@@ -172,18 +182,32 @@ const loginFormTextLimit = 2 << 10
 // message or an unauthorized download on any page, or a login message or
 // password field on a page that is little more than a login form. A
 // navigation "Login" link on an ordinary error page does not count.
-func refusalDocument(text []byte) bool {
+// It also returns the kind of cooldown a confirmed refusal records.
+func refusalDocument(text []byte) (bool, provider.CooldownKind) {
 	markup := hiddenElement.ReplaceAllString(strings.ToLower(string(text)), " ")
 	visible := strings.Join(strings.Fields(html.UnescapeString(markupTag.ReplaceAllString(markup, " "))), " ")
 	message := strings.ReplaceAll(visible, "_", " ")
 	if limitPhrases.MatchString(message) || unauthorizedAccess.MatchString(message) {
-		return true
+		return true, refusalCooldown(message)
 	}
-	return len(visible) < loginFormTextLimit && (loginPhrases.MatchString(message) || passwordField.MatchString(markup))
+	return len(visible) < loginFormTextLimit && (loginPhrases.MatchString(message) || passwordField.MatchString(markup)), provider.CooldownDownloadQuota
+}
+
+// refusalCooldown is the cooldown a refusal message calls for: a rate limit
+// when it says too many requests or names a rate limit and names no download
+// limit or quota, otherwise the download quota.
+func refusalCooldown(message string) provider.CooldownKind {
+	if rateLimitPhrases.MatchString(message) && !quotaPhrases.MatchString(message) {
+		return provider.CooldownRateLimit
+	}
+	return provider.CooldownDownloadQuota
 }
 
 // checkPlaceholderMembers recognizes an archive holding only Titlovi's
-// placeholder message.
+// placeholder message. Its text says the client is a plugin Titlovi does not
+// support, so it is a client block rather than a limit: like a refusal page,
+// it pauses Titlovi's downloads only once a second candidate confirms it, and
+// then for an hour as client_blocked.
 func checkPlaceholderMembers(manifest pack.Manifest) error {
 	if len(manifest.Members) == 0 {
 		return nil
@@ -193,7 +217,7 @@ func checkPlaceholderMembers(manifest pack.Manifest) error {
 			return nil
 		}
 	}
-	return &ProviderResponseError{Reason: "Titlovi placeholder message", Refusal: true, Limit: true}
+	return &ProviderResponseError{Reason: "Titlovi placeholder message (client_blocked)", Refusal: true, Cooldown: provider.CooldownClientBlocked}
 }
 
 // refusalWindow is how close together two refusals of one provider must be
@@ -258,8 +282,9 @@ func (l *RefusalLedger) witness(providerID string, current refusalWitness) (refu
 // failing candidate after candidate. An unconfirmed refusal fails only its
 // candidate, as a retryable provider error like an ordinary error page; a
 // refusal from a second, distinct candidate of that provider within
-// refusalWindow confirms it. An explicit limit (a JSON limit, Titlovi's
-// placeholder) pauses at once. Any other error is returned as it is.
+// refusalWindow confirms it. An explicit limit in a JSON body pauses at once.
+// The cooldown recorded is the message's kind (see ProviderResponseError).
+// Any other error is returned as it is.
 func refusedDownload(ctx context.Context, adapter provider.Provider, candidate domain.Candidate, run *refusalRun, err error) error {
 	var message *ProviderResponseError
 	if !errors.As(err, &message) || !message.Refusal {
@@ -276,7 +301,11 @@ func refusedDownload(ctx context.Context, adapter provider.Provider, candidate d
 		}
 		first = earlier
 	}
-	recorded := provider.RecordDownloadRefusal(ctx, adapter)
+	kind := message.Cooldown
+	if kind == "" {
+		kind = provider.CooldownDownloadQuota
+	}
+	recorded := provider.RecordDownloadRefusal(ctx, adapter, kind)
 	if recorded == nil {
 		return err
 	}

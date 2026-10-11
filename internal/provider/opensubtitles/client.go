@@ -106,10 +106,10 @@ func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
 
-// RecordDownloadRefusal pauses downloads after one delivered a limit or login
-// message instead of a subtitle.
-func (c *Client) RecordDownloadRefusal(ctx context.Context) error {
-	return c.transport.RecordDownloadRefusal(ctx)
+// RecordDownloadRefusal pauses downloads after one delivered a limit, login
+// or client-block message instead of a subtitle, for the cooldown of kind.
+func (c *Client) RecordDownloadRefusal(ctx context.Context, kind baseprovider.CooldownKind) error {
+	return c.transport.RecordDownloadRefusal(ctx, kind)
 }
 
 // SearchCacheVersion refreshes legacy filters, language aliases and download evidence.

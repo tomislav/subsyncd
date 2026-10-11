@@ -64,12 +64,14 @@ func TestSubtitlesThatLookLikeMessagesAreStillRead(t *testing.T) {
 type refusingProvider struct {
 	*availabilityProvider
 	refusals int
+	kinds    []provider.CooldownKind
 	reset    time.Time
 }
 
-func (p *refusingProvider) RecordDownloadRefusal(context.Context) error {
+func (p *refusingProvider) RecordDownloadRefusal(_ context.Context, kind provider.CooldownKind) error {
 	p.refusals++
-	p.unavailable = &provider.CooldownError{ProviderID: p.id, Scope: provider.OperationDownload, Reason: "download_quota", ResetAt: p.reset}
+	p.kinds = append(p.kinds, kind)
+	p.unavailable = &provider.CooldownError{ProviderID: p.id, Scope: provider.OperationDownload, Reason: string(kind), ResetAt: p.reset}
 	return p.unavailable
 }
 
@@ -78,12 +80,24 @@ func TestLimitPageThrottlesTheProviderInsteadOfFailingCandidates(t *testing.T) {
 	placeholder := workflowZIP(t, map[string]string{"titlovi_titl_plugin_message.srt": installSRT})
 	login := []byte(`<html><body><form><input type="password" name="pass"></form></body></html>`)
 	jsonLimit := []byte(`{"status":false,"error":"daily_limit"}`)
-	// A page refusal needs a second candidate to confirm it; an explicit limit
-	// in a JSON body and Titlovi's placeholder pause the provider at once.
+	jsonRate := []byte(`{"status":false,"error":"Too many requests, slow down"}`)
+	ratePage := []byte("<!DOCTYPE html><html><body><h1>429 Too Many Requests</h1></body></html>")
+	// A page refusal and Titlovi's placeholder (a client block, not a limit)
+	// need a second candidate to confirm them; an explicit limit in a JSON
+	// body pauses the provider at once. "Too many requests" is a rate limit,
+	// not the download quota.
 	for name, test := range map[string]struct {
 		body      []byte
 		downloads int
-	}{"limit page": {limit, 2}, "placeholder": {placeholder, 1}, "login page": {login, 2}, "JSON limit": {jsonLimit, 1}} {
+		kind      provider.CooldownKind
+	}{
+		"limit page":      {limit, 2, provider.CooldownDownloadQuota},
+		"placeholder":     {placeholder, 2, provider.CooldownClientBlocked},
+		"login page":      {login, 2, provider.CooldownDownloadQuota},
+		"JSON limit":      {jsonLimit, 1, provider.CooldownDownloadQuota},
+		"JSON rate limit": {jsonRate, 1, provider.CooldownRateLimit},
+		"rate limit page": {ratePage, 2, provider.CooldownRateLimit},
+	} {
 		t.Run(name, func(t *testing.T) {
 			s := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
 			candidates := []domain.Candidate{broadCandidate("one"), broadCandidate("two"), broadCandidate("three")}
@@ -97,8 +111,8 @@ func TestLimitPageThrottlesTheProviderInsteadOfFailingCandidates(t *testing.T) {
 			}
 			useAvailabilityProviders(s, provider.Observe(p, observability.Discard()))
 			result, err := s.Run(t.Context(), serviceRequest(t))
-			if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(p.reset) || p.downloads != test.downloads || p.refusals != 1 {
-				t.Fatalf("result=%+v err=%v downloads=%d refusals=%d", result, err, p.downloads, p.refusals)
+			if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(p.reset) || p.downloads != test.downloads || p.refusals != 1 || p.kinds[0] != test.kind {
+				t.Fatalf("result=%+v err=%v downloads=%d refusals=%d kinds=%v", result, err, p.downloads, p.refusals, p.kinds)
 			}
 			if rejections := s.Repository.(*workflowRepository).rejections; len(rejections) != 0 {
 				t.Fatalf("rejections = %#v; a refusal never rejects a candidate", rejections)
@@ -247,7 +261,7 @@ func TestRunsShareTheServiceRefusalLedger(t *testing.T) {
 // failingRefusalRecorder cannot store a cooldown.
 type failingRefusalRecorder struct{ *fakeProvider }
 
-func (failingRefusalRecorder) RecordDownloadRefusal(context.Context) error {
+func (failingRefusalRecorder) RecordDownloadRefusal(context.Context, provider.CooldownKind) error {
 	return errors.New("database is locked")
 }
 

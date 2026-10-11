@@ -162,14 +162,41 @@ func TestOneDeadFileOnAReadableMountDoesNotPauseTheQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	empty := t.TempDir()
+	// Production: library files in /media/tv are symlinks into /mnt/altmount.
+	// The link's own directory is local and always lists, so the mount is
+	// judged at the link's target.
+	library := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(library, "Show"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(library, "Show", "episode.en.srt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := func(name, target string) string {
+		path := filepath.Join(library, "Show", name)
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	droppedMount := t.TempDir()
+	intoDroppedMount := link("dropped.mkv", filepath.Join(droppedMount, "tv", "Show", "episode.mkv"))
+	intoListedMount := link("dead.mkv", filepath.Join(root, "Show", "gone.mkv"))
+	relativeIntoDroppedMount := link("relative.mkv", filepath.Join("..", "..", filepath.Base(droppedMount), "tv", "Show", "episode.mkv"))
+	if filepath.Dir(library) != filepath.Dir(droppedMount) {
+		t.Fatalf("temporary directories %q and %q do not share a parent", library, droppedMount)
+	}
 	for name, test := range map[string]struct {
-		root      string
+		roots     []string
 		mediaPath string
 		paused    bool
 	}{
-		"dead file in a listed directory":    {root, filepath.Join(root, "Show", "gone.mkv"), false},
-		"removed directory on a listed root": {root, filepath.Join(root, "Gone", "gone.mkv"), false},
-		"empty mount point":                  {empty, filepath.Join(empty, "Show", "gone.mkv"), true},
+		"dead file in a listed directory":          {[]string{root}, filepath.Join(root, "Show", "gone.mkv"), false},
+		"removed directory on a listed root":       {[]string{root}, filepath.Join(root, "Gone", "gone.mkv"), false},
+		"empty mount point":                        {[]string{empty}, filepath.Join(empty, "Show", "gone.mkv"), true},
+		"symlink into an empty mount":              {[]string{library, droppedMount}, intoDroppedMount, true},
+		"relative symlink into an empty mount":     {[]string{library, droppedMount}, relativeIntoDroppedMount, true},
+		"symlink to a dead file on a listed mount": {[]string{library, root}, intoListedMount, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
@@ -180,15 +207,28 @@ func TestOneDeadFileOnAReadableMountDoesNotPauseTheQueue(t *testing.T) {
 			}
 			service := &workerWorkflow{err: missingMedia()}
 			worker := testWorker(repository, service, testutil.NewClock(now))
-			worker.MediaRoots = []string{test.root}
+			worker.MediaRoots = test.roots
 			worker.SearchBatch = 1
 			for range mediaBreakerThreshold + 2 {
 				_ = worker.RunOnce(t.Context())
 			}
-			if paused := service.calls < mediaBreakerThreshold+2; paused != test.paused {
+			if paused := service.calls == mediaBreakerThreshold; paused != test.paused {
 				t.Fatalf("paused = %t after %d calls, want %t", paused, service.calls, test.paused)
 			}
 		})
+	}
+}
+
+func TestTopDirectoriesNamesTheMountOfALinkTarget(t *testing.T) {
+	for directory, want := range map[string]string{
+		"/mnt/altmount/tv/Show/Season 01": "/mnt/altmount",
+		"/mnt/altmount":                   "/mnt/altmount",
+		"/mnt":                            "/mnt",
+		"/":                               "/",
+	} {
+		if got := topDirectories(directory); got != want {
+			t.Errorf("topDirectories(%q) = %q; want %q", directory, got, want)
+		}
 	}
 }
 

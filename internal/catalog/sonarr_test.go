@@ -32,7 +32,7 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 		case r.URL.Path == "/api/v3/episode" && r.URL.Query().Get("episodeFileId") == "1001":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "absoluteEpisodeNumber": 14, "title": "Second Episode", "airDate": "2026-07-15", "airDateUtc": "2026-07-15T04:45:00Z"}})
 		case r.URL.Path == "/api/v3/series/10":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Example Show", "alternateTitles": []map[string]any{{"title": "Primjer"}}, "year": 2024, "imdbId": "tt1234567", "tvdbId": 7654})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Example Show", "alternateTitles": []map[string]any{{"title": "Primjer"}}, "year": 2024, "imdbId": "tt1234567", "tvdbId": 7654, "seriesType": "Anime"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -67,6 +67,9 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	}
 	if want := time.Date(2026, 7, 15, 4, 45, 0, 0, time.UTC); !media.ReleasedAt.Equal(want) {
 		t.Fatalf("released at = %s, want %s", media.ReleasedAt, want)
+	}
+	if !media.Anime() {
+		t.Fatalf("series type = %q, want anime", media.SeriesType)
 	}
 }
 

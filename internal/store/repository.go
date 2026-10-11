@@ -368,8 +368,8 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 	}
 	now := time.Now().UTC().UnixNano()
 	if !found {
-		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, entity_id, series_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, episode_end, absolute_episode_end, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, released_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), now)
+		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, entity_id, series_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, episode_end, absolute_episode_end, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, released_at_ns, series_type, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), media.SeriesType, now)
 		if err != nil {
 			return 0, false, fmt.Errorf("insert media: %w", err)
 		}
@@ -378,8 +378,8 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 			return 0, false, fmt.Errorf("read media id: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, series_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, episode_end=?, absolute_episode_end=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, released_at_ns=CASE WHEN ?!=0 THEN ? ELSE released_at_ns END, updated_at_ns=? WHERE id=?`,
-			media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), releasedAtNS(media), now, id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, series_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, episode_end=?, absolute_episode_end=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, released_at_ns=CASE WHEN ?!=0 THEN ? ELSE released_at_ns END, series_type=CASE WHEN ?!='' THEN ? ELSE series_type END, updated_at_ns=? WHERE id=?`,
+			media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), releasedAtNS(media), media.SeriesType, media.SeriesType, now, id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media: %w", err)
 		}
@@ -410,8 +410,8 @@ func (r *Repository) GetMedia(ctx context.Context, mediaID int64) (domain.Media,
 	var modTimeNS, durationNS int64
 	var unsupportedReason string
 	var releasedAtNS int64
-	err := r.store.db.QueryRowContext(ctx, `SELECT instance, kind, file_id, entity_id, series_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, episode_end, absolute_episode_end, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, released_at_ns FROM media WHERE id=?`, mediaID).Scan(
-		&media.Ref.Instance, &kind, &media.Ref.FileID, &media.EntityID, &media.SeriesID, &media.Fingerprint.Path, &media.Fingerprint.Size, &modTimeNS, &media.Title, &media.EpisodeTitle, &alternateTitles, &media.Year, &media.Season, &media.Episode, &media.AbsoluteEpisode, &media.EpisodeEnd, &media.AbsoluteEpisodeEnd, &media.ExternalIDs.IMDb, &media.ExternalIDs.TMDB, &media.ExternalIDs.TVDB, &media.OriginalFilename, &media.ReleaseName, &media.ReleaseGroup, &media.Source, &media.Resolution, &media.StreamingService, &media.Edition, &media.Quality, &durationNS, &unsupportedReason, &releasedAtNS)
+	err := r.store.db.QueryRowContext(ctx, `SELECT instance, kind, file_id, entity_id, series_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, episode_end, absolute_episode_end, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, released_at_ns, series_type FROM media WHERE id=?`, mediaID).Scan(
+		&media.Ref.Instance, &kind, &media.Ref.FileID, &media.EntityID, &media.SeriesID, &media.Fingerprint.Path, &media.Fingerprint.Size, &modTimeNS, &media.Title, &media.EpisodeTitle, &alternateTitles, &media.Year, &media.Season, &media.Episode, &media.AbsoluteEpisode, &media.EpisodeEnd, &media.AbsoluteEpisodeEnd, &media.ExternalIDs.IMDb, &media.ExternalIDs.TMDB, &media.ExternalIDs.TVDB, &media.OriginalFilename, &media.ReleaseName, &media.ReleaseGroup, &media.Source, &media.Resolution, &media.StreamingService, &media.Edition, &media.Quality, &durationNS, &unsupportedReason, &releasedAtNS, &media.SeriesType)
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("get media %d: %w", mediaID, err)
 	}
@@ -1869,7 +1869,14 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			return false, fmt.Errorf("find deleted media: %w", err)
 		}
 		if err == nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted_at_ns=CASE WHEN deleted=1 THEN MAX(deleted_at_ns, ?1) ELSE ?1 END, deleted=1, updated_at_ns=MAX(updated_at_ns, ?1) WHERE id=?2`, mutation.At.UnixNano(), mediaID); err != nil {
+			// A delete without a file id removes the movie or episode itself,
+			// so it also stops imports of other files; a file's delete stops
+			// only imports of that file.
+			var entityDeletedAt int64
+			if mutation.Ref.FileID <= 0 {
+				entityDeletedAt = mutation.At.UnixNano()
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted_at_ns=CASE WHEN deleted=1 THEN MAX(deleted_at_ns, ?1) ELSE ?1 END, entity_deleted_at_ns=CASE WHEN deleted=1 THEN MAX(entity_deleted_at_ns, ?3) ELSE ?3 END, deleted=1, updated_at_ns=MAX(updated_at_ns, ?1) WHERE id=?2`, mutation.At.UnixNano(), mediaID, entityDeletedAt); err != nil {
 				return false, fmt.Errorf("mark deleted media: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, queue_order_ns=0, rerun_requested=0, resume_providers_json='[]', resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
@@ -1885,14 +1892,17 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 	return true, nil
 }
 
-// deletedAfterEventTx reports whether the import or rename's file or entity
-// was deleted by a change applied after the event happened. It compares the
-// delete's own time (deleted_at_ns), not updated_at_ns, which inventory and
-// other writes also move.
+// deletedAfterEventTx reports whether a delete applied after the import or
+// rename happened removed its file, or removed its whole movie or episode (a
+// delete without a file id). A delete of another file of the same entity,
+// such as the file an upgrade replaced, never makes it stale. It compares the
+// delete's own time (deleted_at_ns, entity_deleted_at_ns), not updated_at_ns,
+// which inventory and other writes also move.
 func deletedAfterEventTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMutation) (bool, error) {
 	var stale bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media WHERE instance=? AND kind=? AND (file_id=? OR entity_id=?) AND deleted=1 AND deleted_at_ns > ?)`,
-		mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID, mutation.EntityID, mutation.At.UnixNano()).Scan(&stale)
+	at := mutation.At.UnixNano()
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media WHERE instance=? AND kind=? AND deleted=1 AND ((file_id=? AND deleted_at_ns > ?) OR (entity_id=? AND entity_deleted_at_ns > ?)))`,
+		mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID, at, mutation.EntityID, at).Scan(&stale)
 	if err != nil {
 		return false, fmt.Errorf("check deleted media: %w", err)
 	}
@@ -1981,7 +1991,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		return 0, false, fmt.Errorf("encode media alternate titles: %w", err)
 	}
 	if !found {
-		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, entity_id, series_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, episode_end, absolute_episode_end, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, released_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), at.UnixNano())
+		result, err := tx.ExecContext(ctx, `INSERT INTO media(instance, kind, file_id, entity_id, series_id, path, size, mod_time_ns, title, episode_title, alternate_titles_json, year, season, episode, absolute_episode, episode_end, absolute_episode_end, imdb_id, tmdb_id, tvdb_id, original_filename, release_name, release_group, source, resolution, streaming_service, edition, quality, duration_ns, unsupported_reason, released_at_ns, series_type, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), media.SeriesType, at.UnixNano())
 		if err != nil {
 			return 0, false, fmt.Errorf("insert media for event: %w", err)
 		}
@@ -1990,7 +2000,7 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 			return 0, false, fmt.Errorf("read media ID for event: %w", err)
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, series_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, episode_end=?, absolute_episode_end=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, released_at_ns=CASE WHEN ?!=0 THEN ? ELSE released_at_ns END, updated_at_ns=MAX(updated_at_ns, ?) WHERE id=?`, media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), releasedAtNS(media), at.UnixNano(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE media SET deleted=0, file_id=?, entity_id=?, series_id=?, path=?, size=?, mod_time_ns=?, title=?, episode_title=?, alternate_titles_json=?, year=?, season=?, episode=?, absolute_episode=?, episode_end=?, absolute_episode_end=?, imdb_id=?, tmdb_id=?, tvdb_id=?, original_filename=?, release_name=?, release_group=?, source=?, resolution=?, streaming_service=?, edition=?, quality=?, duration_ns=?, unsupported_reason=?, released_at_ns=CASE WHEN ?!=0 THEN ? ELSE released_at_ns END, series_type=CASE WHEN ?!='' THEN ? ELSE series_type END, updated_at_ns=MAX(updated_at_ns, ?) WHERE id=?`, media.Ref.FileID, media.EntityID, media.SeriesID, media.Fingerprint.Path, media.Fingerprint.Size, media.Fingerprint.ModTime.UnixNano(), media.Title, media.EpisodeTitle, alternateTitles, media.Year, media.Season, media.Episode, media.AbsoluteEpisode, media.EpisodeEnd, media.AbsoluteEpisodeEnd, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB, media.OriginalFilename, media.ReleaseName, media.ReleaseGroup, media.Source, media.Resolution, media.StreamingService, media.Edition, media.Quality, int64(media.Duration), string(media.UnsupportedReason), releasedAtNS(media), releasedAtNS(media), media.SeriesType, media.SeriesType, at.UnixNano(), id)
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}

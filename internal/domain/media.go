@@ -63,6 +63,19 @@ type Media struct {
 	// ReleasedAt is when the episode aired or the movie was released digitally;
 	// zero when the Arr app doesn't know.
 	ReleasedAt time.Time `json:"released_at,omitzero"`
+	// SeriesType is Sonarr's series type in lower case ("standard", "daily",
+	// "anime"); empty for movies and for rows not yet read again from Sonarr.
+	SeriesType string `json:"series_type,omitempty"`
+}
+
+// SeriesTypeAnime is Sonarr's series type for anime, whose files are often
+// numbered absolutely ("One Piece - 607").
+const SeriesTypeAnime = "anime"
+
+// Anime reports whether Sonarr types the series as anime. An unknown type
+// reads as not anime.
+func (m Media) Anime() bool {
+	return m.SeriesType == SeriesTypeAnime
 }
 
 // CheckedUnsupportedEpisodeEnd records that an unsupported multi-episode file

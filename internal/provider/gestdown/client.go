@@ -72,10 +72,10 @@ func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
 
-// RecordDownloadRefusal pauses downloads after one delivered a limit or login
-// message instead of a subtitle.
-func (c *Client) RecordDownloadRefusal(ctx context.Context) error {
-	return c.transport.RecordDownloadRefusal(ctx)
+// RecordDownloadRefusal pauses downloads after one delivered a limit, login
+// or client-block message instead of a subtitle, for the cooldown of kind.
+func (c *Client) RecordDownloadRefusal(ctx context.Context, kind base.CooldownKind) error {
+	return c.transport.RecordDownloadRefusal(ctx, kind)
 }
 
 func (c *Client) Capabilities() base.Capabilities {
@@ -241,8 +241,11 @@ func (c *Client) request(ctx context.Context, operation base.Operation, path str
 	}
 	if response.StatusCode == http.StatusTooManyRequests {
 		response.Body.Close()
-		reset := c.transport.Clock.Now().Add(5 * time.Minute)
-		if window, found := base.ParseRateLimit(c.transport.Clock.Now(), response.Header); found && window.Remaining <= 0 {
+		// A reset only counts when it lies ahead: "Retry-After: 0" or a
+		// past date would save a cooldown that is already over.
+		now := c.transport.Clock.Now()
+		reset := now.Add(5 * time.Minute)
+		if window, found := base.ParseRateLimit(now, response.Header); found && window.Remaining <= 0 && window.ResetAt.After(now) {
 			reset = window.ResetAt
 		}
 		reset, err := c.transport.PersistCooldown(ctx, operation, base.CooldownRateLimit, reset)

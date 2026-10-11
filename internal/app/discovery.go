@@ -12,7 +12,8 @@ import (
 // A scope change permits another background discovery pass. Credentials and
 // language changes do not invalidate completion; language backfill is separate.
 // library-v2 reran discovery once to backfill media release dates; library-v3
-// reruns it once to backfill runtimes under an hour, which parsed as zero.
+// reruns it once to backfill runtimes under an hour, which parsed as zero, and
+// Sonarr series types, which decide anime absolute numbering.
 func libraryDiscoveryScope(instance config.InstanceConfig, mediaRoots []string) string {
 	mappings := append([]config.PathMapping(nil), instance.PathMappings...)
 	sort.Slice(mappings, func(i, j int) bool {

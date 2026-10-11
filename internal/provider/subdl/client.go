@@ -81,10 +81,10 @@ func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
 
-// RecordDownloadRefusal pauses downloads after one delivered a limit or login
-// message instead of a subtitle.
-func (c *Client) RecordDownloadRefusal(ctx context.Context) error {
-	return c.transport.RecordDownloadRefusal(ctx)
+// RecordDownloadRefusal pauses downloads after one delivered a limit, login
+// or client-block message instead of a subtitle, for the cooldown of kind.
+func (c *Client) RecordDownloadRefusal(ctx context.Context, kind baseprovider.CooldownKind) error {
+	return c.transport.RecordDownloadRefusal(ctx, kind)
 }
 
 // v3: searches no longer send hi=1, which made SubDL return hearing-impaired
@@ -256,7 +256,7 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 				return nil, c.decodeLimit(ctx, baseprovider.OperationSearch, response.Body, response.Header, err)
 			}
 		}
-		return nil, c.rejectedCredentials(ctx, response, err)
+		return nil, c.rejectedCredentials(ctx, baseprovider.OperationSearch, response, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -611,25 +611,31 @@ func (c *Client) decodeLimit(ctx context.Context, operation baseprovider.Operati
 }
 
 // limitCode classifies a SubDL error code or message as a limit: its own codes,
-// wording naming a limit or quota that was reached, exceeded or exhausted
-// ("You have reached your daily download limit", "Request limit reached",
-// "API quota exceeded", "Quota exhausted"), or too many requests. Other
-// mentions of a limit ("must not exceed the limit of 30", "unlimited
-// downloads") and other things exceeded ("Max file size exceeded for
-// download") are not limits. It returns "" for anything else.
+// wording naming a limit or quota that was reached, exceeded or exhausted, or
+// too many requests. A reached limit that names the day, downloads or a quota
+// ("You have reached your daily download limit", "API quota exceeded",
+// "Quota exhausted") is the daily limit; any other ("Request limit reached",
+// "You have reached your limit") and too many requests are a rate limit, a
+// short cooldown rather than a pause until the daily reset. Other mentions
+// of a limit ("must not exceed the limit of 30", "unlimited downloads") and
+// other things exceeded ("Max file size exceeded for download") are not
+// limits. It returns "" for anything else.
 func limitCode(message string) string {
 	normalized := strings.ToLower(strings.TrimSpace(message))
 	switch normalized {
 	case "daily_limit", "api_download_limit_exceeded", "service_busy", "rate_limit":
 		return normalized
 	}
+	limited := strings.ReplaceAll(normalized, "unlimited", "")
 	switch {
 	case strings.Contains(normalized, "too many requests") || strings.Contains(normalized, "rate limit"):
 		return "rate_limit"
-	case containsAny(strings.ReplaceAll(normalized, "unlimited", ""), "limit", "quota") && containsAny(normalized, "reached", "exceeded", "exhausted"):
+	case !containsAny(limited, "limit", "quota") || !containsAny(normalized, "reached", "exceeded", "exhausted"):
+		return ""
+	case containsAny(limited, "daily", "download", "quota"):
 		return "daily_limit"
 	}
-	return ""
+	return "rate_limit"
 }
 
 func containsAny(message string, markers ...string) bool {
@@ -648,12 +654,7 @@ func containsAny(message string, markers ...string) bool {
 // other 403 is treated as a temporary block and opens the provider's
 // transient-failure circuit. It returns nil for other answers.
 func (c *Client) refusal(ctx context.Context, operation baseprovider.Operation, response *http.Response) error {
-	var payload struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
-	}
-	_ = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload)
-	message := strings.TrimSpace(payload.Error + " " + payload.Message)
+	message := refusalMessage(response.Body)
 	if err := c.payloadLimit(ctx, operation, message, time.Time{}); err != nil {
 		return err
 	}
@@ -666,7 +667,27 @@ func (c *Client) refusal(ctx context.Context, operation baseprovider.Operation, 
 		}
 		return &baseprovider.AuthenticationError{Message: "API key rejected"}
 	}
-	state, err := c.transport.Gate.RecordTransientFailure(ctx, c.id, operation, "http_403", time.Time{})
+	return c.temporaryBlock(ctx, operation, "http_403")
+}
+
+// refusalMessage reads a SubDL error body's JSON "error" and "message", or ""
+// when the body is empty or not such JSON.
+func refusalMessage(body io.Reader) string {
+	var payload struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if body == nil || json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Error + " " + payload.Message)
+}
+
+// temporaryBlock opens the transient-failure circuit for a refusal that is
+// neither a limit nor a rejected key, so it backs off 1, 5, 15 then 60
+// minutes while it lasts.
+func (c *Client) temporaryBlock(ctx context.Context, operation baseprovider.Operation, reason string) error {
+	state, err := c.transport.Gate.RecordTransientFailure(ctx, c.id, operation, reason, time.Time{})
 	if err != nil {
 		return err
 	}
@@ -686,11 +707,14 @@ func invalidAPIKey(message string) bool {
 	return containsAny(message, "invalid", "not valid", "wrong", "incorrect", "missing", "required", "expired", "revoked", "disabled", "banned", "blocked", "suspended", "unauthorized", "unauthorised", "not authorized", "unknown")
 }
 
-// rejectedCredentials disables the provider after an HTTP 401 from SubDL's own
-// API or download host, which SubDL answers only for a key it does not
-// accept. A 401 from another host a download was redirected to (a CDN) says
-// nothing about the key and fails only that download.
-func (c *Client) rejectedCredentials(ctx context.Context, response *http.Response, err error) error {
+// rejectedCredentials handles an HTTP 401 from SubDL's own API or download
+// host by its message, like a 403: a limit message is the usual quota or
+// cooldown; a message naming the key as rejected, a bare "Unauthorized", or an
+// empty or non-JSON body is a key SubDL does not accept and disables the
+// provider; any other message opens the transient-failure circuit. A 401
+// from another host a download was redirected to (a CDN) says nothing about
+// the key and fails only that download.
+func (c *Client) rejectedCredentials(ctx context.Context, operation baseprovider.Operation, response *http.Response, err error) error {
 	var authentication *baseprovider.AuthenticationError
 	if !errors.As(err, &authentication) {
 		return err
@@ -698,10 +722,31 @@ func (c *Client) rejectedCredentials(ctx context.Context, response *http.Respons
 	if !c.ownHost(response) {
 		return fmt.Errorf("SubDL download returned HTTP %d from a redirect target", http.StatusUnauthorized)
 	}
+	var message string
+	if response != nil {
+		message = refusalMessage(response.Body)
+	}
+	if limitErr := c.payloadLimit(ctx, operation, message, time.Time{}); limitErr != nil {
+		return limitErr
+	}
+	if message != "" && !invalidAPIKey(message) && !bareUnauthorized(message) {
+		return c.temporaryBlock(ctx, operation, "http_401")
+	}
 	if disableErr := c.transport.DisableAuthentication(ctx, "SubDL API key rejected (HTTP 401)"); disableErr != nil {
 		return fmt.Errorf("disable SubDL provider: %w", disableErr)
 	}
 	return &baseprovider.AuthenticationError{Message: "API key rejected"}
+}
+
+// bareUnauthorized reports a message that only restates the 401 status
+// ("Unauthorized", "Not authorized."), which SubDL answers for a key it does
+// not accept.
+func bareUnauthorized(message string) bool {
+	switch strings.TrimRight(strings.Join(strings.Fields(strings.ToLower(message)), " "), ".!") {
+	case "unauthorized", "unauthorised", "not authorized", "not authorised", "401 unauthorized":
+		return true
+	}
+	return false
 }
 
 // ownHost reports whether a response came from the host of SubDL's
@@ -808,7 +853,7 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 				return baseprovider.DownloadMetadata{}, c.decodeLimit(ctx, baseprovider.OperationDownload, response.Body, response.Header, err)
 			}
 		}
-		return baseprovider.DownloadMetadata{}, c.rejectedCredentials(ctx, response, err)
+		return baseprovider.DownloadMetadata{}, c.rejectedCredentials(ctx, baseprovider.OperationDownload, response, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

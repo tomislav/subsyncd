@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1034,8 +1035,8 @@ func (s *Service) candidateRejection(ctx context.Context, request Request, candi
 		return rejection, found, err
 	}
 	lookup.ExcludeReasonCodes = nil
-	for _, reason := range versionedRejectionReasons {
-		lookup.CandidateSignature = identity.CandidateSignature + rejectionRulesVersion(reason)
+	for _, suffix := range []string{rejectionRulesVersion("invalid_subtitle"), rejectionRulesVersion("pack_selection"), exhaustedRulesVersion()} {
+		lookup.CandidateSignature = identity.CandidateSignature + suffix
 		if rejection, found, err := s.Repository.GetCandidateRejection(ctx, lookup); err != nil || found {
 			return rejection, found, err
 		}
@@ -1058,7 +1059,29 @@ func (s *Service) RejectionActive(rejection store.CandidateRejection, fingerprin
 		return false
 	}
 	suffix := rejectionRulesVersion(rejection.ReasonCode)
-	return suffix == "" || strings.HasSuffix(rejection.CandidateSignature, suffix)
+	if suffix == "" {
+		return true
+	}
+	if !strings.HasSuffix(rejection.CandidateSignature, suffix) {
+		return false
+	}
+	// "All versions rejected" also names the subtitle rules version.
+	if version := subtitleRulesInfix.FindString(strings.TrimSuffix(rejection.CandidateSignature, suffix)); version != "" {
+		return version == rejectionRulesVersion("invalid_subtitle")
+	}
+	return true
+}
+
+// subtitleRulesInfix finds the subtitle rules version an exhaustion
+// rejection carries before its pack selection version.
+var subtitleRulesInfix = regexp.MustCompile(`/subtitle-rules-v\d+$`)
+
+// exhaustedRulesVersion is the suffix of a "versions_exhausted" rejection:
+// every version of a pack was rejected, some for pack selection and some for
+// invalid content, so it names both rules versions and bumping either one
+// re-opens the pack along with its versions.
+func exhaustedRulesVersion() string {
+	return rejectionRulesVersion("invalid_subtitle") + rejectionRulesVersion("pack_selection")
 }
 
 // rejectionRulesVersion is the suffix a rejection for reasonCode adds to its
@@ -1133,7 +1156,12 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	if err != nil {
 		return false, err
 	}
-	signature += rejectionRulesVersion(reasonCode)
+	var selection *pack.SelectionError
+	if errors.As(failure, &selection) && selection.Rule == "versions_exhausted" {
+		signature += exhaustedRulesVersion()
+	} else {
+		signature += rejectionRulesVersion(reasonCode)
+	}
 	now := s.Clock.Now()
 	fingerprint := request.Media.Fingerprint
 	rejection := store.CandidateRejection{

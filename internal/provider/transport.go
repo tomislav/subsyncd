@@ -19,6 +19,9 @@ const (
 	CooldownRateLimit     CooldownKind = "rate_limit"
 	CooldownDownloadQuota CooldownKind = "download_quota"
 	CooldownServiceBusy   CooldownKind = "service_busy"
+	// CooldownClientBlocked is a provider refusing this client rather than
+	// a limit: Titlovi's "unsupported plugin" placeholder.
+	CooldownClientBlocked CooldownKind = "client_blocked"
 )
 
 type Client struct {
@@ -162,7 +165,7 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 			return response, &CooldownError{ProviderID: c.ProviderID, Scope: operation, Reason: throttle.Reason, ResetAt: resetAt}
 		}
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || response.Body == nil {
+	if (response.StatusCode < 200 || response.StatusCode >= 300 || response.Body == nil) && !refusalStatus(response.StatusCode) {
 		if err := c.Gate.ResetTransientFailures(ctx, c.ProviderID, operation); err != nil {
 			return response, err
 		}
@@ -171,6 +174,15 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		return response, &AuthenticationError{Message: "HTTP 401"}
 	}
 	return response, nil
+}
+
+// refusalStatus reports a status that refuses the request (401, 403, 429).
+// It proves the provider answered, but not that it recovered, so it keeps the
+// transient-failure count: a provider that counts its own refusals as
+// transient failures (SubDL's 403) escalates its backoff instead of starting
+// at the first delay every time.
+func refusalStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests
 }
 
 // credentialHeaders carry provider credentials. Go drops Authorization and
@@ -205,11 +217,23 @@ func (c Client) credentialSafeHTTP() *http.Client {
 // response persists as a provider cooldown.
 const minimumPersistedWindow = 5 * time.Second
 
+// defaultCooldown is the cooldown of a refusal whose provider reports no
+// future reset and has no compiled fallback for its kind.
+const defaultCooldown = 5 * time.Minute
+
 // PersistCooldown records a cooldown and returns the reset that applies,
-// which callers report in their CooldownError or QuotaError.
+// which callers report in their CooldownError or QuotaError. A reset that is
+// not in the future (none, "Retry-After: 0", a past date) takes the
+// provider's fallback for kind, or defaultCooldown, so a refusal never saves
+// a cooldown that is already over and the provider is not asked again in a
+// loop.
 func (c Client) PersistCooldown(ctx context.Context, operation Operation, kind CooldownKind, resetAt time.Time) (time.Time, error) {
-	if resetAt.IsZero() {
-		resetAt = FallbackReset(c.Clock.Now(), c.ProviderType, kind)
+	now := c.Clock.Now()
+	if !resetAt.After(now) {
+		resetAt = FallbackReset(now, c.ProviderType, kind)
+	}
+	if !resetAt.After(now) {
+		resetAt = now.Add(defaultCooldown)
 	}
 	return c.Gate.persist(ctx, Throttle{ProviderID: c.ProviderID, Scope: operation, Reason: string(kind), Remaining: 0, ResetAt: resetAt})
 }

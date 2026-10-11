@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"subsyncd/internal/domain"
 	"subsyncd/internal/workflow"
 )
 
@@ -68,11 +69,15 @@ func (w *Worker) mediaPaused() bool {
 }
 
 // mediaMountReadable probes the storage holding mediaPath: its directory, or,
-// when that directory is gone, the configured media root above it. Only a
-// directory that lists at least one entry counts; a dropped mount leaves an
-// empty mount point, a crashed or stale one fails the listing, and a hung one
-// times out. Without configured media roots it reports false, so every
-// failure counts as before.
+// when that directory is gone, the nearest existing directory above it up to
+// the mount's root. Only a directory that lists at least one entry counts; a
+// dropped mount leaves an empty mount point, a crashed or stale one fails the
+// listing, and a hung one times out. A media path that is a symlink (library
+// links into a FUSE mount such as /mnt/altmount) is probed at its target: the
+// link's own directory is local and always lists. The target's root is the
+// deeper of the configured media root holding it and its first two
+// directories ("/mnt/altmount"). Without configured media roots it reports
+// false, so every failure counts as before.
 func (w *Worker) mediaMountReadable(mediaPath string) bool {
 	if len(w.MediaRoots) == 0 || mediaPath == "" {
 		return false
@@ -81,15 +86,43 @@ func (w *Worker) mediaMountReadable(mediaPath string) bool {
 	if root == "" {
 		return false
 	}
-	readable, missing := listsEntries(filepath.Dir(mediaPath))
-	if readable {
-		return true
+	directory := filepath.Dir(filepath.Clean(mediaPath))
+	if target, ok := domain.LinkTarget(mediaPath, mediaMountProbeTimeout); ok {
+		directory = filepath.Dir(target)
+		root = topDirectories(directory)
+		if configured := containingRoot(target, w.MediaRoots); len(configured) > len(root) {
+			root = configured
+		}
 	}
-	if !missing || filepath.Clean(filepath.Dir(mediaPath)) == root {
-		return false
+	return listsUpTo(directory, root)
+}
+
+// listsUpTo reports whether directory lists at least one entry or, when it
+// does not exist, whether the nearest existing directory above it, no higher
+// than root, does.
+func listsUpTo(directory, root string) bool {
+	for {
+		readable, missing := listsEntries(directory)
+		if readable {
+			return true
+		}
+		parent := filepath.Dir(directory)
+		if !missing || directory == root || parent == directory {
+			return false
+		}
+		directory = parent
 	}
-	readable, _ = listsEntries(root)
-	return readable
+}
+
+// topDirectories returns directory's first two levels ("/mnt/altmount" for
+// "/mnt/altmount/tv/Show"), or directory itself when it is shallower.
+func topDirectories(directory string) string {
+	separator := string(filepath.Separator)
+	parts := strings.SplitN(strings.TrimPrefix(directory, separator), separator, 3)
+	if len(parts) == 0 || parts[0] == "" {
+		return separator
+	}
+	return separator + filepath.Join(parts[:min(len(parts), 2)]...)
 }
 
 // containingRoot returns the longest configured root that holds path.

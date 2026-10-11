@@ -292,3 +292,31 @@ func TestProbeMountFollowsMediaRoots(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeMountOfASymlinkIsItsTargetsMount(t *testing.T) {
+	// Production: library files in /media/tv are symlinks into /mnt/altmount,
+	// and only /media/tv is a configured root. Every link into the mount
+	// shares one stuck-probe limit rather than one per show folder.
+	library := t.TempDir()
+	roots := []string{library}
+	for name, target := range map[string]string{
+		"a.mkv": "/mnt/altmount/tv/Show A/Season 01/e1.mkv",
+		"b.mkv": "/mnt/altmount/movies/Film (2020)/film.mkv",
+	} {
+		directory := filepath.Join(library, strings.TrimSuffix(name, ".mkv"))
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(directory, name)
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+		if got := mediaMount(path, roots); got != "/mnt/altmount" {
+			t.Errorf("mediaMount(link to %q) = %q; want /mnt/altmount", target, got)
+		}
+	}
+	plain := filepath.Join(library, "Show", "e1.mkv")
+	if got, want := mediaMount(plain, roots), filepath.Join(library, "Show"); got != want {
+		t.Errorf("mediaMount(%q) = %q; want %q", plain, got, want)
+	}
+}

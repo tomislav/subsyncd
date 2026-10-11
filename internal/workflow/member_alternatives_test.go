@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,6 +213,30 @@ func TestPackVersionsRememberExhaustedInstallationFallback(t *testing.T) {
 	}
 	if adapter.downloads != 1 || sync.synchronizeCalls != 2 {
 		t.Fatalf("repeated exhausted versions: downloads=%d sync=%d", adapter.downloads, sync.synchronizeCalls)
+	}
+	// The versions were rejected as invalid subtitles, so "all versions
+	// rejected" names the subtitle rules version too: a bump of either
+	// rules version re-opens the pack along with its versions.
+	exhausted := 0
+	for _, rejection := range service.Repository.(*workflowRepository).rejections {
+		if rejection.ReasonCode != "pack_selection" {
+			continue
+		}
+		exhausted++
+		if want := exhaustedRulesVersion(); !strings.HasSuffix(rejection.CandidateSignature, want) {
+			t.Fatalf("exhaustion signature %q; want suffix %q", rejection.CandidateSignature, want)
+		}
+		if !service.RejectionActive(rejection, request.Media.Fingerprint) {
+			t.Fatal("current exhaustion rejection is not active")
+		}
+		stale := rejection
+		stale.CandidateSignature = strings.TrimSuffix(rejection.CandidateSignature, exhaustedRulesVersion()) + fmt.Sprintf("/subtitle-rules-v%d", pack.SubtitleRulesVersion-1) + rejectionRulesVersion("pack_selection")
+		if service.RejectionActive(stale, request.Media.Fingerprint) {
+			t.Fatal("exhaustion under an older subtitle rules version is still active")
+		}
+	}
+	if exhausted != 1 {
+		t.Fatalf("exhaustion rejections = %d; want 1", exhausted)
 	}
 }
 

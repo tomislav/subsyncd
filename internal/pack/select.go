@@ -481,10 +481,12 @@ func normalizeTitle(value string) string {
 }
 
 // Names in the anime convention number episodes absolutely: a leading
-// "[Group]" tag or a number after a spaced dash ("[Group] One Piece - 607
-// (1080p)" and "One Piece - 607.srt" are episode 607, not S06E07). A number
-// between spaced dashes and followed by an episode title ("Malcolm in the
-// Middle - 607 - Hal Coaches") is the TV naming convention instead, unless a
+// "[Group]" tag ("[Group] One Piece - 607 (1080p)" is episode 607, not
+// S06E07), and, for a series Sonarr types as anime, a number after a spaced
+// dash ("One Piece - 607.srt"). For other series a spaced dash is ordinary
+// naming ("Malcolm in the Middle - 607.srt" is S06E07). A number between
+// spaced dashes and followed by an episode title ("Malcolm in the Middle -
+// 607 - Hal Coaches") is the TV naming convention even for anime, unless a
 // group tag says otherwise.
 var (
 	leadingGroupTag  = regexp.MustCompile(`^\s*\[([^\]]*)\]`)
@@ -519,15 +521,15 @@ type compactNumber struct {
 // S06E07, seasons 1 to 9). Exactly one such number must appear, and it must not
 // be part of the series title (9-1-1 is not S09E11).
 func compactEpisodeMatches(name string, media domain.Media) bool {
-	numbers := compactNumbers(name, media.Title)
+	numbers := compactNumbers(name, media.Title, media.Anime())
 	return len(numbers) == 1 && compactNamesTarget(numbers[0], media)
 }
 
 // compactNamesTarget reports whether a compact number reads as the target
 // episode and that reading is plausible for the series. A number that is the
 // target's absolute number A matches. Otherwise a name in the anime absolute
-// convention (a group tag, or a spaced dash not followed by an episode title)
-// never matches, whether A is known or not. For other names with A known, the
+// convention (a group tag, or, for an anime series, a spaced dash not
+// followed by an episode title) never matches, whether A is known or not. For other names with A known, the
 // number N could still be an absolute episode; the season-and-episode reading
 // is taken only when N is at least 100 past A, that is when the seasons before
 // the target average fewer than 100 episodes (and a season 1 episode is its
@@ -554,7 +556,7 @@ func compactNamesTarget(number compactNumber, media domain.Media) bool {
 // does not read as the target: another episode, a second episode beside it, or
 // an absolute number that is not the target's.
 func compactNamesOtherEpisode(name string, media domain.Media) bool {
-	numbers := compactNumbers(name, media.Title)
+	numbers := compactNumbers(name, media.Title, media.Anime())
 	for _, number := range numbers {
 		if number.value == media.AbsoluteEpisode {
 			continue
@@ -569,8 +571,9 @@ func compactNamesOtherEpisode(name string, media domain.Media) bool {
 // compactNumbers returns the compact numbers of a name with no other episode
 // evidence, ignoring digits of the series title. Numbers are whole digit runs,
 // so neither 1607 nor 6070 holds a 607; a six-digit run of two numbers of one
-// season in order (607608, a double episode) counts as both.
-func compactNumbers(name, title string) []compactNumber {
+// season in order (607608, a double episode) counts as both. A number after a
+// spaced dash reads as absolute only when anime is set.
+func compactNumbers(name, title string, anime bool) []compactNumber {
 	if hasEpisodeEvidence(name) {
 		return nil
 	}
@@ -593,7 +596,7 @@ func compactNumbers(name, title string) []compactNumber {
 		}
 		run := name[start:end]
 		separated := (start == 0 || strings.IndexByte(" ._-[(", name[start-1]) >= 0) && (end == len(name) || strings.IndexByte(" ._-])", name[end]) >= 0)
-		absolute := groupTagged || spacedDashBefore.MatchString(name[:start]) && !titleDashAfter.MatchString(name[end:])
+		absolute := groupTagged || anime && spacedDashBefore.MatchString(name[:start]) && !titleDashAfter.MatchString(name[end:])
 		var parts []string
 		switch {
 		case !separated:

@@ -446,17 +446,6 @@ func containedDestination(path string, roots []string) (string, string, error) {
 	return destination, parent, nil
 }
 
-func validatedSubtitle(path string, media domain.Media) ([]byte, error) {
-	payload, err := readSubtitleSource(path)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateSubtitlePayload(path, payload, media); err != nil {
-		return nil, err
-	}
-	return payload, nil
-}
-
 // readSubtitleSource reads an installation source that is a regular UTF-8
 // text file of a sensible size.
 func readSubtitleSource(path string) ([]byte, error) {

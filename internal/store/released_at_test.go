@@ -229,3 +229,51 @@ func TestLibraryDiscoveryKeepsTheRuntimeOfAReplacedFile(t *testing.T) {
 		t.Fatalf("duration = %s err=%v; the old file's row keeps %s", got.Duration, err, media.Duration)
 	}
 }
+
+func TestSeriesTypeRoundTripsAndLibraryDiscoveryBackfillsIt(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx, at := t.Context(), time.Now().UTC()
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr", at); err != nil {
+		t.Fatal(err)
+	}
+	// A row saved before the series type was recorded reads as not anime.
+	media := testMedia()
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "initial", Type: "import", Ref: media.Ref, EntityID: media.EntityID, Media: media, Languages: []domain.Language{"hr"}, At: at}); err != nil {
+		t.Fatal(err)
+	}
+	id, got, err := repo.FindMedia(ctx, media.Ref)
+	if err != nil || got.SeriesType != "" || got.Anime() {
+		t.Fatalf("series type = %q err=%v; want unknown", got.SeriesType, err)
+	}
+	searchesBefore := libraryTableSnapshot(t, repo, "search_states")
+	_, revision, err := repo.LibraryDiscoveryState(ctx, "sonarr-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := media
+	listed.SeriesType = domain.SeriesTypeAnime
+	if err := repo.CommitLibraryDiscovery(ctx, "sonarr-main", "scope", revision, []domain.Media{listed}, []domain.Language{"hr"}, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetMedia(ctx, id); err != nil || !got.Anime() {
+		t.Fatalf("series type = %q err=%v; want anime", got.SeriesType, err)
+	}
+	if after := libraryTableSnapshot(t, repo, "search_states"); after != searchesBefore {
+		t.Fatalf("discovery changed search states\nbefore: %s\nafter: %s", searchesBefore, after)
+	}
+	// A later source without a type keeps the known one; a new type replaces it.
+	media.Title = "Show (renamed)"
+	if _, _, err := repo.UpsertMedia(ctx, media); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetMedia(ctx, id); err != nil || !got.Anime() {
+		t.Fatalf("after untyped update = %q err=%v; want anime", got.SeriesType, err)
+	}
+	media.SeriesType = "standard"
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "retyped", Type: "rename", Ref: media.Ref, EntityID: media.EntityID, Media: media, Languages: []domain.Language{"hr"}, At: at.Add(2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetMedia(ctx, id); err != nil || got.SeriesType != "standard" {
+		t.Fatalf("after event = %q err=%v; want standard", got.SeriesType, err)
+	}
+}

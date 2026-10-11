@@ -88,12 +88,20 @@ func (r *Repository) commitLibraryDiscovery(ctx context.Context, instance, scope
 			return err
 		}
 		if found {
-			// Known media keeps its row; only a newly known release date and
-			// runtime are filled in, which backfills rows created before the date
-			// was recorded or while short runtimes still parsed as zero.
+			// Known media keeps its row; only a newly known release date,
+			// series type and runtime are filled in, which backfills rows
+			// created before the date or type was recorded or while short
+			// runtimes still parsed as zero.
 			if released := releasedAtNS(media); released != 0 {
 				if _, err := tx.ExecContext(ctx, `UPDATE media SET released_at_ns=? WHERE id=? AND released_at_ns!=?`, released, id, released); err != nil {
 					return fmt.Errorf("record media release date: %w", err)
+				}
+			}
+			// A known series type is filled in too: rows saved before it was
+			// recorded read as not anime until then.
+			if media.SeriesType != "" {
+				if _, err := tx.ExecContext(ctx, `UPDATE media SET series_type=? WHERE id=? AND series_type!=?`, media.SeriesType, id, media.SeriesType); err != nil {
+					return fmt.Errorf("record media series type: %w", err)
 				}
 			}
 			// The runtime belongs to the listed file: a row still holding a

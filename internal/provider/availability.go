@@ -19,17 +19,18 @@ type SearchAvailability interface {
 }
 
 // DownloadRefusalRecorder is an optional hook for a download that delivered
-// the provider's limit or login message instead of a subtitle. It pauses the
-// provider's downloads and returns the CooldownError to report.
+// the provider's limit, login or client-block message instead of a subtitle.
+// It pauses the provider's downloads for the cooldown of the given kind and
+// returns the CooldownError to report.
 type DownloadRefusalRecorder interface {
-	RecordDownloadRefusal(context.Context) error
+	RecordDownloadRefusal(context.Context, CooldownKind) error
 }
 
 // RecordDownloadRefusal pauses p's downloads after a refused download. It
 // returns nil when p cannot record a cooldown.
-func RecordDownloadRefusal(ctx context.Context, p Provider) error {
+func RecordDownloadRefusal(ctx context.Context, p Provider, kind CooldownKind) error {
 	if recorder, ok := p.(DownloadRefusalRecorder); ok {
-		return recorder.RecordDownloadRefusal(ctx)
+		return recorder.RecordDownloadRefusal(ctx, kind)
 	}
 	return nil
 }
@@ -116,21 +117,41 @@ func (g *Gate) checkAvailability(ctx context.Context, providerID string, include
 	return nil
 }
 
-// downloadRefusalWindow is how long downloads pause after a refused download
-// when the provider has no known quota reset.
-const downloadRefusalWindow = time.Hour
+const (
+	// downloadRefusalWindow is how long downloads pause after a refused
+	// download when the provider has no known quota reset, and after a
+	// client block (Titlovi's "unsupported plugin" placeholder).
+	downloadRefusalWindow = time.Hour
+	// downloadRateLimitWindow is how long downloads pause after a "too many
+	// requests" refusal when the provider has no rate-limit fallback.
+	downloadRateLimitWindow = 15 * time.Minute
+)
 
-// RecordDownloadRefusal persists a download cooldown until the provider's
-// known download quota reset, or for an hour, and returns it as a
-// CooldownError.
-func (c Client) RecordDownloadRefusal(ctx context.Context) error {
-	resetAt := FallbackReset(c.Clock.Now(), c.ProviderType, CooldownDownloadQuota)
-	if resetAt.IsZero() {
-		resetAt = c.Clock.Now().Add(downloadRefusalWindow)
+// RecordDownloadRefusal persists a download cooldown of kind and returns it
+// as a CooldownError: for a download quota, until the provider's known quota
+// reset or for an hour; for a rate limit, the provider's rate-limit fallback
+// or 15 minutes; for a client block, an hour.
+func (c Client) RecordDownloadRefusal(ctx context.Context, kind CooldownKind) error {
+	now := c.Clock.Now()
+	var resetAt time.Time
+	switch kind {
+	case CooldownRateLimit:
+		resetAt = FallbackReset(now, c.ProviderType, CooldownRateLimit)
+		if resetAt.IsZero() {
+			resetAt = now.Add(downloadRateLimitWindow)
+		}
+	case CooldownClientBlocked:
+		resetAt = now.Add(downloadRefusalWindow)
+	default:
+		kind = CooldownDownloadQuota
+		resetAt = FallbackReset(now, c.ProviderType, CooldownDownloadQuota)
+		if resetAt.IsZero() {
+			resetAt = now.Add(downloadRefusalWindow)
+		}
 	}
-	resetAt, err := c.PersistCooldown(ctx, OperationDownload, CooldownDownloadQuota, resetAt)
+	resetAt, err := c.PersistCooldown(ctx, OperationDownload, kind, resetAt)
 	if err != nil {
 		return err
 	}
-	return &CooldownError{ProviderID: c.ProviderID, Scope: OperationDownload, Reason: string(CooldownDownloadQuota), ResetAt: resetAt}
+	return &CooldownError{ProviderID: c.ProviderID, Scope: OperationDownload, Reason: string(kind), ResetAt: resetAt}
 }

@@ -215,7 +215,7 @@ func TestDownloadRefusalPausesDownloadsUntilTheKnownReset(t *testing.T) {
 		t.Run(providerType, func(t *testing.T) {
 			clock := testutil.NewClock(now)
 			client := Client{ProviderID: "p", ProviderType: providerType, Gate: NewGate(&memoryStateStore{states: map[string]store.ProviderState{}}, clock, 1), Clock: clock}
-			err := RecordDownloadRefusal(t.Context(), Observe(&refusalProvider{fakeProvider: &fakeProvider{id: "p"}, client: client}, observability.Discard()))
+			err := RecordDownloadRefusal(t.Context(), Observe(&refusalProvider{fakeProvider: &fakeProvider{id: "p"}, client: client}, observability.Discard()), CooldownDownloadQuota)
 			var cooldown *CooldownError
 			if !errors.As(err, &cooldown) || cooldown.Scope != OperationDownload || !cooldown.ResetAt.Equal(want) {
 				t.Fatalf("error = %v; want a download cooldown until %s", err, want)
@@ -228,7 +228,7 @@ func TestDownloadRefusalPausesDownloadsUntilTheKnownReset(t *testing.T) {
 			}
 		})
 	}
-	if err := RecordDownloadRefusal(t.Context(), &fakeProvider{id: "p"}); err != nil {
+	if err := RecordDownloadRefusal(t.Context(), &fakeProvider{id: "p"}, CooldownDownloadQuota); err != nil {
 		t.Fatalf("a provider without the hook records nothing: %v", err)
 	}
 }
@@ -238,6 +238,34 @@ type refusalProvider struct {
 	client Client
 }
 
-func (p *refusalProvider) RecordDownloadRefusal(ctx context.Context) error {
-	return p.client.RecordDownloadRefusal(ctx)
+func (p *refusalProvider) RecordDownloadRefusal(ctx context.Context, kind CooldownKind) error {
+	return p.client.RecordDownloadRefusal(ctx, kind)
+}
+
+func TestDownloadRefusalKinds(t *testing.T) {
+	// "Too many requests" is a short rate limit, not the daily quota, and a
+	// client block (Titlovi's placeholder) pauses for an hour under its own
+	// reason.
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		providerType string
+		kind         CooldownKind
+		want         time.Time
+	}{
+		{"subdl", CooldownRateLimit, now.Add(15 * time.Minute)},
+		{"titlovi", CooldownRateLimit, now.Add(5 * time.Minute)},
+		{"opensubtitles", CooldownRateLimit, now.Add(time.Minute)},
+		{"gestdown", CooldownRateLimit, now.Add(15 * time.Minute)},
+		{"titlovi", CooldownClientBlocked, now.Add(time.Hour)},
+	} {
+		t.Run(tt.providerType+"/"+string(tt.kind), func(t *testing.T) {
+			clock := testutil.NewClock(now)
+			client := Client{ProviderID: "p", ProviderType: tt.providerType, Gate: NewGate(&memoryStateStore{states: map[string]store.ProviderState{}}, clock, 1), Clock: clock}
+			err := RecordDownloadRefusal(t.Context(), Observe(&refusalProvider{fakeProvider: &fakeProvider{id: "p"}, client: client}, observability.Discard()), tt.kind)
+			var cooldown *CooldownError
+			if !errors.As(err, &cooldown) || cooldown.Scope != OperationDownload || cooldown.Reason != string(tt.kind) || !cooldown.ResetAt.Equal(tt.want) {
+				t.Fatalf("error = %v; want a %s download cooldown until %s", err, tt.kind, tt.want)
+			}
+		})
+	}
 }
