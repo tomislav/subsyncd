@@ -302,52 +302,129 @@ func TestSearchStripsDownloadCredentialsAndDownloadReappliesConfiguredKey(t *tes
 	}
 }
 
-func TestForbiddenSearchDisablesProviderUntilExplicitRetry(t *testing.T) {
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer server.Close()
-	client, states := newTestClientWithState(t, server, 1<<20)
-	query := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}
-	_, err := client.Search(context.Background(), query)
-	var authentication *baseprovider.AuthenticationError
-	if !errors.As(err, &authentication) {
-		t.Fatalf("first search error = %T %v", err, err)
-	}
-	state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth))
-	if err != nil || !state.Disabled {
-		t.Fatalf("disabled state = %#v, %v", state, err)
-	}
-	_, err = client.Search(context.Background(), query)
-	var disabled *baseprovider.DisabledError
-	if !errors.As(err, &disabled) || calls != 1 {
-		t.Fatalf("second search error/calls = %T %v/%d", err, err, calls)
+func TestForbiddenInvalidKeyDisablesProviderUntilExplicitRetry(t *testing.T) {
+	for _, operation := range []string{"search", "download"} {
+		t.Run(operation, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(http.StatusForbidden)
+				io.WriteString(w, `{"status":false,"error":"Invalid API key"}`)
+			}))
+			defer server.Close()
+			client, states := newTestClientWithState(t, server, 1<<20)
+			run := func() error {
+				if operation == "search" {
+					_, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+					return err
+				}
+				_, err := client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/forbidden"}, io.Discard)
+				return err
+			}
+			var authentication *baseprovider.AuthenticationError
+			if err := run(); !errors.As(err, &authentication) {
+				t.Fatalf("first error = %T %v", err, err)
+			}
+			state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth))
+			if err != nil || !state.Disabled {
+				t.Fatalf("disabled state = %#v, %v", state, err)
+			}
+			var disabled *baseprovider.DisabledError
+			if err := run(); !errors.As(err, &disabled) || calls != 1 {
+				t.Fatalf("second error/calls = %T %v/%d", err, err, calls)
+			}
+		})
 	}
 }
 
-func TestForbiddenDownloadDisablesProviderUntilExplicitRetry(t *testing.T) {
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer server.Close()
-	client, states := newTestClientWithState(t, server, 1<<20)
-	_, err := client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/forbidden"}, io.Discard)
-	var authentication *baseprovider.AuthenticationError
-	if !errors.As(err, &authentication) {
-		t.Fatalf("first download error = %T %v", err, err)
+func TestForbiddenWithoutAKeyMessageIsTemporary(t *testing.T) {
+	for _, body := range []string{"", `<html>Access denied</html>`, `{"status":false,"error":"Forbidden"}`} {
+		for _, operation := range []string{"search", "download"} {
+			t.Run(operation+"/"+body, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusForbidden)
+					io.WriteString(w, body)
+				}))
+				defer server.Close()
+				client, states := newTestClientWithState(t, server, 1<<20)
+				var err error
+				if operation == "search" {
+					_, err = client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+				} else {
+					_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/forbidden"}, io.Discard)
+				}
+				var cooldown *baseprovider.CooldownError
+				if !errors.As(err, &cooldown) {
+					t.Fatalf("error = %T %v; want a temporary cooldown", err, err)
+				}
+				if state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth)); err == nil && state.Disabled {
+					t.Fatalf("provider disabled by a 403 without a key message: %#v", state)
+				}
+			})
+		}
 	}
-	state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth))
-	if err != nil || !state.Disabled {
-		t.Fatalf("disabled state = %#v, %v", state, err)
+}
+
+func TestLimitMessagesInJSONBodiesCoolDownUntilTheDailyReset(t *testing.T) {
+	reset := time.Date(2026, 9, 5, 0, 15, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name, operation, body string
+		status                int
+	}{
+		{"search status false", "search", `{"status":false,"error":"You have reached your daily limit"}`, http.StatusOK},
+		{"search 400", "search", `{"status":false,"error":"API quota exceeded"}`, http.StatusBadRequest},
+		{"download 403", "download", `{"status":false,"message":"Daily download limit exceeded"}`, http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			client, states := newTestClientWithState(t, server, 1<<20)
+			var err error
+			if tt.operation == "search" {
+				_, err = client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+			} else {
+				_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/example.zip"}, io.Discard)
+			}
+			var quota *baseprovider.QuotaError
+			if !errors.As(err, &quota) || !quota.ResetAt.Equal(reset) {
+				t.Fatalf("error = %T %v; want a quota until %v", err, err, reset)
+			}
+			state, err := states.GetProviderState(context.Background(), "subdl-main", tt.operation)
+			if err != nil || !state.ResetAt.Equal(reset) {
+				t.Fatalf("saved state = %#v, %v", state, err)
+			}
+			if state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth)); err == nil && state.Disabled {
+				t.Fatal("a limit message disabled the provider")
+			}
+		})
 	}
-	_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/forbidden"}, io.Discard)
-	var disabled *baseprovider.DisabledError
-	if !errors.As(err, &disabled) || calls != 1 {
-		t.Fatalf("second download error/calls = %T %v/%d", err, err, calls)
+}
+
+func TestIdentityComesOnlyFromASingleMatchedTitle(t *testing.T) {
+	for _, tt := range []struct {
+		name, results string
+		want          string
+	}{
+		{"one title", `[{"sd_id":1,"name":"Example Show","year":2024,"imdb_id":"tt1234567"}]`, "Example Show"},
+		{"one title listed twice", `[{"sd_id":1,"name":"Example Show","year":2024},{"sd_id":1,"name":"Example Show","year":2024}]`, "Example Show"},
+		{"two titles", `[{"sd_id":1,"name":"Example Show","year":2024,"imdb_id":"tt1234567"},{"sd_id":2,"name":"Example Show","year":1994,"imdb_id":"tt7654321"}]`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, `{"status":true,"results":`+tt.results+`,"subtitles":[{"url":"/subtitle/example.zip","language":"EN","season":1,"episode":2}]}`)
+			}))
+			defer server.Close()
+			candidates, err := newTestClient(t, server, 1<<20).Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+			if err != nil || len(candidates) != 1 || candidates[0].Title != tt.want {
+				t.Fatalf("candidates = %#v, %v; want title %q", candidates, err, tt.want)
+			}
+			if tt.want == "" && (candidates[0].ExternalIDs.IMDb != "" || candidates[0].Year != 0) {
+				t.Fatalf("identity taken from one of several titles: %#v", candidates[0])
+			}
+		})
 	}
 }
 

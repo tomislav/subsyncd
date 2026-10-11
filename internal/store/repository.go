@@ -203,6 +203,8 @@ type CandidateRejectionLookup struct {
 	MediaFileID        int64
 	MediaSize          int64
 	MediaModTimeNS     int64
+	// ExcludeReasonCodes skips rejections recorded for these reasons.
+	ExcludeReasonCodes []string
 	Now                time.Time
 }
 
@@ -1382,6 +1384,10 @@ func (r *Repository) GetCandidateRejection(ctx context.Context, lookup Candidate
 	if lookup.ArtifactChecksum != "" {
 		query += ` AND artifact_checksum=?`
 		args = append(args, lookup.ArtifactChecksum)
+	}
+	for _, reason := range lookup.ExcludeReasonCodes {
+		query += ` AND reason_code<>?`
+		args = append(args, reason)
 	}
 	query += ` ORDER BY rejected_at_ns DESC LIMIT 1`
 	var rejection CandidateRejection

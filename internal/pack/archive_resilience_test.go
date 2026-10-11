@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,50 @@ func TestExtractIgnoresMacOSMetadataEntries(t *testing.T) {
 	})
 	if err != nil || strings.Join(memberNames(manifest), ",") != "The.Thing.1982.srt" {
 		t.Fatalf("members = %v, err = %v; want only the real subtitle", memberNames(manifest), err)
+	}
+}
+
+func TestExtractSkipsMacOSMetadataBeforeTheDepthCheck(t *testing.T) {
+	appleDouble := "\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        "
+	limits := DefaultLimits()
+	limits.MaxDepth = 1
+	payload := zipPayload(t, []zipEntry{
+		{name: "Pack/Show.S01E01.srt", body: validSRT},
+		{name: "__MACOSX/Pack/._Show.S01E01.srt", body: appleDouble},
+	})
+	manifest, err := Extract(context.Background(), domain.Candidate{}, bytes.NewReader(payload), int64(len(payload)), filepath.Join(t.TempDir(), "out"), limits)
+	if err != nil || len(manifest.Members) != 1 {
+		t.Fatalf("members = %v, err = %v; want the metadata copy ignored, not too deep", memberNames(manifest), err)
+	}
+}
+
+func TestExtractReadsSubtitlesThreeFoldersDeep(t *testing.T) {
+	payload := zipPayload(t, []zipEntry{{name: "Show/Season 1/UTF/Show.S01E01.srt", body: validSRT}})
+	manifest, err := Extract(context.Background(), domain.Candidate{}, bytes.NewReader(payload), int64(len(payload)), filepath.Join(t.TempDir(), "out"), DefaultLimits())
+	if err != nil || len(manifest.Members) != 1 {
+		t.Fatalf("members = %v, err = %v", memberNames(manifest), err)
+	}
+	payload = zipPayload(t, []zipEntry{{name: "a/b/c/d/Show.S01E01.srt", body: validSRT}})
+	if _, err := Extract(context.Background(), domain.Candidate{}, bytes.NewReader(payload), int64(len(payload)), filepath.Join(t.TempDir(), "out"), DefaultLimits()); err == nil {
+		t.Fatal("a member four folders deep was accepted")
+	}
+}
+
+func TestExtractCountsOnlySubtitleFilesAgainstTheFileLimit(t *testing.T) {
+	limits := testLimits()
+	limits.MaxFiles = 2
+	entries := []zipEntry{{name: "Show.S01E01.srt", body: validSRT}, {name: "Show.S01E02.srt", body: strings.Replace(validSRT, "Hello", "Next", 1)}}
+	for index := range 5 {
+		entries = append(entries, zipEntry{name: fmt.Sprintf("scan%d.jpg", index), body: "image"})
+	}
+	payload := zipPayload(t, entries)
+	manifest, err := Extract(context.Background(), domain.Candidate{}, bytes.NewReader(payload), int64(len(payload)), filepath.Join(t.TempDir(), "out"), limits)
+	if err != nil || len(manifest.Members) != 2 {
+		t.Fatalf("members = %v, err = %v; want extra files not counted", memberNames(manifest), err)
+	}
+	payload = zipPayload(t, append(entries, zipEntry{name: "Show.S01E03.srt", body: validSRT}))
+	if _, err := Extract(context.Background(), domain.Candidate{}, bytes.NewReader(payload), int64(len(payload)), filepath.Join(t.TempDir(), "out"), limits); err == nil {
+		t.Fatal("a third subtitle file was accepted under MaxFiles 2")
 	}
 }
 

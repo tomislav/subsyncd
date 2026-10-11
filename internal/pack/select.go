@@ -480,35 +480,76 @@ func normalizeTitle(value string) string {
 	return builder.String()
 }
 
-// compactEpisodePattern finds a separated three-digit number such as the 607 in
-// "malcolm.in.the.middle.607.hdtv": season 6, episode 7.
-var compactEpisodePattern = regexp.MustCompile(`(?:^|[ ._\-\[(])([1-9])(\d{2})(?:[ ._\-\])]|$)`)
+// Names in the anime convention number episodes absolutely: a leading
+// "[Group]" tag or a number after a spaced dash ("[Group] One Piece - 607
+// (1080p)" is episode 607, not S06E07).
+var (
+	leadingGroupTag  = regexp.MustCompile(`^\s*\[[^\]]*\]`)
+	spacedDashBefore = regexp.MustCompile(`\s-\s+$`)
+)
 
 // compactVideoNumbers are three-digit numbers that name a codec or resolution.
 var compactVideoNumbers = map[string]bool{"264": true, "265": true, "480": true, "576": true, "720": true}
+
+// compactNumber is a separated three-digit number such as the 607 in
+// "malcolm.in.the.middle.607.hdtv": season 6, episode 7.
+type compactNumber struct {
+	value, season, episode int
+	// absolute is set when the name's shape numbers episodes absolutely.
+	absolute bool
+}
 
 // compactEpisodeMatches reports whether a name without other episode evidence
 // numbers the target episode in the compact season-and-episode form (607 for
 // S06E07, seasons 1 to 9). Exactly one such number must appear, and it must not
 // be part of the series title (9-1-1 is not S09E11).
 func compactEpisodeMatches(name string, media domain.Media) bool {
+	numbers := compactNumbers(name, media.Title)
+	return len(numbers) == 1 && compactNamesTarget(numbers[0], media)
+}
+
+// compactNamesTarget reports whether a compact number reads as the target
+// episode and that reading is plausible for the series. When the target has an
+// absolute number A, the number N could be an absolute episode too; the
+// season-and-episode reading is taken only when N is A itself or at least 100
+// past it, that is when the seasons before the target average fewer than 100
+// episodes (and a season 1 episode is its own absolute number). An anime series
+// with seasons of hundreds of episodes, or absolute-numbered names, never
+// matches this way.
+func compactNamesTarget(number compactNumber, media domain.Media) bool {
 	if media.Season < 1 || media.Season > 9 || media.Episode < 1 || media.Episode > 99 {
 		return false
 	}
-	season, episode, found := compactEpisode(name, media.Title)
-	return found && season == media.Season && episode == media.Episode
+	if number.absolute || number.season != media.Season || number.episode != media.Episode {
+		return false
+	}
+	absolute := media.AbsoluteEpisode
+	return absolute <= 0 || number.value == absolute || number.value-absolute >= 100
 }
 
+// compactNamesOtherEpisode reports whether a name holds a compact number that
+// does not read as the target: another episode, a second episode beside it, or
+// an absolute number that is not the target's.
 func compactNamesOtherEpisode(name string, media domain.Media) bool {
-	season, episode, found := compactEpisode(name, media.Title)
-	return found && (season != media.Season || episode != media.Episode)
+	numbers := compactNumbers(name, media.Title)
+	for _, number := range numbers {
+		if number.value == media.AbsoluteEpisode {
+			continue
+		}
+		if len(numbers) > 1 || !compactNamesTarget(number, media) {
+			return true
+		}
+	}
+	return false
 }
 
-// compactEpisode returns the season and episode of the single compact number in
-// a name with no other episode evidence, ignoring digits of the series title.
-func compactEpisode(name, title string) (int, int, bool) {
+// compactNumbers returns the compact numbers of a name with no other episode
+// evidence, ignoring digits of the series title. Numbers are whole digit runs,
+// so neither 1607 nor 6070 holds a 607; a six-digit run of two numbers of one
+// season in order (607608, a double episode) counts as both.
+func compactNumbers(name, title string) []compactNumber {
 	if hasEpisodeEvidence(name) {
-		return 0, 0, false
+		return nil
 	}
 	titleDigits := strings.Map(func(r rune) rune {
 		if r >= '0' && r <= '9' {
@@ -516,17 +557,38 @@ func compactEpisode(name, title string) (int, int, bool) {
 		}
 		return -1
 	}, title)
-	found, season, episode := 0, 0, 0
-	for _, match := range compactEpisodePattern.FindAllStringSubmatch(name, -1) {
-		number := match[1] + match[2]
-		if compactVideoNumbers[number] || (titleDigits != "" && strings.Contains(titleDigits, number)) {
+	groupTagged := leadingGroupTag.MatchString(name)
+	var numbers []compactNumber
+	for start := 0; start < len(name); {
+		if name[start] < '0' || name[start] > '9' {
+			start++
 			continue
 		}
-		found++
-		season, _ = strconv.Atoi(match[1])
-		episode, _ = strconv.Atoi(match[2])
+		end := start
+		for end < len(name) && name[end] >= '0' && name[end] <= '9' {
+			end++
+		}
+		run := name[start:end]
+		separated := (start == 0 || strings.IndexByte(" ._-[(", name[start-1]) >= 0) && (end == len(name) || strings.IndexByte(" ._-])", name[end]) >= 0)
+		absolute := groupTagged || spacedDashBefore.MatchString(name[:start])
+		var parts []string
+		switch {
+		case !separated:
+		case len(run) == 3:
+			parts = []string{run}
+		case len(run) == 6 && run[0] == run[3] && run[1:3] < run[4:6]:
+			parts = []string{run[:3], run[3:]}
+		}
+		for _, part := range parts {
+			if part[0] == '0' || compactVideoNumbers[part] || (titleDigits != "" && strings.Contains(titleDigits, part)) {
+				continue
+			}
+			value, _ := strconv.Atoi(part)
+			numbers = append(numbers, compactNumber{value: value, season: value / 100, episode: value % 100, absolute: absolute})
+		}
+		start = end
 	}
-	return season, episode, found == 1
+	return numbers
 }
 
 func hasEpisodeEvidence(name string) bool {

@@ -59,7 +59,7 @@ func evaluate(media domain.Media, candidate domain.Candidate, requestedLanguage 
 		contribution("title_year", boolPoints(titleMatch && yearMatch, 15), "normalized title and year"),
 		contribution("episode", boolPoints(selectedMember || episodeEvidenceMatches(media, candidate, releases), 20), "episode or containing pack"),
 		contribution("release_group", boolPoints(releaseGroupMatches(releases, media.ReleaseGroup), 25), "release group"),
-		contribution("source", boolPoints(releaseSourceMatches(releases, media.Source), 15), "media source"),
+		contribution("source", boolPoints(releaseSourceMatches(releases, media), 15), "media source"),
 		contribution("edition", boolPoints(editionMatches(releases, media.Edition), 10), "edition or cut"),
 		contribution("streaming_service", boolPoints(releaseFieldMatches(releases, media.StreamingService, func(r Release) string { return r.Service }), 5), "streaming service"),
 		contribution("resolution", boolPoints(releaseFieldMatches(releases, media.Resolution, func(r Release) string { return r.Resolution }), 5), "resolution"),
@@ -339,8 +339,19 @@ func releaseFieldMatches(releases []Release, wanted string, field func(Release) 
 	return false
 }
 
-func releaseSourceMatches(releases []Release, wanted string) bool {
-	return releaseFieldMatches(releases, normalizeSource(wanted, ""), func(r Release) string { return r.Source })
+func releaseSourceMatches(releases []Release, media domain.Media) bool {
+	return releaseFieldMatches(releases, mediaSource(media), func(r Release) string { return r.Source })
+}
+
+// mediaSource is the media file's source in release terms. Radarr reports a
+// remux or full disc as source "bluray" and names it only in the quality
+// ("Remux-1080p", "BR-DISK"), so the quality name decides those.
+func mediaSource(media domain.Media) string {
+	quality := strings.ToLower(media.Quality)
+	if strings.Contains(quality, "remux") || strings.Contains(quality, "br-disk") || strings.Contains(quality, "brdisk") {
+		return "remux"
+	}
+	return normalizeSource(media.Source, "")
 }
 
 // editionMatches reports whether a release names the file's cut or, when the

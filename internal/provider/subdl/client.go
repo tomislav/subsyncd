@@ -205,6 +205,7 @@ type searchResponse struct {
 }
 
 type mediaResult struct {
+	SDID int64  `json:"sd_id"`
 	IMDb string `json:"imdb_id"`
 	TMDB int64  `json:"tmdb_id"`
 	Name string `json:"name"`
@@ -258,13 +259,10 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		return nil, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusForbidden {
-		if err := c.transport.DisableAuthentication(ctx, "SubDL API key rejected (HTTP 403)"); err != nil {
-			return nil, fmt.Errorf("disable SubDL provider: %w", err)
-		}
-		return nil, &baseprovider.AuthenticationError{Message: "API key rejected"}
-	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if err := c.refusal(ctx, baseprovider.OperationSearch, response); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("SubDL search returned HTTP %d", response.StatusCode)
 	}
 	var decoded searchResponse
@@ -295,12 +293,38 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		c.events.Log(ctx, slog.LevelWarn, "provider.response_unrecognized", "SubDL answered with an unrecognised message; treating it as no result", attrs...)
 		return nil, nil
 	}
-	if len(decoded.Results) != 0 {
+	// A search that matched several titles lists subtitles of all of them, so
+	// no one title is the subtitles' identity.
+	if identity, ok := singleTitle(decoded.Results); ok {
 		for index := range decoded.Subtitles {
-			decoded.Subtitles[index].Identity = decoded.Results[0]
+			decoded.Subtitles[index].Identity = identity
 		}
 	}
 	return decoded.Subtitles, nil
+}
+
+// singleTitle returns the title a search matched when it matched exactly one
+// distinct title (by SubDL ID, then IMDb, TMDB, or name and year).
+func singleTitle(results []mediaResult) (mediaResult, bool) {
+	distinct := map[string]bool{}
+	for _, result := range results {
+		key := ""
+		switch {
+		case result.SDID != 0:
+			key = "sd:" + strconv.FormatInt(result.SDID, 10)
+		case result.IMDb != "":
+			key = "imdb:" + strings.ToLower(result.IMDb)
+		case result.TMDB != 0:
+			key = "tmdb:" + strconv.FormatInt(result.TMDB, 10)
+		default:
+			key = "name:" + strings.ToLower(strings.TrimSpace(result.Name)) + "|" + strconv.Itoa(result.Year)
+		}
+		distinct[key] = true
+	}
+	if len(distinct) != 1 {
+		return mediaResult{}, false
+	}
+	return results[0], true
 }
 
 func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) []domain.Candidate {
@@ -586,8 +610,72 @@ func (c *Client) decodeLimit(ctx context.Context, operation baseprovider.Operati
 	return fallback
 }
 
+// limitCode classifies a SubDL error code or message as a limit: its own codes,
+// or wording naming a daily or download limit or quota ("You have reached your
+// daily download limit") or too many requests. It returns "" for anything else.
+func limitCode(message string) string {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	switch normalized {
+	case "daily_limit", "api_download_limit_exceeded", "service_busy", "rate_limit":
+		return normalized
+	}
+	switch {
+	case strings.Contains(normalized, "too many requests") || strings.Contains(normalized, "rate limit"):
+		return "rate_limit"
+	case strings.Contains(normalized, "quota") || strings.Contains(normalized, "limit") && (strings.Contains(normalized, "daily") || strings.Contains(normalized, "download") || strings.Contains(normalized, "exceed") || strings.Contains(normalized, "reached")):
+		return "daily_limit"
+	}
+	return ""
+}
+
+// refusal classifies a non-success SubDL answer by its JSON message: a limit
+// becomes the usual quota or cooldown, and a 403 is a rejected API key, which
+// disables the provider, only when the message says the key is invalid. Any
+// other 403 is treated as a temporary block and opens the provider's
+// transient-failure circuit. It returns nil for other answers.
+func (c *Client) refusal(ctx context.Context, operation baseprovider.Operation, response *http.Response) error {
+	var payload struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	_ = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload)
+	message := strings.TrimSpace(payload.Error + " " + payload.Message)
+	if err := c.payloadLimit(ctx, operation, message, time.Time{}); err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusForbidden {
+		return nil
+	}
+	if invalidAPIKey(message) {
+		if err := c.transport.DisableAuthentication(ctx, "SubDL API key rejected (HTTP 403)"); err != nil {
+			return fmt.Errorf("disable SubDL provider: %w", err)
+		}
+		return &baseprovider.AuthenticationError{Message: "API key rejected"}
+	}
+	state, err := c.transport.Gate.RecordTransientFailure(ctx, c.id, operation, "http_403", time.Time{})
+	if err != nil {
+		return err
+	}
+	return &baseprovider.CooldownError{ProviderID: c.id, Scope: operation, Reason: state.Reason, ResetAt: state.ResetAt}
+}
+
+// invalidAPIKey reports a message saying the API key is invalid, wrong,
+// missing or no longer valid.
+func invalidAPIKey(message string) bool {
+	message = strings.ToLower(message)
+	if !strings.Contains(message, "api key") && !strings.Contains(message, "api_key") && !strings.Contains(message, "apikey") {
+		return false
+	}
+	for _, marker := range []string{"invalid", "not valid", "wrong", "incorrect", "missing", "required", "expired", "revoked", "disabled", "not found", "unknown"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operation, code string, reset time.Time) error {
-	switch strings.ToLower(strings.TrimSpace(code)) {
+	switch limitCode(code) {
 	case "daily_limit", "api_download_limit_exceeded":
 		if reset.IsZero() {
 			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownDownloadQuota)
@@ -679,13 +767,10 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 		return baseprovider.DownloadMetadata{}, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusForbidden {
-		if err := c.transport.DisableAuthentication(ctx, "SubDL API key rejected (HTTP 403)"); err != nil {
-			return baseprovider.DownloadMetadata{}, fmt.Errorf("disable SubDL provider: %w", err)
-		}
-		return baseprovider.DownloadMetadata{}, &baseprovider.AuthenticationError{Message: "API key rejected"}
-	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if err := c.refusal(ctx, baseprovider.OperationDownload, response); err != nil {
+			return baseprovider.DownloadMetadata{}, err
+		}
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("SubDL download returned HTTP %d", response.StatusCode)
 	}
 	if response.ContentLength > c.config.MaxDownloadBytes {

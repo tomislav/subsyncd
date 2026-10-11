@@ -116,7 +116,7 @@ func (s *Service) prepareMembers(ctx context.Context, request Request, item down
 		}
 		ready = append(ready, prepared)
 	}
-	if variants && allRejected {
+	if variants && allRejected && !item.moreVersions {
 		_, err := s.recordCandidateRejection(ctx, request, item.candidate, "", &pack.SelectionError{Rule: "versions_exhausted", Reason: "all identified episode versions were rejected", MatchingMemberCount: len(paths)})
 		if err != nil {
 			return nil, err
@@ -147,7 +147,7 @@ func (s *Service) rejectExhaustedVersions(ctx context.Context, request Request, 
 		}
 	}
 	for _, group := range groups {
-		rejected := true
+		rejected := !group[0].moreVersions
 		for _, item := range group {
 			if !item.groupMayReject {
 				rejected = false

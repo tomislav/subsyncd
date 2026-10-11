@@ -9,7 +9,7 @@ import "subsyncd/internal/domain"
 func ReleaseAffinity(media domain.Media, name string) int {
 	releases := []Release{ParseRelease(name)}
 	return boolPoints(releaseGroupMatches(releases, media.ReleaseGroup), 25) +
-		boolPoints(releaseSourceMatches(releases, media.Source), 15) +
+		boolPoints(releaseSourceMatches(releases, media), 15) +
 		boolPoints(editionMatches(releases, media.Edition), 10) +
 		boolPoints(releaseFieldMatches(releases, media.StreamingService, func(r Release) string { return r.Service }), 5) +
 		boolPoints(releaseFieldMatches(releases, media.Resolution, func(r Release) string { return r.Resolution }), 5)

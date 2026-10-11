@@ -320,3 +320,31 @@ func TestMixedVersionFailureCannotAggregateRejection(t *testing.T) {
 		t.Fatalf("mixed result blacklisted: %+v", rejections)
 	}
 }
+
+func TestPackVersionsAreExhaustedOnlyAfterEveryUntriedVersion(t *testing.T) {
+	request := serviceRequest(t)
+	request.Media.Ref.Kind = domain.MediaEpisode
+	request.Media.Season, request.Media.Episode = 4, 13
+	candidate := broadCandidate("versions")
+	candidate.Kind = domain.MediaEpisode
+	candidate.Season, candidate.Episode = 4, 13
+	adapter := &fakeProvider{id: "provider", payloads: map[string][]byte{"versions": workflowZIP(t, map[string]string{
+		"Movie.S04E13.A.srt": strings.ReplaceAll(installSRT, "Hello", "version-a"),
+		"Movie.S04E13.B.srt": strings.ReplaceAll(installSRT, "Hello", "version-b"),
+		"Movie.S04E13.C.srt": strings.ReplaceAll(installSRT, "Hello", "version-c"),
+		"Movie.S04E13.D.srt": strings.ReplaceAll(installSRT, "Hello", "version-d"),
+	})}}
+	sync := &fakeSynchronizer{rejectAll: true}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, sync, &fakeInstaller{})
+	service.Providers["provider"] = adapter
+	// The first run times the best three; the fourth, untried, keeps the pack
+	// open. The second run times only the fourth and exhausts the pack.
+	for run, want := range []struct{ downloads, synchronized int }{{1, 3}, {2, 4}, {2, 4}} {
+		if _, err := service.Run(context.Background(), request); err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+		if adapter.downloads != want.downloads || sync.synchronizeCalls != want.synchronized {
+			t.Fatalf("run %d: downloads=%d synchronized=%d, want %d/%d", run, adapter.downloads, sync.synchronizeCalls, want.downloads, want.synchronized)
+		}
+	}
+}

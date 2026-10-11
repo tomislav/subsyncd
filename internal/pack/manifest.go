@@ -2,15 +2,28 @@ package pack
 
 import "subsyncd/internal/domain"
 
+// SubtitleRulesVersion and SelectionRulesVersion version the rules that
+// reject a subtitle as invalid (extraction, decoding, repairs) and that select
+// an archive's members. Candidate rejections for invalid_subtitle and
+// pack_selection carry them, so bumping one after a rule change re-opens the
+// rejections the old rules made. Rejections recorded before versioning count
+// as version 1.
+const (
+	SubtitleRulesVersion  = 2
+	SelectionRulesVersion = 2
+)
+
 type Limits struct {
 	MaxCompressed int64
 	MaxExpanded   int64
-	MaxFiles      int
-	MaxDepth      int
+	// MaxFiles counts subtitle files only.
+	MaxFiles int
+	// MaxDepth is the number of folders a member may sit in.
+	MaxDepth int
 }
 
 func DefaultLimits() Limits {
-	return Limits{MaxCompressed: 20 << 20, MaxExpanded: 100 << 20, MaxFiles: 100, MaxDepth: 1}
+	return Limits{MaxCompressed: 20 << 20, MaxExpanded: 100 << 20, MaxFiles: 100, MaxDepth: 3}
 }
 
 type Member struct {

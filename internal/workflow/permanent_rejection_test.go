@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -242,5 +244,56 @@ func TestRejectionSignatureTreatsProviderGroupsAndResolutionsAsSets(t *testing.T
 	diff, _ = candidateSignature(changed)
 	if a == diff {
 		t.Fatal("new resolution evidence did not invalidate rejection")
+	}
+}
+
+func TestRulesVersionReopensOnlySubtitleAndSelectionRejections(t *testing.T) {
+	ctx := context.Background()
+	request := serviceRequest(t)
+	request.Media.EntityID = 1
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	request.MediaID, _, err = db.Repository().UpsertMedia(ctx, request.Media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = db.Repository()
+	// Rejections recorded before rules were versioned, under the bare signature.
+	fingerprint := request.Media.Fingerprint
+	for id, reason := range map[string]string{"invalid": "invalid_subtitle", "selection": "pack_selection", "unsure": "lapse_unsure"} {
+		candidate := broadCandidate(id)
+		signature, err := candidateSignature(candidate, request.Media)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Repository().PutCandidateRejection(ctx, store.CandidateRejection{
+			MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
+			CandidateSignature: signature, ArtifactChecksum: "sum", ReasonCode: reason, ToolSignature: service.rejectionToolSignature(),
+			MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: service.Clock.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]bool{"invalid": false, "selection": false, "unsure": true} {
+		if _, found, err := service.candidateRejection(ctx, request, broadCandidate(id), ""); err != nil || found != want {
+			t.Fatalf("legacy %s rejection found = %v, %v; want %v", id, found, err, want)
+		}
+	}
+	// Rejections recorded now carry the current rules version and hold.
+	for id, failure := range map[string]error{"invalid": &pack.ContentError{Err: errors.New("bad")}, "selection": &pack.SelectionError{Rule: "none", Reason: "none"}} {
+		if ok, err := service.recordCandidateRejection(ctx, request, broadCandidate(id), "sum", failure); err != nil || !ok {
+			t.Fatalf("record %s: %v %v", id, ok, err)
+		}
+		rejection, found, err := service.candidateRejection(ctx, request, broadCandidate(id), "")
+		if err != nil || !found || !strings.HasSuffix(rejection.CandidateSignature, rejectionRulesVersion(rejection.ReasonCode)) {
+			t.Fatalf("current %s rejection = %+v, %v, %v", id, rejection, found, err)
+		}
+	}
+	if rejectionRulesVersion("lapse_unsure") != "" || rejectionRulesVersion("invalid_subtitle") != fmt.Sprintf("/subtitle-rules-v%d", pack.SubtitleRulesVersion) {
+		t.Fatal("rules version applies to the wrong reasons")
 	}
 }

@@ -67,3 +67,61 @@ func TestSingleGenericFileRejectsCompactNumberForAnotherEpisode(t *testing.T) {
 		t.Fatal("empty manifest selected a member")
 	}
 }
+
+func TestCompactEpisodeVersionsAreAlternatives(t *testing.T) {
+	media := domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7}
+	manifest := Manifest{Members: []Member{
+		{SafeName: "malcolm.in.the.middle.607.hdtv-lol.srt", Checksum: "hdtv"},
+		{SafeName: "malcolm.in.the.middle.607.dvdrip-fov.srt", Checksum: "dvd"},
+		{SafeName: "malcolm.in.the.middle.608.hdtv-lol.srt", Checksum: "next"},
+	}}
+	got, err := SelectAlternatives(manifest, domain.Candidate{}, media, false)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("alternatives = %+v, %v; want both 607 versions", got, err)
+	}
+	for _, member := range got {
+		if member.SelectionRule != "compact_episode" || member.Checksum == "next" {
+			t.Fatalf("alternative = %+v", member)
+		}
+	}
+}
+
+func TestCompactEpisodeNumbersAreNotAnimeAbsoluteNumbers(t *testing.T) {
+	cases := []struct {
+		name  string
+		media domain.Media
+		want  bool
+	}{
+		// Absolute-numbered names in the anime convention.
+		{"[SubsPlease] One Piece - 607 (1080p).srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 150}, false},
+		{"One Piece - 607.srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7}, false},
+		// Seasons that average 100 episodes or more: 607 is as likely absolute.
+		{"one.piece.607.srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 520}, false},
+		{"show.107.srt", domain.Media{Title: "Show", Season: 1, Episode: 7, AbsoluteEpisode: 12}, false},
+		// Ordinary seasons: the absolute number is far below the compact one.
+		{"malcolm.in.the.middle.607.hdtv.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7, AbsoluteEpisode: 129}, true},
+		{"show.107.srt", domain.Media{Title: "Show", Season: 1, Episode: 7, AbsoluteEpisode: 7}, true},
+		// Adjacent numbers are a double episode, not the first one.
+		{"show.607-608.hdtv.srt", domain.Media{Title: "Show", Season: 6, Episode: 7}, false},
+		{"show.607608.hdtv.srt", domain.Media{Title: "Show", Season: 6, Episode: 7}, false},
+		{"show.1607.srt", domain.Media{Title: "Show", Season: 6, Episode: 7}, false},
+		{"show.6070.srt", domain.Media{Title: "Show", Season: 6, Episode: 7}, false},
+	}
+	for _, tc := range cases {
+		if got := compactEpisodeMatches(tc.name, tc.media); got != tc.want {
+			t.Errorf("compactEpisodeMatches(%q, %+v) = %v, want %v", tc.name, tc.media, got, tc.want)
+		}
+	}
+	// A lone double-episode or absolute-numbered file is not a generic subtitle
+	// for the target either.
+	for _, name := range []string{"show.607-608.hdtv.srt", "[Group] Show - 607.srt"} {
+		media := domain.Media{Title: "Show", Season: 6, Episode: 7, AbsoluteEpisode: 130}
+		if selected, err := SelectSingleEpisode(Manifest{Members: []Member{{SafeName: name}}}, domain.Candidate{}, media, false); err == nil {
+			t.Errorf("lone %q selected for S06E07: %+v", name, selected)
+		}
+	}
+	media := domain.Media{Title: "Show", Season: 6, Episode: 7, AbsoluteEpisode: 607}
+	if _, err := SelectSingleEpisode(Manifest{Members: []Member{{SafeName: "[Group] Show - 607.srt"}}}, domain.Candidate{}, media, false); err != nil {
+		t.Errorf("lone file naming the target's absolute number rejected: %v", err)
+	}
+}

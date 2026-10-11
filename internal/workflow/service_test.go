@@ -285,7 +285,7 @@ func TestServiceExactCandidatesSkipIneligibleRejectedAndDeterministicFailures(t 
 				fingerprint := request.Media.Fingerprint
 				repository.rejections = append(repository.rejections, store.CandidateRejection{
 					MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
-					CandidateSignature: signature, ReasonCode: "invalid_subtitle", ToolSignature: service.rejectionToolSignature(),
+					CandidateSignature: signature + rejectionRulesVersion("invalid_subtitle"), ReasonCode: "invalid_subtitle", ToolSignature: service.rejectionToolSignature(),
 					MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(time.Hour),
 				})
 			},
@@ -1858,7 +1858,7 @@ func (r *workflowRepository) RecordCandidateLapseFailure(_ context.Context, fail
 
 func (r *workflowRepository) GetCandidateRejection(_ context.Context, lookup store.CandidateRejectionLookup) (store.CandidateRejection, bool, error) {
 	for _, rejection := range r.rejections {
-		if rejection.MediaID == lookup.MediaID && rejection.Language == lookup.Language && rejection.ProviderID == lookup.ProviderID && rejection.ResultID == lookup.ResultID && rejection.CandidateSignature == lookup.CandidateSignature && rejection.ToolSignature == lookup.ToolSignature && rejection.MediaPath == lookup.MediaPath && rejection.MediaFileID == lookup.MediaFileID && rejection.MediaSize == lookup.MediaSize && rejection.MediaModTimeNS == lookup.MediaModTimeNS && (lookup.ArtifactChecksum == "" || rejection.ArtifactChecksum == lookup.ArtifactChecksum) {
+		if rejection.MediaID == lookup.MediaID && rejection.Language == lookup.Language && rejection.ProviderID == lookup.ProviderID && rejection.ResultID == lookup.ResultID && rejection.CandidateSignature == lookup.CandidateSignature && rejection.ToolSignature == lookup.ToolSignature && rejection.MediaPath == lookup.MediaPath && rejection.MediaFileID == lookup.MediaFileID && rejection.MediaSize == lookup.MediaSize && rejection.MediaModTimeNS == lookup.MediaModTimeNS && (lookup.ArtifactChecksum == "" || rejection.ArtifactChecksum == lookup.ArtifactChecksum) && !slices.Contains(lookup.ExcludeReasonCodes, rejection.ReasonCode) {
 			return rejection, true, nil
 		}
 	}

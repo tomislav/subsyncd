@@ -121,10 +121,37 @@ func NormalizeIdentity(value string) string {
 	return output.String()
 }
 
+// sourceAliases maps whole source names that Sonarr and Radarr report
+// (television, web, dvd, blurayRaw...) or the release parser returns (WEB,
+// PDTV, BRRip) to the names release descriptors use, so they compare equal.
+var sourceAliases = map[string]string{
+	"television":      "hdtv",
+	"televisionraw":   "hdtv",
+	"tv":              "hdtv",
+	"pdtv":            "hdtv",
+	"web":             "web-dl",
+	"webdl":           "web-dl",
+	"dvd":             "dvdrip",
+	"brrip":           "bluray",
+	"blurayraw":       "remux",
+	"bdremux":         "remux",
+	"brdisk":          "remux",
+	"br disk":         "remux",
+	"bdmv":            "remux",
+	"complete bluray": "remux",
+}
+
+// normalizeSource returns the source a release names. value is a whole source
+// name (from the release parser or the media's Arr quality) and raw a release
+// descriptor searched for source tokens; aliases apply only to value, since
+// words such as "tv" or "web" inside a title name no source.
 func normalizeSource(value, raw string) string {
+	if alias, ok := sourceAliases[NormalizeIdentity(value)]; ok {
+		return alias
+	}
 	joined := strings.ToLower(value + " " + raw)
 	switch {
-	case strings.Contains(joined, "remux"):
+	case strings.Contains(joined, "remux") || strings.Contains(joined, "bdmv") || strings.Contains(joined, "br-disk"):
 		return "remux"
 	case strings.Contains(joined, "web-dl") || strings.Contains(joined, "webdl") || strings.Contains(joined, "web dl"):
 		return "web-dl"

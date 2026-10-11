@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/asticode/go-astisub"
 
 	"subsyncd/internal/domain"
 )
@@ -287,10 +291,13 @@ func TestLayeredASSIsNotTreatedAsMerged(t *testing.T) {
 	if _, _, err := normalizeSubtitle([]byte(body), ".ass"); err != nil {
 		t.Fatalf("layered ASS rejected: %v", err)
 	}
-	// The same overlap in SRT is two subtitles in one file.
-	cues := []string{clock(0) + " --> " + clock(60), "Whole scene"}
+	// Two SRT subtitles stitched into one file overlap all along.
+	var cues []string
 	for second := 0; second < 60; second += 3 {
-		cues = append(cues, clock(second)+" --> "+clock(second+2), "Line")
+		cues = append(cues, clock(second)+" --> "+clock(second+2), "Episode one")
+	}
+	for second := 1; second < 60; second += 3 {
+		cues = append(cues, clock(second)+" --> "+clock(second+2), "Episode two")
 	}
 	if _, _, err := normalizeSubtitle([]byte(srt(cues...)), ".srt"); err == nil {
 		t.Fatal("heavily overlapping SRT accepted")
@@ -312,23 +319,68 @@ func TestSameSubtitleInTwoEncodingFoldersIsKeptOnce(t *testing.T) {
 }
 
 func TestDifferentSubtitlesWithOneNameKeepTheirFolders(t *testing.T) {
-	manifest, _, err := extractZIP(t, []zipEntry{
-		{name: "WEB/Show.S01E01.srt", body: validSRT},
-		{name: "BluRay/Show.S01E01.srt", body: strings.Replace(validSRT, "Hello", "Other", 1)},
-	})
-	if err != nil || len(manifest.Members) != 2 {
-		t.Fatalf("members = %+v, err = %v", manifest.Members, err)
-	}
-	if manifest.Members[1].SafeName != "BluRay - Show.S01E01.srt" {
-		t.Fatalf("second member name = %q", manifest.Members[1].SafeName)
+	web := zipEntry{name: "WEB/Show.S01E01.srt", body: validSRT}
+	bluray := zipEntry{name: "BluRay/Show.S01E01.srt", body: strings.Replace(validSRT, "Hello", "Other", 1)}
+	for _, entries := range [][]zipEntry{{web, bluray}, {bluray, web}} {
+		manifest, _, err := extractZIP(t, entries)
+		if err != nil || len(manifest.Members) != 2 {
+			t.Fatalf("members = %+v, err = %v", manifest.Members, err)
+		}
+		names := memberNames(manifest)
+		sort.Strings(names)
+		if strings.Join(names, ",") != "Show.S01E01.srt,WEB - Show.S01E01.srt" {
+			t.Fatalf("names = %v; want the same names in any member order", names)
+		}
 	}
 }
 
-func TestPrefixedDuplicateNameTooLongIsAContentRejection(t *testing.T) {
+func TestDifferentSubtitlesWithOneNameAndNoFolderAreNumbered(t *testing.T) {
+	first := zipEntry{name: "Episode.srt", body: validSRT}
+	second := zipEntry{name: "episode.srt", body: strings.Replace(validSRT, "Hello", "Other", 1)}
+	taken := zipEntry{name: "Episode (2).srt", body: strings.Replace(validSRT, "Hello", "Third", 1)}
+	copyOfFirst := zipEntry{name: "Copy/Episode.srt", body: validSRT}
+	var want map[string]string
+	for _, entries := range [][]zipEntry{{first, second, taken, copyOfFirst}, {copyOfFirst, taken, second, first}} {
+		manifest, destination, err := extractZIP(t, entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, member := range manifest.Members {
+			content, err := os.ReadFile(filepath.Join(destination, member.SafeName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got[member.SafeName] = string(content)
+		}
+		if len(got) != 3 {
+			t.Fatalf("members = %v; want the identical copy kept once", memberNames(manifest))
+		}
+		if _, ok := got["episode (3).srt"]; !ok {
+			t.Fatalf("members = %v; want the clash numbered past the taken name", memberNames(manifest))
+		}
+		if want == nil {
+			want = got
+		} else if !reflect.DeepEqual(got, want) {
+			t.Fatalf("names depend on member order: %v versus %v", got, want)
+		}
+	}
+}
+
+func TestPrefixedDuplicateNameTooLongIsNumbered(t *testing.T) {
 	name := strings.Repeat("x", 240) + ".srt"
-	_, _, err := extractZIP(t, []zipEntry{
+	manifest, _, err := extractZIP(t, []zipEntry{
 		{name: "Original encoding/" + name, body: validSRT},
 		{name: "UTF-8 encoding/" + name, body: strings.Replace(validSRT, "Hello", "Other", 1)},
+	})
+	if err != nil || len(manifest.Members) != 2 {
+		t.Fatalf("members = %v, err = %v", memberNames(manifest), err)
+	}
+	// With no room for even a number, the archive is a content rejection.
+	name = strings.Repeat("x", 251) + ".srt"
+	_, _, err = extractZIP(t, []zipEntry{
+		{name: name, body: validSRT},
+		{name: "Other/" + name, body: strings.Replace(validSRT, "Hello", "Other", 1)},
 	})
 	var content *ContentError
 	if !errors.As(err, &content) {
@@ -343,5 +395,86 @@ func TestUnreadableAndReadableMembersWithOneNameKeepTheReadableOne(t *testing.T)
 	})
 	if err != nil || len(manifest.Members) != 1 || manifest.SkippedMembers != 1 {
 		t.Fatalf("members = %+v skipped = %d err = %v", manifest.Members, manifest.SkippedMembers, err)
+	}
+}
+
+func TestRepairSortsALongCaptionInsteadOfShorteningItsStart(t *testing.T) {
+	// Starting 50 s early but ending in sequence: moving its start to the end
+	// of the leader would leave one second for a long caption, so it is only
+	// sorted.
+	caption := "This is a long caption that needs several seconds of reading time on screen."
+	body := srt(
+		"00:10:02,000 --> 00:10:05,000", "First",
+		"00:10:06,000 --> 00:10:09,000", "Second",
+		"00:09:20,000 --> 00:10:10,000", caption,
+		"00:10:12,000 --> 00:10:14,000", "Third",
+	)
+	got := normalizedMember(t, "Show.S01E01.srt", body)
+	if !strings.Contains(got, "00:09:20,000 --> 00:10:10,000\n"+caption) || strings.Index(got, caption) > strings.Index(got, "First") {
+		t.Fatalf("long caption retimed or not sorted:\n%s", got)
+	}
+}
+
+func TestASSIsNeitherStartRetimedNorDeduplicated(t *testing.T) {
+	body := "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Default,Arial,20\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" +
+		"Dialogue: 0,0:10:00.00,0:10:05.00,Default,,0,0,0,,First\n" +
+		"Dialogue: 0,0:10:06.00,0:10:09.00,Default,,0,0,0,,Second\n" +
+		"Dialogue: 0,0:09:50.00,0:10:12.00,Default,,0,0,0,,Sign\n" +
+		"Dialogue: 1,0:10:12.00,0:10:14.00,Default,,0,0,0,,Glow\n" +
+		"Dialogue: 0,0:10:12.00,0:10:14.00,Default,,0,0,0,,Glow\n"
+	items, err := astisub.ReadFromSSAWithOptions(strings.NewReader(body), astisub.SSAOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cues, err := planRepairs(items.Items, ".ass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, cue := range cues {
+		if cue.Drop || cue.Retime {
+			t.Fatalf("ASS cue %d dropped or retimed: %+v", i, cue)
+		}
+	}
+}
+
+func TestRepairEndsAMistypedLongCueAtTheNextOne(t *testing.T) {
+	body := srt(
+		"00:12:31,000 --> 00:22:33,000", "Short line.",
+		"00:12:34,000 --> 00:12:36,000", "Next",
+		"00:12:37,000 --> 00:12:39,000", "And on",
+	)
+	got := normalizedMember(t, "Show.S01E01.srt", body)
+	if !strings.Contains(got, "00:12:31,000 --> 00:12:34,000\nShort line.") {
+		t.Fatalf("mistyped end not repaired:\n%s", got)
+	}
+	// A song may hold one cue over the dialogue; it is kept as it is, and so
+	// is a long cue that ends before the next one starts.
+	body = srt(
+		"00:12:31,000 --> 00:13:10,000", "♪ A song plays ♪",
+		"00:12:34,000 --> 00:12:36,000", "Next",
+		"00:12:37,000 --> 00:12:39,000", "And on",
+		"00:13:20,000 --> 00:13:45,000", "Long quiet line.",
+		"00:13:46,000 --> 00:13:48,000", "After",
+	)
+	got = normalizedMember(t, "Show.S01E01.srt", body)
+	for _, timing := range []string{"00:12:31,000 --> 00:13:10,000", "00:13:20,000 --> 00:13:45,000"} {
+		if !strings.Contains(got, timing) {
+			t.Fatalf("cue %s was retimed:\n%s", timing, got)
+		}
+	}
+}
+
+func TestMicroDVDLowercaseItalicAppliesToItsLineOnly(t *testing.T) {
+	cases := map[string]string{
+		"{y:i}Sung line|Spoken line": "<i>Sung line</i>\nSpoken line",
+		"Spoken line|{y:i}Sung line": "Spoken line\n<i>Sung line</i>",
+		"{Y:i}Both|lines":            "<i>Both</i>\n<i>lines</i>",
+		"{Y:b,i}Bold italic|too":     "<i>Bold italic</i>\n<i>too</i>",
+		"{y:b}Bold only":             "Bold only",
+	}
+	for input, want := range cases {
+		if got := microDVDText(input); got != want {
+			t.Errorf("microDVDText(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

@@ -64,7 +64,7 @@ subsyncd doctor --config /config/config.yaml
 
 `GET /healthz` means the HTTP process is alive. `GET /readyz` rechecks SQLite and media-root availability. Temporary provider or Arr failures do not make readiness fail; they are scheduled and logged instead.
 
-Provider network errors and HTTP 5xx responses are circuit-broken per provider instance and operation with persisted 1, 5, 15, and 60 minute retries. A provider-supplied `Retry-After` overrides that delay. Interrupted response bodies also participate in provider failure backoff; caller cancellation and local output failures do not. Definitive login HTTP 401 from OpenSubtitles/Titlovi and SubDL HTTP 403 disable the affected instance until its credentials are corrected and the operator clears provider state (substitute that instance name below):
+Provider network errors and HTTP 5xx responses are circuit-broken per provider instance and operation with persisted 1, 5, 15, and 60 minute retries. A provider-supplied `Retry-After` overrides that delay. Interrupted response bodies also participate in provider failure backoff; caller cancellation and local output failures do not. Definitive login HTTP 401 from OpenSubtitles/Titlovi and a SubDL HTTP 403 whose message says the API key is invalid disable the affected instance (any other SubDL 403 opens the transient circuit) until its credentials are corrected and the operator clears provider state (substitute that instance name below):
 
 ```bash
 subsyncd retry --config /config/config.yaml --provider subdl-main

@@ -54,6 +54,41 @@ func TestEvaluateNormalizesTargetSourceAliases(t *testing.T) {
 	}
 }
 
+func TestEvaluateMapsArrSourceNamesToReleaseSources(t *testing.T) {
+	for _, test := range []struct {
+		name, source, quality, release string
+	}{
+		{"sonarr television", "television", "HDTV-720p", "Example.Movie.2020.720p.HDTV.x264-GROUP"},
+		{"radarr tv", "tv", "HDTV-1080p", "Example.Movie.2020.1080p.HDTV.x264-GROUP"},
+		{"sonarr web", "web", "WEBDL-1080p", "Example.Movie.2020.1080p.WEB-DL.H264-GROUP"},
+		{"web release", "webdl", "WEBDL-1080p", "Example.Movie.2020.1080p.WEB.h264-GROUP"},
+		{"dvd", "dvd", "DVD", "Example.Movie.2020.DVDRip.XviD-GROUP"},
+		{"sonarr bluray raw", "blurayRaw", "Bluray-1080p Remux", "Example.Movie.2020.1080p.BluRay.REMUX.AVC-GROUP"},
+		{"radarr remux quality", "bluray", "Remux-2160p", "Example.Movie.2020.2160p.UHD.BluRay.REMUX-GROUP"},
+		{"bdremux", "bluray", "Remux-1080p", "Example.Movie.2020.1080p.BDRemux-GROUP"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Source: test.source, Quality: test.quality}
+			candidate := domain.Candidate{Language: "en", ReleaseNames: []string{test.release}}
+			if score := Evaluate(media, candidate, "en"); score.Total != 15 {
+				t.Fatalf("score = %#v, want 15 source points", score)
+			}
+			if got := ReleaseAffinity(media, test.release+".srt"); got != 15 {
+				t.Fatalf("affinity = %d, want 15 source points", got)
+			}
+		})
+	}
+	// A Radarr Bluray encode is not a remux, and title words name no source.
+	media := domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Source: "bluray", Quality: "Bluray-1080p"}
+	if score := Evaluate(media, domain.Candidate{Language: "en", ReleaseNames: []string{"Example.Movie.2020.1080p.BluRay.REMUX-GROUP"}}, "en"); score.Total != 0 {
+		t.Fatalf("bluray encode versus remux = %#v, want 0", score)
+	}
+	media = domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Source: "tv"}
+	if score := Evaluate(media, domain.Candidate{Language: "en", ReleaseNames: []string{"The.TV.Set.2006.1080p.WEB-DL-GROUP"}}, "en"); score.Total != 0 {
+		t.Fatalf("tv target versus a title word = %#v, want 0", score)
+	}
+}
+
 func TestEvaluateAlternativeSourceBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		name, source, release string

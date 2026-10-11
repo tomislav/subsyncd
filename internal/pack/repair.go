@@ -18,6 +18,10 @@ import (
 // considered for a start-time typo repair.
 const typoDisorder = 10 * time.Second
 
+// mistypedEndDuration is how long a cue must last before its end, when it
+// also runs more than typoDisorder past the next cue's start, is a typo.
+const mistypedEndDuration = 15 * time.Second
+
 // maximumMergedOverlap is the share of a subtitle's cue time that may be shown
 // together with another cue. Real subtitles stay near 0% (1.5% at most in a
 // sample of 89 Titlovi files); two episodes stitched into one file reach 50%.
@@ -25,19 +29,29 @@ const maximumMergedOverlap = 0.25
 
 // planRepairs decides, for cues in file order, which to drop and which to
 // retime before the subtitle is put in start order:
-//   - cues with no text, and exact repeats of an earlier cue, are dropped;
-//   - a cue that starts well before the furthest start so far while its end
-//     still continues from there has a mistyped start, which moves to the end
-//     of the cue with that furthest start (00:33:04 -> 00:34:07 between
-//     00:34:01 and 00:34:08); a cue whose end is also early belongs to a
-//     misplaced block and is only sorted;
+//   - cues with no text, and in SRT and WebVTT exact repeats of an earlier
+//     cue, are dropped (ASS/SSA layers legitimately repeat a line);
+//   - in SRT and WebVTT, a cue that starts well before the furthest start so
+//     far while its end still continues from there has a mistyped start, which
+//     moves to the end of the cue with that furthest start (00:33:04 ->
+//     00:34:07 between 00:34:01 and 00:34:08); a cue whose end is also early
+//     belongs to a misplaced block, and one the move would leave shorter than
+//     its reading time is a long caption, so both are only sorted;
 //   - a cue that ends before it starts ends after its reading time, or at the
-//     next cue when that comes sooner.
+//     next cue when that comes sooner;
+//   - in SRT and WebVTT, a cue that ends more than 10 s after the next cue
+//     starts and lasts over three times its reading time and over 15 s has a
+//     mistyped end, which moves to the next cue's start (or its reading time,
+//     when that is later). Song lyrics (♪, ♫ or #) may run that long and are
+//     kept.
 //
 // Cues that are simply out of order are left to sorting. A subtitle whose cues
 // overlap too much is two subtitles in one file and is rejected (SRT and
 // WebVTT only).
 func planRepairs(items []*astisub.Item, extension string) ([]subtitleorder.Cue, error) {
+	// ASS/SSA run signs, typesetting and karaoke layers alongside dialogue, so
+	// repeated and overlapping lines are normal there.
+	ass := extension == ".ass" || extension == ".ssa"
 	cues := make([]subtitleorder.Cue, len(items))
 	texts := make([]string, len(items))
 	seen := map[string]bool{}
@@ -49,12 +63,12 @@ func planRepairs(items []*astisub.Item, extension string) ([]subtitleorder.Cue, 
 		cues[i] = subtitleorder.Cue{Start: item.StartAt, End: item.EndAt}
 		texts[i] = strings.TrimSpace(item.String())
 		key := fmt.Sprintf("%d|%d|%s", item.StartAt, item.EndAt, texts[i])
-		if texts[i] == "" || seen[key] {
+		if texts[i] == "" || !ass && seen[key] {
 			cues[i].Drop = true
 			continue
 		}
 		seen[key] = true
-		if leader >= 0 && item.StartAt < latest-typoDisorder && item.EndAt >= latest && item.EndAt <= latest+typoDisorder && cues[leader].End < item.EndAt {
+		if !ass && leader >= 0 && item.StartAt < latest-typoDisorder && item.EndAt >= latest && item.EndAt <= latest+typoDisorder && cues[leader].End < item.EndAt && item.EndAt-cues[leader].End >= readingTime(texts[i]) {
 			cues[i].Start, cues[i].Retime = cues[leader].End, true
 		}
 		if leader < 0 || cues[i].Start >= latest {
@@ -68,20 +82,32 @@ func planRepairs(items []*astisub.Item, extension string) ([]subtitleorder.Cue, 
 		}
 	}
 	sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+	nextStart := func(start time.Duration) (time.Duration, bool) {
+		next := sort.Search(len(starts), func(j int) bool { return starts[j] > start })
+		if next == len(starts) {
+			return 0, false
+		}
+		return starts[next], true
+	}
 	for i := range cues {
-		if cues[i].Drop || cues[i].End >= cues[i].Start {
+		if cues[i].Drop {
 			continue
 		}
-		end := cues[i].Start + readingTime(texts[i])
-		next := sort.Search(len(starts), func(j int) bool { return starts[j] > cues[i].Start })
-		if next < len(starts) && starts[next] < end {
-			end = max(starts[next], cues[i].Start+500*time.Millisecond)
+		reading := readingTime(texts[i])
+		if cues[i].End < cues[i].Start {
+			end := cues[i].Start + reading
+			if next, ok := nextStart(cues[i].Start); ok && next < end {
+				end = max(next, cues[i].Start+500*time.Millisecond)
+			}
+			cues[i].End, cues[i].Retime = end, true
+			continue
 		}
-		cues[i].End, cues[i].Retime = end, true
+		duration := cues[i].End - cues[i].Start
+		if next, ok := nextStart(cues[i].Start); ok && !ass && cues[i].End > next+typoDisorder && duration > 3*reading && duration > mistypedEndDuration && !strings.ContainsAny(texts[i], "♪♫#") {
+			cues[i].End, cues[i].Retime = max(next, cues[i].Start+reading), true
+		}
 	}
-	// ASS/SSA run signs, typesetting and karaoke layers alongside dialogue, so
-	// overlap there is normal; the merged-file check is for SRT and WebVTT.
-	if extension == ".ass" || extension == ".ssa" {
+	if ass {
 		return cues, nil
 	}
 	if overlap := overlapShare(cues); overlap > maximumMergedOverlap {
@@ -198,15 +224,29 @@ func srtClock(frame int, fps float64) string {
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", milliseconds/3_600_000, milliseconds/60_000%60, milliseconds/1000%60, milliseconds%1000)
 }
 
+// microDVDYStyle matches a MicroDVD font style code: lowercase {y:i} applies
+// to its own line, uppercase {Y:i} to every line of the cue. Its value lists
+// styles such as "i", "b" or "i,b".
+var microDVDYStyle = regexp.MustCompile(`\{([yY]):([^}]*)\}`)
+
 // microDVDText turns MicroDVD lines into SRT text: '|' separates lines, a
-// leading '/' or {y:i} marks italics, and other formatting codes are dropped.
+// leading '/' or {y:i} marks a line italic and {Y:i} the whole cue, and other
+// formatting codes are dropped.
 func microDVDText(text string) string {
-	italicAll := strings.Contains(strings.ToLower(text), "{y:i}")
-	text = microDVDStyle.ReplaceAllString(text, "")
+	italic := func(line string, letter string) bool {
+		for _, match := range microDVDYStyle.FindAllStringSubmatch(line, -1) {
+			if match[1] == letter && strings.ContainsRune(strings.ToLower(match[2]), 'i') {
+				return true
+			}
+		}
+		return false
+	}
+	italicAll := italic(text, "Y")
 	lines := strings.Split(text, "|")
 	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "/") || italicAll {
+		italicLine := italicAll || italic(line, "y")
+		line = strings.TrimSpace(microDVDStyle.ReplaceAllString(line, ""))
+		if strings.HasPrefix(line, "/") || italicLine {
 			line = "<i>" + strings.TrimSpace(strings.TrimPrefix(line, "/")) + "</i>"
 		}
 		lines[i] = line

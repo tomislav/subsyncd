@@ -63,3 +63,37 @@ func TestSelectAlternativesTriesTheBestMatchingVersionsOfALargeSet(t *testing.T)
 		}
 	}
 }
+
+func TestSelectUntriedAlternativesSkipsRejectedVersionsBeforeTruncating(t *testing.T) {
+	media := domain.Media{Season: 4, Episode: 13, ReleaseGroup: "BEST"}
+	manifest := Manifest{Members: []Member{
+		{SafeName: "Show.S04E13.720p-BEST.srt", Checksum: "best"},
+		{SafeName: "Show.S04E13.a.srt", Checksum: "a"},
+		{SafeName: "Show.S04E13.b.srt", Checksum: "b"},
+		{SafeName: "Show.S04E13.c.srt", Checksum: "c"},
+		{SafeName: "Show.S04E13.d.srt", Checksum: "d"},
+	}}
+	rejected := map[string]bool{"best": true, "a": true}
+	tried := func(member Member) (bool, error) { return rejected[member.Checksum], nil }
+	got, more, err := SelectUntriedAlternatives(manifest, domain.Candidate{}, media, false, tried)
+	if err != nil || len(got) != maxEpisodeVersions || more {
+		t.Fatalf("alternatives = %+v, %v, %v", got, more, err)
+	}
+	for _, member := range got {
+		if rejected[member.Checksum] {
+			t.Fatalf("rejected version %q displaced an untried one: %+v", member.Checksum, got)
+		}
+	}
+	// With one untried version left, rejected ones fill the rest, so the pack
+	// is exhausted only once that one fails too.
+	rejected = map[string]bool{"best": true, "a": true, "b": true, "c": true}
+	got, more, err = SelectUntriedAlternatives(manifest, domain.Candidate{}, media, false, tried)
+	if err != nil || len(got) != maxEpisodeVersions || got[0].Checksum != "d" || more {
+		t.Fatalf("alternatives = %+v, %v, %v; want the untried version first", got, more, err)
+	}
+	// Four untried versions: the fourth is left for a later run.
+	rejected = map[string]bool{"best": true}
+	if _, more, err = SelectUntriedAlternatives(manifest, domain.Candidate{}, media, false, tried); err != nil || !more {
+		t.Fatalf("untried left = %v, %v; want true", more, err)
+	}
+}

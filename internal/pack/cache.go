@@ -25,7 +25,10 @@ const (
 type cacheClock interface{ Now() time.Time }
 
 type CachedMember struct {
-	MemberScoped      bool
+	MemberScoped bool
+	// MoreVersions is set when the pack holds more versions of the episode
+	// than were selected, so rejecting these does not exhaust it.
+	MoreVersions      bool
 	Alternatives      []CachedMember
 	RuntimePack       bool
 	Path              string
@@ -113,7 +116,7 @@ entriesLoop:
 				continue
 			}
 		}
-		members, err := SelectAlternatives(manifest, manifest.Candidate, media, false)
+		members, moreVersions, err := SelectUntriedAlternatives(manifest, manifest.Candidate, media, false, nil)
 		if err != nil {
 			selectionErr = err
 			continue
@@ -133,7 +136,7 @@ entriesLoop:
 				}
 				continue entriesLoop
 			}
-			cached := CachedMember{MemberScoped: len(members) > 1, RuntimePack: manifest.RuntimePack, Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
+			cached := CachedMember{MemberScoped: len(members) > 1, MoreVersions: moreVersions, RuntimePack: manifest.RuntimePack, Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
 			if accept != nil {
 				accepted, err := accept(cached)
 				if err != nil {

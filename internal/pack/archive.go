@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -36,6 +37,11 @@ var (
 // negativeTiming finds an SRT or WebVTT timing line with a negative time,
 // which astisub reads as positive ("-00:00:05,000" as five seconds).
 var negativeTiming = regexp.MustCompile(`(?m)^[\t ]*-[0-9].*-->|-->[\t ]*-[0-9]`)
+
+// maxArchiveEntries bounds the files of any kind an archive may hold; only
+// subtitle files count against Limits.MaxFiles, so a pack with scans, NFOs and
+// samples beside its subtitles is still read.
+const maxArchiveEntries = 10_000
 
 type ContentError struct{ Err error }
 
@@ -89,8 +95,7 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 		}
 	}()
 
-	// seen maps each member's lower-cased name to its normalized checksum.
-	seen := map[string]string{}
+	var subtitles []extractedMember
 	var firstUnreadable error
 	for _, raw := range members {
 		if err := ctx.Err(); err != nil {
@@ -144,29 +149,21 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 			// Movie.srt shipped beside it.
 			safeName += extension
 		}
-		sum := checksum(text)
-		if existing, exists := seen[strings.ToLower(safeName)]; exists {
-			// Uploaders often ship one copy per encoding in separate folders
-			// (ANSI/ and UTF/): the same text once decoded is kept once.
-			if existing == sum {
-				continue
-			}
-			safeName = folderPrefix(raw.name) + safeName
-			// A name longer than filesystems allow could not be written; it is
-			// a content problem of this archive, not a reason to retry.
-			if _, clash := seen[strings.ToLower(safeName)]; clash || folderPrefix(raw.name) == "" || len(safeName) > 255 {
-				return Manifest{}, &ContentError{Err: fmt.Errorf("archive contains duplicate subtitle name %q", safeName)}
-			}
-		}
-		seen[strings.ToLower(safeName)] = sum
-		path := filepath.Join(staging, safeName)
-		if err := os.WriteFile(path, text, 0o600); err != nil {
+		subtitles = append(subtitles, extractedMember{path: strings.ReplaceAll(raw.name, `\`, "/"), name: safeName, text: text, sum: checksum(text)})
+	}
+	subtitles, err = assignMemberNames(subtitles)
+	if err != nil {
+		return Manifest{}, &ContentError{Err: err}
+	}
+	for _, subtitle := range subtitles {
+		path := filepath.Join(staging, subtitle.name)
+		if err := os.WriteFile(path, subtitle.text, 0o600); err != nil {
 			return Manifest{}, fmt.Errorf("write normalized subtitle: %w", err)
 		}
-		member := memberEvidence(safeName, candidate.Title)
+		member := memberEvidence(subtitle.name, candidate.Title)
 		member.NormalizedPath = path
-		member.Checksum = sum
-		member.ByteSize = int64(len(text))
+		member.Checksum = subtitle.sum
+		member.ByteSize = int64(len(subtitle.text))
 		manifest.Members = append(manifest.Members, member)
 	}
 	if len(manifest.Members) == 0 {
@@ -234,10 +231,15 @@ func decodeZIP(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 	}
 	var members []archiveMember
 	var declaredExpanded, actualExpanded int64
-	files := 0
+	files, entries := 0, 0
 	for _, entry := range reader.File {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		// macOS metadata is skipped before any path check: a __MACOSX copy
+		// sits one folder deeper than the file it describes.
+		if macOSMetadata(entry.Name) {
+			continue
 		}
 		if err := validateArchivePath(entry.Name, limits.MaxDepth); err != nil {
 			return nil, err
@@ -249,9 +251,8 @@ func decodeZIP(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 		if entry.FileInfo().IsDir() {
 			continue
 		}
-		files++
-		if files > limits.MaxFiles {
-			return nil, fmt.Errorf("archive contains more than %d files", limits.MaxFiles)
+		if entries++; entries > maxArchiveEntries {
+			return nil, fmt.Errorf("archive contains more than %d entries", maxArchiveEntries)
 		}
 		declaredExpanded += int64(entry.UncompressedSize64)
 		if declaredExpanded > limits.MaxExpanded {
@@ -283,6 +284,9 @@ func decodeZIP(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 		if !isSubtitleExtension(entry.Name) {
 			continue
 		}
+		if files++; files > limits.MaxFiles {
+			return nil, fmt.Errorf("archive contains more than %d subtitle files", limits.MaxFiles)
+		}
 		members = append(members, archiveMember{name: entry.Name, mode: mode, body: body})
 	}
 	return members, nil
@@ -295,7 +299,7 @@ func decodeRAR(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 	}
 	var members []archiveMember
 	var expanded int64
-	files := 0
+	files, entries := 0, 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -307,6 +311,9 @@ func decodeRAR(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 		if err != nil {
 			return nil, fmt.Errorf("read RAR header: %w", err)
 		}
+		if macOSMetadata(header.Name) {
+			continue
+		}
 		if err := validateArchivePath(header.Name, limits.MaxDepth); err != nil {
 			return nil, err
 		}
@@ -316,9 +323,8 @@ func decodeRAR(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 		if header.IsDir {
 			continue
 		}
-		files++
-		if files > limits.MaxFiles {
-			return nil, fmt.Errorf("archive contains more than %d files", limits.MaxFiles)
+		if entries++; entries > maxArchiveEntries {
+			return nil, fmt.Errorf("archive contains more than %d entries", maxArchiveEntries)
 		}
 		if !header.UnKnownSize {
 			expanded += header.UnPackedSize
@@ -345,6 +351,9 @@ func decodeRAR(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 		}
 		if !isSubtitleExtension(header.Name) {
 			continue
+		}
+		if files++; files > limits.MaxFiles {
+			return nil, fmt.Errorf("archive contains more than %d subtitle files", limits.MaxFiles)
 		}
 		members = append(members, archiveMember{name: header.Name, mode: header.Mode(), body: body})
 	}
@@ -388,6 +397,88 @@ func safeMemberName(name string, maxDepth int) (string, error) {
 		return "", fmt.Errorf("archive member has no safe name")
 	}
 	return base, nil
+}
+
+// extractedMember is a readable subtitle of an archive before its name in the
+// extraction directory is settled.
+type extractedMember struct {
+	path string // the member's path inside the archive, with "/" separators
+	name string
+	text []byte
+	sum  string
+}
+
+// assignMemberNames gives each subtitle a unique (case-insensitive) file name
+// independent of the archive's member order. Identical copies under one name,
+// as with the per-encoding ANSI/ and UTF/ copies uploaders ship, are kept
+// once. Of different subtitles sharing a name, the one with the first archive
+// path keeps it; each other one is prefixed with its folder ("UTF - name.srt"),
+// or, with no folder, numbered ("name (2).srt") in
+// path order; so is one whose prefixed name is taken or too long. The result
+// keeps archive order.
+func assignMemberNames(subtitles []extractedMember) ([]extractedMember, error) {
+	groups := map[string][]int{}
+	var keys []string
+	for index, subtitle := range subtitles {
+		key := strings.ToLower(subtitle.name)
+		if _, exists := groups[key]; !exists {
+			keys = append(keys, key)
+		}
+		groups[key] = append(groups[key], index)
+	}
+	sort.Strings(keys)
+	taken := map[string]bool{}
+	for _, key := range keys {
+		taken[key] = true
+	}
+	keep := make([]bool, len(subtitles))
+	for _, key := range keys {
+		group := groups[key]
+		sort.SliceStable(group, func(i, j int) bool {
+			left, right := subtitles[group[i]], subtitles[group[j]]
+			if left.path != right.path {
+				return left.path < right.path
+			}
+			return left.sum < right.sum
+		})
+		kept := map[string]bool{}
+		for position, index := range group {
+			subtitle := &subtitles[index]
+			if kept[subtitle.sum] {
+				continue
+			}
+			kept[subtitle.sum] = true
+			keep[index] = true
+			if position == 0 {
+				continue
+			}
+			name := folderPrefix(subtitle.path) + subtitle.name
+			if name == subtitle.name || taken[strings.ToLower(name)] || len(name) > 255 {
+				extension := filepath.Ext(subtitle.name)
+				stem := strings.TrimSuffix(subtitle.name, extension)
+				for number := 2; ; number++ {
+					name = fmt.Sprintf("%s (%d)%s", stem, number, extension)
+					if !taken[strings.ToLower(name)] {
+						break
+					}
+				}
+			}
+			// A name longer than filesystems allow could not be written; it is
+			// a content problem of this archive, not a reason to retry.
+			if len(name) > 255 {
+				return nil, fmt.Errorf("archive contains duplicate subtitle name %q", subtitle.name)
+			}
+			taken[strings.ToLower(name)] = true
+			subtitle.name = name
+		}
+	}
+	var named []extractedMember
+	for index, subtitle := range subtitles {
+		if keep[index] {
+			named = append(named, subtitle)
+		}
+	}
+	return named, nil
 }
 
 // folderPrefix names a member's folder as a file-name prefix ("UTF/x.srt" ->
