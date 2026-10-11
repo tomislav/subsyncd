@@ -12,12 +12,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/asticode/go-astisub"
 	"github.com/nwaples/rardecode/v2"
 	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 
 	"subsyncd/internal/domain"
@@ -29,6 +32,10 @@ var (
 	zipMagic = []byte{'P', 'K', 3, 4}
 	rarMagic = []byte{'R', 'a', 'r', '!', 0x1a, 0x07}
 )
+
+// negativeTiming finds an SRT or WebVTT timing line with a negative time,
+// which astisub reads as positive ("-00:00:05,000" as five seconds).
+var negativeTiming = regexp.MustCompile(`(?m)^[\t ]*-[0-9].*-->|-->[\t ]*-[0-9]`)
 
 type ContentError struct{ Err error }
 
@@ -102,6 +109,16 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 			if err != nil || !isMicroDVD(decoded) {
 				// A binary VobSub .sub (with its .idx) is not a text
 				// subtitle; it is ignored like any other extra file.
+				continue
+			}
+			if _, err := microDVDToSRT(decoded); err != nil {
+				// Nor is a MicroDVD file without a usable frame rate an
+				// unreadable subtitle that makes selection doubt the rest:
+				// it is ignored, and only explains an archive with nothing
+				// else in it.
+				if firstUnreadable == nil {
+					firstUnreadable = fmt.Errorf("validate subtitle %q: %w", safeName, err)
+				}
 				continue
 			}
 		}
@@ -255,7 +272,7 @@ func decodeZIP(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 		if actualExpanded > limits.MaxExpanded {
 			return nil, fmt.Errorf("archive expands beyond %d bytes", limits.MaxExpanded)
 		}
-		if hasArchiveMagic(body) {
+		if HasArchiveMagic(body) {
 			return nil, fmt.Errorf("nested archives are not allowed")
 		}
 		if !isSubtitleExtension(entry.Name) {
@@ -318,7 +335,7 @@ func decodeRAR(ctx context.Context, payload []byte, limits Limits) ([]archiveMem
 		if header.UnKnownSize {
 			expanded += int64(len(body))
 		}
-		if hasArchiveMagic(body) {
+		if HasArchiveMagic(body) {
 			return nil, fmt.Errorf("nested archives are not allowed")
 		}
 		if !isSubtitleExtension(header.Name) {
@@ -394,7 +411,8 @@ func isArchiveExtension(name string) bool {
 	return false
 }
 
-func hasArchiveMagic(payload []byte) bool {
+// HasArchiveMagic reports whether payload starts like a ZIP or RAR archive.
+func HasArchiveMagic(payload []byte) bool {
 	return bytes.HasPrefix(payload, zipMagic) || bytes.HasPrefix(payload, rarMagic)
 }
 
@@ -444,6 +462,9 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 	if len(subtitles.Items) > 100_000 {
 		return nil, "", fmt.Errorf("subtitle contains too many cues")
 	}
+	if extension != ".ass" && extension != ".ssa" && negativeTiming.Match(text) {
+		return nil, "", fmt.Errorf("subtitle timestamps are invalid")
+	}
 	for _, item := range subtitles.Items {
 		if item.StartAt < 0 || item.EndAt < 0 {
 			return nil, "", fmt.Errorf("subtitle timestamps are invalid")
@@ -457,10 +478,32 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 		return nil, "", err
 	}
 	repaired, err := subtitleorder.Repair(text, extension, cues)
+	if errors.Is(err, subtitleorder.ErrUnsafe) && startsInOrder(subtitles.Items, cues) {
+		// The records could not be matched to the cues for a repair that only
+		// tidies up (an unclosed <i>, an empty or retimed cue); the file
+		// plays as it is, so keep it rather than reject it.
+		return text, extension, nil
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("subtitle timestamps are out of order: %w", err)
 	}
 	return repaired, extension, nil
+}
+
+// startsInOrder reports whether the cues a repair keeps already start in file
+// order as parsed, so the subtitle needs no reordering.
+func startsInOrder(items []*astisub.Item, cues []subtitleorder.Cue) bool {
+	var previous time.Duration
+	for i, item := range items {
+		if cues[i].Drop {
+			continue
+		}
+		if item.StartAt < previous {
+			return false
+		}
+		previous = item.StartAt
+	}
+	return true
 }
 
 // macOSMetadata reports archive entries macOS adds beside real files: the
@@ -477,6 +520,15 @@ func macOSMetadata(name string) bool {
 }
 
 func decodeText(payload []byte) ([]byte, error) {
+	// UTF-16 is only recognized by its byte order mark; without one its NUL
+	// bytes reject it below.
+	if bytes.HasPrefix(payload, []byte{0xff, 0xfe}) || bytes.HasPrefix(payload, []byte{0xfe, 0xff}) {
+		decoded, _, err := transform.Bytes(unicode.UTF16(unicode.LittleEndian, unicode.ExpectBOM).NewDecoder(), payload)
+		if err != nil || !utf8.Valid(decoded) {
+			return nil, fmt.Errorf("subtitle encoding is unsupported")
+		}
+		payload = decoded
+	}
 	if bytes.IndexByte(payload, 0) >= 0 {
 		return nil, fmt.Errorf("subtitle contains NUL bytes")
 	}

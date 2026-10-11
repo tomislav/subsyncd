@@ -316,10 +316,6 @@ func querySuffix(raw string) string {
 }
 
 func (c *Client) Download(ctx context.Context, candidate domain.Candidate, writer io.Writer) (baseprovider.DownloadMetadata, error) {
-	return c.download(ctx, candidate, writer, true)
-}
-
-func (c *Client) download(ctx context.Context, candidate domain.Candidate, writer io.Writer, allowRefresh bool) (baseprovider.DownloadMetadata, error) {
 	base, _ := url.Parse(strings.TrimRight(c.config.DownloadBaseURL, "/") + "/")
 	reference, err := url.Parse(candidate.DownloadRef)
 	if err != nil || !c.validDownloadReference(reference) {
@@ -329,17 +325,19 @@ func (c *Client) download(ctx context.Context, candidate domain.Candidate, write
 	if !c.allowedDownloadURL(endpoint) {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("Titlovi download URL is not allowed")
 	}
-	if err := c.login(ctx, false); err != nil {
-		return baseprovider.DownloadMetadata{}, err
-	}
+	// Download requests carry no token, so they need no login and a 401
+	// says nothing about the credentials.
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return baseprovider.DownloadMetadata{}, fmt.Errorf("create Titlovi download request: %w", err)
 	}
 	safeHTTP := *c.transport.HTTP
-	safeHTTP.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+	safeHTTP.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= baseprovider.MaxDownloadRedirects {
+			return &baseprovider.RedirectError{Message: "Titlovi download redirected too many times"}
+		}
 		if !c.allowedDownloadURL(request.URL) {
-			return fmt.Errorf("Titlovi redirect target is not allowed")
+			return &baseprovider.RedirectError{Message: "Titlovi redirect target is not allowed"}
 		}
 		return nil
 	}
@@ -350,16 +348,8 @@ func (c *Client) download(ctx context.Context, candidate domain.Candidate, write
 		if response != nil {
 			response.Body.Close()
 		}
-		if _, unauthorized := err.(*baseprovider.AuthenticationError); unauthorized && allowRefresh {
-			if loginErr := c.login(ctx, true); loginErr != nil {
-				return baseprovider.DownloadMetadata{}, loginErr
-			}
-			return c.download(ctx, candidate, writer, false)
-		}
 		if _, unauthorized := err.(*baseprovider.AuthenticationError); unauthorized {
-			if persistErr := c.transport.DisableAuthentication(ctx, "credentials rejected after token refresh"); persistErr != nil {
-				return baseprovider.DownloadMetadata{}, persistErr
-			}
+			return baseprovider.DownloadMetadata{}, fmt.Errorf("Titlovi download returned HTTP 401")
 		}
 		return baseprovider.DownloadMetadata{}, err
 	}

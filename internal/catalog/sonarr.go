@@ -568,10 +568,29 @@ func resolutionName(value int) string {
 	return strconv.Itoa(value) + "p"
 }
 
+// parseRuntime reads the media info runtime, which Sonarr and Radarr write as
+// "h:mm:ss" from an hour up and as "m:ss" below it; fractional seconds are
+// ignored. Anything else is unknown (zero).
 func parseRuntime(raw string) time.Duration {
-	parsed, err := time.Parse("15:04:05", raw)
-	if err != nil {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	if len(parts) < 2 || len(parts) > 3 {
 		return 0
 	}
-	return time.Duration(parsed.Hour())*time.Hour + time.Duration(parsed.Minute())*time.Minute + time.Duration(parsed.Second())*time.Second
+	seconds, _, _ := strings.Cut(parts[len(parts)-1], ".")
+	parts[len(parts)-1] = seconds
+	values := make([]int, len(parts))
+	for i, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 || part == "" || part[0] == '+' {
+			return 0
+		}
+		if i > 0 && (len(part) != 2 || value > 59) {
+			return 0
+		}
+		values[i] = value
+	}
+	if len(values) == 2 {
+		values = append([]int{0}, values...)
+	}
+	return time.Duration(values[0])*time.Hour + time.Duration(values[1])*time.Minute + time.Duration(values[2])*time.Second
 }

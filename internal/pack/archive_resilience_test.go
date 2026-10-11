@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"subsyncd/internal/domain"
 )
@@ -135,5 +136,20 @@ func TestSkippedMemberDoesNotPromoteAGenericSibling(t *testing.T) {
 	}
 	if _, err := SelectSingleEpisode(manifest, domain.Candidate{}, domain.Media{Season: 1, Episode: 5}, false); err == nil {
 		t.Fatal("a generic file was accepted after the archive's explicit S01E05 file was skipped")
+	}
+}
+
+func TestUTF16WithByteOrderMarkIsDecoded(t *testing.T) {
+	text := "1\r\n00:00:01,000 --> 00:00:02,000\r\nČovjek\r\n"
+	units := utf16.Encode([]rune(text))
+	little, big := []byte{0xff, 0xfe}, []byte{0xfe, 0xff}
+	for _, unit := range units {
+		little = append(little, byte(unit), byte(unit>>8))
+		big = append(big, byte(unit>>8), byte(unit))
+	}
+	for name, body := range map[string][]byte{"little endian": little, "big endian": big} {
+		if got := normalizedMember(t, "Show.S01E01.srt", string(body)); got != "1\n00:00:01,000 --> 00:00:02,000\nČovjek\n" {
+			t.Errorf("%s: normalized = %q", name, got)
+		}
 	}
 }

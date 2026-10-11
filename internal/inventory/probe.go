@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 	"unicode"
 
 	"subsyncd/internal/domain"
@@ -21,15 +23,55 @@ type CommandRunner interface {
 	Run(context.Context, string, ...string) (stdout, stderr []byte, err error)
 }
 
+// defaultProbeTimeout bounds one ffprobe run. Reading stream headers takes
+// seconds even over a network mount; minutes mean the mount stopped answering.
+const defaultProbeTimeout = 5 * time.Minute
+
+// ErrProbeTimedOut means ffprobe did not finish reading the media file in
+// time, which is how a hung mount looks; the media is unavailable for now.
+var ErrProbeTimedOut = errors.New("ffprobe timed out reading the media file")
+
 type Probe struct {
 	Path   string
 	Runner CommandRunner
+	// Timeout bounds one run; 0 uses defaultProbeTimeout.
+	Timeout time.Duration
 }
 
 func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
-	stdout, _, err := p.Runner.Run(ctx, p.Path, "-v", "error", "-show_streams", "-show_format", "-of", "json", mediaPath)
-	if err != nil {
-		return nil, fmt.Errorf("ffprobe failed: %w", err)
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = defaultProbeTimeout
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	type output struct {
+		stdout []byte
+		err    error
+	}
+	// A process blocked in a read of a hung mount cannot be killed until the
+	// read returns, so the result is awaited only until the deadline; a late
+	// run finishes in the background.
+	done := make(chan output, 1)
+	go func() {
+		stdout, _, err := p.Runner.Run(probeCtx, p.Path, "-v", "error", "-show_streams", "-show_format", "-of", "json", mediaPath)
+		done <- output{stdout, err}
+	}()
+	var stdout []byte
+	select {
+	case result := <-done:
+		stdout = result.stdout
+		if result.err != nil {
+			if ctx.Err() == nil && probeCtx.Err() != nil {
+				return nil, ErrProbeTimedOut
+			}
+			return nil, fmt.Errorf("ffprobe failed: %w", result.err)
+		}
+	case <-probeCtx.Done():
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, ErrProbeTimedOut
 	}
 	if len(stdout) > maxProbeOutput {
 		return nil, fmt.Errorf("ffprobe output exceeds %d bytes", maxProbeOutput)

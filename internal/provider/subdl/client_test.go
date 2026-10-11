@@ -351,6 +351,24 @@ func TestForbiddenDownloadDisablesProviderUntilExplicitRetry(t *testing.T) {
 	}
 }
 
+func TestDownloadRedirectLoopStopsWithoutProviderCooldown(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Redirect(w, r, "/subtitle/loop", http.StatusFound)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	_, err := client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/loop"}, io.Discard)
+	var redirect *baseprovider.RedirectError
+	if !errors.As(err, &redirect) || requests != baseprovider.MaxDownloadRedirects {
+		t.Fatalf("error = %T %v after %d requests; want a redirect refusal after %d", err, err, requests, baseprovider.MaxDownloadRedirects)
+	}
+	if err := client.CheckDownloadAvailability(context.Background()); err != nil {
+		t.Fatalf("download availability = %v; a refused redirect is not a provider outage", err)
+	}
+}
+
 func newTestClient(t *testing.T, server *httptest.Server, maxBytes int64) *Client {
 	t.Helper()
 	client, _ := newTestClientWithState(t, server, maxBytes)

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"subsyncd/internal/domain"
 )
 
 func normalizedMember(t *testing.T, name, body string) string {
@@ -103,6 +105,40 @@ func TestRepairClosesUnbalancedItalics(t *testing.T) {
 	}
 }
 
+func TestRepairReadsCuesLikeTheParser(t *testing.T) {
+	tests := map[string]struct{ body, want string }{
+		"missing blank line between cues with an unclosed italic": {
+			"1\n00:00:01,000 --> 00:00:02,000\n<i>Narrator\n2\n00:00:03,000 --> 00:00:04,000\nPlain\n",
+			"1\n00:00:01,000 --> 00:00:02,000\n<i>Narrator</i>\n\n2\n00:00:03,000 --> 00:00:04,000\nPlain\n"},
+		"arrow without spaces and an empty cue": {
+			"1\n00:00:01,000-->00:00:02,000\nHello\n\n2\n00:00:02,000-->00:00:03,000\n\n3\n00:00:04,000-->00:00:05,000\nWorld\n",
+			"1\n00:00:01,000-->00:00:02,000\nHello\n\n2\n00:00:04,000-->00:00:05,000\nWorld\n"},
+		"blank line inside a misplaced cue": {
+			"1\n00:00:05,000 --> 00:00:06,000\nLater\n\nstill later\n\n2\n00:00:01,000 --> 00:00:02,000\nFirst\n",
+			"1\n00:00:01,000 --> 00:00:02,000\nFirst\n\n2\n00:00:05,000 --> 00:00:06,000\nLater\nstill later\n"},
+	}
+	for name, test := range tests {
+		if got := normalizedMember(t, "Show.S01E01.srt", test.body); got != test.want {
+			t.Errorf("%s: normalized =\n%q\nwant\n%q", name, got, test.want)
+		}
+	}
+}
+
+func TestUnsafeRepairKeepsAnOrderedSubtitleAsItIs(t *testing.T) {
+	// Two-digit milliseconds parse, but the timing cannot be rewritten; the
+	// backwards cue plays as it is rather than losing the subtitle.
+	body := "1\n00:00:05,00 --> 00:00:04,000\nA\n\n2\n00:00:07,000 --> 00:00:08,000\nB\n"
+	if got := normalizedMember(t, "Show.S01E01.srt", body); got != body {
+		t.Fatalf("normalized =\n%q\nwant it unchanged", got)
+	}
+	// When the cues also need reordering, the subtitle is still rejected.
+	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: "1\n00:00:05,00 --> 00:00:04,000\nA\n\n2\n00:00:01,000 --> 00:00:02,000\nB\n"}})
+	var content *ContentError
+	if !errors.As(err, &content) || !strings.Contains(err.Error(), "out of order") {
+		t.Fatalf("error = %v; want the out-of-order rejection", err)
+	}
+}
+
 func TestRepairRejectsTwoSubtitlesInOneFile(t *testing.T) {
 	// The Big Bang Theory S01 pack on Titlovi: one file holds two episodes,
 	// the second restarting at 00:01:59 after 00:19:43.
@@ -146,6 +182,30 @@ func TestMicroDVDWithoutFrameRateIsRejected(t *testing.T) {
 	var content *ContentError
 	if !errors.As(err, &content) || !strings.Contains(err.Error(), "frame rate") {
 		t.Fatalf("error = %v; want a frame-rate rejection", err)
+	}
+}
+
+func TestMicroDVDWithoutFrameRateBesideSRTIsIgnored(t *testing.T) {
+	manifest, _, err := extractZIP(t, []zipEntry{
+		{name: "Show.HDTV.XviD-LOL.srt", body: validSRT},
+		{name: "Show.HDTV.XviD-LOL.sub", body: "{575}{669}Ljudski život\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Members) != 1 || manifest.SkippedMembers != 0 {
+		t.Fatalf("members = %d skipped = %d; an unconvertible MicroDVD file is an extra file", len(manifest.Members), manifest.SkippedMembers)
+	}
+	selected, err := SelectSingleEpisode(manifest, domain.Candidate{}, domain.Media{Title: "Show", Season: 1, Episode: 2}, false)
+	if err != nil || selected.SafeName != "Show.HDTV.XviD-LOL.srt" || selected.SelectionRule != "single_generic" {
+		t.Fatalf("selected = %+v, %v; want the srt by single_generic", selected, err)
+	}
+}
+
+func TestMicroDVDWithCommaFrameRateAndEndOfFileMarkIsConverted(t *testing.T) {
+	out, extension, err := normalizeSubtitle([]byte("{1}{1}23,976\r\n{24}{48}Hej\r\n\x1a"), ".sub")
+	if err != nil || extension != ".srt" || !strings.Contains(string(out), "00:00:01,001 --> 00:00:02,002\nHej") {
+		t.Fatalf("normalizeSubtitle() = %q, %q, %v", out, extension, err)
 	}
 }
 

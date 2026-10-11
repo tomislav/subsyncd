@@ -171,7 +171,8 @@ sync:
   # 0 turns this off. Default: 4.
   min_read_rate: 4
   # Upper limit for that extension; it never shortens timeout.
-  # Default: 4h, or timeout when that is longer.
+  # Default: 4h, or timeout when that is longer. A whole search job is
+  # stopped after twice this (or twice timeout, when longer).
   max_timeout: 4h
   # When to check and fix subtitle timing with LAPSE. Default: confidence.
   #   confidence  Skip LAPSE only for a strong match (see bypass_score and the

@@ -104,7 +104,9 @@ func (s *Service) runProviderTiers(ctx context.Context, request Request, existin
 	}
 	if first.Outcome == OutcomeThrottled {
 		second.Outcome = OutcomeThrottled
-		if second.RetryAt.IsZero() || first.RetryAt.Before(second.RetryAt) {
+		// A tier without a reset (a disabled provider) must not hide the
+		// other tier's reset; the earliest known reset wins.
+		if !first.RetryAt.IsZero() && (second.RetryAt.IsZero() || first.RetryAt.Before(second.RetryAt)) {
 			second.RetryAt = first.RetryAt
 		}
 	}

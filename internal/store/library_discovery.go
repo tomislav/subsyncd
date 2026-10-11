@@ -88,11 +88,17 @@ func (r *Repository) commitLibraryDiscovery(ctx context.Context, instance, scope
 			return err
 		}
 		if found {
-			// Known media keeps its row; only a newly known release date is filled
-			// in, which backfills rows created before the date was recorded.
+			// Known media keeps its row; only a newly known release date and
+			// runtime are filled in, which backfills rows created before the date
+			// was recorded or while short runtimes still parsed as zero.
 			if released := releasedAtNS(media); released != 0 {
 				if _, err := tx.ExecContext(ctx, `UPDATE media SET released_at_ns=? WHERE id=? AND released_at_ns!=?`, released, id, released); err != nil {
 					return fmt.Errorf("record media release date: %w", err)
+				}
+			}
+			if duration := int64(media.Duration); duration > 0 {
+				if _, err := tx.ExecContext(ctx, `UPDATE media SET duration_ns=? WHERE id=? AND duration_ns!=?`, duration, id, duration); err != nil {
+					return fmt.Errorf("record media duration: %w", err)
 				}
 			}
 			continue

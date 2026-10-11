@@ -89,6 +89,54 @@ func TestLibraryDiscoveryBackfillsReleaseDateOnly(t *testing.T) {
 	}
 }
 
+func TestLibraryDiscoveryBackfillsDurationOnly(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx, at := t.Context(), time.Now().UTC()
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr", at); err != nil {
+		t.Fatal(err)
+	}
+	media := testMedia()
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "initial", Type: "import", Ref: media.Ref, EntityID: media.EntityID, Media: media, Languages: []domain.Language{"hr"}, At: at}); err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := repo.FindMedia(ctx, media.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchesBefore := libraryTableSnapshot(t, repo, "search_states")
+	commit := func(listed domain.Media, offset time.Duration) {
+		t.Helper()
+		_, revision, err := repo.LibraryDiscoveryState(ctx, "sonarr-main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.CommitLibraryDiscovery(ctx, "sonarr-main", "scope", revision, []domain.Media{listed}, []domain.Language{"hr"}, at.Add(offset)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	duration := 47*time.Minute + 44*time.Second
+	listed := media
+	listed.Duration = duration
+	listed.Title = "newer catalog title"
+	commit(listed, time.Hour)
+	got, err := repo.GetMedia(ctx, id)
+	if err != nil || got.Duration != duration {
+		t.Fatalf("duration = %s err=%v, want %s", got.Duration, err, duration)
+	}
+	if got.Title != media.Title {
+		t.Fatalf("discovery changed title to %q; other metadata stays with history", got.Title)
+	}
+	// A listing without a runtime keeps the known one.
+	listed.Duration = 0
+	commit(listed, 2*time.Hour)
+	if got, err := repo.GetMedia(ctx, id); err != nil || got.Duration != duration {
+		t.Fatalf("duration after unknown runtime = %s err=%v, want %s", got.Duration, err, duration)
+	}
+	if after := libraryTableSnapshot(t, repo, "search_states"); after != searchesBefore {
+		t.Fatalf("discovery changed search states\nbefore: %s\nafter: %s", searchesBefore, after)
+	}
+}
+
 func TestMissingAttemptFloorJumpsAndThenAdvances(t *testing.T) {
 	repo := openTestRepository(t)
 	ctx, now := t.Context(), time.Now()

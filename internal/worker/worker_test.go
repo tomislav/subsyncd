@@ -506,6 +506,42 @@ func TestRunOnceSchedulesThrottleAfterResetWithoutAdvancingAttempts(t *testing.T
 	}
 }
 
+func TestThrottleWithoutResetStaysPending(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeThrottled}}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.RandomUnit = func() float64 { return 0.5 }
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Six hours plus the usual jitter of up to a tenth of the delay.
+	completion := repository.searchCompletions[0]
+	if want := now.Add(6*time.Hour + 18*time.Minute); !completion.NextAttemptAt.Equal(want) || !completion.PreserveQueueOrder {
+		t.Fatalf("throttle completion = %#v; want pending until %s", completion, want)
+	}
+}
+
+func TestJobPastItsTimeLimitIsCanceledAndScheduledAsFailure(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	// A workflow stuck on media that stopped answering, until canceled.
+	service := &workerWorkflow{release: make(chan struct{}), outcome: workflow.Result{Outcome: workflow.OutcomeInstalled}}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.JobTimeout = 50 * time.Millisecond
+	err := worker.RunOnce(context.Background())
+	if !errors.Is(err, errJobTimedOut) {
+		t.Fatalf("error = %v; want the job time limit", err)
+	}
+	if len(repository.searchCompletions) != 1 {
+		t.Fatalf("completions = %#v; want one failure completion", repository.searchCompletions)
+	}
+	completion := repository.searchCompletions[0]
+	if completion.Outcome != "workflow_error" || !completion.NextAttemptAt.After(now) || !completion.AdvanceFailureAttempt {
+		t.Fatalf("completion = %#v; want a scheduled failure retry", completion)
+	}
+}
+
 func TestRunOnceSchedulesNoResultAsMissingPriority(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)

@@ -30,7 +30,16 @@ const (
 	defaultMaxWorkflows      = 1
 	maximumWorkflows         = 8
 	defaultNotificationBatch = 10
+	// defaultJobTimeout bounds one search job. A LAPSE run is limited to
+	// sync.max_timeout (4h by default) on the largest files, and later runs
+	// on the same media reuse its speech cache, so twice that never cuts a
+	// legitimate job; it only frees a worker stuck on media that stopped
+	// answering.
+	defaultJobTimeout = 8 * time.Hour
 )
+
+// errJobTimedOut ends a search job that ran past Worker.JobTimeout.
+var errJobTimedOut = errors.New("subtitle job exceeded its time limit")
 
 type Clock interface{ Now() time.Time }
 
@@ -89,6 +98,9 @@ type Worker struct {
 	RenewInterval     time.Duration
 	ShutdownTimeout   time.Duration
 	ReconcileInterval time.Duration
+	// JobTimeout cancels a search job that runs longer, stops renewing its
+	// lease and schedules it as a failure; 0 uses defaultJobTimeout.
+	JobTimeout        time.Duration
 	SearchBatch       int
 	MaxWorkflows      int
 	NotificationBatch int
@@ -276,7 +288,13 @@ func (w *Worker) processSearchLease(ctx context.Context, lease store.SearchLease
 
 func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) error {
 	started := time.Now()
-	jobCtx, cancelJob := context.WithCancel(ctx)
+	limit := w.JobTimeout
+	if limit <= 0 {
+		limit = defaultJobTimeout
+	}
+	timeoutCtx, cancelTimeout := context.WithTimeoutCause(ctx, limit, errJobTimedOut)
+	defer cancelTimeout()
+	jobCtx, cancelJob := context.WithCancel(timeoutCtx)
 	defer cancelJob()
 	jobCtx = observability.WithAttrs(jobCtx,
 		slog.String("job_id", lease.JobID),
@@ -334,6 +352,13 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 	if renewErr := renewal.finish(); renewErr != nil {
 		events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
 		return renewErr
+	}
+	if context.Cause(timeoutCtx) == errJobTimedOut && ctx.Err() == nil {
+		// The lease is still ours until it expires: record the failure so the
+		// search retries on the failure schedule instead of at once.
+		err = fmt.Errorf("%w (%s)", errJobTimedOut, limit)
+		events.Log(jobCtx, slog.LevelWarn, "job.timed_out", "subtitle job exceeded its time limit", slog.Duration("limit", limit))
+		jobCtx = context.WithoutCancel(jobCtx)
 	}
 	if jobCtx.Err() != nil {
 		w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, len(lease.ResumeProviders), nil)
@@ -741,9 +766,15 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
+// unknownThrottleDelay is how long a throttled search waits when no provider
+// reported a reset, as when the only blocked provider is disabled. A
+// throttled search is never complete: it stays pending until a provider can
+// be asked again (`subsyncd retry --provider` makes it due at once).
+const unknownThrottleDelay = 6 * time.Hour
+
 func (w *Worker) throttleRetryAt(reset time.Time) time.Time {
 	if reset.IsZero() {
-		return time.Time{}
+		reset = w.Clock.Now().Add(unknownThrottleDelay)
 	}
 	delay := reset.Sub(w.Clock.Now())
 	if delay <= 0 {

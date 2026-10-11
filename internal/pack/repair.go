@@ -152,13 +152,14 @@ func isMicroDVD(text []byte) bool {
 }
 
 // microDVDToSRT converts a MicroDVD subtitle that states its frame rate in a
-// {1}{1}25.000 header (or {0}{0}) to SRT. Without that header frames cannot
-// be turned into times, so the file is rejected.
+// {1}{1}25.000 header (or {0}{0}, also with a decimal comma) to SRT. Without
+// that header frames cannot be turned into times, so the file is rejected. A
+// DOS end-of-file mark (Ctrl-Z) at the end is ignored.
 func microDVDToSRT(text []byte) ([]byte, error) {
 	var fps float64
 	var output strings.Builder
 	number := 0
-	for _, raw := range strings.Split(string(text), "\n") {
+	for _, raw := range strings.Split(strings.TrimRight(string(text), "\x1a \t\r\n"), "\n") {
 		line := strings.TrimSpace(strings.TrimPrefix(raw, "\ufeff"))
 		if line == "" {
 			continue
@@ -170,7 +171,7 @@ func microDVDToSRT(text []byte) ([]byte, error) {
 		start, _ := strconv.Atoi(match[1])
 		end, _ := strconv.Atoi(match[2])
 		if fps == 0 && start <= 1 && end <= 1 {
-			value, err := strconv.ParseFloat(strings.TrimSpace(match[3]), 64)
+			value, err := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(match[3]), ",", "."), 64)
 			if err != nil || value < 10 || value > 120 {
 				return nil, fmt.Errorf("MicroDVD frame rate header is invalid")
 			}

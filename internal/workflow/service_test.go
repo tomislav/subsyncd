@@ -1687,6 +1687,7 @@ type fakeProvider struct {
 	downloadErrors   map[string]error
 	payloads         map[string][]byte
 	filenames        map[string]string
+	contentTypes     map[string]string
 	streamBytes      int64
 	ignoreWriteError bool
 }
@@ -1722,7 +1723,11 @@ func (f *fakeProvider) Download(_ context.Context, candidate domain.Candidate, w
 	if filename == "" {
 		filename = candidate.ResultID + ".srt"
 	}
-	return provider.DownloadMetadata{Filename: filename, ContentType: "application/x-subrip"}, err
+	contentType := f.contentTypes[candidate.ResultID]
+	if contentType == "" {
+		contentType = "application/x-subrip"
+	}
+	return provider.DownloadMetadata{Filename: filename, ContentType: contentType}, err
 }
 
 type zeroReader struct{}

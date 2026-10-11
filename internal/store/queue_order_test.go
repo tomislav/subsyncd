@@ -301,3 +301,39 @@ func TestLeaseDueSearchesExceptCanPauseOnlyEpisodeRanges(t *testing.T) {
 		t.Fatalf("leases = %+v, want only the single episode %d (range %d paused)", leases, single, ranged)
 	}
 }
+
+func TestRetryThrottledSearchesMakesThemDue(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	repo := openTestRepository(t)
+	media := insertTestMedia(t, repo, 1, now)
+	queued := now.Add(-2 * time.Hour)
+	for _, language := range []domain.Language{"en", "hr", "pt"} {
+		requireSearchState(t, repo, media, language, queued, SearchPriorityMissing)
+	}
+	leases, err := repo.LeaseDueSearches(ctx, now, 3, time.Minute)
+	if err != nil || len(leases) != 3 {
+		t.Fatalf("leases = %d, %v", len(leases), err)
+	}
+	completions := map[string]SearchCompletion{
+		// Completed without a retry by an older version.
+		"en": {Outcome: "throttled", PreserveQueueOrder: true},
+		"hr": {Outcome: "throttled", NextAttemptAt: now.Add(6 * time.Hour), PreserveQueueOrder: true},
+		"pt": {Outcome: "no_result", NextAttemptAt: now.Add(6 * time.Hour), Priority: SearchPriorityMissing},
+	}
+	for _, lease := range leases {
+		completion := completions[lease.Language]
+		completion.JobID = lease.JobID
+		if _, err := repo.CompleteSearch(ctx, completion); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retried, err := repo.RetryThrottledSearches(ctx, now)
+	if err != nil || retried != 2 {
+		t.Fatalf("retried = %d, %v; want the two throttled searches", retried, err)
+	}
+	due, err := repo.LeaseDueSearches(ctx, now, 3, time.Minute)
+	if err != nil || len(due) != 2 || due[0].Language == "pt" || due[1].Language == "pt" {
+		t.Fatalf("due = %+v, %v; want en and hr", due, err)
+	}
+}

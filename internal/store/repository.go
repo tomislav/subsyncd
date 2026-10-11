@@ -1191,6 +1191,23 @@ func (r *Repository) ClearProviderState(ctx context.Context, providerID string) 
 	return nil
 }
 
+// RetryThrottledSearches makes every search whose last outcome was a provider
+// throttle due at now, including one an older version completed without a
+// retry time. It reports how many searches it changed.
+func (r *Repository) RetryThrottledSearches(ctx context.Context, now time.Time) (int64, error) {
+	result, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='pending', next_attempt_at_ns=?
+		WHERE last_outcome='throttled' AND lease_owner IS NULL AND (state='complete' OR next_attempt_at_ns>?)
+		AND media_id IN (SELECT id FROM media WHERE deleted=0)`, now.UnixNano(), now.UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("retry throttled searches: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count retried searches: %w", err)
+	}
+	return count, nil
+}
+
 func (r *Repository) ListProviderStates(ctx context.Context, providerID string) ([]ProviderState, error) {
 	rows, err := r.store.db.QueryContext(ctx, `SELECT provider_id, scope, reason, quota_limit, quota_remaining, reset_at_ns, disabled, failure_attempt FROM provider_states WHERE provider_id=? ORDER BY scope`, providerID)
 	if err != nil {

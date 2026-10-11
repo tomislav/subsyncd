@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -206,4 +207,58 @@ func makeZip(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestDownloadUnauthorizedIsAnOrdinaryFailure(t *testing.T) {
+	logins := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/subtitles/gettoken" {
+			logins++
+			io.WriteString(w, `{"Token":"token","UserId":42,"ExpirationDate":"2026-09-04T14:00:00Z"}`)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	_, err := client.Download(context.Background(), domain.Candidate{DownloadRef: "/download/101"}, io.Discard)
+	if err == nil || logins != 0 {
+		t.Fatalf("error = %v logins = %d; want a failed download without a login", err, logins)
+	}
+	if _, ok := err.(*baseprovider.AuthenticationError); ok {
+		t.Fatalf("error = %T; a download carries no token", err)
+	}
+	if err := client.CheckSearchAvailability(context.Background()); err != nil {
+		t.Fatalf("search availability = %v; a download 401 must not disable the provider", err)
+	}
+	if err := client.CheckDownloadAvailability(context.Background()); err != nil {
+		t.Fatalf("download availability = %v", err)
+	}
+}
+
+func TestDownloadRedirectLoopStopsWithoutProviderCooldown(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/download/loop":
+			requests++
+			http.Redirect(w, r, "/download/loop", http.StatusFound)
+		case "/download/external":
+			http.Redirect(w, r, "https://evil.example/file", http.StatusFound)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	_, err := client.Download(context.Background(), domain.Candidate{DownloadRef: "/download/loop"}, io.Discard)
+	var redirect *baseprovider.RedirectError
+	if !errors.As(err, &redirect) || requests != baseprovider.MaxDownloadRedirects {
+		t.Fatalf("error = %T %v after %d requests; want a redirect refusal after %d", err, err, requests, baseprovider.MaxDownloadRedirects)
+	}
+	_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/download/external"}, io.Discard)
+	if !errors.As(err, &redirect) {
+		t.Fatalf("error = %T %v; want a redirect refusal", err, err)
+	}
+	if err := client.CheckDownloadAvailability(context.Background()); err != nil {
+		t.Fatalf("download availability = %v; a refused redirect is not a provider outage", err)
+	}
 }

@@ -71,3 +71,42 @@ func TestReorderDoesNotTouchItalics(t *testing.T) {
 		t.Fatalf("Reorder() = %q, %v", got, err)
 	}
 }
+
+func TestRepairFindsCuesTheWayTheParserDoes(t *testing.T) {
+	tests := map[string]struct {
+		in, want string
+		cues     []Cue
+	}{
+		"missing blank line between cues with an unclosed italic": {
+			"1\n00:00:01,000 --> 00:00:02,000\n<i>A\n2\n00:00:03,000 --> 00:00:04,000\nB\n",
+			"1\n00:00:01,000 --> 00:00:02,000\n<i>A</i>\n\n2\n00:00:03,000 --> 00:00:04,000\nB\n",
+			[]Cue{{Start: time.Second, End: 2 * time.Second}, {Start: 3 * time.Second, End: 4 * time.Second}}},
+		"arrow without spaces and an empty cue": {
+			"1\n00:00:01,000-->00:00:02,000\nA\n\n2\n00:00:03,000-->00:00:04,000\n\n3\n00:00:05,000-->00:00:06,000\nC\n",
+			"1\n00:00:01,000-->00:00:02,000\nA\n\n2\n00:00:05,000-->00:00:06,000\nC\n",
+			[]Cue{{Start: time.Second, End: 2 * time.Second}, {Start: 3 * time.Second, End: 4 * time.Second, Drop: true}, {Start: 5 * time.Second, End: 6 * time.Second}}},
+		"blank line inside a reordered cue keeps its text": {
+			"1\n00:00:05,000 --> 00:00:06,000\nB first\n\nB second\n\n2\n00:00:01,000 --> 00:00:02,000\nA\n",
+			"1\n00:00:01,000 --> 00:00:02,000\nA\n\n2\n00:00:05,000 --> 00:00:06,000\nB first\nB second\n",
+			[]Cue{{Start: 5 * time.Second, End: 6 * time.Second}, {Start: time.Second, End: 2 * time.Second}}},
+		"retime without spaces around the arrow": {
+			"1\n00:00:05,000-->00:00:04,000\nA\n",
+			"1\n00:00:05,000-->00:00:06,000\nA\n",
+			[]Cue{{Start: 5 * time.Second, End: 6 * time.Second, Retime: true}}},
+	}
+	for name, test := range tests {
+		got, err := Repair([]byte(test.in), ".srt", test.cues)
+		if err != nil || string(got) != test.want {
+			t.Errorf("%s: Repair() = %q, %v\nwant %q", name, got, err, test.want)
+		}
+	}
+}
+
+func TestRepairWebVTTCueEndsAtBlankLine(t *testing.T) {
+	in := "WEBVTT\n\nNOTE kept in place\n\nb\n00:00:05.000 --> 00:00:06.000\nB\n\n00:00:01.000 --> 00:00:02.000 line:90%\nA\n"
+	want := "WEBVTT\n\nNOTE kept in place\n\n00:00:01.000 --> 00:00:02.000 line:90%\nA\n\nb\n00:00:05.000 --> 00:00:06.000\nB\n"
+	got, err := Reorder([]byte(in), ".vtt", []time.Duration{5 * time.Second, time.Second})
+	if err != nil || string(got) != want {
+		t.Fatalf("Reorder() = %q, %v\nwant %q", got, err, want)
+	}
+}

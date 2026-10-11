@@ -61,11 +61,11 @@ func New(config Config, transport baseprovider.Client, hasher Hasher, hashCache 
 		transport.HTTP = &api
 		signed := *download.HTTP
 		signed.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("OpenSubtitles download redirected too many times")
+			if len(via) >= baseprovider.MaxDownloadRedirects {
+				return &baseprovider.RedirectError{Message: "OpenSubtitles download redirected too many times"}
 			}
 			if request.URL.Scheme != "https" || request.URL.User != nil || request.URL.Host == "" {
-				return fmt.Errorf("OpenSubtitles download redirect target is not allowed")
+				return &baseprovider.RedirectError{Message: "OpenSubtitles download redirect target is not allowed"}
 			}
 			return nil
 		}

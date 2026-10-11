@@ -45,3 +45,14 @@ type QuotaError struct {
 }
 
 func (e *QuotaError) Error() string { return "provider quota exhausted: " + e.Message }
+
+// RedirectError is returned by a download's redirect check when it refuses a
+// redirect (a target outside the provider's hosts, or too many hops). It is a
+// problem of that one download, so the transport passes it on without
+// recording a provider-wide network failure.
+type RedirectError struct{ Message string }
+
+func (e *RedirectError) Error() string { return e.Message }
+
+// MaxDownloadRedirects is how many redirects a download may follow.
+const MaxDownloadRedirects = 5

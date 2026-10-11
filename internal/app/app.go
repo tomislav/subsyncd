@@ -356,7 +356,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			resumeRoutes[language] = store.ProviderResumeRoute{Signature: service.RouteSignature(language), Providers: cfg.Languages[language].AllProviders()}
 		}
 		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes)
-		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events}
+		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events}
 	}
 
 	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}
@@ -740,7 +740,13 @@ func (a *App) Retry(ctx context.Context, providerID string) (string, error) {
 	if err := a.Repository.ClearProviderState(ctx, providerID); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("provider retry state reset: %s", providerID), nil
+	// Throttled searches do not record which provider held them back, so all
+	// of them become due; one still blocked elsewhere is throttled again.
+	retried, err := a.Repository.RetryThrottledSearches(ctx, a.Clock.Now())
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("provider retry state reset: %s; throttled searches due again: %d", providerID, retried), nil
 }
 
 func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, languageTag string) (string, error) {
@@ -1009,4 +1015,11 @@ func providerSecrets(nodes []*yaml.Node) []string {
 		}
 	}
 	return secrets
+}
+
+// jobTimeout bounds a search job at twice the longest a single LAPSE run may
+// take: later runs on the same media reuse the first run's speech cache, so a
+// legitimate job stays well inside it.
+func jobTimeout(sync config.SyncConfig) time.Duration {
+	return 2 * max(sync.MaxTimeout, sync.Timeout)
 }

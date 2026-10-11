@@ -651,9 +651,12 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 	}
 	request.Header.Set("x-api-key", c.config.APIKey)
 	safeHTTP := *c.transport.HTTP
-	safeHTTP.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+	safeHTTP.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= baseprovider.MaxDownloadRedirects {
+			return &baseprovider.RedirectError{Message: "SubDL download redirected too many times"}
+		}
 		if !c.allowedDownloadURL(request.URL) {
-			return fmt.Errorf("SubDL redirect target is not allowed")
+			return &baseprovider.RedirectError{Message: "SubDL redirect target is not allowed"}
 		}
 		return nil
 	}

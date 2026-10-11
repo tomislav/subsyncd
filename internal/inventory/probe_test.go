@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestForcedTrackTitleCannotSatisfyFullSubtitleCoverage(t *testing.T) {
@@ -118,5 +119,27 @@ func TestProbeRejectsOversizedOutput(t *testing.T) {
 	_, err := (Probe{Path: "ffprobe", Runner: runner}).Tracks(context.Background(), "/media/show.mkv")
 	if err == nil {
 		t.Fatal("expected oversized-output error")
+	}
+}
+
+// hungRunner never returns, like ffprobe blocked in a read of a hung mount.
+type hungRunner struct{ release chan struct{} }
+
+func (h hungRunner) Run(context.Context, string, ...string) ([]byte, []byte, error) {
+	<-h.release
+	return nil, nil, errors.New("released")
+}
+
+func TestProbeGivesUpOnAHungMount(t *testing.T) {
+	runner := hungRunner{release: make(chan struct{})}
+	defer close(runner.release)
+	_, err := (Probe{Path: "ffprobe", Runner: runner, Timeout: 20 * time.Millisecond}).Tracks(context.Background(), "/media/show.mkv")
+	if !errors.Is(err, ErrProbeTimedOut) {
+		t.Fatalf("error = %v; want ErrProbeTimedOut", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (Probe{Path: "ffprobe", Runner: runner, Timeout: time.Minute}).Tracks(ctx, "/media/show.mkv"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v; a canceled job is not a probe timeout", err)
 	}
 }

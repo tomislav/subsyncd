@@ -48,3 +48,12 @@ func TestUnrelatedNotFoundErrorsAreNotMediaUnavailable(t *testing.T) {
 		t.Error("a wrapped MediaUnavailableError was not recognised")
 	}
 }
+
+func TestProbeTimeoutIsMediaUnavailable(t *testing.T) {
+	request := serviceRequest(t)
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
+	service.Inventory = &fakeInventory{err: fmt.Errorf("probe media: %w", inventory.ErrProbeTimedOut)}
+	if _, err := service.Run(t.Context(), request); !MediaUnavailable(err) {
+		t.Fatalf("Run() = %v; want media-unavailable for a hung mount", err)
+	}
+}

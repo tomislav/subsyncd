@@ -590,3 +590,26 @@ func TestArrTimeTreatsMissingOrMalformedDatesAsUnknown(t *testing.T) {
 		t.Fatalf("decoded %s err=%v", value.At.Time(), err)
 	}
 }
+
+func TestParseRuntimeAcceptsShortAndLongForms(t *testing.T) {
+	for raw, want := range map[string]time.Duration{
+		"47:44":       47*time.Minute + 44*time.Second,
+		"7:05":        7*time.Minute + 5*time.Second,
+		"00:42:30":    42*time.Minute + 30*time.Second,
+		"1:02:03":     time.Hour + 2*time.Minute + 3*time.Second,
+		"01:02:03":    time.Hour + 2*time.Minute + 3*time.Second,
+		"2:15:09.480": 2*time.Hour + 15*time.Minute + 9*time.Second,
+		"44:12.5":     44*time.Minute + 12*time.Second,
+		"":            0,
+		"42":          0,
+		"1:2:3":       0,
+		"47:61":       0,
+		"-1:00":       0,
+		"1:00:00:00":  0,
+		"ab:cd":       0,
+	} {
+		if got := parseRuntime(raw); got != want {
+			t.Errorf("parseRuntime(%q) = %s, want %s", raw, got, want)
+		}
+	}
+}

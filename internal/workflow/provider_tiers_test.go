@@ -373,3 +373,22 @@ func TestProviderTierRetainsRefreshedFallbackAssessment(t *testing.T) {
 		t.Fatalf("score=%d outcome=%s err=%v", result.Score.Total, result.Outcome, err)
 	}
 }
+
+func TestProviderTierDisabledPreferredKeepsFallbackReset(t *testing.T) {
+	preferred := &fakeSearcher{result: provider.SearchResult{Errors: map[string]error{"provider": &provider.DisabledError{ProviderID: "provider", Reason: "credentials rejected"}}}}
+	fallback := &fakeSearcher{}
+	s, _ := tierService(t, preferred, fallback)
+	reset := s.Clock.Now().Add(3 * time.Hour)
+	fallback.result.Errors = map[string]error{"fallback": &provider.CooldownError{ProviderID: "fallback", ResetAt: reset}}
+	result, err := s.Run(t.Context(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) {
+		t.Fatalf("result=%+v err=%v; want throttled until the fallback reset %s", result, err, reset)
+	}
+	// With nothing in the fallback tier there is no reset at all; the worker
+	// keeps such a search pending.
+	fallback.result.Errors = nil
+	result, err = s.Run(t.Context(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.IsZero() {
+		t.Fatalf("result=%+v err=%v; want throttled without a reset", result, err)
+	}
+}

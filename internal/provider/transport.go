@@ -78,6 +78,11 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		var redirect *RedirectError
+		if errors.As(err, &redirect) {
+			// Our own redirect check refused it: the provider answered.
+			return nil, redirect
+		}
 		state, persistErr := c.Gate.RecordTransientFailure(ctx, c.ProviderID, operation, "network_error", time.Time{})
 		if persistErr != nil {
 			return nil, persistErr

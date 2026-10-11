@@ -1223,6 +1223,9 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 	if downloadErr != nil {
 		return nil, runtimePack, nil, downloadErr
 	}
+	if err := checkProviderResponse(payloadPath, metadata.ContentType); err != nil {
+		return nil, runtimePack, nil, err
+	}
 	info, err := os.Stat(payloadPath)
 	if err != nil {
 		return nil, runtimePack, nil, err
@@ -1242,6 +1245,9 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 		return nil, runtimePack, nil, fmt.Errorf("release downloaded payload: %v", errors.Join(closeErr, removeErr))
 	}
 	if err != nil {
+		return nil, runtimePack, nil, err
+	}
+	if err := checkPlaceholderMembers(manifest); err != nil {
 		return nil, runtimePack, nil, err
 	}
 	runtimePack = manifest.RuntimePack

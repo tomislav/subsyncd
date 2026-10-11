@@ -7,15 +7,16 @@ import (
 	"syscall"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/inventory"
 	"subsyncd/internal/observability"
 )
 
 // MediaUnavailableError marks a search that failed because its media file
 // could not be found or read: a dropped (ENOENT), crashed (ENOTCONN, EIO) or
-// stale (ESTALE) mount, or a file Arr removed. Only failures reading the
-// media file itself carry it; a missing binary, cache or scratch file does
-// not. The worker keeps such a search's queue position and pauses when
-// several fail in a row.
+// stale (ESTALE) mount, a hung mount (ffprobe timed out on the file), or a
+// file Arr removed. Only failures reading the media file itself carry it; a
+// missing binary, cache or scratch file does not. The worker keeps such a
+// search's queue position and pauses when several fail in a row.
 type MediaUnavailableError struct{ Err error }
 
 func (e *MediaUnavailableError) Error() string { return e.Err.Error() }
@@ -36,6 +37,9 @@ func mediaAccessErrno(err error) bool {
 func markIfMediaUnreadable(err error, media domain.Media) error {
 	if err == nil || MediaUnavailable(err) {
 		return err
+	}
+	if errors.Is(err, inventory.ErrProbeTimedOut) {
+		return &MediaUnavailableError{Err: err}
 	}
 	if _, statErr := os.Stat(media.Fingerprint.Path); mediaAccessErrno(statErr) {
 		return &MediaUnavailableError{Err: err}

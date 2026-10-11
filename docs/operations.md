@@ -231,7 +231,7 @@ Allow the container to stop fully before starting another process against the sa
 | `reconcile.snapshot_deletions_withheld` warning | Arr reported a library missing most of what subsyncd tracks, so the deletions were not applied. Check the instance URL and the Arr database. |
 | `config.weak_webhook_token` warning | That instance's webhook secret is shorter than 16 characters. Replace it with `openssl rand -hex 32` output and update the Arr webhook URL. |
 
-After fixing credentials, clear the named provider's saved authentication and cooldown state:
+After fixing credentials, clear the named provider's saved authentication and cooldown state; this also makes searches that were waiting on a provider run again right away:
 
 ```bash
 docker compose stop subsyncd
