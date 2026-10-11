@@ -1166,7 +1166,7 @@ func TestServiceClearsPersistedCandidatesAfterSuccessfulEmptySearch(t *testing.T
 }
 
 func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {
-	t.Run("too many episode versions", func(t *testing.T) {
+	t.Run("more than three episode versions tries three", func(t *testing.T) {
 		request := serviceRequest(t)
 		request.Media.Ref.Kind = domain.MediaEpisode
 		request.Media.Season = 1
@@ -1182,8 +1182,17 @@ func TestServiceRejectsAmbiguousPackAndAllLapseFailures(t *testing.T) {
 		service.Repository = repository
 		service.Providers = map[string]provider.Provider{"provider": providerFake}
 		result, err := service.Run(context.Background(), request)
-		if err != nil || result.Outcome != OutcomeRejected || cache.puts != 0 || len(repository.rejections) != 1 || repository.rejections[0].ReasonCode != "pack_selection" {
-			t.Fatalf("Run() = %#v, %v, cache puts=%d rejections=%#v", result, err, cache.puts, repository.rejections)
+		if err != nil || result.Outcome != OutcomeInstalled || len(repository.rejections) != 0 {
+			t.Fatalf("Run() = %#v, %v, rejections=%#v", result, err, repository.rejections)
+		}
+		timed := 0
+		for _, decision := range result.Decisions {
+			if decision.Stage == "lapse_prepare" {
+				timed++
+			}
+		}
+		if timed != 3 {
+			t.Fatalf("timed %d versions, want the best 3 of 4", timed)
 		}
 	})
 

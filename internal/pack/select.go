@@ -118,6 +118,15 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 			return selected, err
 		}
 	}
+	var compactMatches []Member
+	for _, member := range members {
+		if compactEpisodeMatches(member.SafeName, media) {
+			compactMatches = append(compactMatches, member)
+		}
+	}
+	if selected, done, err := uniqueRule(manifest, compactMatches, "compact_episode", fmt.Sprintf("filename numbers the episode %d%02d", media.Season, media.Episode)); done {
+		return selected, err
+	}
 	if numbered := numberedEpisodeMatches(members, media); numbered != nil {
 		if selected, done, err := uniqueRule(manifest, numbered, "numbered_episode", fmt.Sprintf("numbered set without episode tokens identifies episode %d", media.Episode)); done {
 			return selected, err
@@ -161,8 +170,9 @@ func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media do
 		return Member{}, err
 	}
 	// A skipped member may have been the archive's explicit evidence for the
-	// episode, so a generic survivor is not assumed to be it.
-	if candidate.Pack == nil && manifest.SkippedMembers == 0 && len(members) == 1 && !hasInvalidOrAmbiguousRangeEvidence(members[0].SafeName) && !hasEpisodeEvidence(members[0].SafeName) {
+	// episode, so a generic survivor is not assumed to be it. A compact number
+	// naming another episode (show.105.srt for S02E03) is conflicting evidence.
+	if candidate.Pack == nil && manifest.SkippedMembers == 0 && len(members) == 1 && !hasInvalidOrAmbiguousRangeEvidence(members[0].SafeName) && !hasEpisodeEvidence(members[0].SafeName) && !compactNamesOtherEpisode(members[0].SafeName, media) {
 		selected = members[0]
 		selected.SelectionRule = "single_generic"
 		selected.SelectionEvidence = "single subtitle member has no conflicting episode evidence"
@@ -468,6 +478,55 @@ func normalizeTitle(value string) string {
 		}
 	}
 	return builder.String()
+}
+
+// compactEpisodePattern finds a separated three-digit number such as the 607 in
+// "malcolm.in.the.middle.607.hdtv": season 6, episode 7.
+var compactEpisodePattern = regexp.MustCompile(`(?:^|[ ._\-\[(])([1-9])(\d{2})(?:[ ._\-\])]|$)`)
+
+// compactVideoNumbers are three-digit numbers that name a codec or resolution.
+var compactVideoNumbers = map[string]bool{"264": true, "265": true, "480": true, "576": true, "720": true}
+
+// compactEpisodeMatches reports whether a name without other episode evidence
+// numbers the target episode in the compact season-and-episode form (607 for
+// S06E07, seasons 1 to 9). Exactly one such number must appear, and it must not
+// be part of the series title (9-1-1 is not S09E11).
+func compactEpisodeMatches(name string, media domain.Media) bool {
+	if media.Season < 1 || media.Season > 9 || media.Episode < 1 || media.Episode > 99 {
+		return false
+	}
+	season, episode, found := compactEpisode(name, media.Title)
+	return found && season == media.Season && episode == media.Episode
+}
+
+func compactNamesOtherEpisode(name string, media domain.Media) bool {
+	season, episode, found := compactEpisode(name, media.Title)
+	return found && (season != media.Season || episode != media.Episode)
+}
+
+// compactEpisode returns the season and episode of the single compact number in
+// a name with no other episode evidence, ignoring digits of the series title.
+func compactEpisode(name, title string) (int, int, bool) {
+	if hasEpisodeEvidence(name) {
+		return 0, 0, false
+	}
+	titleDigits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, title)
+	found, season, episode := 0, 0, 0
+	for _, match := range compactEpisodePattern.FindAllStringSubmatch(name, -1) {
+		number := match[1] + match[2]
+		if compactVideoNumbers[number] || (titleDigits != "" && strings.Contains(titleDigits, number)) {
+			continue
+		}
+		found++
+		season, _ = strconv.Atoi(match[1])
+		episode, _ = strconv.Atoi(match[2])
+	}
+	return season, episode, found == 1
 }
 
 func hasEpisodeEvidence(name string) bool {
