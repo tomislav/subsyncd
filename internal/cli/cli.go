@@ -24,6 +24,7 @@ type Backend interface {
 	Explain(context.Context, string, string, int64, string) (string, error)
 	Doctor(context.Context) (string, error)
 	AnalyzeSync(context.Context, string, string) (string, error)
+	ForgetInstance(context.Context, string, bool) (string, error)
 }
 
 type OpenFunc func(context.Context, string, string) (Backend, error)
@@ -78,6 +79,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	retryRejected := flags.Bool("retry-rejected", false, "clear and retry rejected subtitle candidates")
 	media := flags.String("media", "", "media file path")
 	subtitle := flags.String("subtitle", "", "subtitle file path")
+	yes := flags.Bool("yes", false, "delete the records instead of previewing them")
 	if err := flags.Parse(args[1:]); err != nil {
 		return ExitUsage
 	}
@@ -98,7 +100,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	var validateErr error
 	switch command {
 	case "serve", "doctor":
-	case "scan":
+	case "scan", "forget-instance":
 		validateErr = require("--instance", *instance)
 	case "search", "explain":
 		validateErr = validateMediaSelection(*instance, *kind, *fileID, *language)
@@ -118,7 +120,13 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		return c.failure(errorsText("backend is unavailable"))
 	}
 
-	backend, err := c.Open(ctx, *configPath, command)
+	// A preview only reads, so it opens like the diagnostic commands: no
+	// migrations or startup writes, and it can run beside the daemon.
+	openCommand := command
+	if command == "forget-instance" && !*yes {
+		openCommand = "forget-instance-preview"
+	}
+	backend, err := c.Open(ctx, *configPath, openCommand)
 	if err != nil {
 		return c.failure(err)
 	}
@@ -140,6 +148,8 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		output, err = backend.Doctor(ctx)
 	case "analyze-sync":
 		output, err = backend.AnalyzeSync(ctx, *media, *subtitle)
+	case "forget-instance":
+		output, err = backend.ForgetInstance(ctx, *instance, *yes)
 	}
 	if err != nil {
 		if reporter, ok := backend.(FailureReporter); ok {
@@ -171,6 +181,8 @@ func commandFlags(command string) map[string]bool {
 		names = []string{"provider"}
 	case "analyze-sync":
 		names = []string{"media", "subtitle"}
+	case "forget-instance":
+		names = []string{"instance", "yes"}
 	}
 	for _, name := range names {
 		allowed[name] = true

@@ -56,6 +56,13 @@ func (f *fakeBackend) Doctor(context.Context) (string, error) {
 	f.call = "doctor"
 	return "configuration: ok\nsqlite: ok\nLAPSE: ok", f.err
 }
+func (f *fakeBackend) ForgetInstance(_ context.Context, instance string, apply bool) (string, error) {
+	f.call = "forget:" + instance
+	if apply {
+		f.call += ":yes"
+	}
+	return "forget-instance preview", f.err
+}
 func (f *fakeBackend) AnalyzeSync(_ context.Context, media, subtitle string) (string, error) {
 	f.call = "analyze:" + media + ":" + subtitle
 	return "verdict: solid", f.err
@@ -75,6 +82,7 @@ func TestCommandSurface(t *testing.T) {
 		{"retry", []string{"retry", "--provider", "titlovi"}, "retry:titlovi", "provider retry state reset\n"},
 		{"explain", []string{"explain", "--instance", "movies", "--kind", "movie", "--file-id", "7", "--language", "en"}, "explain:movies:movie:en", "inventory: 2 tracks\nnext attempt: tomorrow\n"},
 		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nLAPSE: ok\n"},
+		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance preview\n"},
 		{"analyze", []string{"analyze-sync", "--media", "/media/a.mkv", "--subtitle", "/tmp/a.srt"}, "analyze:/media/a.mkv:/tmp/a.srt", "verdict: solid\n"},
 	}
 	for _, test := range tests {
@@ -94,6 +102,22 @@ func TestCommandSurface(t *testing.T) {
 				t.Fatalf("call/output = %q/%q, want %q/%q", backend.call, stdout.String(), test.call, test.out)
 			}
 		})
+	}
+}
+
+func TestForgetInstancePreviewOpensAsDiagnostic(t *testing.T) {
+	backend := &fakeBackend{}
+	var opened string
+	var stdout bytes.Buffer
+	command := Command{Open: func(_ context.Context, _ string, openedCommand string) (Backend, error) {
+		opened = openedCommand
+		return backend, nil
+	}, Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	if code := command.Run(context.Background(), []string{"forget-instance", "--instance", "old"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if opened != "forget-instance-preview" || backend.call != "forget:old" {
+		t.Fatalf("opened/call = %q/%q", opened, backend.call)
 	}
 }
 
@@ -117,6 +141,8 @@ func TestUsageAndOperationExitCodes(t *testing.T) {
 		{"missing required", []string{"search", "--instance", "tv"}, nil, ExitUsage, "--kind"},
 		{"bad kind", []string{"search", "--instance", "tv", "--kind", "track", "--file-id", "1", "--language", "en"}, nil, ExitUsage, "movie or episode"},
 		{"unrelated flag", []string{"serve", "--provider", "x"}, nil, ExitUsage, "not valid for serve"},
+		{"forget without instance", []string{"forget-instance", "--yes"}, nil, ExitUsage, "--instance is required"},
+		{"yes outside forget", []string{"scan", "--instance", "tv", "--yes"}, nil, ExitUsage, "not valid for scan"},
 		{"open failure", []string{"doctor", "--config", "/bad"}, func(context.Context, string, string) (Backend, error) {
 			return nil, errors.New("invalid configuration")
 		}, ExitFailure, "invalid configuration"},

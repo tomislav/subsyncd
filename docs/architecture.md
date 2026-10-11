@@ -60,7 +60,7 @@ For an unfinished first-install cooldown cycle, the search row also holds a stri
 
 ### Leases, shutdown, and locking
 
-Workers lease only available concurrency slots, filtering current instance/language routes and active media before ordering and limiting claims. Removing a route preserves durable work for re-enable. Leases are renewed and completed by owner compare-and-swap. Deletion retains active ownership; completion leaves deleted media terminal, while reimport during that lease coalesces one rerun.
+Workers lease only available concurrency slots, filtering current instance/language routes and active media before ordering and limiting claims. Removing a route preserves durable work for re-enable; `forget-instance` explicitly discards a removed instance's records. Leases are renewed and completed by owner compare-and-swap. Deletion retains active ownership; completion leaves deleted media terminal, while reimport during that lease coalesces one rerun.
 
 Shutdown stops new acquisition, waits one configured window, cancels active work, waits one more window, then returns even if a dependency ignores cancellation. Unfinished leases remain recoverable after expiry.
 

@@ -130,7 +130,7 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 	}
 	runtimeOptions := options.Runtime
 	runtimeOptions.Events = events
-	runtimeOptions.ReadOnly = options.Command == "explain" || options.Command == "doctor" || options.Command == "analyze-sync"
+	runtimeOptions.ReadOnly = readOnlyCommand(options.Command)
 	application, err := New(ctx, cfg, runtimeOptions)
 	if err != nil {
 		appEvents.Log(ctx, slog.LevelError, "service.start_failed", "subsyncd failed to start", appEvents.ErrorAttrs("startup", err)...)
@@ -139,6 +139,16 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 	application.Command = options.Command
 	appEvents.Log(ctx, slog.LevelInfo, "service.ready", "subsyncd ready", slog.String("command", options.Command))
 	return application, nil
+}
+
+// readOnlyCommand reports whether a command opens the database read-only,
+// without the process lock, migrations or startup writes.
+func readOnlyCommand(command string) bool {
+	switch command {
+	case "explain", "doctor", "analyze-sync", "forget-instance-preview":
+		return true
+	}
+	return false
 }
 
 // minimumWebhookTokenLength is the length below which a webhook token is

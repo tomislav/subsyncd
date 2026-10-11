@@ -120,6 +120,7 @@ The container runs `serve` by default. The other commands are run through Compos
 | `search` | Searches one file and language now. | Stop first |
 | `scan` | Discovers unindexed files in one instance's library and reconciles its history. Add `--force-probe` to reread embedded subtitle tracks. | Stop first |
 | `retry` | Clears one provider's saved cooldown and authentication state. | Stop first |
+| `forget-instance` | Shows what subsyncd has saved for a Sonarr or Radarr instance you removed from the configuration. Add `--yes` to delete those records. | May run to preview; stop first with `--yes` |
 
 Run read-only commands with `docker compose exec subsyncd subsyncd COMMAND ...`, and the others with the stop/run/start sequence shown below. File paths given to `analyze-sync` are paths inside the container. Put the subtitle you want to test in the host `data/` folder rather than beside the media, where subsyncd would treat it as your own subtitle and protect it:
 
@@ -130,6 +131,21 @@ docker compose exec subsyncd subsyncd analyze-sync --media /media/movies/Movie/M
 Delete the test file from `data/` afterwards.
 
 Exit status is 0 for success, 1 for an operational failure, and 2 for invalid command usage. `subsyncd --version` prints the build version.
+
+### Remove an instance for good
+
+When you remove a Sonarr or Radarr instance from the configuration, subsyncd keeps its records in case you add it back under the same name. If that library is gone for good, delete the records once you have removed the instance from `config.yaml`:
+
+```bash
+docker compose exec subsyncd subsyncd forget-instance --instance sonarr-old
+docker compose stop subsyncd
+docker compose run --rm --no-deps subsyncd forget-instance --instance sonarr-old --yes
+docker compose up -d
+```
+
+The first command is a read-only preview, like `doctor`: it lists how many files, searches, installations, rejections, notifications, and history records it would delete, changes nothing, and works while subsyncd runs. The run with `--yes` deletes them all in one step, or nothing if it fails. subsyncd refuses an instance that is still configured or one the database has no records for.
+
+Subtitle files it installed for that library stay on disk. It no longer knows it wrote them, so if those media files are ever indexed again it treats them as your own subtitles and won't replace them. When subsyncd replaced a subtitle it may also have kept one hidden backup copy, named `.subsyncd-rollback-` plus random characters, in the same folder. The output counts these as `rollback_copies`; nothing will clean them up after this, so delete them by hand if you want them gone. This can't be undone, so back up `data/` first if you might want the records back.
 
 ## Inspect or search one file
 

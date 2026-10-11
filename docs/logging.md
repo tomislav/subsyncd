@@ -68,6 +68,7 @@ At debug level, `archive.classified` reports archive type, subtitle-member count
 | `reconcile.deferred` | Sonarr or Radarr reported a file subsyncd cannot read; `deferred_media` names the movies or episodes. It repeats hourly until the file is readable or replaced in Arr. |
 | `reconcile.snapshot_deletions_withheld` | Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied. |
 | `config.weak_webhook_token` | Logged at daemon startup for an instance whose `webhook_token` is shorter than 16 characters. |
+| `instance.forgotten` | `forget-instance --yes` deleted a removed instance's records; carries the instance name and how many of each kind of record were removed. |
 
 `reconcile.failed` (error) is reserved for real reconciliation failures. The [troubleshooting table](operations.md#troubleshooting) says what to do about each warning.
 
