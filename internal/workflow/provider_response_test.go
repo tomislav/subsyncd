@@ -3,6 +3,9 @@ package workflow
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,13 +74,19 @@ func TestLimitPageThrottlesTheProviderInsteadOfFailingCandidates(t *testing.T) {
 	limit := []byte("<!DOCTYPE html><html><body><h1>Daily download limit reached</h1></body></html>")
 	placeholder := workflowZIP(t, map[string]string{"titlovi_titl_plugin_message.srt": installSRT})
 	login := []byte(`<html><body><form><input type="password" name="pass"></form></body></html>`)
-	for name, body := range map[string][]byte{"limit page": limit, "placeholder": placeholder, "login page": login} {
+	jsonLimit := []byte(`{"status":false,"error":"daily_limit"}`)
+	// A page refusal needs a second candidate to confirm it; an explicit limit
+	// in a JSON body pauses the provider at once.
+	for name, test := range map[string]struct {
+		body      []byte
+		downloads int
+	}{"limit page": {limit, 2}, "placeholder": {placeholder, 2}, "login page": {login, 2}, "JSON limit": {jsonLimit, 1}} {
 		t.Run(name, func(t *testing.T) {
 			s := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
 			candidates := []domain.Candidate{broadCandidate("one"), broadCandidate("two"), broadCandidate("three")}
 			payloads := map[string][]byte{}
 			for _, candidate := range candidates {
-				payloads[candidate.ResultID] = body
+				payloads[candidate.ResultID] = test.body
 			}
 			p := &refusingProvider{
 				availabilityProvider: &availabilityProvider{fakeProvider: &fakeProvider{id: "provider", payloads: payloads}, results: map[provider.SearchMode][]domain.Candidate{provider.SearchBroad: candidates}},
@@ -85,10 +94,121 @@ func TestLimitPageThrottlesTheProviderInsteadOfFailingCandidates(t *testing.T) {
 			}
 			useAvailabilityProviders(s, provider.Observe(p, observability.Discard()))
 			result, err := s.Run(t.Context(), serviceRequest(t))
-			if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(p.reset) || p.downloads != 1 || p.refusals != 1 {
+			if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(p.reset) || p.downloads != test.downloads || p.refusals != 1 {
 				t.Fatalf("result=%+v err=%v downloads=%d refusals=%d", result, err, p.downloads, p.refusals)
 			}
+			if rejections := s.Repository.(*workflowRepository).rejections; len(rejections) != 0 {
+				t.Fatalf("rejections = %#v; a refusal never rejects a candidate", rejections)
+			}
 		})
+	}
+}
+
+func TestOneRefusingCandidateDoesNotPauseTheProvider(t *testing.T) {
+	// A deleted subtitle redirecting to a login page fails only itself; the
+	// provider is not paused, so its other candidates still download.
+	login := []byte(`<!DOCTYPE html><html><body><h1>Please log in to continue</h1><form><input type="password"></form></body></html>`)
+	s := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
+	candidates := []domain.Candidate{broadCandidate("one")}
+	p := &refusingProvider{
+		availabilityProvider: &availabilityProvider{fakeProvider: &fakeProvider{id: "provider", payloads: map[string][]byte{"one": login}}, results: map[provider.SearchMode][]domain.Candidate{provider.SearchBroad: candidates}},
+		reset:                s.Clock.Now().Add(time.Hour),
+	}
+	useAvailabilityProviders(s, provider.Observe(p, observability.Discard()))
+	result, err := s.Run(t.Context(), serviceRequest(t))
+	if result.Outcome == OutcomeThrottled || p.refusals != 0 || p.downloads != 1 {
+		t.Fatalf("result=%+v err=%v downloads=%d refusals=%d; want one candidate failure", result, err, p.downloads, p.refusals)
+	}
+	var message *ProviderResponseError
+	if !errors.As(err, &message) {
+		t.Fatalf("error = %v; want the candidate's provider error", err)
+	}
+	if rejections := s.Repository.(*workflowRepository).rejections; len(rejections) != 0 {
+		t.Fatalf("rejections = %#v; a refusal never rejects a candidate", rejections)
+	}
+}
+
+func TestRefusalIsConfirmedOnlyByAnotherCandidate(t *testing.T) {
+	recorder := &refusingProvider{availabilityProvider: &availabilityProvider{fakeProvider: &fakeProvider{id: "provider"}}, reset: time.Date(2026, 9, 4, 13, 0, 0, 0, time.UTC)}
+	ledger := &refusalLedger{}
+	refusal := func() *ProviderResponseError { return &ProviderResponseError{Reason: "HTML page", Refusal: true} }
+	first := refusal()
+	if err := refusedDownload(t.Context(), recorder, broadCandidate("one"), ledger, first); err != first || recorder.refusals != 0 {
+		t.Fatalf("first refusal = %v, refusals = %d; want only a candidate failure", err, recorder.refusals)
+	}
+	// The same candidate downloaded again in the run confirms nothing.
+	if err := refusedDownload(t.Context(), recorder, broadCandidate("one"), ledger, refusal()); recorder.refusals != 0 {
+		t.Fatalf("repeated refusal = %v, refusals = %d; want no pause", err, recorder.refusals)
+	}
+	var cooldown *provider.CooldownError
+	if err := refusedDownload(t.Context(), recorder, broadCandidate("two"), ledger, refusal()); !errors.As(err, &cooldown) || recorder.refusals != 1 {
+		t.Fatalf("confirmed refusal = %v, refusals = %d; want a cooldown", err, recorder.refusals)
+	}
+	// The first failure now counts as the provider being unavailable too, so
+	// the search ends as throttled rather than as failed.
+	if !errors.As(error(first), &cooldown) {
+		t.Fatalf("first refusal = %v; want it confirmed as a cooldown", first)
+	}
+	if _, unavailable := unavailableErrors([]error{first}); !unavailable {
+		t.Fatal("a confirmed first refusal is still a candidate failure")
+	}
+}
+
+// failingRefusalRecorder cannot store a cooldown.
+type failingRefusalRecorder struct{ *fakeProvider }
+
+func (failingRefusalRecorder) RecordDownloadRefusal(context.Context) error {
+	return errors.New("database is locked")
+}
+
+func TestRefusalCooldownStoreFailureEndsTheWorkflow(t *testing.T) {
+	limit := &ProviderResponseError{Reason: "JSON body", Refusal: true, Limit: true}
+	err := refusedDownload(t.Context(), failingRefusalRecorder{&fakeProvider{id: "provider"}}, broadCandidate("one"), &refusalLedger{}, limit)
+	var availability *provider.AvailabilityError
+	if !errors.As(err, &availability) {
+		t.Fatalf("error = %T %v; want a state-store failure", err, err)
+	}
+}
+
+func TestOrdinaryPagesAreNotRefusals(t *testing.T) {
+	siteText := strings.Repeat("<p>Browse the latest subtitles for films and series in every language.</p>", 40)
+	for name, test := range map[string]struct{ body, contentType string }{
+		"site page with a header login box": {`<!DOCTYPE html><html><body><nav><form action="/login"><input type="text" name="u"><input type="password" name="p"></form></nav><h1>Page not found</h1>` + siteText + `</body></html>`, "text/html"},
+		"quotation":                         {`<!DOCTYPE html><html><body><h1>Error</h1><p>Request a quotation</p></body></html>`, ""},
+		"quota in a script":                 {`<!doctype html><html><head><script>try{localStorage.setItem('x','y')}catch(e){/*QuotaExceededError quota*/}</script></head><body>Subtitle removed</body></html>`, ""},
+		"password selector in a style":      {`<!doctype html><html><head><style>input[type=password]{border:0}</style></head><body>Subtitle removed</body></html>`, ""},
+		"maintenance":                       {`<html><body>We are performing maintenance, too many changes at once. Back soon.</body></html>`, ""},
+		"fragment served as text/html":      {"<SAMI><BODY><SYNC Start=1000><P>Too many requests, please log in to the ship!</SAMI>", "text/html"},
+		"cloudflare 5xx":                    {`<!DOCTYPE html><html><head><title>502: Bad gateway</title></head><body>Please try again in a few minutes.</body></html>`, "text/html"},
+	} {
+		path := filepath.Join(t.TempDir(), "download")
+		if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var message *ProviderResponseError
+		if err := checkProviderResponse(path, test.contentType); !errors.As(err, &message) || message.Refusal {
+			t.Errorf("%s: error = %#v; want a provider error that is not a refusal", name, err)
+		}
+	}
+	for name, test := range map[string]struct {
+		body  string
+		limit bool
+	}{
+		"limit page":    {`<!DOCTYPE html><html><body><h1>Daily download   limit reached</h1></body></html>`, false},
+		"login form":    {`<!DOCTYPE html><html><body><form><input name="u"><input type='password' name="p"></form></body></html>`, false},
+		"JSON limit":    {`{"error":"limit_exceeded"}`, true},
+		"JSON quota":    {`{"message":"Download quota used up"}`, true},
+		"JSON sign in":  {`{"message":"Please sign in to download"}`, false},
+		"limit escaped": {`<!DOCTYPE html><html><body><p>You&#39;ve reached your daily&nbsp;limit</p></body></html>`, false},
+	} {
+		path := filepath.Join(t.TempDir(), "download")
+		if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var message *ProviderResponseError
+		if err := checkProviderResponse(path, ""); !errors.As(err, &message) || !message.Refusal || message.Limit != test.limit {
+			t.Errorf("%s: error = %#v; want a refusal with Limit %t", name, err, test.limit)
+		}
 	}
 }
 

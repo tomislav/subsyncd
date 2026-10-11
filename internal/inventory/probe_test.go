@@ -172,7 +172,7 @@ func waitForNoStuckProbes(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		stuckProbes.mu.Lock()
-		total := stuckProbes.total
+		total := len(stuckProbes.paths)
 		stuckProbes.mu.Unlock()
 		if total == 0 {
 			return
@@ -219,4 +219,65 @@ func TestTooManyStuckProbesStopNewOnes(t *testing.T) {
 	}
 	close(runner.release)
 	waitForNoStuckProbes(t)
+}
+
+func TestStuckProbesOnOneMountDoNotBlockOthers(t *testing.T) {
+	waitForNoStuckProbes(t)
+	runner := &countingHungRunner{release: make(chan struct{})}
+	roots := []string{"/media/nfs", "/media/local"}
+	hung := Probe{Path: "ffprobe", Runner: runner, Timeout: 10 * time.Millisecond, MediaRoots: roots}
+	for i := range maxStuckProbes {
+		if _, err := hung.Tracks(context.Background(), fmt.Sprintf("/media/nfs/show/hung-%d.mkv", i)); !errors.Is(err, ErrProbeTimedOut) {
+			t.Fatalf("error = %v; want ErrProbeTimedOut", err)
+		}
+	}
+	if _, err := hung.Tracks(context.Background(), "/media/nfs/show/next.mkv"); !errors.Is(err, ErrProbeTimedOut) || runner.started() != maxStuckProbes {
+		t.Fatalf("error = %v, started = %d; want the hung mount blocked", err, runner.started())
+	}
+	healthy := Probe{Path: "ffprobe", Runner: &fakeRunner{stdout: []byte(`{"streams":[]}`)}, MediaRoots: roots}
+	for _, path := range []string{"/media/local/movie.mkv", "/srv/other/movie.mkv"} {
+		if _, err := healthy.Tracks(context.Background(), path); err != nil {
+			t.Errorf("%s: probe on a healthy mount = %v", path, err)
+		}
+	}
+	close(runner.release)
+	waitForNoStuckProbes(t)
+}
+
+func TestCanceledProbeIsNotCountedAsStuck(t *testing.T) {
+	waitForNoStuckProbes(t)
+	runner := &countingHungRunner{release: make(chan struct{})}
+	defer close(runner.release)
+	probe := Probe{Path: "ffprobe", Runner: runner, Timeout: time.Minute}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for runner.started() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	if _, err := probe.Tracks(ctx, "/media/canceled.mkv"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v; want cancellation", err)
+	}
+	stuckProbes.mu.Lock()
+	stuck := len(stuckProbes.paths) + len(stuckProbes.mounts)
+	stuckProbes.mu.Unlock()
+	if stuck != 0 {
+		t.Fatalf("a canceled probe counted as stuck (%d)", stuck)
+	}
+}
+
+func TestProbeMountFollowsMediaRoots(t *testing.T) {
+	roots := []string{"/media", "/media/nfs"}
+	for path, want := range map[string]string{
+		"/media/nfs/show/e1.mkv": "/media/nfs",
+		"/media/local/movie.mkv": "/media",
+		"/data/tv/show/e1.mkv":   "/data/tv",
+		"/data/movie.mkv":        "/data",
+		"/movie.mkv":             "/",
+	} {
+		if got := probeMount(path, roots); got != want {
+			t.Errorf("probeMount(%q) = %q; want %q", path, got, want)
+		}
+	}
 }

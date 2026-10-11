@@ -193,8 +193,16 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 		}
 	}
 	committedFile := false
+	published := checksumBytes(payload)
 	restore := func(cause error) (store.Installation, error) {
 		restoreErrors := []error{cause}
+		if committedFile && !destinationHolds(destination, published) {
+			// A run abandoned while publishing can fail its database write
+			// long after; another run may have installed a newer subtitle
+			// since. Only this run's own publication is rolled back.
+			committedFile = false
+			i.Events.For("workflow").Log(ctx, slog.LevelWarn, "install.rollback_skipped", "subtitle rollback skipped because the destination changed after publication")
+		}
 		if committedFile {
 			if rollbackPath == "" {
 				if removeErr := os.Remove(destination); removeErr != nil {
@@ -252,7 +260,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 		return restore(fmt.Errorf("encode synchronization result: %w", err))
 	}
 	fingerprint := request.Media.Fingerprint
-	installation := store.Installation{Fallback: request.Fallback, MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: checksumBytes(payload), ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
+	installation := store.Installation{Fallback: request.Fallback, MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: published, ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
 	now := time.Now().UTC()
 	if i.Now != nil {
 		now = i.Now()
@@ -586,6 +594,17 @@ func writeAll(writer io.Writer, payload []byte) error {
 		payload = payload[written:]
 	}
 	return nil
+}
+
+// destinationHolds reports whether destination is still a regular file with
+// the given checksum.
+func destinationHolds(destination, checksum string) bool {
+	info, err := os.Lstat(destination)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	payload, err := os.ReadFile(destination)
+	return err == nil && checksumBytes(payload) == checksum
 }
 
 func checksumBytes(payload []byte) string {

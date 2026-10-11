@@ -203,9 +203,14 @@ func TestDownloadAvailabilityCancellationDoesNotAccessState(t *testing.T) {
 
 func TestDownloadRefusalPausesDownloadsUntilTheKnownReset(t *testing.T) {
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	// An OpenSubtitles refusal can only come from the file transfer, since
+	// the API's own refusals are status codes; it pauses the download scope
+	// for the same six hours as the API's download quota, which stops link
+	// issuance and with it every transfer.
 	for providerType, want := range map[string]time.Time{
-		"subdl":   time.Date(2026, 9, 11, 0, 15, 0, 0, time.UTC),
-		"titlovi": now.Add(time.Hour),
+		"subdl":         time.Date(2026, 9, 11, 0, 15, 0, 0, time.UTC),
+		"titlovi":       now.Add(time.Hour),
+		"opensubtitles": now.Add(6 * time.Hour),
 	} {
 		t.Run(providerType, func(t *testing.T) {
 			clock := testutil.NewClock(now)

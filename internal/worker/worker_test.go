@@ -574,6 +574,42 @@ func TestJobIgnoringCancellationIsAbandonedAfterTheGrace(t *testing.T) {
 	}
 }
 
+// failingGraceRenewalRepository fails lease renewal once the job is past its
+// time limit, like SQLite reporting busy during the grace period.
+type failingGraceRenewalRepository struct {
+	*workerRepository
+	failAfter time.Time
+}
+
+func (r *failingGraceRenewalRepository) RenewSearchLease(ctx context.Context, jobID string, at time.Time, duration time.Duration) error {
+	if time.Now().After(r.failAfter) {
+		return errors.New("database is locked")
+	}
+	return r.workerRepository.RenewSearchLease(ctx, jobID, at, duration)
+}
+
+func TestTimedOutJobRecordsItsFailureWhenRenewalFailsDuringTheGrace(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := &stubbornWorkflow{started: make(chan struct{}), release: make(chan struct{})}
+	defer close(service.release)
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.Repository = &failingGraceRenewalRepository{workerRepository: repository, failAfter: time.Now().Add(80 * time.Millisecond)}
+	worker.JobTimeout = 50 * time.Millisecond
+	worker.jobGrace = 150 * time.Millisecond
+	worker.RenewInterval = 20 * time.Millisecond
+	if err := worker.RunOnce(context.Background()); !errors.Is(err, errJobTimedOut) {
+		t.Fatalf("error = %v; want the job time limit", err)
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	// The completion is owner-checked, so recording it is safe; without it
+	// the search is leased again beside the stuck workflow.
+	if len(repository.searchCompletions) != 1 || repository.searchCompletions[0].Outcome != "workflow_error" || !repository.searchCompletions[0].AdvanceFailureAttempt {
+		t.Fatalf("completions = %#v; want one failure completion", repository.searchCompletions)
+	}
+}
+
 // deadlineWorkflow returns its result as soon as its context is canceled: a
 // workflow that finishes exactly at the time limit.
 type deadlineWorkflow struct{ outcome workflow.Result }

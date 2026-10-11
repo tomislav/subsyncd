@@ -129,15 +129,27 @@ func TestRepairReadsCuesLikeTheParser(t *testing.T) {
 }
 
 func TestUnsafeRepairKeepsAnOrderedSubtitleAsItIs(t *testing.T) {
-	// "1984" before the next timing line reads as that cue's index, so closing
-	// the <i> cannot rewrite the records without losing it; the cues already
-	// play in order, so the subtitle is kept as it is.
-	body := "1\n00:00:01,000 --> 00:00:02,000\n<i>The year was\n1984\n00:00:05,000 --> 00:00:06,000\nLater\n"
+	// "long ago" before the next timing line reads as that cue's index, so
+	// closing the <i> cannot rewrite the records without losing it; the cues
+	// already play in order, so the subtitle is kept as it is.
+	body := "1\n00:00:01,000 --> 00:00:02,000\n<i>The year was\nlong ago\n00:00:05,000 --> 00:00:06,000\nLater\n"
 	if got := normalizedMember(t, "Show.S01E01.srt", body); got != body {
 		t.Fatalf("normalized =\n%q\nwant it unchanged", got)
 	}
 	// When the cues also need reordering, the subtitle is still rejected.
-	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: "1\n00:00:05,000 --> 00:00:06,000\nThe year was\n1984\n00:00:01,000 --> 00:00:02,000\nFirst\n"}})
+	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: "1\n00:00:05,000 --> 00:00:06,000\nThe year was\nlong ago\n00:00:01,000 --> 00:00:02,000\nFirst\n"}})
+	var content *ContentError
+	if !errors.As(err, &content) || !strings.Contains(err.Error(), "out of order") {
+		t.Fatalf("error = %v; want the out-of-order rejection", err)
+	}
+}
+
+func TestUnsafeRepairDoesNotKeepADroppedCueOutOfOrder(t *testing.T) {
+	// Without indexes or blank lines, "Second" reads as the next cue's index,
+	// so the first cue is empty and dropped; the cue left plays in order, but
+	// the kept text would still start at 5s and then 1s.
+	body := "00:00:05,000 --> 00:00:06,000\nSecond\n00:00:01,000 --> 00:00:02,000\nFirst\n"
+	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: body}})
 	var content *ContentError
 	if !errors.As(err, &content) || !strings.Contains(err.Error(), "out of order") {
 		t.Fatalf("error = %v; want the out-of-order rejection", err)

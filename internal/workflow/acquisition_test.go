@@ -205,15 +205,9 @@ func TestServiceExactCancellationPreservesInstallerRollbackError(t *testing.T) {
 		if err != nil || !strings.Contains(string(payload), "first") {
 			t.Fatalf("published subtitle = %q, %v", payload, err)
 		}
-		// A nonempty directory makes the real rollback removal fail after
+		// A read-only directory makes the real rollback removal fail after
 		// cancellation causes the SQLite installation transaction to fail.
-		if err := os.Remove(destination); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(destination, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		writeInstallFile(t, filepath.Join(destination, "blocker"), "x")
+		lockDirectory(t, filepath.Dir(destination))
 		cancel()
 		return nil
 	}}
@@ -241,8 +235,8 @@ func TestServiceExactCancellationPreservesInstallerRollbackError(t *testing.T) {
 	if _, found, err := repository.GetInstallation(inspection, request.MediaID, "en"); err != nil || found {
 		t.Fatalf("uncommitted installation found/error = %v/%v", found, err)
 	}
-	if entries, err := os.ReadDir(destination); err != nil || len(entries) != 1 || entries[0].Name() != "blocker" {
-		t.Fatalf("rollback obstruction = %v, %v", entries, err)
+	if payload, err := os.ReadFile(destination); err != nil || !strings.Contains(string(payload), "first") {
+		t.Fatalf("subtitle left after the failed removal = %q, %v", payload, err)
 	}
 }
 

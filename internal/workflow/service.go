@@ -39,6 +39,7 @@ type Request struct {
 	memberScope          string
 	attemptedArtifacts   map[candidateArtifactIdentity]struct{}
 	lapseTimeout         *lapseTimeoutLatch
+	refusals             *refusalLedger
 	MediaID              int64
 	Media                domain.Media
 	Language             domain.Language
@@ -295,6 +296,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	}
 	request.attemptedArtifacts = make(map[candidateArtifactIdentity]struct{})
 	request.lapseTimeout = &lapseTimeoutLatch{}
+	request.refusals = &refusalLedger{}
 
 	result, runErr = s.runProviderTiers(ctx, request, existing, activeInstallation, &candidateCount)
 	if runErr == nil && activeInstallation && InstallationMatchesMedia(existing, request.Media) &&
@@ -1261,7 +1263,7 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 		return nil, runtimePack, false, nil, downloadErr
 	}
 	if err := checkProviderResponse(payloadPath, metadata.ContentType); err != nil {
-		return nil, runtimePack, false, nil, refusedDownload(ctx, adapter, err)
+		return nil, runtimePack, false, nil, refusedDownload(ctx, adapter, candidate, request.refusals, err)
 	}
 	info, err := os.Stat(payloadPath)
 	if err != nil {
@@ -1285,7 +1287,7 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 		return nil, runtimePack, false, nil, err
 	}
 	if err := checkPlaceholderMembers(manifest); err != nil {
-		return nil, runtimePack, false, nil, refusedDownload(ctx, adapter, err)
+		return nil, runtimePack, false, nil, refusedDownload(ctx, adapter, candidate, request.refusals, err)
 	}
 	runtimePack = manifest.RuntimePack
 	classification := "single"

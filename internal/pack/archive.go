@@ -602,19 +602,24 @@ func validateSubtitle(text []byte, extension string) ([]byte, string, error) {
 	return repaired, extension, nil
 }
 
-// onlyTidies reports whether the cues a repair keeps already start in file
-// order as parsed and none needs new times (a mistyped start, or an end before
-// its start), so the subtitle plays correctly without the repair.
+// onlyTidies reports whether every cue, dropped ones included, already starts
+// in file order as parsed and none the repair keeps needs new times (a
+// mistyped start, or an end before its start), so the subtitle plays
+// correctly without the repair. A dropped cue still stays in the kept text,
+// where install would reject it out of order.
 func onlyTidies(items []*astisub.Item, cues []subtitleorder.Cue) bool {
 	var previous time.Duration
 	for i, item := range items {
-		if cues[i].Drop {
-			continue
-		}
-		if cues[i].Retime || item.EndAt < item.StartAt || item.StartAt < previous {
+		if item.StartAt < previous {
 			return false
 		}
 		previous = item.StartAt
+		if cues[i].Drop {
+			continue
+		}
+		if cues[i].Retime || item.EndAt < item.StartAt {
+			return false
+		}
 	}
 	return true
 }

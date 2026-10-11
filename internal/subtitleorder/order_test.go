@@ -128,16 +128,35 @@ func TestRepairTakesTheLineBeforeATimingLineAsTheIndex(t *testing.T) {
 	}
 }
 
-func TestRepairRefusesToLoseANumericLastLineOfText(t *testing.T) {
-	// "1984" directly before a timing line reads as the next cue's index, but
-	// it is not the next cue number: rewriting would drop it.
-	in := "1\n00:00:05,000 --> 00:00:06,000\nThe year was\n1984\n00:00:01,000 --> 00:00:02,000\nFirst\n"
-	_, err := Reorder([]byte(in), ".srt", []time.Duration{5 * time.Second, time.Second})
-	if !errors.Is(err, ErrUnsafe) {
-		t.Fatalf("Reorder() error = %v; want ErrUnsafe", err)
+func TestRepairRefusesToLoseTextBeforeATimingLine(t *testing.T) {
+	// With no blank line before it, the line before a timing line reads as
+	// the next cue's index; when it is surely text (not a number, or the only
+	// text of the cue before), rewriting would drop it.
+	for name, in := range map[string]string{
+		"text line":         "1\n00:00:05,000 --> 00:00:06,000\nThe year was\nlong ago\n00:00:01,000 --> 00:00:02,000\nFirst\n",
+		"only line of text": "1\n00:00:05,000 --> 00:00:06,000\n42\n00:00:01,000 --> 00:00:02,000\nFirst\n",
+	} {
+		if _, err := Reorder([]byte(in), ".srt", []time.Duration{5 * time.Second, time.Second}); !errors.Is(err, ErrUnsafe) {
+			t.Errorf("%s: Reorder() error = %v; want ErrUnsafe", name, err)
+		}
 	}
-	ordered := "1\n00:00:01,000 --> 00:00:02,000\nThe year was\n1984\n00:00:05,000 --> 00:00:06,000\nLater\n"
+	ordered := "1\n00:00:01,000 --> 00:00:02,000\nThe year was\nlong ago\n00:00:05,000 --> 00:00:06,000\nLater\n"
 	if got, err := Reorder([]byte(ordered), ".srt", []time.Duration{time.Second, 5 * time.Second}); err != nil || string(got) != ordered {
 		t.Fatalf("ordered text changed: %q, %v", got, err)
+	}
+}
+
+func TestReorderReadsNumbersAfterTextAsIndexes(t *testing.T) {
+	// Without blank lines, a number after a line of text is the next cue's
+	// index even when the numbering skips or restarts.
+	want := "1\n00:00:01,000 --> 00:00:02,000\nFirst\n\n2\n00:00:05,000 --> 00:00:06,000\nSecond\n\n3\n00:00:07,000 --> 00:00:08,000\nThird\n"
+	for name, in := range map[string]string{
+		"skipping":   "1\n00:00:05,000 --> 00:00:06,000\nSecond\n3\n00:00:01,000 --> 00:00:02,000\nFirst\n4\n00:00:07,000 --> 00:00:08,000\nThird\n",
+		"restarting": "1\n00:00:05,000 --> 00:00:06,000\nSecond\n1\n00:00:01,000 --> 00:00:02,000\nFirst\n1\n00:00:07,000 --> 00:00:08,000\nThird\n",
+	} {
+		got, err := Reorder([]byte(in), ".srt", []time.Duration{5 * time.Second, time.Second, 7 * time.Second})
+		if err != nil || string(got) != want {
+			t.Errorf("%s: Reorder() = %q, %v\nwant %q", name, got, err, want)
+		}
 	}
 }

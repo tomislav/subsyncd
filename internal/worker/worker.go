@@ -371,13 +371,16 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		}
 	}
 	timedOut := context.Cause(timeoutCtx) == errJobTimedOut && ctx.Err() == nil
-	if renewErr := renewal.finish(); renewErr != nil {
-		if !timedOut || !errors.Is(renewErr, context.DeadlineExceeded) {
-			events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
+	renewErr := renewal.finish()
+	if renewErr != nil {
+		events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
+		// A job that failed or was abandoned past its time limit still records
+		// the timeout: completion is owner-checked, so it only lands while the
+		// lease is ours, and otherwise the search would be leased again at once
+		// beside the stuck workflow.
+		if !timedOut || err == nil {
 			return renewErr
 		}
-		// A renewal cut short by the job's own deadline is the timeout, not
-		// a lost lease.
 	}
 	if timedOut {
 		// A workflow that still returned a result in time keeps it; one that
@@ -405,7 +408,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
 		if completionErr != nil {
 			w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, len(lease.ResumeProviders), completionErr)
-			return errors.Join(err, completionErr)
+			return errors.Join(err, completionErr, renewErr)
 		}
 		events.Log(jobCtx, slog.LevelWarn, "job.retry_scheduled", "subtitle job retry scheduled",
 			slog.String("reason", "workflow_error"),

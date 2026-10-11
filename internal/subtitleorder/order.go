@@ -159,10 +159,14 @@ type cueBlock struct {
 // whatever it says ("1", "1."), as astisub reads it; in WebVTT it is the cue's
 // identifier when it follows a blank line.
 //
-// ambiguous reports an SRT index line that directly follows another cue's text
-// or timing line and is not the next cue number, such as a last line of text
-// "1984" before a timing line with no blank line between them: astisub drops
-// it as an index, so a rewrite would lose it.
+// ambiguous reports an SRT index line with no blank line before it that is
+// surely text: a line that is not a number ("Second" in cues written without
+// indexes or blank lines), or one that directly follows a timing line, as the
+// only text of the cue before. astisub drops it as an index, so a rewrite
+// would lose it. A number after a line of text reads as an index, even when
+// it is not the next cue number (numbering that skips or restarts); a last
+// line of text "1984" cannot be told apart from it, and is lost as astisub
+// loses it.
 func cueBlocks(lines []string, vtt bool) (blocks []cueBlock, ambiguous bool) {
 	first := 0
 	if vtt {
@@ -174,7 +178,6 @@ func cueBlocks(lines []string, vtt bool) (blocks []cueBlock, ambiguous bool) {
 			}
 		}
 	}
-	previousNumber := -1
 	for i := first; i < len(lines); i++ {
 		if !isTimingLine(lines[i], vtt) {
 			continue
@@ -184,7 +187,6 @@ func cueBlocks(lines []string, vtt bool) (blocks []cueBlock, ambiguous bool) {
 		if len(blocks) > 0 {
 			previous = blocks[len(blocks)-1].timing
 		}
-		number := -1
 		if i-1 > previous && strings.TrimSpace(lines[i-1]) != "" {
 			separated := i-2 < first || strings.TrimSpace(lines[i-2]) == ""
 			if vtt {
@@ -193,18 +195,12 @@ func cueBlocks(lines []string, vtt bool) (blocks []cueBlock, ambiguous bool) {
 				}
 			} else {
 				block.start = i - 1
-				if value, err := strconv.Atoi(strings.TrimSpace(lines[i-1])); err == nil {
-					number = value
-				}
-				// Without a blank line before it, the index is only told
-				// apart from text by being the next cue number.
-				next := number >= 0 && (number == len(blocks)+1 || (previousNumber >= 0 && number == previousNumber+1))
-				if !separated && !next {
+				_, err := strconv.Atoi(strings.TrimSpace(lines[i-1]))
+				if !separated && (err != nil || isTimingLine(lines[i-2], vtt)) {
 					ambiguous = true
 				}
 			}
 		}
-		previousNumber = number
 		blocks = append(blocks, block)
 	}
 	for i := range blocks {

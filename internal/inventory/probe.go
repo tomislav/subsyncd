@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -33,57 +34,84 @@ const defaultProbeTimeout = 5 * time.Minute
 var ErrProbeTimedOut = errors.New("ffprobe timed out reading the media file")
 
 // maxStuckProbes is how many timed-out ffprobe runs may still be blocked at
-// once. Each holds a process and a goroutine until its read returns, so
-// beyond this no new run starts and every probe times out at once.
+// once on one mount. Each holds a process and a goroutine until its read
+// returns, so beyond this no new run starts on that mount and every probe of
+// it times out at once; probes of other mounts still run.
 const maxStuckProbes = 4
 
-// stuckProbes counts the timed-out ffprobe runs still blocked, per media
-// path, so a retry on a hung mount does not start another one beside them.
-var stuckProbes = &probeRegistry{paths: map[string]int{}}
+// stuckProbes counts the timed-out ffprobe runs still blocked, per media path
+// and per mount, so a retry on a hung mount does not start another one beside
+// them.
+var stuckProbes = &probeRegistry{paths: map[string]int{}, mounts: map[string]int{}}
 
 type probeRegistry struct {
-	mu    sync.Mutex
-	paths map[string]int
-	total int
+	mu     sync.Mutex
+	paths  map[string]int
+	mounts map[string]int
 }
 
 // probeRun is one ffprobe run; its fields are guarded by the registry.
 type probeRun struct {
+	path, mount         string
 	finished, abandoned bool
 }
 
-// blocked reports whether a new run must not start: one for mediaPath is
-// still blocked, or too many are.
-func (r *probeRegistry) blocked(mediaPath string) bool {
+// blocked reports whether a new run must not start: one for the same media
+// path is still blocked, or too many on its mount are.
+func (r *probeRegistry) blocked(run *probeRun) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.paths[mediaPath] > 0 || r.total >= maxStuckProbes
+	return r.paths[run.path] > 0 || r.mounts[run.mount] >= maxStuckProbes
 }
 
 // abandon records a run that is no longer awaited, unless it already ended.
-func (r *probeRegistry) abandon(run *probeRun, mediaPath string) {
+func (r *probeRegistry) abandon(run *probeRun) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if run.finished || run.abandoned {
 		return
 	}
 	run.abandoned = true
-	r.paths[mediaPath]++
-	r.total++
+	r.paths[run.path]++
+	r.mounts[run.mount]++
 }
 
 // finish records that a run's process returned.
-func (r *probeRegistry) finish(run *probeRun, mediaPath string) {
+func (r *probeRegistry) finish(run *probeRun) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	run.finished = true
 	if !run.abandoned {
 		return
 	}
-	r.total--
-	if r.paths[mediaPath]--; r.paths[mediaPath] <= 0 {
-		delete(r.paths, mediaPath)
+	if r.paths[run.path]--; r.paths[run.path] <= 0 {
+		delete(r.paths, run.path)
 	}
+	if r.mounts[run.mount]--; r.mounts[run.mount] <= 0 {
+		delete(r.mounts, run.mount)
+	}
+}
+
+// probeMount names the mount a media path is read through: the longest
+// configured media root containing it, or else its first two directories
+// ("/mnt/media"), which is where network mounts usually sit.
+func probeMount(mediaPath string, roots []string) string {
+	clean := filepath.Clean(mediaPath)
+	mount := ""
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if (clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) || root == string(filepath.Separator)) && len(root) > len(mount) {
+			mount = root
+		}
+	}
+	if mount != "" {
+		return mount
+	}
+	parts := strings.SplitN(strings.TrimPrefix(filepath.Dir(clean), string(filepath.Separator)), string(filepath.Separator), 3)
+	if len(parts) > 2 {
+		parts = parts[:2]
+	}
+	return string(filepath.Separator) + strings.Join(parts, string(filepath.Separator))
 }
 
 type Probe struct {
@@ -91,6 +119,8 @@ type Probe struct {
 	Runner CommandRunner
 	// Timeout bounds one run; 0 uses defaultProbeTimeout.
 	Timeout time.Duration
+	// MediaRoots group media paths by mount for the stuck-probe limit.
+	MediaRoots []string
 }
 
 func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
@@ -101,7 +131,8 @@ func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if stuckProbes.blocked(mediaPath) {
+	run := &probeRun{path: mediaPath, mount: probeMount(mediaPath, p.MediaRoots)}
+	if stuckProbes.blocked(run) {
 		return nil, ErrProbeTimedOut
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -114,10 +145,9 @@ func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
 	// read returns, so the result is awaited only until the deadline; a late
 	// run finishes in the background.
 	done := make(chan output, 1)
-	run := &probeRun{}
 	go func() {
 		stdout, _, err := p.Runner.Run(probeCtx, p.Path, "-v", "error", "-show_streams", "-show_format", "-of", "json", mediaPath)
-		stuckProbes.finish(run, mediaPath)
+		stuckProbes.finish(run)
 		done <- output{stdout, err}
 	}()
 	var stdout []byte
@@ -131,10 +161,12 @@ func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
 			return nil, fmt.Errorf("ffprobe failed: %w", result.err)
 		}
 	case <-probeCtx.Done():
-		stuckProbes.abandon(run, mediaPath)
+		// A run ended by the job's cancellation did not time out on the
+		// mount, so it does not count as stuck.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		stuckProbes.abandon(run)
 		return nil, ErrProbeTimedOut
 	}
 	if len(stdout) > maxProbeOutput {
