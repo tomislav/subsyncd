@@ -115,7 +115,7 @@ The container runs `serve` by default. The other commands are run through Compos
 | Command | What it does | Daemon |
 | --- | --- | --- |
 | `doctor` | Checks configuration, database, media folders, and bundled tools. | May run |
-| `explain` | Shows what subsyncd knows about one file and language: existing subtitles, candidates, rejections, installation, and the next search. | May run |
+| `explain` | Shows what subsyncd knows about one file and language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
 | `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
 | `search` | Searches one file and language now. | Stop first |
 | `scan` | Discovers unindexed files in one instance's library and reconciles its history. Add `--force-probe` to reread embedded subtitle tracks. | Stop first |

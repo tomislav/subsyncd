@@ -1041,6 +1041,15 @@ func (s *Service) candidateRejection(ctx context.Context, request Request, candi
 // normalization and pack selection rules rather than the media or LAPSE.
 var versionedRejectionReasons = []string{"invalid_subtitle", "pack_selection"}
 
+// RejectionActive reports whether a stored rejection still counts. A rejection
+// whose reason follows versioned rules counts only when it was recorded under
+// the current rules version; older ones, including legacy bare-signature rows,
+// are ignored by lookup.
+func RejectionActive(rejection store.CandidateRejection) bool {
+	suffix := rejectionRulesVersion(rejection.ReasonCode)
+	return suffix == "" || strings.HasSuffix(rejection.CandidateSignature, suffix)
+}
+
 // rejectionRulesVersion is the suffix a rejection for reasonCode adds to its
 // candidate signature: the version of the rules that decided it, so bumping
 // pack.SubtitleRulesVersion or pack.SelectionRulesVersion re-opens the

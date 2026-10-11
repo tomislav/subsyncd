@@ -27,6 +27,7 @@ import (
 	"subsyncd/internal/httpapi"
 	"subsyncd/internal/notifier"
 	"subsyncd/internal/observability"
+	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/syncer"
@@ -614,8 +615,20 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Legacy bare-signature rows of versioned reasons are ignored by lookup, so
+	// they do not count as active rejections; a current-version row does.
+	for _, row := range []struct{ result, signature, reason string }{
+		{"legacy-invalid", "candidate", "invalid_subtitle"},
+		{"legacy-selection", "candidate/member-abc", "pack_selection"},
+		{"current-selection", fmt.Sprintf("candidate/pack-selection-v%d", pack.SelectionRulesVersion), "pack_selection"},
+	} {
+		if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: row.result, CandidateSignature: row.signature, ArtifactChecksum: "artifact", ReasonCode: row.reason, ToolSignature: "tool", MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 100, MediaModTimeNS: now.UnixNano(), RejectedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	output, err := application.Explain(context.Background(), "tv", "movie", 7, "en")
-	if err != nil || !strings.Contains(output, "candidate_rejections: 1") || !strings.Contains(output, "expires=never") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") {
+	if err != nil || !strings.Contains(output, "candidate_rejections: 2\n") || !strings.Contains(output, "candidate_rejections_superseded: 2") || !strings.Contains(output, "expires=never") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") || !strings.Contains(output, "result=current-selection") || strings.Contains(output, "result=legacy-") {
 		t.Fatalf("Explain() = %q/%v", output, err)
 	}
 }

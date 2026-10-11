@@ -42,8 +42,9 @@ const maximumMergedOverlap = 0.25
 //   - in SRT and WebVTT, a cue that ends more than 10 s after the next cue
 //     starts and lasts over three times its reading time and over 15 s has a
 //     mistyped end, which moves to the next cue's start (or its reading time,
-//     when that is later). Song lyrics (♪, ♫ or #) may run that long and are
-//     kept.
+//     when that is later). Cues set apart from dialogue may run that long and
+//     are kept: song lyrics (♪, ♫, or # at the start or end of a line), cues
+//     whose whole text is italic, and positioned signs (heldApart).
 //
 // Cues that are simply out of order are left to sorting. A subtitle whose cues
 // overlap too much is two subtitles in one file and is rejected (SRT and
@@ -103,7 +104,7 @@ func planRepairs(items []*astisub.Item, extension string) ([]subtitleorder.Cue, 
 			continue
 		}
 		duration := cues[i].End - cues[i].Start
-		if next, ok := nextStart(cues[i].Start); ok && !ass && cues[i].End > next+typoDisorder && duration > 3*reading && duration > mistypedEndDuration && !strings.ContainsAny(texts[i], "♪♫#") {
+		if next, ok := nextStart(cues[i].Start); ok && !ass && cues[i].End > next+typoDisorder && duration > 3*reading && duration > mistypedEndDuration && !heldApart(items[i]) {
 			cues[i].End, cues[i].Retime = max(next, cues[i].Start+reading), true
 		}
 	}
@@ -114,6 +115,79 @@ func planRepairs(items []*astisub.Item, extension string) ([]subtitleorder.Cue, 
 		return nil, fmt.Errorf("subtitle cues overlap for %.0f%% of their time, like two subtitles in one file", overlap*100)
 	}
 	return cues, nil
+}
+
+// heldApart reports a cue set apart from the dialogue, which may stay on
+// screen across other cues: song lyrics (♪ or ♫ anywhere, or a # lyrics marker
+// at the start or end of a line, not a "#1" inside a sentence), a cue whose
+// every line is italic (<i>…</i> or {\i1}), or a positioned one ({\an8},
+// {\pos(…)}, or WebVTT line or position settings).
+func heldApart(item *astisub.Item) bool {
+	if item.InlineStyle != nil && (item.InlineStyle.WebVTTLine != "" || item.InlineStyle.WebVTTPosition != nil) {
+		return true
+	}
+	italic := true
+	for _, line := range item.Lines {
+		var text strings.Builder
+		lineItalic := true
+		for _, lineItem := range line.Items {
+			text.WriteString(lineItem.Text)
+			if strings.TrimSpace(overrideTags.ReplaceAllString(lineItem.Text, "")) == "" {
+				continue
+			}
+			if style := lineItem.InlineStyle; style != nil && style.SRTPosition != 0 {
+				return true
+			}
+			lineItalic = lineItalic && styledItalic(lineItem.InlineStyle)
+		}
+		raw := strings.TrimSpace(text.String())
+		if positionTag.MatchString(raw) {
+			return true
+		}
+		plain := strings.TrimSpace(overrideTags.ReplaceAllString(raw, ""))
+		if strings.ContainsAny(plain, "♪♫") || strings.HasPrefix(plain, "#") || strings.HasSuffix(plain, "#") {
+			return true
+		}
+		if plain == "" {
+			continue
+		}
+		italic = italic && (lineItalic || assItalicLine(raw))
+	}
+	return italic && strings.TrimSpace(item.String()) != ""
+}
+
+var (
+	// overrideTags are ASS-style override blocks such as {\an8} or {\i1}.
+	overrideTags = regexp.MustCompile(`\{\\[^}]*\}`)
+	positionTag  = regexp.MustCompile(`\{[^}]*\\(?:an[1-9]|a[1-9]|pos\()`)
+	italicOn     = regexp.MustCompile(`^(?:\{[^}]*\})*\{[^}]*\\i1[^}]*\}`)
+	italicOff    = regexp.MustCompile(`\{[^}]*\\i0[^}]*\}`)
+)
+
+// styledItalic reports italic text as SRT (<i>) or WebVTT (<i>) parsing marks it.
+func styledItalic(style *astisub.StyleAttributes) bool {
+	if style == nil {
+		return false
+	}
+	if style.SRTItalics || style.WebVTTItalics {
+		return true
+	}
+	for _, tag := range style.WebVTTTags {
+		if tag.Name == "i" {
+			return true
+		}
+	}
+	return false
+}
+
+// assItalicLine reports a line that turns italics on with {\i1} before its
+// text and does not turn them off before its end.
+func assItalicLine(line string) bool {
+	if !italicOn.MatchString(line) {
+		return false
+	}
+	off := italicOff.FindStringIndex(line)
+	return off == nil || strings.TrimSpace(overrideTags.ReplaceAllString(line[off[0]:], "")) == ""
 }
 
 // readingTime is how long a cue's text needs on screen: about 20 characters

@@ -1,6 +1,8 @@
 package pack
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -340,8 +342,26 @@ func TestDifferentSubtitlesWithOneNameKeepTheirFolders(t *testing.T) {
 		}
 		names := memberNames(manifest)
 		sort.Strings(names)
-		if strings.Join(names, ",") != "Show.S01E01.srt,WEB - Show.S01E01.srt" {
+		if strings.Join(names, ",") != "BluRay - Show.S01E01.srt,WEB - Show.S01E01.srt" {
 			t.Fatalf("names = %v; want the same names in any member order", names)
+		}
+	}
+}
+
+func TestDifferentSubtitlesWithOneNameKeepTheFoldersThatTellThemApart(t *testing.T) {
+	first := zipEntry{name: "Show/Season 1/Croatian/01.srt", body: validSRT}
+	second := zipEntry{name: "Show/Season 2/Croatian/01.srt", body: strings.Replace(validSRT, "Hello", "Other", 1)}
+	third := zipEntry{name: "Show/Season 2/English/01.srt", body: strings.Replace(validSRT, "Hello", "Third", 1)}
+	for _, entries := range [][]zipEntry{{first, second, third}, {third, second, first}} {
+		payload := zipPayload(t, entries)
+		manifest, err := Extract(context.Background(), domain.Candidate{}, bytes.NewReader(payload), int64(len(payload)), filepath.Join(t.TempDir(), "out"), DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := memberNames(manifest)
+		sort.Strings(names)
+		if strings.Join(names, ",") != "Season 1 - Croatian - 01.srt,Season 2 - Croatian - 01.srt,Season 2 - English - 01.srt" {
+			t.Fatalf("names = %v; want the season kept in any member order", names)
 		}
 	}
 }
@@ -350,7 +370,8 @@ func TestDifferentSubtitlesWithOneNameAndNoFolderAreNumbered(t *testing.T) {
 	first := zipEntry{name: "Episode.srt", body: validSRT}
 	second := zipEntry{name: "episode.srt", body: strings.Replace(validSRT, "Hello", "Other", 1)}
 	taken := zipEntry{name: "Episode (2).srt", body: strings.Replace(validSRT, "Hello", "Third", 1)}
-	copyOfFirst := zipEntry{name: "Copy/Episode.srt", body: validSRT}
+	// The identical copy sorts after the root files, so a root file keeps it.
+	copyOfFirst := zipEntry{name: "zCopy/Episode.srt", body: validSRT}
 	var want map[string]string
 	for _, entries := range [][]zipEntry{{first, second, taken, copyOfFirst}, {copyOfFirst, taken, second, first}} {
 		manifest, destination, err := extractZIP(t, entries)
@@ -473,6 +494,45 @@ func TestRepairEndsAMistypedLongCueAtTheNextOne(t *testing.T) {
 		if !strings.Contains(got, timing) {
 			t.Fatalf("cue %s was retimed:\n%s", timing, got)
 		}
+	}
+}
+
+func TestRepairKeepsLongItalicAndPositionedCuesButNotHashInASentence(t *testing.T) {
+	long := "00:12:31,000 --> 00:13:10,000"
+	for _, text := range []string{
+		"<i>Sung without a note sign</i>\n<i>second line</i>",
+		"{\\i1}Sung in ASS italics{\\i0}",
+		"{\\an8}A sign at the top",
+		"{\\pos(320,50)}A placed sign",
+		"# Lyrics marked with a hash",
+		"Lyrics ending in a hash #",
+	} {
+		body := srt(long, text, "00:12:34,000 --> 00:12:36,000", "Next", "00:12:37,000 --> 00:12:39,000", "And on")
+		if got := normalizedMember(t, "Show.S01E01.srt", body); !strings.Contains(got, long) {
+			t.Errorf("cue %q was retimed:\n%s", text, got)
+		}
+	}
+	for _, text := range []string{"We're #1 in the league.", "<i>Partly</i> italic line."} {
+		body := srt(long, text, "00:12:34,000 --> 00:12:36,000", "Next", "00:12:37,000 --> 00:12:39,000", "And on")
+		if got := normalizedMember(t, "Show.S01E01.srt", body); !strings.Contains(got, "00:12:31,000 --> 00:12:34,000") {
+			t.Errorf("mistyped end of %q not repaired:\n%s", text, got)
+		}
+	}
+	vtt := "WEBVTT\n\n00:12:31.000 --> 00:13:10.000 line:10%\nA placed caption\n\n00:12:34.000 --> 00:12:36.000\nNext\n\n00:12:37.000 --> 00:12:39.000\nAnd on\n"
+	items, err := astisub.ReadFromWebVTT(strings.NewReader(vtt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cues, err := planRepairs(items.Items, ".vtt")
+	if err != nil || cues[0].Retime {
+		t.Fatalf("positioned WebVTT cue = %+v, %v; want it kept", cues, err)
+	}
+	vtt = strings.Replace(vtt, "line:10%\nA placed caption", "\n<i>An italic caption</i>", 1)
+	if items, err = astisub.ReadFromWebVTT(strings.NewReader(vtt)); err != nil {
+		t.Fatal(err)
+	}
+	if cues, err = planRepairs(items.Items, ".vtt"); err != nil || cues[0].Retime {
+		t.Fatalf("italic WebVTT cue = %+v, %v; want it kept", cues, err)
 	}
 }
 

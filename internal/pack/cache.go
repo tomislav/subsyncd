@@ -68,14 +68,31 @@ func NewCache(root string, repository *store.Repository, clock cacheClock, maxBy
 }
 
 func (c *Cache) Find(ctx context.Context, media domain.Media, language domain.Language) (CachedMember, bool, error) {
-	return c.FindEligible(ctx, media, language, nil)
+	return c.FindEligible(ctx, media, language, Eligibility{})
 }
 
-// FindEligible applies accept after validating each selected member and before
-// marking it used. Rejected members do not hide later matching packs. A nil
-// callback accepts every member; callback errors stop lookup without touching
-// that entry. The callback runs under the cache lock and must not reenter Cache.
-func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language domain.Language, accept func(CachedMember) (bool, error)) (CachedMember, bool, error) {
+// Eligibility filters the members a cache lookup may return. Nil callbacks
+// accept every member and report no rejections. Callbacks run under the cache
+// lock and must not reenter Cache; their errors stop the lookup without
+// touching the entry.
+type Eligibility struct {
+	// Accept is applied after a selected member is validated and before it is
+	// marked used.
+	Accept func(CachedMember) (bool, error)
+	// Rejected reports a version already rejected for the media. When a pack
+	// holds more versions than are timed, rejected versions give their places
+	// to untried ones (as on the download path), and rejected members are not
+	// returned.
+	Rejected func(CachedMember) (bool, error)
+	// Exhausted receives the first selected member of a multi-version pack
+	// whose every selected version is rejected and no untried version is left,
+	// so the caller can reject the whole provider result.
+	Exhausted func(CachedMember) error
+}
+
+// FindEligible returns the first cached pack member that filter accepts and
+// does not report rejected. Skipped members do not hide later matching packs.
+func (c *Cache) FindEligible(ctx context.Context, media domain.Media, language domain.Language, filter Eligibility) (CachedMember, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.clock.Now()
@@ -116,12 +133,43 @@ entriesLoop:
 				continue
 			}
 		}
-		members, moreVersions, err := SelectUntriedAlternatives(manifest, manifest.Candidate, media, false, nil)
+		rejectedVersions := map[string]bool{}
+		rejected := func(cached CachedMember) (bool, error) {
+			if filter.Rejected == nil {
+				return false, nil
+			}
+			if done, seen := rejectedVersions[cached.Checksum]; seen {
+				return done, nil
+			}
+			done, err := filter.Rejected(cached)
+			if err != nil {
+				return false, err
+			}
+			rejectedVersions[cached.Checksum] = done
+			return done, nil
+		}
+		var tried func(Member) (bool, error)
+		var triedErr error
+		if filter.Rejected != nil {
+			// tried runs only when more versions match than are timed, so
+			// every member is a scoped version.
+			tried = func(member Member) (bool, error) {
+				done, err := rejected(CachedMember{MemberScoped: true, RuntimePack: manifest.RuntimePack, Checksum: member.Checksum, Candidate: manifest.Candidate})
+				triedErr = err
+				return done, err
+			}
+		}
+		members, moreVersions, err := SelectUntriedAlternatives(manifest, manifest.Candidate, media, false, tried)
+		if triedErr != nil {
+			return CachedMember{}, false, triedErr
+		}
 		if err != nil {
 			selectionErr = err
 			continue
 		}
 		var acceptedMembers []CachedMember
+		rejectedCount := 0
+		var firstRejected CachedMember
 		for _, member := range members {
 			if err := c.secureRegularPath(member.NormalizedPath); err != nil {
 				if err := c.invalidateEntry(ctx, entry); err != nil {
@@ -137,8 +185,8 @@ entriesLoop:
 				continue entriesLoop
 			}
 			cached := CachedMember{MemberScoped: len(members) > 1, MoreVersions: moreVersions, RuntimePack: manifest.RuntimePack, Path: member.NormalizedPath, Checksum: member.Checksum, Candidate: manifest.Candidate, SelectionRule: member.SelectionRule, SelectionEvidence: member.SelectionEvidence}
-			if accept != nil {
-				accepted, err := accept(cached)
+			if filter.Accept != nil {
+				accepted, err := filter.Accept(cached)
 				if err != nil {
 					return CachedMember{}, false, err
 				}
@@ -146,9 +194,25 @@ entriesLoop:
 					continue
 				}
 			}
+			done, err := rejected(cached)
+			if err != nil {
+				return CachedMember{}, false, err
+			}
+			if done {
+				if rejectedCount == 0 {
+					firstRejected = cached
+				}
+				rejectedCount++
+				continue
+			}
 			acceptedMembers = append(acceptedMembers, cached)
 		}
 		if len(acceptedMembers) == 0 {
+			if filter.Exhausted != nil && len(members) > 1 && !moreVersions && rejectedCount == len(members) {
+				if err := filter.Exhausted(firstRejected); err != nil {
+					return CachedMember{}, false, err
+				}
+			}
 			continue
 		}
 		cached := acceptedMembers[0]

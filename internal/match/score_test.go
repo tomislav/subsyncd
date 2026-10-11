@@ -331,3 +331,23 @@ func scoredMedia() domain.Media {
 func scoredCandidate() domain.Candidate {
 	return domain.Candidate{ProviderID: "provider", ResultID: "one", Language: "en", Kind: domain.MediaEpisode, Title: "Example Show", Year: 2024, Season: 1, Episode: 2, ExternalIDs: domain.ExternalIDs{IMDb: "tt123", TMDB: 456}, ReleaseNames: []string{"Example.Show.S01E02.1080p.NF.WEB-DL.EXTENDED-GROUP"}, Rating: 1, Popularity: 1}
 }
+
+func TestReleaseSourceTokensWinOverTheParsersWholeValue(t *testing.T) {
+	for _, test := range []struct{ release, want string }{
+		{"Show.S01E01.1080p.WEB.h264-GRP.WEBRip", "webrip"},
+		{"Show.S01E01.1080p.WEB.h264-GRP", "web-dl"},
+		{"Show.S01E01.720p.PDTV.x264-GRP", "hdtv"},
+		{"Movie.2010.1080p.BluRay.REMUX.AVC-GRP", "remux"},
+		// COMPLETE also marks a complete season, so it names no full disc.
+		{"Show.S01.COMPLETE.BluRay.x264-GRP", "bluray"},
+	} {
+		if got := ParseRelease(test.release).Source; got != test.want {
+			t.Errorf("ParseRelease(%q).Source = %q, want %q", test.release, got, test.want)
+		}
+	}
+	for _, test := range []struct{ source, want string }{{"blurayRaw", "remux"}, {"web", "web-dl"}, {"webRip", "webrip"}, {"television", "hdtv"}} {
+		if got := mediaSource(domain.Media{Source: test.source}); got != test.want {
+			t.Errorf("mediaSource(%q) = %q, want %q", test.source, got, test.want)
+		}
+	}
+}

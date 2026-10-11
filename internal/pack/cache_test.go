@@ -175,10 +175,10 @@ func TestCacheFindEligibleSkipsRejectedPackWithoutTouchingIt(t *testing.T) {
 	}
 	rejectedAccess := clock.Now().Add(-time.Minute)
 	var visited []string
-	member, found, err := cache.FindEligible(ctx, cacheMedia(), "en", func(member CachedMember) (bool, error) {
+	member, found, err := cache.FindEligible(ctx, cacheMedia(), "en", Eligibility{Accept: func(member CachedMember) (bool, error) {
 		visited = append(visited, member.Candidate.ResultID)
 		return member.Candidate.ResultID != "rejected", nil
-	})
+	}})
 	if err != nil || !found || member.Candidate.ResultID != "viable" || strings.Join(visited, ",") != "rejected,viable" {
 		t.Fatalf("FindEligible() = %#v/%v/%v, visited %v", member, found, err, visited)
 	}
@@ -197,11 +197,11 @@ func TestCacheFindEligibleSkipsRejectedPackWithoutTouchingIt(t *testing.T) {
 	}
 	clock.Advance(time.Minute)
 	lookupErr := errors.New("rejection lookup failed")
-	_, found, err = cache.FindEligible(ctx, cacheMedia(), "en", func(CachedMember) (bool, error) { return false, lookupErr })
+	_, found, err = cache.FindEligible(ctx, cacheMedia(), "en", Eligibility{Accept: func(CachedMember) (bool, error) { return false, lookupErr }})
 	if found || !errors.Is(err, lookupErr) {
 		t.Fatalf("callback failure = %v/%v", found, err)
 	}
-	_, found, err = cache.FindEligible(ctx, cacheMedia(), "en", func(CachedMember) (bool, error) { return false, nil })
+	_, found, err = cache.FindEligible(ctx, cacheMedia(), "en", Eligibility{Accept: func(CachedMember) (bool, error) { return false, nil }})
 	if found || err != nil {
 		t.Fatalf("all rejected = %v/%v, want clean miss", found, err)
 	}
@@ -235,6 +235,69 @@ func TestCacheFindRerunsSelectionAndDeduplicatesIdenticalVersions(t *testing.T) 
 	}
 	if member, found, err := cache.Find(ctx, cacheMedia(), "en"); err != nil || !found || len(member.Alternatives) != 0 {
 		t.Fatalf("deduplicated versions = %+v/%v/%v", member, found, err)
+	}
+}
+
+func TestCacheFindEligibleSkipsRejectedVersionsBeforeKeepingThree(t *testing.T) {
+	ctx := context.Background()
+	repository := openRepository(t)
+	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	cache, err := NewCache(filepath.Join(t.TempDir(), "pack-cache"), repository, clock, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := cacheCandidate("versions")
+	var entries []zipEntry
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		entries = append(entries, zipEntry{name: name + ".S01E02.srt", body: strings.ReplaceAll(validSRT, "Hello", "Hello "+name)})
+	}
+	payload := zipPayload(t, entries)
+	manifest, err := Extract(ctx, candidate, strings.NewReader(string(payload)), int64(len(payload)), filepath.Join(t.TempDir(), "extracted"), testLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put(ctx, manifest, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	checksums := map[string]string{}
+	for _, member := range manifest.Members {
+		checksums[member.Checksum] = strings.TrimSuffix(member.SafeName, ".S01E02.srt")
+	}
+	lookup := func(rejected string) (CachedMember, bool, []string, error) {
+		var exhausted []string
+		member, found, err := cache.FindEligible(ctx, cacheMedia(), "en", Eligibility{
+			Rejected: func(member CachedMember) (bool, error) {
+				return strings.Contains(rejected, checksums[member.Checksum]), nil
+			},
+			Exhausted: func(member CachedMember) error {
+				exhausted = append(exhausted, member.Candidate.ResultID)
+				return nil
+			},
+		})
+		return member, found, exhausted, err
+	}
+	names := func(member CachedMember) string {
+		got := []string{checksums[member.Checksum]}
+		for _, alternative := range member.Alternatives {
+			got = append(got, checksums[alternative.Checksum])
+		}
+		return strings.Join(got, ",")
+	}
+	// Without rejections the first three versions are tried and two are left.
+	if member, found, exhausted, err := lookup(""); err != nil || !found || names(member) != "a,b,c" || !member.MoreVersions || len(exhausted) != 0 {
+		t.Fatalf("no rejections = %s more=%v found=%v exhausted=%v err=%v", names(member), member.MoreVersions, found, exhausted, err)
+	}
+	// Rejected versions give their places to untried ones.
+	if member, found, exhausted, err := lookup("abc"); err != nil || !found || names(member) != "d,e" || member.MoreVersions || len(exhausted) != 0 {
+		t.Fatalf("three rejected = %s more=%v found=%v exhausted=%v err=%v", names(member), member.MoreVersions, found, exhausted, err)
+	}
+	// With every version rejected the pack is reported exhausted.
+	if member, found, exhausted, err := lookup("abcde"); err != nil || found || len(exhausted) != 1 || exhausted[0] != "versions" {
+		t.Fatalf("all rejected = %+v found=%v exhausted=%v err=%v", member, found, exhausted, err)
+	}
+	lookupErr := errors.New("rejection lookup failed")
+	if _, found, err := cache.FindEligible(ctx, cacheMedia(), "en", Eligibility{Rejected: func(CachedMember) (bool, error) { return false, lookupErr }}); found || !errors.Is(err, lookupErr) {
+		t.Fatalf("rejection lookup failure = %v/%v", found, err)
 	}
 }
 

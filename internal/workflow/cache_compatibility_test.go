@@ -20,14 +20,20 @@ type compatibilityCache struct {
 	members []pack.CachedMember
 }
 
-func (c *compatibilityCache) FindEligible(_ context.Context, _ domain.Media, _ domain.Language, accept func(pack.CachedMember) (bool, error)) (pack.CachedMember, bool, error) {
+func (c *compatibilityCache) FindEligible(_ context.Context, _ domain.Media, _ domain.Language, filter pack.Eligibility) (pack.CachedMember, bool, error) {
 	for _, m := range c.members {
-		ok, err := accept(m)
+		ok, err := filter.Accept(m)
 		if err != nil {
 			return pack.CachedMember{}, false, err
 		}
 		if ok {
-			return m, true, nil
+			rejected, err := filter.Rejected(m)
+			if err != nil {
+				return pack.CachedMember{}, false, err
+			}
+			if !rejected {
+				return m, true, nil
+			}
 		}
 	}
 	return pack.CachedMember{}, false, nil

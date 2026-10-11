@@ -125,44 +125,56 @@ func NormalizeIdentity(value string) string {
 // (television, web, dvd, blurayRaw...) or the release parser returns (WEB,
 // PDTV, BRRip) to the names release descriptors use, so they compare equal.
 var sourceAliases = map[string]string{
-	"television":      "hdtv",
-	"televisionraw":   "hdtv",
-	"tv":              "hdtv",
-	"pdtv":            "hdtv",
-	"web":             "web-dl",
-	"webdl":           "web-dl",
-	"dvd":             "dvdrip",
-	"brrip":           "bluray",
-	"blurayraw":       "remux",
-	"bdremux":         "remux",
-	"brdisk":          "remux",
-	"br disk":         "remux",
-	"bdmv":            "remux",
-	"complete bluray": "remux",
+	"television":    "hdtv",
+	"televisionraw": "hdtv",
+	"tv":            "hdtv",
+	"pdtv":          "hdtv",
+	"web":           "web-dl",
+	"webdl":         "web-dl",
+	"dvd":           "dvdrip",
+	"brrip":         "bluray",
+	"blurayraw":     "remux",
+	"bdremux":       "remux",
+	"brdisk":        "remux",
+	"br disk":       "remux",
+	"bdmv":          "remux",
 }
 
 // normalizeSource returns the source a release names. value is a whole source
 // name (from the release parser or the media's Arr quality) and raw a release
-// descriptor searched for source tokens; aliases apply only to value, since
-// words such as "tv" or "web" inside a title name no source.
+// descriptor searched for source tokens. A specific source token in raw wins
+// over the parser's whole value ("WEB" in "Show.1080p.WEB.h264-GRP.WEBRip" is
+// webrip); aliases apply only to the whole value, since words such as "tv" or
+// "web" inside a title name no source.
 func normalizeSource(value, raw string) string {
+	if source := sourceToken(raw); source != "" {
+		return source
+	}
 	if alias, ok := sourceAliases[NormalizeIdentity(value)]; ok {
 		return alias
 	}
-	joined := strings.ToLower(value + " " + raw)
-	switch {
-	case strings.Contains(joined, "remux") || strings.Contains(joined, "bdmv") || strings.Contains(joined, "br-disk"):
-		return "remux"
-	case strings.Contains(joined, "web-dl") || strings.Contains(joined, "webdl") || strings.Contains(joined, "web dl"):
-		return "web-dl"
-	case strings.Contains(joined, "webrip") || strings.Contains(joined, "web-rip"):
-		return "webrip"
-	case strings.Contains(joined, "bluray") || strings.Contains(joined, "blu-ray") || strings.Contains(joined, "bdrip"):
-		return "bluray"
-	case strings.Contains(joined, "hdtv"):
-		return "hdtv"
+	if source := sourceToken(value); source != "" {
+		return source
 	}
 	return NormalizeIdentity(value)
+}
+
+// sourceToken returns the source a release descriptor's tokens name, or "".
+func sourceToken(text string) string {
+	text = strings.ToLower(text)
+	switch {
+	case strings.Contains(text, "remux") || strings.Contains(text, "bdmv") || strings.Contains(text, "br-disk"):
+		return "remux"
+	case strings.Contains(text, "web-dl") || strings.Contains(text, "webdl") || strings.Contains(text, "web dl"):
+		return "web-dl"
+	case strings.Contains(text, "webrip") || strings.Contains(text, "web-rip"):
+		return "webrip"
+	case strings.Contains(text, "bluray") || strings.Contains(text, "blu-ray") || strings.Contains(text, "bdrip"):
+		return "bluray"
+	case strings.Contains(text, "hdtv"):
+		return "hdtv"
+	}
+	return ""
 }
 
 // normalizeEdition returns the cut a release or file names, or "" when it

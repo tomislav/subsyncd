@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -400,6 +401,58 @@ func TestLimitMessagesInJSONBodiesCoolDownUntilTheDailyReset(t *testing.T) {
 				t.Fatal("a limit message disabled the provider")
 			}
 		})
+	}
+}
+
+func TestLimitWordingNeedsAReachedDailyDownloadOrQuotaLimit(t *testing.T) {
+	for _, message := range []string{"film_name exceeds the character limit", "subs_per_page must not exceed the limit of 30", "Upgrade for unlimited downloads"} {
+		if got := limitCode(message); got != "" {
+			t.Errorf("limitCode(%q) = %q, want no limit", message, got)
+		}
+	}
+	for _, message := range []string{"You have reached your daily download limit", "Daily download limit exceeded", "API quota exceeded", "You have reached your daily limit", "Download limit reached", "daily_limit"} {
+		if got := limitCode(message); got != "daily_limit" {
+			t.Errorf("limitCode(%q) = %q, want daily_limit", message, got)
+		}
+	}
+}
+
+func TestRejectedKeyOrTokenAndAny401DisableProvider(t *testing.T) {
+	for _, tt := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusForbidden, `{"status":false,"error":"API key banned"}`},
+		{http.StatusForbidden, `{"status":false,"error":"invalid token"}`},
+		{http.StatusForbidden, `{"status":false,"error":"Unauthorized API key"}`},
+		{http.StatusForbidden, `{"status":false,"message":"Your token has expired"}`},
+		{http.StatusUnauthorized, `{"status":false,"error":"Unauthorized"}`},
+		{http.StatusUnauthorized, ""},
+	} {
+		for _, operation := range []string{"search", "download"} {
+			t.Run(fmt.Sprintf("%s/%d/%s", operation, tt.status, tt.body), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tt.status)
+					io.WriteString(w, tt.body)
+				}))
+				defer server.Close()
+				client, states := newTestClientWithState(t, server, 1<<20)
+				var err error
+				if operation == "search" {
+					_, err = client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+				} else {
+					_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/forbidden"}, io.Discard)
+				}
+				var authentication *baseprovider.AuthenticationError
+				if !errors.As(err, &authentication) {
+					t.Fatalf("error = %T %v; want an authentication error", err, err)
+				}
+				state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth))
+				if err != nil || !state.Disabled {
+					t.Fatalf("disabled state = %#v, %v", state, err)
+				}
+			})
+		}
 	}
 }
 

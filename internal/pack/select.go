@@ -482,11 +482,23 @@ func normalizeTitle(value string) string {
 
 // Names in the anime convention number episodes absolutely: a leading
 // "[Group]" tag or a number after a spaced dash ("[Group] One Piece - 607
-// (1080p)" is episode 607, not S06E07).
+// (1080p)" is episode 607, not S06E07). The shape is used only when the
+// target's absolute number is unknown.
 var (
-	leadingGroupTag  = regexp.MustCompile(`^\s*\[[^\]]*\]`)
+	leadingGroupTag  = regexp.MustCompile(`^\s*\[([^\]]*)\]`)
 	spacedDashBefore = regexp.MustCompile(`\s-\s+$`)
 )
+
+// animeGroupTagged reports a leading "[Group]" tag. A tag naming a site
+// ("[TorrentCouch.com]", "[www.Site]") is a scene release label, not a group.
+func animeGroupTagged(name string) bool {
+	match := leadingGroupTag.FindStringSubmatch(name)
+	if match == nil {
+		return false
+	}
+	tag := strings.ToLower(match[1])
+	return !strings.Contains(tag, ".") && !strings.Contains(tag, "www")
+}
 
 // compactVideoNumbers are three-digit numbers that name a codec or resolution.
 var compactVideoNumbers = map[string]bool{"264": true, "265": true, "480": true, "576": true, "720": true}
@@ -513,18 +525,20 @@ func compactEpisodeMatches(name string, media domain.Media) bool {
 // absolute number A, the number N could be an absolute episode too; the
 // season-and-episode reading is taken only when N is A itself or at least 100
 // past it, that is when the seasons before the target average fewer than 100
-// episodes (and a season 1 episode is its own absolute number). An anime series
-// with seasons of hundreds of episodes, or absolute-numbered names, never
-// matches this way.
+// episodes (and a season 1 episode is its own absolute number). That test alone
+// decides; the anime name shape is consulted only when A is unknown. An anime
+// series with seasons of hundreds of episodes never matches this way.
 func compactNamesTarget(number compactNumber, media domain.Media) bool {
 	if media.Season < 1 || media.Season > 9 || media.Episode < 1 || media.Episode > 99 {
 		return false
 	}
-	if number.absolute || number.season != media.Season || number.episode != media.Episode {
+	if number.season != media.Season || number.episode != media.Episode {
 		return false
 	}
-	absolute := media.AbsoluteEpisode
-	return absolute <= 0 || number.value == absolute || number.value-absolute >= 100
+	if absolute := media.AbsoluteEpisode; absolute > 0 {
+		return number.value == absolute || number.value-absolute >= 100
+	}
+	return !number.absolute
 }
 
 // compactNamesOtherEpisode reports whether a name holds a compact number that
@@ -557,7 +571,7 @@ func compactNumbers(name, title string) []compactNumber {
 		}
 		return -1
 	}, title)
-	groupTagged := leadingGroupTag.MatchString(name)
+	groupTagged := animeGroupTagged(name)
 	var numbers []compactNumber
 	for start := 0; start < len(name); {
 		if name[start] < '0' || name[start] > '9' {

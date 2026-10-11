@@ -411,11 +411,12 @@ type extractedMember struct {
 // assignMemberNames gives each subtitle a unique (case-insensitive) file name
 // independent of the archive's member order. Identical copies under one name,
 // as with the per-encoding ANSI/ and UTF/ copies uploaders ship, are kept
-// once. Of different subtitles sharing a name, the one with the first archive
-// path keeps it; each other one is prefixed with its folder ("UTF - name.srt"),
-// or, with no folder, numbered ("name (2).srt") in
-// path order; so is one whose prefixed name is taken or too long. The result
-// keeps archive order.
+// once. Different subtitles sharing a name are each prefixed with the shortest
+// trailing part of their folder path that tells them apart ("UTF - name.srt",
+// "Season 1 - Croatian - name.srt"), so folder evidence such as the season is
+// kept. A subtitle with no folder keeps the name; so does the first one in
+// path order whose prefixed name is taken or too long, and any further one is
+// numbered ("name (2).srt") in path order. The result keeps archive order.
 func assignMemberNames(subtitles []extractedMember) ([]extractedMember, error) {
 	groups := map[string][]int{}
 	var keys []string
@@ -442,26 +443,40 @@ func assignMemberNames(subtitles []extractedMember) ([]extractedMember, error) {
 			return left.sum < right.sum
 		})
 		kept := map[string]bool{}
-		for position, index := range group {
-			subtitle := &subtitles[index]
-			if kept[subtitle.sum] {
+		var distinct []int
+		for _, index := range group {
+			if kept[subtitles[index].sum] {
 				continue
 			}
-			kept[subtitle.sum] = true
+			kept[subtitles[index].sum] = true
 			keep[index] = true
-			if position == 0 {
-				continue
-			}
-			name := folderPrefix(subtitle.path) + subtitle.name
-			if name == subtitle.name || taken[strings.ToLower(name)] || len(name) > 255 {
-				extension := filepath.Ext(subtitle.name)
-				stem := strings.TrimSuffix(subtitle.name, extension)
-				for number := 2; ; number++ {
-					name = fmt.Sprintf("%s (%d)%s", stem, number, extension)
-					if !taken[strings.ToLower(name)] {
-						break
+			distinct = append(distinct, index)
+		}
+		if len(distinct) < 2 {
+			continue
+		}
+		folders := make([][]string, len(distinct))
+		for position, index := range distinct {
+			folders[position] = memberFolders(subtitles[index].path)
+		}
+		prefixes := distinguishingPrefixes(folders)
+		bareUsed := false
+		for position, index := range distinct {
+			subtitle := &subtitles[index]
+			name := prefixes[position] + subtitle.name
+			if prefixes[position] == "" || taken[strings.ToLower(name)] || len(name) > 255 {
+				name = subtitle.name
+				if bareUsed {
+					extension := filepath.Ext(subtitle.name)
+					stem := strings.TrimSuffix(subtitle.name, extension)
+					for number := 2; ; number++ {
+						name = fmt.Sprintf("%s (%d)%s", stem, number, extension)
+						if !taken[strings.ToLower(name)] {
+							break
+						}
 					}
 				}
+				bareUsed = true
 			}
 			// A name longer than filesystems allow could not be written; it is
 			// a content problem of this archive, not a reason to retry.
@@ -481,14 +496,48 @@ func assignMemberNames(subtitles []extractedMember) ([]extractedMember, error) {
 	return named, nil
 }
 
-// folderPrefix names a member's folder as a file-name prefix ("UTF/x.srt" ->
-// "UTF - "), so different subtitles that share a name stay apart.
-func folderPrefix(name string) string {
-	folder := filepath.Base(filepath.Dir(strings.ReplaceAll(name, `\`, "/")))
-	if folder == "." || folder == "/" || folder == "" {
-		return ""
+// memberFolders returns the folders of an archive path, outermost first
+// ("Show/Season 1/UTF/x.srt" -> Show, Season 1, UTF).
+func memberFolders(name string) []string {
+	var folders []string
+	for _, folder := range strings.Split(filepath.Dir(strings.ReplaceAll(name, `\`, "/")), "/") {
+		if folder != "." && folder != "" {
+			folders = append(folders, folder)
+		}
 	}
-	return folder + " - "
+	return folders
+}
+
+// distinguishingPrefixes names each member's folder as a file-name prefix
+// ("UTF - "), using the fewest trailing folders that give every member a
+// different (case-insensitive) prefix, or all folders when none do. A member
+// with no folder gets "".
+func distinguishingPrefixes(folders [][]string) []string {
+	depth := 0
+	for _, path := range folders {
+		depth = max(depth, len(path))
+	}
+	var prefixes []string
+	for count := 1; count <= depth; count++ {
+		prefixes = make([]string, len(folders))
+		seen := map[string]bool{}
+		unique := true
+		for position, path := range folders {
+			if len(path) > 0 {
+				prefixes[position] = strings.Join(path[max(0, len(path)-count):], " - ") + " - "
+			}
+			key := strings.ToLower(prefixes[position])
+			unique = unique && !seen[key]
+			seen[key] = true
+		}
+		if unique {
+			break
+		}
+	}
+	if prefixes == nil {
+		prefixes = make([]string, len(folders))
+	}
+	return prefixes
 }
 
 func isSubtitleExtension(name string) bool {

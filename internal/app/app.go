@@ -810,8 +810,19 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(&output, "candidate_rejections: %d\n", len(rejections))
+	// Rejections made under older selection or subtitle rules no longer count;
+	// they are left out of the list and only counted.
+	var active []store.CandidateRejection
 	for _, rejection := range rejections {
+		if workflow.RejectionActive(rejection) {
+			active = append(active, rejection)
+		}
+	}
+	fmt.Fprintf(&output, "candidate_rejections: %d\n", len(active))
+	if superseded := len(rejections) - len(active); superseded > 0 {
+		fmt.Fprintf(&output, "candidate_rejections_superseded: %d\n", superseded)
+	}
+	for _, rejection := range active {
 		fmt.Fprintf(&output, "  rejection: provider=%s result=%s reason=%s artifact=%s expires=never\n", rejection.ProviderID, rejection.ResultID, rejection.ReasonCode, rejection.ArtifactChecksum)
 	}
 	installation, installed, err := a.Repository.GetInstallation(ctx, mediaID, language)

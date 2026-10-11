@@ -92,9 +92,17 @@ func TestCompactEpisodeNumbersAreNotAnimeAbsoluteNumbers(t *testing.T) {
 		media domain.Media
 		want  bool
 	}{
-		// Absolute-numbered names in the anime convention.
-		{"[SubsPlease] One Piece - 607 (1080p).srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 150}, false},
+		// Absolute-numbered names in the anime convention, when the target's
+		// absolute number is unknown.
+		{"[SubsPlease] One Piece - 607 (1080p).srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7}, false},
 		{"One Piece - 607.srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7}, false},
+		// A site tag is not an anime group tag.
+		{"[TorrentCouch.com].Malcolm.in.the.Middle.607.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7}, true},
+		{"[www.Site] Show.607.srt", domain.Media{Title: "Show", Season: 6, Episode: 7}, true},
+		// A known absolute number decides alone; the name shape does not override it.
+		{"Malcolm in the Middle - 607 - Hal Coaches.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7, AbsoluteEpisode: 129}, true},
+		{"[TorrentCouch.com].Malcolm.in.the.Middle.607.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7, AbsoluteEpisode: 129}, true},
+		{"[SubsPlease] One Piece - 607 (1080p).srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 520}, false},
 		// Seasons that average 100 episodes or more: 607 is as likely absolute.
 		{"one.piece.607.srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 520}, false},
 		{"show.107.srt", domain.Media{Title: "Show", Season: 1, Episode: 7, AbsoluteEpisode: 12}, false},
@@ -115,9 +123,17 @@ func TestCompactEpisodeNumbersAreNotAnimeAbsoluteNumbers(t *testing.T) {
 	// A lone double-episode or absolute-numbered file is not a generic subtitle
 	// for the target either.
 	for _, name := range []string{"show.607-608.hdtv.srt", "[Group] Show - 607.srt"} {
-		media := domain.Media{Title: "Show", Season: 6, Episode: 7, AbsoluteEpisode: 130}
+		media := domain.Media{Title: "Show", Season: 6, Episode: 7}
 		if selected, err := SelectSingleEpisode(Manifest{Members: []Member{{SafeName: name}}}, domain.Candidate{}, media, false); err == nil {
 			t.Errorf("lone %q selected for S06E07: %+v", name, selected)
+		}
+	}
+	// Both reviewer examples select as compact_episode with a known absolute number.
+	for _, name := range []string{"Malcolm in the Middle - 607 - Hal Coaches.srt", "[TorrentCouch.com].Malcolm.in.the.Middle.607.srt"} {
+		media := domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7, AbsoluteEpisode: 129}
+		manifest := Manifest{Members: []Member{{SafeName: name, Checksum: "a"}, {SafeName: "Malcolm in the Middle - 608 - Other.srt", Checksum: "b"}}}
+		if selected, err := Select(manifest, domain.Candidate{Pack: &domain.PackInfo{Season: 6}}, media, false); err != nil || selected.SelectionRule != "compact_episode" {
+			t.Errorf("%q for S06E07 = %+v, %v; want compact_episode", name, selected, err)
 		}
 	}
 	media := domain.Media{Title: "Show", Season: 6, Episode: 7, AbsoluteEpisode: 607}
