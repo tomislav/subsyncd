@@ -33,6 +33,10 @@ func Reorder(text []byte, extension string, starts []time.Duration) ([]byte, err
 		bom = "\ufeff"
 		content = strings.TrimPrefix(content, bom)
 	}
+	// The final newline belongs to the file, not to the last record: keep it
+	// out of the records so a moved last record does not carry it along.
+	trailing := len(content) - len(strings.TrimRight(content, "\n"))
+	content = content[:len(content)-trailing]
 	extension = strings.ToLower(extension)
 	ssa := extension == ".ass" || extension == ".ssa"
 	var records []string
@@ -88,5 +92,5 @@ func Reorder(text []byte, extension string, starts []time.Duration) ([]byte, err
 		}
 		records[positions[i]] = record
 	}
-	return []byte(bom + strings.Join(records, separator)), nil
+	return []byte(bom + strings.Join(records, separator) + strings.Repeat("\n", trailing)), nil
 }

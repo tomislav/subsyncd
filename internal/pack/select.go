@@ -160,7 +160,9 @@ func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media do
 		}
 		return Member{}, err
 	}
-	if candidate.Pack == nil && len(members) == 1 && !hasInvalidOrAmbiguousRangeEvidence(members[0].SafeName) && !hasEpisodeEvidence(members[0].SafeName) {
+	// A skipped member may have been the archive's explicit evidence for the
+	// episode, so a generic survivor is not assumed to be it.
+	if candidate.Pack == nil && manifest.SkippedMembers == 0 && len(members) == 1 && !hasInvalidOrAmbiguousRangeEvidence(members[0].SafeName) && !hasEpisodeEvidence(members[0].SafeName) {
 		selected = members[0]
 		selected.SelectionRule = "single_generic"
 		selected.SelectionEvidence = "single subtitle member has no conflicting episode evidence"
@@ -595,8 +597,8 @@ func numberedEpisode(name string, season int) (int, bool) {
 }
 
 // numberedEpisodeMatches returns the members numbered as the target episode,
-// or nil when fewer than two members follow a numbering scheme: a lone
-// "Part 2" is not evidence of a numbered set.
+// or nil when fewer than three members follow a numbering scheme: a lone
+// "Part 2", or the two halves of a two-part episode, are not a numbered set.
 func numberedEpisodeMatches(members []Member, media domain.Media) []Member {
 	numbered := 0
 	var matches []Member
@@ -610,7 +612,7 @@ func numberedEpisodeMatches(members []Member, media domain.Media) []Member {
 			matches = append(matches, member)
 		}
 	}
-	if numbered < 2 {
+	if numbered < 3 {
 		return nil
 	}
 	return matches

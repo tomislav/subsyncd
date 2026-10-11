@@ -405,10 +405,17 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 		return nil, "", fmt.Errorf("subtitle contains too many cues")
 	}
 	starts := make([]time.Duration, 0, len(subtitles.Items))
+	var latest time.Duration
 	for _, item := range subtitles.Items {
 		if item.StartAt < 0 || item.EndAt < item.StartAt {
 			return nil, "", fmt.Errorf("subtitle timestamps are invalid")
 		}
+		// Overlapping lines are a few seconds apart; a cue minutes earlier
+		// than one before it is a timing typo that sorting would misplace.
+		if item.StartAt < latest-maximumCueDisorder {
+			return nil, "", fmt.Errorf("subtitle has a cue far out of order")
+		}
+		latest = max(latest, item.StartAt)
 		starts = append(starts, item.StartAt)
 	}
 	// Uploads often carry a few overlapping or misplaced cues; put them in
@@ -419,6 +426,10 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 	}
 	return ordered, extension, nil
 }
+
+// maximumCueDisorder is how far a cue may start before an earlier one and
+// still be put in order.
+const maximumCueDisorder = 10 * time.Second
 
 // macOSMetadata reports archive entries macOS adds beside real files: the
 // __MACOSX folder and AppleDouble "._name" resource forks, which carry a

@@ -45,15 +45,15 @@ func TestSelectNumberedEpisodesOfASingleSeason(t *testing.T) {
 }
 
 func TestSelectNumberedEpisodesStaysStrict(t *testing.T) {
-	parts := []Member{{SafeName: "Show.Part.1.srt"}, {SafeName: "Show.Part.2.srt"}}
+	parts := []Member{{SafeName: "Show.Part.1.srt"}, {SafeName: "Show.Part.2.srt"}, {SafeName: "Show.Part.3.srt"}}
 	if _, err := Select(Manifest{Members: parts}, domain.Candidate{}, domain.Media{Season: 2, Episode: 2}, false); err == nil {
 		t.Fatal("a Part number was taken as an episode outside season 1")
 	}
-	lone := []Member{{SafeName: "Show.Part.2.srt"}}
+	lone := []Member{{SafeName: "Show.Part.1.srt"}, {SafeName: "Show.Part.2.srt"}}
 	if _, err := Select(Manifest{Members: lone}, domain.Candidate{}, domain.Media{Season: 1, Episode: 2}, false); err == nil {
 		t.Fatal("a lone numbered file was taken as a numbered set")
 	}
-	wrongSeason := []Member{{SafeName: "2-01 Show - One.srt"}, {SafeName: "2-02 Show - Two.srt"}}
+	wrongSeason := []Member{{SafeName: "2-01 Show - One.srt"}, {SafeName: "2-02 Show - Two.srt"}, {SafeName: "2-03 Show - Three.srt"}}
 	if _, err := Select(Manifest{Members: wrongSeason}, domain.Candidate{}, domain.Media{Season: 1, Episode: 2}, false); err == nil {
 		t.Fatal("a 2-02 prefix was taken as season 1")
 	}
@@ -61,5 +61,12 @@ func TestSelectNumberedEpisodesStaysStrict(t *testing.T) {
 	selected, err := Select(Manifest{Members: tokens}, domain.Candidate{}, domain.Media{Season: 1, Episode: 2}, false)
 	if err != nil || selected.SafeName != "Show.S01E02.Part.1.srt" {
 		t.Fatalf("Select() = %#v, %v; an explicit SxxEyy token must win over a Part number", selected, err)
+	}
+}
+
+func TestSelectNumberedEpisodesNeedsAtLeastThreeNumberedFiles(t *testing.T) {
+	twoParts := []Member{{SafeName: "Show - Pilot Part 1.srt"}, {SafeName: "Show - Pilot Part 2.srt"}}
+	if _, err := Select(Manifest{Members: twoParts}, domain.Candidate{}, domain.Media{Season: 1, Episode: 2}, false); err == nil {
+		t.Fatal("the halves of a two-part episode were taken as episodes 1 and 2")
 	}
 }

@@ -90,3 +90,22 @@ func TestExtractStillRejectsInvalidCueTimes(t *testing.T) {
 		t.Fatalf("error = %T %v; want a content rejection", err, err)
 	}
 }
+
+func TestExtractRejectsACueFarOutOfPlace(t *testing.T) {
+	typo := "1\n00:19:58,000 --> 00:19:59,000\nBefore\n\n2\n00:01:59,000 --> 00:02:00,000\nTypo for 00:19:59\n\n3\n00:20:01,000 --> 00:20:02,000\nAfter\n"
+	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E08.srt", body: typo}})
+	var content *ContentError
+	if !errors.As(err, &content) {
+		t.Fatalf("error = %T %v; a cue minutes out of place is a broken subtitle, not overlap", err, err)
+	}
+}
+
+func TestSkippedMemberDoesNotPromoteAGenericSibling(t *testing.T) {
+	manifest, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E05.srt", body: "\x00\x01binary"}, {name: "subs.srt", body: validSRT}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SelectSingleEpisode(manifest, domain.Candidate{}, domain.Media{Season: 1, Episode: 5}, false); err == nil {
+		t.Fatal("a generic file was accepted after the archive's explicit S01E05 file was skipped")
+	}
+}

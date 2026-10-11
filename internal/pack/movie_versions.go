@@ -1,24 +1,23 @@
 package pack
 
 import (
-	"regexp"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/match"
 )
-
-// discLabel matches disc markers such as "CD1", "CD01", "(CD 2)", "2cd" or
-// "Disc 1". A film split across discs needs every part, so it is refused.
-var discLabel = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:cd ?0?[1-9]|[2-9] ?cds?|dis[ck] ?0?[1-9])(?:[^a-z0-9]|$)`)
 
 // extraWords mark subtitles for bonus material shipped beside the film.
 var extraWords = map[string]bool{"commentary": true, "trailer": true, "featurette": true, "featurettes": true, "extras": true, "bonus": true, "short": true, "shorts": true}
 
 // languageWords map explicit language tags in a file name to a language. Only
 // unambiguous tags are listed: two-letter codes such as "es" collide with
-// release text ("DTS-ES").
+// release text ("DTS-ES"). The listed two-letter codes count only when written
+// in capitals ("Movie.HR.srt") or placed just before the extension
+// ("Movie.hr.srt"), since a lower-case "en" is often a title word.
 var languageWords = map[string]domain.Language{
 	"en": "en", "eng": "en", "english": "en",
 	"hr": "hr", "hrv": "hr", "cro": "hr", "croatian": "hr", "hrvatski": "hr",
@@ -41,6 +40,12 @@ func SelectMovieAlternatives(manifest Manifest, candidate domain.Candidate, want
 		titleWords[word] = true
 	}
 	members = preferWhere(members, func(member Member) bool { return !isExtra(member.SafeName, titleWords) })
+	// Files tagged with the requested language beat untagged ones, which
+	// in turn beat files tagged with another language.
+	members = preferWhere(members, func(member Member) bool {
+		language, tagged := languageTag(member.SafeName, titleWords)
+		return tagged && language == candidate.Language
+	})
 	members = preferWhere(members, func(member Member) bool {
 		language, tagged := languageTag(member.SafeName, titleWords)
 		return !tagged || language == candidate.Language
@@ -54,7 +59,7 @@ func SelectMovieAlternatives(manifest Manifest, candidate domain.Candidate, want
 		seen[member.Checksum] = true
 		unique = append(unique, member)
 	}
-	if slices.ContainsFunc(unique, func(member Member) bool { return discLabel.MatchString(member.SafeName) }) {
+	if slices.ContainsFunc(unique, func(member Member) bool { return match.IsMultiDisc(member.SafeName) }) {
 		return nil, selectionError(manifest, "single_movie", len(unique), "movie subtitle is split across discs")
 	}
 	if candidate.ExactHash && len(unique) > 1 {
@@ -102,10 +107,18 @@ func isExtra(name string, titleWords map[string]bool) bool {
 }
 
 func languageTag(name string, titleWords map[string]bool) (domain.Language, bool) {
-	for _, word := range nameWords(name) {
-		if language, found := languageWords[word]; found && !titleWords[word] {
-			return language, true
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	words := strings.FieldsFunc(stem, func(r rune) bool { return !unicode.IsLetter(r) })
+	for index, word := range words {
+		lower := strings.ToLower(word)
+		language, found := languageWords[lower]
+		if !found || titleWords[lower] {
+			continue
 		}
+		if len(word) == 2 && word != strings.ToUpper(word) && index != len(words)-1 {
+			continue
+		}
+		return language, true
 	}
 	return "", false
 }

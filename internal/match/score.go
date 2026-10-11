@@ -243,9 +243,15 @@ func identityRejections(media domain.Media, candidate domain.Candidate, requeste
 	return reasons
 }
 
-// multiDiscLabel matches disc markers such as "CD1", "(CD 2)", "-CD1", "2cd"
-// or "2CDs" as whole tokens, never "CDDHD" or "CDR".
-var multiDiscLabel = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:cd ?[1-9]|[2-9] ?cds?)(?:[^a-z0-9]|$)`)
+// multiDiscLabel matches disc markers such as "CD1", "CD01", "(CD 2)", "-CD1",
+// "2cd" or "2CDs" as whole tokens, never "CDDHD" or "CDR".
+var multiDiscLabel = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:cd ?0?[1-9]|[2-9] ?cds?)(?:[^a-z0-9]|$)`)
+
+// IsMultiDisc reports whether a release or file name marks one disc of a
+// multi-disc rip.
+func IsMultiDisc(name string) bool {
+	return multiDiscLabel.MatchString(name)
+}
 
 func HasMatchingEdition(media domain.Media, candidate domain.Candidate) bool {
 	if normalizeEdition(media.Edition, "", false, false) == "" && editionVariants(media.Edition) == 0 {

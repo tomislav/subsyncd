@@ -70,3 +70,23 @@ func TestSelectMovieAlternativesRejectsDiscSplits(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectMovieAlternativesDropsUntaggedFilesWhenATagMatches(t *testing.T) {
+	members, err := SelectMovieAlternatives(movieManifest("Movie.EN.srt", "Movie.srt"), domain.Candidate{Title: "Movie", Language: "en"}, false)
+	if err != nil || selectedNames(members) != "Movie.EN.srt" {
+		t.Fatalf("members = %v, %v; an untagged file must not compete with one tagged for the requested language", selectedNames(members), err)
+	}
+}
+
+func TestSelectMovieAlternativesReadsTwoLetterCodesOnlyAsTags(t *testing.T) {
+	manifest := movieManifest("Un.Homme.en.Colere.2021.DVDRip.srt", "Un.Homme.en.Colere.2021.BDRip.srt")
+	members, err := SelectMovieAlternatives(manifest, domain.Candidate{Title: "Un homme en colere", Language: "hr"}, false)
+	if err != nil || len(members) != 2 {
+		t.Fatalf("members = %v, %v; a lower-case word inside the title is not a language tag", selectedNames(members), err)
+	}
+	for name, want := range map[string]bool{"Movie.HR.srt": true, "Movie.hr.srt": true, "Movie.en.Colere.srt": false} {
+		if _, tagged := languageTag(name, nil); tagged != want {
+			t.Errorf("languageTag(%q) tagged = %v, want %v", name, tagged, want)
+		}
+	}
+}
