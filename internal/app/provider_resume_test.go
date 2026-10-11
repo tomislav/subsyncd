@@ -68,7 +68,8 @@ func newResumeTestApp(t *testing.T, count int, languages ...domain.Language) res
 		id := fmt.Sprintf("p%d", i)
 		p := &resumeTestProvider{fakeProvider: fakeProvider{id: id}, clock: clock}
 		if i == 0 {
-			p.reset = clock.Now().Add(8 * time.Hour)
+			// Inside the six-hour life of the saved progress.
+			p.reset = clock.Now().Add(5 * time.Hour)
 		}
 		cfg.Providers[id], supplied[id] = providerSpec, p
 		providers, order = append(providers, p), append(order, id)
@@ -135,7 +136,7 @@ func TestProviderResumeAcceptsTenProviderRoute(t *testing.T) {
 	if !slices.Equal(ids, []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"}) || signature == "" {
 		t.Fatalf("resume = %v/%q", ids, signature)
 	}
-	h.clock.Advance(8 * time.Hour)
+	h.clock.Advance(5 * time.Hour)
 	h.run(t)
 	for i, p := range h.providers {
 		want := int64(1)
@@ -152,6 +153,24 @@ func TestProviderResumeAcceptsTenProviderRoute(t *testing.T) {
 	}
 	if ids, signature := h.resume(t, "en"); len(ids) != 0 || signature != "" {
 		t.Fatalf("completed resume = %v/%q", ids, signature)
+	}
+}
+
+func TestProviderResumeExpiresWithSearchCache(t *testing.T) {
+	h := newResumeTestApp(t, 3, "en")
+	h.providers[0].reset = h.clock.Now().Add(8 * time.Hour)
+	h.run(t)
+	if ids, _ := h.resume(t, "en"); !slices.Equal(ids, []string{"p1", "p2"}) {
+		t.Fatalf("resume = %v", ids)
+	}
+	// The cooldown outlasts the six-hour search cache, so the providers that
+	// answered clean-empty are asked again instead of skipped on stale answers.
+	h.clock.Advance(8 * time.Hour)
+	h.run(t)
+	for _, p := range h.providers {
+		if got := p.calls.Load(); got != 2 {
+			t.Errorf("%s calls = %d, want 2", p.id, got)
+		}
 	}
 }
 
@@ -188,7 +207,7 @@ func TestProviderResumeInvalidatesLiveReplacementAcrossLanguages(t *testing.T) {
 
 func TestProviderResumeProgressesTwoThrottledProviders(t *testing.T) {
 	h := newResumeTestApp(t, 3, "en")
-	h.providers[1].reset = h.clock.Now().Add(16 * time.Hour)
+	h.providers[1].reset = h.clock.Now().Add(5*time.Hour + 30*time.Minute)
 	for _, step := range []struct {
 		advance     time.Duration
 		wantIDs     []string
@@ -196,8 +215,8 @@ func TestProviderResumeProgressesTwoThrottledProviders(t *testing.T) {
 		wantOutcome string
 	}{
 		{0, []string{"p2"}, []int64{1, 1, 1}, "throttled"},
-		{8 * time.Hour, []string{"p0", "p2"}, []int64{2, 2, 1}, "throttled"},
-		{8 * time.Hour, nil, []int64{2, 3, 1}, "no_result"},
+		{5 * time.Hour, []string{"p0", "p2"}, []int64{2, 2, 1}, "throttled"},
+		{30 * time.Minute, nil, []int64{2, 3, 1}, "no_result"},
 	} {
 		h.clock.Advance(step.advance)
 		h.run(t)
@@ -222,7 +241,7 @@ func TestProviderResumeProgressesTwoThrottledProviders(t *testing.T) {
 func TestProviderResumeRemainingTechnicalFailureKeepsProgress(t *testing.T) {
 	h := newResumeTestApp(t, 3, "en")
 	h.run(t)
-	h.clock.Advance(8 * time.Hour)
+	h.clock.Advance(5 * time.Hour)
 	h.providers[0].err = errors.New("local fake provider failure")
 	if err := h.app.Worker.(*worker.Worker).RunOnce(t.Context()); err == nil {
 		t.Fatal("remaining provider technical failure returned success")

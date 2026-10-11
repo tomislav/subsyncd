@@ -34,9 +34,10 @@ func ScanSidecars(mediaPath string, ownership map[domain.Language]OwnedSidecar) 
 	}
 	var tracks []Track
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if entry.IsDir() {
 			continue
 		}
+		symlink := entry.Type()&os.ModeSymlink != 0
 		extension := strings.ToLower(filepath.Ext(entry.Name()))
 		if _, ok := supportedSidecarExtensions[extension]; !ok {
 			continue
@@ -50,13 +51,21 @@ func ScanSidecars(mediaPath string, ownership map[domain.Language]OwnedSidecar) 
 			continue
 		}
 		path := filepath.Join(directory, entry.Name())
+		if symlink {
+			// A symlinked sidecar is the user's: it satisfies its language
+			// and is never written or removed through, so the search stops
+			// before any download. A dangling link is not a subtitle.
+			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+		}
 		checksum, err := checksumFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("checksum sidecar: %w", observability.PathErrorCause(err))
 		}
 		owned, managed := ownership[language]
-		protected := !managed || filepath.Clean(owned.Path) != filepath.Clean(path) || owned.Checksum != checksum
-		tracks = append(tracks, Track{Path: path, Language: language, Codec: strings.TrimPrefix(extension, "."), Forced: forced, SDH: sdh, Protected: protected, Checksum: checksum})
+		protected := symlink || !managed || filepath.Clean(owned.Path) != filepath.Clean(path) || owned.Checksum != checksum
+		tracks = append(tracks, Track{Path: path, Language: language, Codec: strings.TrimPrefix(extension, "."), Forced: forced, SDH: sdh, Protected: protected, Symlink: symlink, Checksum: checksum})
 	}
 	return tracks, nil
 }

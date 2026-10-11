@@ -9,12 +9,16 @@ import (
 	"strings"
 
 	"subsyncd/internal/config"
+	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 )
 
 var ErrOutsideScope = errors.New("media is outside configured scope")
 
 var errMappedPathUnavailable = errors.New("mapped media path is unavailable")
+
+// lstat is os.Lstat; tests replace it to simulate failing mounts.
+var lstat = os.Lstat
 
 func IsOutsideScope(err error) bool {
 	return errors.Is(err, ErrOutsideScope)
@@ -63,6 +67,9 @@ func MapPath(remote string, mappings []config.PathMapping, mediaRoots []string) 
 	for _, root := range mediaRoots {
 		resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
 		if err != nil {
+			if domain.MountUnavailable(err) {
+				return "", fmt.Errorf("%w: resolve media root: %v", errMappedPathUnavailable, observability.PathErrorCause(err))
+			}
 			return "", fmt.Errorf("resolve media root %q: %w", root, err)
 		}
 		if pathContained(resolvedRoot, resolved) {
@@ -90,11 +97,11 @@ func resolveExistingParents(path string) (string, error) {
 	current := filepath.Clean(path)
 	var missing []string
 	for {
-		_, err := os.Lstat(current)
+		_, err := lstat(current)
 		if err == nil {
 			resolved, err := filepath.EvalSymlinks(current)
 			if err != nil {
-				if os.IsNotExist(err) {
+				if os.IsNotExist(err) || domain.MountUnavailable(err) {
 					return "", fmt.Errorf("%w: resolve mapped path: %v", errMappedPathUnavailable, observability.PathErrorCause(err))
 				}
 				return "", fmt.Errorf("resolve mapped path: %w", observability.PathErrorCause(err))
@@ -103,6 +110,12 @@ func resolveExistingParents(path string) (string, error) {
 				resolved = filepath.Join(resolved, missing[i])
 			}
 			return filepath.Clean(resolved), nil
+		}
+		if domain.MountUnavailable(err) {
+			// A crashed or stale mount is storage that is down, like a
+			// dropped one: the media waits rather than failing or being
+			// treated as removed.
+			return "", fmt.Errorf("%w: inspect mapped path: %v", errMappedPathUnavailable, observability.PathErrorCause(err))
 		}
 		if !os.IsNotExist(err) {
 			return "", fmt.Errorf("inspect mapped path: %w", observability.PathErrorCause(err))

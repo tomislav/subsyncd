@@ -142,7 +142,7 @@ func TestTitleFallbackDoesNotInventIDs(t *testing.T) {
 }
 
 func TestCooldownPersistsAndStopsFurtherRequests(t *testing.T) {
-	for _, status := range []int{423, 429, 503} {
+	for _, status := range []int{429, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			count := 0
 			c, repo := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -199,8 +199,8 @@ func TestDownloadRejectsUnsafeIDsRedirectsAndOversize(t *testing.T) {
 	}
 }
 
-func TestHeaderlessBusyAndRateLimitHaveFiniteRetry(t *testing.T) {
-	for _, status := range []int{423, 429} {
+func TestHeaderlessRateLimitHasFiniteRetry(t *testing.T) {
+	for _, status := range []int{429} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) })
 			now := time.Now()
@@ -263,5 +263,32 @@ func TestServerExtractedEpisodeIDMustMatchReturnedEpisode(t *testing.T) {
 				t.Fatal("incorrect downloaded episode")
 			}
 		})
+	}
+}
+
+func TestLockedIsATemporaryFailureNotAProviderCooldown(t *testing.T) {
+	count := 0
+	c, repo := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		count++
+		w.WriteHeader(http.StatusLocked)
+	})
+	_, err := c.Download(context.Background(), domain.Candidate{ProviderID: c.ID(), ResultID: subtitleID}, io.Discard)
+	var cooldown *base.CooldownError
+	if !errors.Is(err, ErrNotReady) || errors.As(err, &cooldown) {
+		t.Fatalf("download error = %v, want a temporary candidate failure", err)
+	}
+	if _, err := c.Search(context.Background(), query()); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("search error = %v", err)
+	}
+	for _, scope := range []string{"search", "download"} {
+		if state, err := repo.GetProviderState(context.Background(), "gestdown-test", scope); err == nil && state.ResetAt.After(time.Now()) {
+			t.Fatalf("423 persisted a %s cooldown: %+v", scope, state)
+		}
+	}
+	if err := c.CheckDownloadAvailability(context.Background()); err != nil {
+		t.Fatalf("provider unavailable after 423: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("requests = %d", count)
 	}
 }

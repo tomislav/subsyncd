@@ -194,8 +194,21 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	committedFile := false
 	published := checksumBytes(payload)
+	pendingID, err := i.beginPendingInstall(ctx, store.PendingInstall{MediaID: request.MediaID, Language: request.Language.String(), Destination: destination, Checksum: published, StagedPath: stagedPath, RollbackPath: rollbackPath})
+	if err != nil {
+		if rollbackPath != "" {
+			_ = os.Remove(rollbackPath)
+		}
+		return failStaging(err)
+	}
 	restore := func(cause error) (store.Installation, error) {
 		restoreErrors := []error{cause}
+		defer func() {
+			// Undone completely: nothing is left for the startup sweep.
+			if len(restoreErrors) == 1 {
+				i.finishPendingInstall(ctx, pendingID)
+			}
+		}()
 		if committedFile && !destinationHolds(destination, published) {
 			// A run abandoned while publishing can fail its database write
 			// long after; another run may have installed a newer subtitle
@@ -208,20 +221,20 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 				if removeErr := os.Remove(destination); removeErr != nil {
 					restoreErrors = append(restoreErrors, fmt.Errorf("remove newly published subtitle: %w", removeErr))
 				} else if syncErr := syncDirectory(parent); syncErr != nil {
-					restoreErrors = append(restoreErrors, fmt.Errorf("sync subtitle directory after rollback: %w", syncErr))
+					restoreErrors = append(restoreErrors, fmt.Errorf("after removing newly published subtitle: %w", syncErr))
 				}
 			} else if renameErr := os.Rename(rollbackPath, destination); renameErr != nil {
 				restoreErrors = append(restoreErrors, fmt.Errorf("restore previous subtitle: %w", renameErr))
 			} else {
 				rollbackPath = ""
 				if syncErr := syncDirectory(parent); syncErr != nil {
-					restoreErrors = append(restoreErrors, fmt.Errorf("sync subtitle directory after rollback: %w", syncErr))
+					restoreErrors = append(restoreErrors, fmt.Errorf("after restoring previous subtitle: %w", syncErr))
 				}
 			}
 		}
 		if rollbackPath != "" && !committedFile {
 			if removeErr := os.Remove(rollbackPath); removeErr != nil {
-				restoreErrors = append(restoreErrors, fmt.Errorf("remove unused rollback subtitle: %w", removeErr))
+				restoreErrors = append(restoreErrors, fmt.Errorf("remove rollback copy of previous subtitle: %w", removeErr))
 			}
 		}
 		_ = os.Remove(stagedPath)
@@ -261,11 +274,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	fingerprint := request.Media.Fingerprint
 	installation := store.Installation{Fallback: request.Fallback, MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: published, ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
-	now := time.Now().UTC()
-	if i.Now != nil {
-		now = i.Now()
-	}
-	requests, err := notificationRequests(request.Media, installation, i.NotifierNames, now)
+	requests, err := notificationRequests(request.Media, installation, i.NotifierNames, i.now())
 	if err != nil {
 		return restore(err)
 	}
@@ -276,6 +285,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err != nil {
 		return restore(fmt.Errorf("record installed subtitle: %w", err))
 	}
+	i.finishPendingInstall(ctx, pendingID)
 	i.logEnqueuedNotifications(ctx, enqueued)
 	if found && existing.RollbackPath != "" && filepath.Clean(existing.RollbackPath) != filepath.Clean(rollbackPath) {
 		if err := i.inject(StageCleanup); err == nil {

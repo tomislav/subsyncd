@@ -17,6 +17,10 @@ import (
 var (
 	ErrIgnoredEvent   = errors.New("ignored Arr event")
 	ErrInvalidWebhook = errors.New("invalid Arr webhook")
+	// errUnsupportedEvent is an Arr event subsyncd has no use for (grab,
+	// health, series added, ...): it is ignored, not rejected, so Arr does not
+	// report a failing connection for events it is configured to send.
+	errUnsupportedEvent = errors.New("unsupported Arr event")
 )
 
 type webhookEntity struct {
@@ -74,6 +78,9 @@ func NormalizeWebhook(instance, instanceType string, body []byte) ([]WebhookEven
 	}
 
 	kind, files, eventType, err := webhookFiles(instanceType, payload)
+	if errors.Is(err, errUnsupportedEvent) {
+		return nil, ErrIgnoredEvent
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidWebhook, err)
 	}
@@ -135,7 +142,7 @@ func webhookFiles(instanceType string, payload webhookPayload) (domain.MediaKind
 	default:
 		return "", nil, "", fmt.Errorf("unknown Arr instance type %q", instanceType)
 	}
-	return "", nil, "", fmt.Errorf("unsupported %s webhook event %q", instanceType, payload.EventType)
+	return "", nil, "", errUnsupportedEvent
 }
 
 func stableEventID(instance, eventType string, kind domain.MediaKind, file webhookFile, upgrade bool) string {
@@ -151,6 +158,8 @@ type MediaEventStore interface {
 type WebhookResult struct {
 	EventCount   int
 	AppliedCount int
+	// Queued reports a webhook accepted for asynchronous processing.
+	Queued bool
 }
 
 // WebhookHandler normalizes an Arr payload, hydrates current media metadata for
@@ -166,6 +175,12 @@ type WebhookHandler struct {
 }
 
 func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult, error) {
+	return h.HandleAt(ctx, body, h.Now())
+}
+
+// HandleAt applies a webhook received at receivedAt. The receipt time dates
+// its changes, so a delete received later wins over a retried import.
+func (h WebhookHandler) HandleAt(ctx context.Context, body []byte, receivedAt time.Time) (WebhookResult, error) {
 	events, err := NormalizeWebhook(h.Instance, h.InstanceType, body)
 	if err != nil {
 		return WebhookResult{}, err
@@ -178,7 +193,7 @@ func (h WebhookHandler) Handle(ctx context.Context, body []byte) (WebhookResult,
 			h.OnApplied()
 		}
 	}()
-	now := h.Now().UTC()
+	now := receivedAt.UTC()
 	for _, event := range events {
 		committed, err := h.Store.HasAppliedMediaEvent(ctx, event.EventID)
 		if err != nil {

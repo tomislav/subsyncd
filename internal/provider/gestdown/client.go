@@ -2,6 +2,7 @@ package gestdown
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,11 @@ import (
 	"subsyncd/internal/match"
 	base "subsyncd/internal/provider"
 )
+
+// ErrNotReady is Gestdown's HTTP 423: the show is being refreshed or the
+// subtitle prepared. It is a temporary failure of one search or candidate,
+// never a provider cooldown.
+var ErrNotReady = errors.New("Gestdown is still preparing this subtitle (HTTP 423)")
 
 type Client struct {
 	id        string
@@ -226,21 +232,24 @@ func (c *Client) request(ctx context.Context, operation base.Operation, path str
 		}
 		return nil, err
 	}
-	if response.StatusCode == http.StatusLocked || response.StatusCode == http.StatusTooManyRequests {
+	if response.StatusCode == http.StatusLocked {
+		// Gestdown is still fetching this show's subtitles or preparing this
+		// one. Only this search or candidate waits, on the technical retry
+		// schedule; the provider stays available for everything else.
+		response.Body.Close()
+		return nil, ErrNotReady
+	}
+	if response.StatusCode == http.StatusTooManyRequests {
 		response.Body.Close()
 		reset := c.transport.Clock.Now().Add(5 * time.Minute)
 		if window, found := base.ParseRateLimit(c.transport.Clock.Now(), response.Header); found && window.Remaining <= 0 {
 			reset = window.ResetAt
 		}
-		reason := base.CooldownServiceBusy
-		if response.StatusCode == http.StatusTooManyRequests {
-			reason = base.CooldownRateLimit
-		}
-		reset, err := c.transport.PersistCooldown(ctx, operation, reason, reset)
+		reset, err := c.transport.PersistCooldown(ctx, operation, base.CooldownRateLimit, reset)
 		if err != nil {
 			return nil, err
 		}
-		return nil, &base.CooldownError{ProviderID: c.id, Scope: operation, Reason: string(reason), ResetAt: reset}
+		return nil, &base.CooldownError{ProviderID: c.id, Scope: operation, Reason: string(base.CooldownRateLimit), ResetAt: reset}
 	}
 	return response, nil
 }

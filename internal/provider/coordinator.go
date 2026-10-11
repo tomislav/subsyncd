@@ -444,9 +444,19 @@ func stripCandidateQuery(raw string) string {
 	return parsed.String()
 }
 
+// providerCacheKey identifies one provider search. Besides the file it covers
+// every identity a provider searches by (kind, external IDs, title, year,
+// season, episode and range, absolute numbering), so a corrected Arr identity
+// is searched afresh instead of reusing results for the old one.
 func providerCacheKey(providerID string, query SearchQuery) string {
-	fingerprint := query.Media.Fingerprint
-	raw := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s\x00%d\x00%d", normalizedCandidateCacheVersion, providerID, query.Mode, query.Language, query.Media.Ref.Instance, query.Media.Ref.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), query.Media.ReleaseName, query.Media.Season, query.Media.Episode)
-	sum := sha256.Sum256([]byte(raw))
+	media := query.Media
+	fingerprint := media.Fingerprint
+	raw, _ := json.Marshal([]any{
+		normalizedCandidateCacheVersion, providerID, query.Mode, query.Language,
+		media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), media.ReleaseName,
+		media.Title, media.Year, media.ExternalIDs.IMDb, media.ExternalIDs.TMDB, media.ExternalIDs.TVDB,
+		media.Season, media.Episode, media.EpisodeEnd, media.AbsoluteEpisode, media.AbsoluteEpisodeEnd,
+	})
+	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }

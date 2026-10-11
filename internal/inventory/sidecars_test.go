@@ -61,25 +61,40 @@ func TestScanSidecarsRecognizesLanguagesVariantsAndOwnership(t *testing.T) {
 	}
 }
 
-func TestScanSidecarsProtectsChangedManagedFileAndSkipsSymlink(t *testing.T) {
+func TestScanSidecarsProtectsChangedManagedFileAndSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions vary on Windows")
 	}
 	dir := t.TempDir()
 	media := filepath.Join(dir, "Show.mkv")
 	changed := filepath.Join(dir, "Show.en.srt")
+	linked := filepath.Join(dir, "Show.hr.srt")
 	writeTestFile(t, media, "video")
 	writeTestFile(t, changed, "changed")
-	if err := os.Symlink(changed, filepath.Join(dir, "Show.hr.srt")); err != nil {
+	if err := os.Symlink(changed, linked); err != nil {
 		t.Fatal(err)
 	}
-	tracks, err := ScanSidecars(media, map[domain.Language]OwnedSidecar{"en": {Path: changed, Checksum: "old-checksum"}})
+	if err := os.Symlink(filepath.Join(dir, "missing.srt"), filepath.Join(dir, "Show.de.srt")); err != nil {
+		t.Fatal(err)
+	}
+	// Even a link whose path and checksum match a managed install stays
+	// protected: replacing it would write through the link.
+	tracks, err := ScanSidecars(media, map[domain.Language]OwnedSidecar{"en": {Path: changed, Checksum: "old-checksum"}, "hr": {Path: linked, Checksum: checksumOf(t, changed)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tracks) != 1 || !tracks[0].Protected {
-		t.Fatalf("tracks = %#v, want one protected changed file", tracks)
+	if len(tracks) != 2 || !tracks[0].Protected || !tracks[1].Protected || tracks[0].Symlink || !tracks[1].Symlink || tracks[1].Language != "hr" {
+		t.Fatalf("tracks = %#v, want the changed file and the symlink, both protected, and no dangling link", tracks)
 	}
+}
+
+func checksumOf(t *testing.T, path string) string {
+	t.Helper()
+	checksum, err := checksumFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return checksum
 }
 
 func writeTestFile(t *testing.T, path, body string) {

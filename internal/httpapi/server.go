@@ -122,6 +122,10 @@ func (s Server) webhook(response http.ResponseWriter, request *http.Request) {
 		slog.String("instance", name), slog.Int("body_bytes", len(body)), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
 	result, err := instance.Handler.Handle(request.Context(), body)
 	switch {
+	case err == nil && result.Queued:
+		s.log(request, slog.LevelInfo, "webhook.queued", "webhook stored for processing",
+			slog.String("instance", name), slog.Int("event_count", result.EventCount), slog.Int("status", http.StatusAccepted), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+		response.WriteHeader(http.StatusAccepted)
 	case err == nil:
 		outcome := "applied"
 		if result.AppliedCount == 0 {

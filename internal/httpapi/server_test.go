@@ -99,17 +99,19 @@ func TestWebhookBodyAndJSONValidation(t *testing.T) {
 
 func TestWebhookStatusMapping(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		err  error
-		want int
+		name   string
+		result catalog.WebhookResult
+		err    error
+		want   int
 	}{
-		{"test event", catalog.ErrIgnoredEvent, http.StatusNoContent},
-		{"invalid event", ErrInvalidWebhook, http.StatusBadRequest},
-		{"dependency failure", errors.New("arr unavailable"), http.StatusServiceUnavailable},
+		{"test event", catalog.WebhookResult{}, catalog.ErrIgnoredEvent, http.StatusNoContent},
+		{"invalid event", catalog.WebhookResult{}, ErrInvalidWebhook, http.StatusBadRequest},
+		{"dependency failure", catalog.WebhookResult{}, errors.New("arr unavailable"), http.StatusServiceUnavailable},
+		{"queued", catalog.WebhookResult{EventCount: 1, Queued: true}, nil, http.StatusAccepted},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := Server{Instances: map[string]Instance{"main": {Token: "secret", Handler: webhookFunc(func(context.Context, []byte) (catalog.WebhookResult, error) {
-				return catalog.WebhookResult{}, test.err
+				return test.result, test.err
 			})}}}
 			response := httptest.NewRecorder()
 			server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/webhooks/main?token=secret", strings.NewReader(`{"eventType":"Download"}`)))

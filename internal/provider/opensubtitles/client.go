@@ -472,6 +472,8 @@ func normalizeCandidates(providerID string, query baseprovider.SearchQuery, item
 type downloadResponse struct {
 	Link         string `json:"link"`
 	FileName     string `json:"file_name"`
+	Message      string `json:"message"`
+	Remaining    *int64 `json:"remaining"`
 	ResetTimeUTC string `json:"reset_time_utc"`
 }
 
@@ -528,6 +530,14 @@ func (c *Client) requestDownloadLink(ctx context.Context, fileID int64, allowRef
 	response, err := c.transport.Do(ctx, baseprovider.OperationDownload, request)
 	if err != nil {
 		if response != nil {
+			// A 429 that names the download quota is the daily quota, not a
+			// one-minute rate limit.
+			if response.StatusCode == http.StatusTooManyRequests {
+				if quotaErr := c.quotaRefusal(ctx, response); quotaErr != nil {
+					response.Body.Close()
+					return downloadResponse{}, quotaErr
+				}
+			}
 			response.Body.Close()
 		}
 		if _, unauthorized := err.(*baseprovider.AuthenticationError); unauthorized && allowRefresh {
@@ -544,33 +554,69 @@ func (c *Client) requestDownloadLink(ctx context.Context, fileID int64, allowRef
 		return downloadResponse{}, err
 	}
 	defer response.Body.Close()
-	var decoded downloadResponse
-	if response.StatusCode == http.StatusNotAcceptable {
-		_ = decodeLimitedJSON(response.Body, &decoded)
-		resetAt, _ := time.Parse(time.RFC3339, decoded.ResetTimeUTC)
-		now := c.clock.Now()
-		if window, found := baseprovider.ParseRateLimit(now, response.Header); found && window.Remaining <= 0 && window.ResetAt.After(now) {
-			resetAt = window.ResetAt
+	if response.StatusCode == http.StatusNotAcceptable || response.StatusCode == http.StatusForbidden {
+		if quotaErr := c.quotaRefusal(ctx, response); quotaErr != nil {
+			return downloadResponse{}, quotaErr
 		}
-		if !resetAt.After(now) {
-			resetAt = baseprovider.FallbackReset(now, "opensubtitles", baseprovider.CooldownDownloadQuota)
-		}
-		resetAt, err := c.transport.PersistCooldown(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, resetAt)
-		if err != nil {
-			return downloadResponse{}, err
-		}
-		return downloadResponse{}, &baseprovider.QuotaError{Scope: baseprovider.OperationDownload, ResetAt: resetAt, Message: "OpenSubtitles download quota"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return downloadResponse{}, fmt.Errorf("OpenSubtitles download request returned HTTP %d", response.StatusCode)
 	}
+	var decoded downloadResponse
 	if err := decodeLimitedJSON(response.Body, &decoded); err != nil {
 		return downloadResponse{}, err
 	}
 	if decoded.Link == "" {
 		return downloadResponse{}, &baseprovider.InvalidPayloadError{Message: "download response has no valid link"}
 	}
+	if decoded.Remaining != nil && *decoded.Remaining <= 0 {
+		// This was the last download of the quota: it still proceeds, and
+		// the next one waits for the reset instead of spending a request on
+		// a refusal.
+		if _, err := c.transport.PersistCooldown(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, c.quotaReset(decoded, response.Header)); err != nil {
+			return downloadResponse{}, err
+		}
+	}
 	return decoded, nil
+}
+
+// quotaRefusal handles a download refusal. 406 is OpenSubtitles' documented
+// quota answer; a 403 or 429 counts only when its body speaks of the quota or
+// carries its reset time, since those statuses have other causes too. A
+// refusal persists the download-quota cooldown until the reset and returns
+// the QuotaError (or the persistence failure); anything else returns nil. The
+// body is consumed; the caller still closes it.
+func (c *Client) quotaRefusal(ctx context.Context, response *http.Response) error {
+	var decoded downloadResponse
+	_ = decodeLimitedJSON(response.Body, &decoded)
+	if response.StatusCode != http.StatusNotAcceptable && !quotaMessage(decoded) {
+		return nil
+	}
+	resetAt, err := c.transport.PersistCooldown(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, c.quotaReset(decoded, response.Header))
+	if err != nil {
+		return err
+	}
+	return &baseprovider.QuotaError{Scope: baseprovider.OperationDownload, ResetAt: resetAt, Message: "OpenSubtitles download quota"}
+}
+
+func quotaMessage(decoded downloadResponse) bool {
+	message := strings.ToLower(decoded.Message)
+	return decoded.ResetTimeUTC != "" || (decoded.Remaining != nil && *decoded.Remaining <= 0) ||
+		strings.Contains(message, "quota") || strings.Contains(message, "download limit") || strings.Contains(message, "allowed")
+}
+
+// quotaReset is the download quota's reset: the response's reset time, a
+// rate-limit header's, or the fallback when neither lies in the future.
+func (c *Client) quotaReset(decoded downloadResponse, header http.Header) time.Time {
+	resetAt, _ := time.Parse(time.RFC3339, decoded.ResetTimeUTC)
+	now := c.clock.Now()
+	if window, found := baseprovider.ParseRateLimit(now, header); found && window.Remaining <= 0 && window.ResetAt.After(now) {
+		resetAt = window.ResetAt
+	}
+	if !resetAt.After(now) {
+		resetAt = baseprovider.FallbackReset(now, "opensubtitles", baseprovider.CooldownDownloadQuota)
+	}
+	return resetAt
 }
 
 func (c *Client) newAbsoluteRequest(ctx context.Context, method, endpoint string) (*http.Request, error) {

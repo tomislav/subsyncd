@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-    arr[Sonarr / Radarr] -- webhooks --> mut
+    arr[Sonarr / Radarr] -- webhooks --> inbox[(Webhook inbox)] --> mut
     arr -- history and library --> recon[Reconciliation and discovery] --> mut
     mut[Transactional media mutation] --> queue[(SQLite search queue)]
     queue --> worker[Worker lease]
@@ -18,7 +18,7 @@ flowchart LR
 
 ## Durable state and event flow
 
-Webhooks and periodic Arr reconciliation converge on the same transactional media-mutation helper. It records an idempotent audit event, applies an import, rename, upgrade, or deletion, invalidates stale evidence when content changes, and updates every configured language search.
+Webhooks and periodic Arr reconciliation converge on the same transactional media-mutation helper. It records an idempotent audit event, applies an import, rename, upgrade, or deletion, invalidates stale evidence when content changes, and updates every configured language search. A webhook is answered once it is stored in the durable webhook inbox; one processor per instance applies stored webhooks in arrival order, retries failures with backoff, and resumes after a restart. Each change is dated by its receipt time, and an import or rename of a file or entity deleted after that time is not applied, so a late or retried upsert cannot revive a deleted row.
 
 Reconciliation:
 
@@ -53,6 +53,7 @@ For an unfinished first-install cooldown cycle, the search row also holds a stri
 
 - A provider becomes clean-empty only after broad completion without candidates and, if applicable, exact completion without candidates. Candidates, availability failures, and technical errors never create suppression state.
 - The persisted signature hashes the canonical language/ordered-tier route together with media path, file ID, size, and nanosecond mtime; only the opaque digest is stored.
+- The list is dated by its oldest answer and dropped once that is six hours old, the provider search-result cache lifetime. A list that fails validation is reset for that search alone instead of failing the lease batch.
 - The worker supplies the saved state only when the signature matches the assembled language workflow; otherwise it runs the full route and clears stale progress on completion. The workflow validates the signature before inventory and again after adopting the live inventory fingerprint, and inventory replacement transactionally clears every language's progress.
 - Owner-guarded completion atomically retains the state only for throttled or retryable technical first-install outcomes and clears it for terminal, upgrade, media-reset, and rerun paths.
 - The worker repository derives JSON-size and membership bounds from each accepted configured route, invalidates stale signatures before applying smaller current bounds, and checks the current fingerprint inside completion. This permits every accepted route, preserves exact provider-ID identity, and prevents stale in-flight completions from restoring old progress. Unscoped repository utilities perform structural JSON validation; daemon assembly always supplies the route policy.
@@ -62,7 +63,7 @@ For an unfinished first-install cooldown cycle, the search row also holds a stri
 
 Workers lease only available concurrency slots, filtering current instance/language routes and active media before ordering and limiting claims. Removing a route preserves durable work for re-enable; `forget-instance` explicitly discards a removed instance's records. Leases are renewed and completed by owner compare-and-swap. Deletion retains active ownership; completion leaves deleted media terminal, while reimport during that lease coalesces one rerun.
 
-Shutdown stops new acquisition, waits one configured window, cancels active work, waits one more window, then returns even if a dependency ignores cancellation. Unfinished leases remain recoverable after expiry.
+Shutdown stops new acquisition, waits one configured window, cancels active work, waits one more window, then returns even if a dependency ignores cancellation. Work that returns canceled gives its lease back so the next start leases it at once; work that never returns keeps its lease until expiry. An expired lease counts as unleased everywhere it is checked. Reconciliation timing is persisted per instance, so a restart keeps its schedule and failure backoff.
 
 Mutating application assembly acquires the data-directory lock before database migration or durable initialization and retains it through close. Diagnostic assembly validates an existing current-schema database in read-only mode, without backfills or persistent cache construction. It can read the running daemon's WAL without taking its mutation lock.
 
@@ -89,7 +90,7 @@ Installation:
 2. fsyncs and atomically publishes it: a fresh sidecar is hard-linked so a file created concurrently at the destination is never overwritten (falling back to rename on filesystems without hard links), and a managed replacement is renamed;
 3. fsyncs the directory and commits checksum-bound provenance.
 
-Managed replacement uses a retained rollback copy. If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
+A pending-install record spans publication to commit; startup undoes any publication a crash left unrecorded (restoring the rollback copy or removing the new file) and removes staging leftovers. Managed replacement uses a retained rollback copy. If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
 
 A committed installation may enqueue a checksum-deduplicated Silo notification. Notification leases and retries are independent, so notification failure never rolls back subtitle acquisition.
 

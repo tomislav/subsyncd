@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 )
 
 func TestSearchResumePreservesConfiguredIdentityAndLargeIDs(t *testing.T) {
@@ -87,7 +89,7 @@ func TestSearchResumeBoundsFollowCurrentRoute(t *testing.T) {
 	})
 	for _, test := range []struct {
 		name, signature, encoded string
-		wantErr                  bool
+		reset                    bool
 	}{
 		{"too many current IDs", domain.ProviderResumeSignature("current-route", media.Fingerprint), `["p","q"]`, true},
 		{"current oversized ID", domain.ProviderResumeSignature("current-route", media.Fingerprint), `["oversized"]`, true},
@@ -97,15 +99,22 @@ func TestSearchResumeBoundsFollowCurrentRoute(t *testing.T) {
 			if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, SearchPriorityMissing); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json=?,resume_route_signature=? WHERE media_id=?`, test.encoded, test.signature, mediaID); err != nil {
+			if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json=?,resume_route_signature=?,resume_saved_at_ns=? WHERE media_id=?`, test.encoded, test.signature, now.UnixNano(), mediaID); err != nil {
 				t.Fatal(err)
 			}
 			leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute)
-			if (err != nil) != test.wantErr {
-				t.Fatalf("lease = %+v/%v", leases, err)
+			if err != nil || len(leases) != 1 || len(leases[0].ResumeProviders) != 0 || leases[0].ResumeRouteSignature != "" {
+				t.Fatalf("out-of-bound route survived: %+v/%v", leases, err)
 			}
-			if !test.wantErr && (len(leases) != 1 || len(leases[0].ResumeProviders) != 0 || leases[0].ResumeRouteSignature != "") {
-				t.Fatalf("stale route survived: %+v", leases)
+			var persisted string
+			if err := db.db.QueryRow(`SELECT resume_providers_json FROM search_states WHERE media_id=?`, mediaID).Scan(&persisted); err != nil {
+				t.Fatal(err)
+			}
+			if test.reset != (persisted == "[]") {
+				t.Fatalf("persisted resume state = %s, reset %t", persisted, test.reset)
+			}
+			if _, err := db.db.Exec(`UPDATE search_states SET lease_owner=NULL, lease_until_ns=NULL WHERE media_id=?`, mediaID); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -240,7 +249,7 @@ func (r *resumeIterationErrorRows) Next(destination []driver.Value) error {
 		return errors.New("injected due-search iteration failure")
 	}
 	r.returned = true
-	copy(destination, []driver.Value{int64(1), "en", int64(0), int64(0), int64(SearchPriorityMissing), "[]", "route", "/media/movie.mkv", int64(1), int64(100), int64(0)})
+	copy(destination, []driver.Value{int64(1), "en", int64(0), int64(0), int64(SearchPriorityMissing), "[]", "route", int64(0), "/media/movie.mkv", int64(1), int64(100), int64(0)})
 	return nil
 }
 
@@ -260,7 +269,7 @@ func TestSearchResumeRoundTrip(t *testing.T) {
 	if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, SearchPriorityMissing); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json='["titlovi-main","subdl-main"]',resume_route_signature='route-v1' WHERE media_id=? AND language='en'`, mediaID); err != nil {
+	if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json='["titlovi-main","subdl-main"]',resume_route_signature='route-v1',resume_saved_at_ns=? WHERE media_id=? AND language='en'`, now.UnixNano(), mediaID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,6 +295,7 @@ func TestSearchResumeRoundTrip(t *testing.T) {
 		ResumeProviders:      []string{"opensubtitles-main", "titlovi-main"},
 		ResumeRouteSignature: "route-v2",
 		PreserveResume:       true,
+		ResumeSavedAt:        now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -335,28 +345,35 @@ func TestSearchResumeRejectsMalformedState(t *testing.T) {
 					t.Fatal(err)
 				}
 				if index == 2 {
-					if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json=?,resume_route_signature='route' WHERE media_id=?`, persisted, mediaID); err != nil {
+					if _, err := db.db.Exec(`UPDATE search_states SET resume_providers_json=?,resume_route_signature='route',resume_saved_at_ns=? WHERE media_id=?`, persisted, now.UnixNano(), mediaID); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
 
-			leases, err := repo.LeaseDueSearches(ctx, now, 2, 5*time.Minute)
-			if err == nil {
-				t.Fatalf("malformed state leased %d rows", len(leases))
-			}
-			if len(err.Error()) > 128 {
-				t.Fatalf("repository error is unbounded: %q", err)
-			}
-			if strings.Contains(err.Error(), persisted) || strings.Contains(err.Error(), "secret") {
-				t.Fatalf("repository error exposes persisted state: %q", err)
-			}
-			var claimed int
-			if err := db.db.QueryRow(`SELECT count(*) FROM search_states WHERE lease_owner IS NOT NULL OR lease_until_ns IS NOT NULL`).Scan(&claimed); err != nil {
+			var logs bytes.Buffer
+			events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+			if err != nil {
 				t.Fatal(err)
 			}
-			if claimed != 0 {
-				t.Fatalf("claimed %d rows before rejecting malformed state", claimed)
+			leases, err := repo.WithEvents(events).LeaseDueSearches(ctx, now, 2, 5*time.Minute)
+			if err != nil || len(leases) != 2 {
+				t.Fatalf("malformed state blocked leasing: %d leases/%v", len(leases), err)
+			}
+			for _, lease := range leases {
+				if len(lease.ResumeProviders) != 0 || lease.ResumeRouteSignature != "" {
+					t.Fatalf("malformed state resumed: %+v", lease)
+				}
+			}
+			var reset int
+			if err := db.db.QueryRow(`SELECT count(*) FROM search_states WHERE resume_providers_json='[]' AND resume_route_signature=''`).Scan(&reset); err != nil {
+				t.Fatal(err)
+			}
+			if reset != 2 {
+				t.Fatalf("malformed resume state was not reset (%d clean rows)", reset)
+			}
+			if !strings.Contains(logs.String(), `"event":"search.resume_reset"`) || strings.Contains(logs.String(), "secret") {
+				t.Fatalf("reset warning = %s", logs.String())
 			}
 		})
 	}

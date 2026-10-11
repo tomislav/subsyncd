@@ -1119,6 +1119,13 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	if reasonCode == "" {
 		return false, nil
 	}
+	if reasonCode == "lapse_nothing" || reasonCode == "lapse_unsure" {
+		// LAPSE hears no speech, or no match, when it cannot read the media
+		// either; that is not the subtitle's fault.
+		if err := checkMediaReadable(request.Media); err != nil {
+			return false, err
+		}
+	}
 	signature, err := candidateSignature(candidate, request.Media)
 	if request.memberScope != "" {
 		signature += "/member-" + request.memberScope

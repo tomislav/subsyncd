@@ -73,7 +73,7 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 			release()
 		}
 	}()
-	response, err := c.HTTP.Do(request.WithContext(ctx))
+	response, err := c.credentialSafeHTTP().Do(request.WithContext(ctx))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -171,6 +171,34 @@ func (c Client) Do(ctx context.Context, operation Operation, request *http.Reque
 		return response, &AuthenticationError{Message: "HTTP 401"}
 	}
 	return response, nil
+}
+
+// credentialHeaders carry provider credentials. Go drops Authorization and
+// Cookie on a redirect to another domain, but forwards every custom header,
+// such as an API key, to any host a redirect names.
+var credentialHeaders = []string{"Authorization", "Cookie", "Api-Key", "X-Api-Key", "X-Auth-Token"}
+
+// credentialSafeHTTP returns the client with a redirect check that strips
+// credential headers whenever a redirect leaves the original scheme and host
+// (port included), before the provider's own check runs.
+func (c Client) credentialSafeHTTP() *http.Client {
+	client := *c.HTTP
+	next := client.CheckRedirect
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) > 0 && (!strings.EqualFold(request.URL.Scheme, via[0].URL.Scheme) || !strings.EqualFold(request.URL.Host, via[0].URL.Host)) {
+			for _, header := range credentialHeaders {
+				request.Header.Del(header)
+			}
+		}
+		if next != nil {
+			return next(request, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
 }
 
 // minimumPersistedWindow is the shortest exhausted window a successful

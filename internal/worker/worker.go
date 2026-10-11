@@ -57,11 +57,25 @@ type Reconciler interface {
 	Run(context.Context) error
 }
 
-type reconcileAttempt struct {
-	LastAttempt time.Time
-	Failures    int
-	Deferred    bool
+// reconcileAttempt is an instance's last reconciliation, saved in the
+// database when the repository supports it so a restart keeps its schedule.
+type reconcileAttempt = store.ReconcileTiming
+
+// reconcileTimingStore persists reconciliation timing across restarts.
+type reconcileTimingStore interface {
+	ReconcileTimings(context.Context) (map[string]store.ReconcileTiming, error)
+	RecordReconcileTiming(context.Context, string, store.ReconcileTiming) error
 }
+
+// leaseReleaser gives leases back on shutdown, so their work is leased again
+// at the next start instead of after the lease expires.
+type leaseReleaser interface {
+	ReleaseSearchLease(context.Context, string) error
+	ReleaseNotificationLease(context.Context, string) error
+}
+
+// leaseReleaseTimeout bounds the best-effort release after cancellation.
+const leaseReleaseTimeout = 5 * time.Second
 
 // reconcileDeferredDelay is the retry for a page that committed but had to
 // wait for unreadable media, capped at the normal interval. It does not
@@ -115,6 +129,9 @@ type Worker struct {
 	Events            *observability.Emitter
 	// Routes pauses leasing for routes whose providers are all unavailable.
 	Routes RouteGate
+	// MediaRoots lets the media breaker tell one unreadable file from an
+	// unreadable mount; without them every media failure counts.
+	MediaRoots []string
 
 	reconcileMu       sync.Mutex
 	reconcileAttempts map[string]reconcileAttempt
@@ -341,6 +358,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 				return renewErr
 			}
 			if jobCtx.Err() != nil {
+				w.releaseSearchLease(jobCtx, lease.JobID)
 				w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, len(lease.ResumeProviders), nil)
 				return jobCtx.Err()
 			}
@@ -396,15 +414,16 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		jobCtx = context.WithoutCancel(jobCtx)
 	}
 	if jobCtx.Err() != nil {
+		w.releaseSearchLease(jobCtx, lease.JobID)
 		w.logJobCompleted(jobCtx, slog.LevelInfo, "canceled", "canceled", time.Time{}, started, len(lease.ResumeProviders), nil)
 		return jobCtx.Err()
 	}
-	w.recordSearchResult(jobCtx, err)
+	w.recordSearchResult(jobCtx, err, media.Fingerprint.Path)
 	if err != nil {
 		completion := schedule.Scheduler{Clock: w.Clock}.Failure(lease.JobID, lease.FailureAttempt, "workflow_error")
 		// Unreadable media is usually storage, not this search: keep its place.
 		completion.PreserveQueueOrder = workflow.MediaUnavailable(err)
-		preserveProviderResume(lease, result, &completion)
+		preserveProviderResume(lease, result, &completion, w.Clock.Now())
 		completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
 		if completionErr != nil {
 			w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, len(lease.ResumeProviders), completionErr)
@@ -487,7 +506,7 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		// The jittered reset only delays eligibility; the search keeps its place.
 		completion.NextAttemptAt = w.throttleRetryAt(result.RetryAt)
 		completion.PreserveQueueOrder = true
-		preserveProviderResume(lease, result, &completion)
+		preserveProviderResume(lease, result, &completion, w.Clock.Now())
 	default:
 		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
 	}
@@ -511,13 +530,48 @@ func (w *Worker) releaseAttrs(media domain.Media, completion store.SearchComplet
 	return attrs
 }
 
-func preserveProviderResume(lease store.SearchLease, result workflow.Result, completion *store.SearchCompletion) {
+// preserveProviderResume keeps the clean-empty providers for the retry. The
+// list is dated by its oldest answer: the leased list's date when the search
+// resumed one, otherwise now.
+func preserveProviderResume(lease store.SearchLease, result workflow.Result, completion *store.SearchCompletion, now time.Time) {
 	if lease.Priority == store.SearchPriorityUpgrade || len(result.ResumeProviders) == 0 || result.ResumeRouteSignature == "" {
 		return
 	}
 	completion.ResumeProviders = append([]string(nil), result.ResumeProviders...)
 	completion.ResumeRouteSignature = result.ResumeRouteSignature
 	completion.PreserveResume = true
+	completion.ResumeSavedAt = now
+	if len(lease.ResumeProviders) > 0 && !lease.ResumeSavedAt.IsZero() {
+		completion.ResumeSavedAt = lease.ResumeSavedAt
+	}
+}
+
+// releaseSearchLease gives a canceled job's lease back, best effort.
+func (w *Worker) releaseSearchLease(ctx context.Context, jobID string) {
+	releaser, ok := w.Repository.(leaseReleaser)
+	if !ok {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), leaseReleaseTimeout)
+	defer cancel()
+	if err := releaser.ReleaseSearchLease(releaseCtx, jobID); err != nil {
+		w.report(err)
+	}
+}
+
+// releaseNotificationLeases gives undelivered notification leases back.
+func (w *Worker) releaseNotificationLeases(ctx context.Context, members []groupMember) {
+	releaser, ok := w.Repository.(leaseReleaser)
+	if !ok {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), leaseReleaseTimeout)
+	defer cancel()
+	for _, member := range members {
+		if err := releaser.ReleaseNotificationLease(releaseCtx, member.lease.JobID); err != nil {
+			w.report(err)
+		}
+	}
 }
 
 func (w *Worker) processNotifications(ctx context.Context, leases []store.NotificationLease) error {
@@ -622,13 +676,19 @@ func (w *Worker) processNotificationGroupContexts(dispatchCtx, ctx context.Conte
 	select {
 	case semaphore <- struct{}{}:
 	case <-dispatchCtx.Done():
-		return errors.Join(finishAll(), dispatchCtx.Err())
+		err := errors.Join(finishAll(), dispatchCtx.Err())
+		w.releaseNotificationLeases(ctx, members)
+		return err
 	case <-leader.ctx.Done():
 		return errors.Join(finishAll(), leader.ctx.Err())
 	}
 	defer func() { <-semaphore }()
 	if err := errors.Join(dispatchCtx.Err(), leader.ctx.Err()); err != nil {
-		return errors.Join(finishAll(), err)
+		err = errors.Join(finishAll(), err)
+		if dispatchCtx.Err() != nil {
+			w.releaseNotificationLeases(ctx, members)
+		}
+		return err
 	}
 	err := group[0].decodeErr
 	destination := w.Notifiers[leader.lease.Notifier]
@@ -642,7 +702,12 @@ func (w *Worker) processNotificationGroupContexts(dispatchCtx, ctx context.Conte
 		return errors.Join(renewErr, finishFollowers(members[1:]))
 	}
 	if leader.ctx.Err() != nil {
-		return errors.Join(leader.ctx.Err(), finishFollowers(members[1:]))
+		err := errors.Join(leader.ctx.Err(), finishFollowers(members[1:]))
+		if ctx.Err() != nil {
+			// Shutdown, not a lost lease: deliver again at the next start.
+			w.releaseNotificationLeases(ctx, members)
+		}
+		return err
 	}
 	var failures []error
 	for index, member := range members {
@@ -753,7 +818,17 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 	w.reconcileMu.Lock()
 	defer w.reconcileMu.Unlock()
 	if w.reconcileAttempts == nil {
-		w.reconcileAttempts = make(map[string]reconcileAttempt)
+		attempts := make(map[string]reconcileAttempt)
+		if timings, ok := w.Repository.(reconcileTimingStore); ok {
+			saved, err := timings.ReconcileTimings(ctx)
+			if err != nil {
+				return err
+			}
+			for name, timing := range saved {
+				attempts[name] = timing
+			}
+		}
+		w.reconcileAttempts = attempts
 	}
 	names := make([]string, 0, len(w.Reconcilers))
 	for name := range w.Reconcilers {
@@ -794,7 +869,7 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 		if errors.Is(err, catalog.ErrHistoryDeferred) {
 			deferred := &catalog.DeferredHistoryError{}
 			errors.As(err, &deferred)
-			w.reconcileAttempts[name] = reconcileAttempt{LastAttempt: now, Deferred: true}
+			w.setReconcileAttempt(ctx, name, reconcileAttempt{LastAttempt: now, Deferred: true})
 			events.Log(ctx, slog.LevelWarn, "reconcile.deferred", "catalog reconciliation is waiting for unavailable media",
 				slog.String("instance", name),
 				slog.Int("deferred_count", len(deferred.Entities)),
@@ -809,19 +884,36 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 			if attempt.Failures < len(reconcileFailureDelays) {
 				attempt.Failures++
 			}
-			w.reconcileAttempts[name] = attempt
+			w.setReconcileAttempt(ctx, name, attempt)
 			retryAt := now.Add(reconcileFailureDelays[attempt.Failures-1])
 			events.Log(ctx, slog.LevelError, "reconcile.failed", "catalog reconciliation failed",
 				append([]slog.Attr{slog.String("instance", name), slog.Int("attempt", attempt.Failures), slog.Time("retry_at", retryAt), slog.Int64("duration_ms", time.Since(started).Milliseconds())}, events.ErrorAttrs("reconciliation", err)...)...)
 			failures = append(failures, fmt.Errorf("reconcile %s: %w", name, err))
 			continue
 		}
-		w.reconcileAttempts[name] = reconcileAttempt{LastAttempt: now}
+		w.setReconcileAttempt(ctx, name, reconcileAttempt{LastAttempt: now})
 		events.Log(ctx, slog.LevelInfo, "reconcile.completed", "catalog reconciliation completed",
 			slog.String("instance", name), slog.String("outcome", "success"), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
 	}
 	return errors.Join(failures...)
 }
+
+// setReconcileAttempt records an attempt in memory and, when supported, in
+// the database. A failed save only costs an early reconciliation after a
+// restart, so it is reported, not returned.
+func (w *Worker) setReconcileAttempt(ctx context.Context, name string, attempt reconcileAttempt) {
+	w.reconcileAttempts[name] = attempt
+	if timings, ok := w.Repository.(reconcileTimingStore); ok {
+		if err := timings.RecordReconcileTiming(context.WithoutCancel(ctx), name, attempt); err != nil {
+			w.report(err)
+		}
+	}
+}
+
+// minimumThrottleDelay is the shortest wait after a throttle. A provider that
+// reports a reset already past (Retry-After: 0, a stale reset header) would
+// otherwise be asked again at once, in a loop.
+const minimumThrottleDelay = time.Minute
 
 // unknownThrottleDelay is how long a throttled search waits when no provider
 // reported a reset, as when the only blocked provider is disabled. A
@@ -834,8 +926,8 @@ func (w *Worker) throttleRetryAt(reset time.Time) time.Time {
 		reset = w.Clock.Now().Add(unknownThrottleDelay)
 	}
 	delay := reset.Sub(w.Clock.Now())
-	if delay <= 0 {
-		return w.Clock.Now()
+	if delay < minimumThrottleDelay {
+		return w.Clock.Now().Add(minimumThrottleDelay)
 	}
 	unit := rand.Float64()
 	if w.RandomUnit != nil {

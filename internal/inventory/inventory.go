@@ -22,7 +22,10 @@ type Track struct {
 	Default   bool
 	SDH       bool
 	Protected bool
-	Checksum  string
+	// Symlink marks a sidecar that is a symbolic link; it stays protected
+	// even when it points at a managed subtitle.
+	Symlink  bool
+	Checksum string
 }
 
 type Inventory struct {
@@ -96,7 +99,7 @@ func (s Service) Refresh(ctx context.Context, mediaID int64, media domain.Media,
 		if err != nil {
 			return Inventory{}, fmt.Errorf("get sidecar ownership: %w", err)
 		}
-		if exists && filepath.Clean(installation.Path) == filepath.Clean(sidecars[index].Path) && installation.Checksum == sidecars[index].Checksum {
+		if exists && !sidecars[index].Symlink && filepath.Clean(installation.Path) == filepath.Clean(sidecars[index].Path) && installation.Checksum == sidecars[index].Checksum {
 			sidecars[index].Protected = false
 		}
 	}

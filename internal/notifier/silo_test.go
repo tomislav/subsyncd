@@ -164,7 +164,7 @@ func TestSiloClassifiesFailuresWithoutLeakingCredentialsOrBodies(t *testing.T) {
 		{http.StatusBadRequest, false},
 		{http.StatusNotFound, false},
 		{http.StatusGone, false},
-		{http.StatusConflict, false},
+		{http.StatusConflict, true},
 		{http.StatusUnprocessableEntity, false},
 		{http.StatusRequestTimeout, true},
 		{http.StatusTooManyRequests, true},

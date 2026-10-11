@@ -161,10 +161,18 @@ func TestWholeDeletionRejectsMissingOrWrongIdentity(t *testing.T) {
 		{"sonarr", `{"eventType":"SeriesDelete","episodeFile":{"id":42}}`},
 		{"sonarr", `{"eventType":"SeriesDelete","series":{"id":0}}`},
 		{"sonarr", `{"eventType":"SeriesDelete","series":{"id":-1}}`},
+	} {
+		if _, err := NormalizeWebhook("main", test.kind, []byte(test.body)); !errors.Is(err, ErrInvalidWebhook) {
+			t.Fatalf("%s: error=%v", test.body, err)
+		}
+	}
+	// The other app's whole-deletion event is just an event this instance
+	// type does not send: ignored, not rejected.
+	for _, test := range []struct{ kind, body string }{
 		{"sonarr", `{"eventType":"MovieDelete","movie":{"id":42}}`},
 		{"radarr", `{"eventType":"SeriesDelete","series":{"id":42}}`},
 	} {
-		if _, err := NormalizeWebhook("main", test.kind, []byte(test.body)); !errors.Is(err, ErrInvalidWebhook) {
+		if _, err := NormalizeWebhook("main", test.kind, []byte(test.body)); !errors.Is(err, ErrIgnoredEvent) {
 			t.Fatalf("%s: error=%v", test.body, err)
 		}
 	}

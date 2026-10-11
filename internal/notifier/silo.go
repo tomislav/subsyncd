@@ -123,7 +123,10 @@ func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitle
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return nil
 	}
-	retryable := response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
+	// 409 is Silo's unique active-scan scope: a scan of this directory is
+	// already running and may have passed the new subtitle, so scan again
+	// once it has finished.
+	retryable := response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
 	return &DeliveryError{StatusCode: response.StatusCode, Retryable: retryable, Reason: strconv.Itoa(response.StatusCode)}
 }
 

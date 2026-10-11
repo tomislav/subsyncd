@@ -146,7 +146,7 @@ Generate each webhook secret with `openssl rand -hex 32`; secrets shorter than 1
 
 For an instance outside Docker, replace `subsyncd` with your Docker host's address and use the published port.
 
-Enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches.
+Enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches, and other event types are accepted and ignored. subsyncd answers a webhook as soon as it has saved it and applies it right after, so Arr never waits on subsyncd's own lookups.
 
 After the daemon starts, subsyncd discovers existing movie and episode files in each configured Sonarr/Radarr library once, including files absent from retained history, and queues subtitle checks. It remembers completion across restarts and then follows changes through webhooks and periodic history reconciliation. Run `scan --instance NAME` with the daemon stopped to discover unindexed files again.
 

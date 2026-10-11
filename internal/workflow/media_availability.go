@@ -3,8 +3,8 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"syscall"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
@@ -12,8 +12,8 @@ import (
 )
 
 // MediaUnavailableError marks a search that failed because its media file
-// could not be found or read: a dropped (ENOENT), crashed (ENOTCONN, EIO) or
-// stale (ESTALE) mount, a hung mount (ffprobe timed out on the file), or a
+// could not be found or read: a dropped (ENOENT), crashed (ENOTCONN, EIO),
+// stale or unreachable (ESTALE, EHOSTDOWN; see domain.MountUnavailable) mount, a hung mount (ffprobe timed out on the file), or a
 // file Arr removed. Only failures reading the media file itself carry it; a
 // missing binary, cache or scratch file does not. The worker keeps such a
 // search's queue position and pauses when several fail in a row.
@@ -29,7 +29,7 @@ func MediaUnavailable(err error) bool {
 }
 
 func mediaAccessErrno(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EIO) || errors.Is(err, syscall.ESTALE)
+	return errors.Is(err, os.ErrNotExist) || domain.MountUnavailable(err)
 }
 
 // markIfMediaUnreadable wraps err as a MediaUnavailableError when the media
@@ -64,6 +64,38 @@ func checkMediaAvailable(media domain.Media) error {
 	}
 	if !info.Mode().IsRegular() {
 		return errors.New("media path is not a regular file")
+	}
+	return nil
+}
+
+// mediaReadProbeBytes is how much of the media checkMediaReadable reads.
+const mediaReadProbeBytes = 64 << 10
+
+// checkMediaReadable is checkMediaAvailable plus a small read from the start
+// and the middle of the file, so a mount that still answers stat but fails
+// reads also ends the search instead of rejecting a candidate.
+func checkMediaReadable(media domain.Media) error {
+	if err := checkMediaAvailable(media); err != nil {
+		return err
+	}
+	file, err := os.Open(media.Fingerprint.Path)
+	if err != nil {
+		return markIfMediaUnreadable(fmt.Errorf("open media: %w", observability.PathErrorCause(err)), media)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return markIfMediaUnreadable(fmt.Errorf("inspect media: %w", observability.PathErrorCause(err)), media)
+	}
+	buffer := make([]byte, mediaReadProbeBytes)
+	for _, offset := range []int64{0, info.Size() / 2} {
+		if _, err := file.ReadAt(buffer, offset); err != nil && !errors.Is(err, io.EOF) {
+			wrapped := fmt.Errorf("read media: %w", observability.PathErrorCause(err))
+			if mediaAccessErrno(err) {
+				return &MediaUnavailableError{Err: wrapped}
+			}
+			return markIfMediaUnreadable(wrapped, media)
+		}
 	}
 	return nil
 }

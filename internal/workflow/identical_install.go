@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"subsyncd/internal/store"
 )
@@ -34,11 +33,7 @@ func (i Installer) refreshIdenticalInstallation(ctx context.Context, request Ins
 	// A replacement media file still needs a new scan even when its sidecar bytes
 	// repeat. A same-media provenance refresh does not change Silo's inventory.
 	if !InstallationMatchesMedia(existing, request.Media) {
-		now := time.Now().UTC()
-		if i.Now != nil {
-			now = i.Now()
-		}
-		requests, err = notificationRequests(request.Media, installation, i.NotifierNames, now)
+		requests, err = notificationRequests(request.Media, installation, i.NotifierNames, i.now())
 		if err != nil {
 			return store.Installation{}, err
 		}

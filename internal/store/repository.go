@@ -8,17 +8,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 )
 
 type Repository struct {
 	store        *Store
 	searchScope  *searchScope
 	resumeRoutes map[domain.Language]providerResumeBound
+	events       *observability.Emitter
+}
+
+// WithEvents returns a repository that logs recoverable data problems, such
+// as a malformed saved row it resets, to events.
+func (r *Repository) WithEvents(events *observability.Emitter) *Repository {
+	clone := *r
+	clone.events = events
+	return &clone
 }
 
 type searchScope struct {
@@ -91,7 +102,13 @@ type SearchLease struct {
 	Priority             SearchPriority
 	ResumeProviders      []string
 	ResumeRouteSignature string
+	// ResumeSavedAt is when the oldest provider in ResumeProviders answered.
+	ResumeSavedAt time.Time
 }
+
+// ResumeProvidersTTL is how long a saved clean-empty provider stays skipped:
+// the provider search-result cache TTL. Past it the provider is asked again.
+const ResumeProvidersTTL = 6 * time.Hour
 
 type SearchCompletion struct {
 	JobID                 string
@@ -109,6 +126,8 @@ type SearchCompletion struct {
 	ResumeProviders      []string
 	ResumeRouteSignature string
 	PreserveResume       bool
+	// ResumeSavedAt dates a preserved list; zero dates it now.
+	ResumeSavedAt time.Time
 	// PreserveQueueOrder keeps the search's queue position while NextAttemptAt
 	// moves, so a throttle changes when it may run but not where it runs.
 	PreserveQueueOrder bool
@@ -677,7 +696,8 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, e
 		return ErrStaleInventory
 	}
 	contentChanged := existingFileID != fingerprint.FileID || existingSize != fingerprint.Size || existingModTime != fingerprint.ModTime.UnixNano()
-	result, err := tx.ExecContext(ctx, `UPDATE media SET path=?, file_id=?, size=?, mod_time_ns=?, updated_at_ns=? WHERE id=?`, fingerprint.Path, fingerprint.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), time.Now().UTC().UnixNano(), mediaID)
+	now := time.Now().UTC().UnixNano()
+	result, err := tx.ExecContext(ctx, `UPDATE media SET path=?, file_id=?, size=?, mod_time_ns=?, updated_at_ns=? WHERE id=?`, fingerprint.Path, fingerprint.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), now, mediaID)
 	if err != nil {
 		return fmt.Errorf("update inventory fingerprint: %w", err)
 	}
@@ -694,6 +714,14 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, e
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE search_states SET resume_providers_json='[]',resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
 			return fmt.Errorf("clear replaced media search resume: %w", err)
+		}
+		// The file was replaced in place, behind Arr's back: a subtitle
+		// installed for the old bytes may be out of sync. Search again now,
+		// like a replacement import, for every other language that has one;
+		// the running search (leased) handles its own.
+		if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=?, queue_order_ns=?, last_outcome='', priority=MAX(priority, ?), rerun_requested=0
+			WHERE media_id=? AND language IN (SELECT language FROM installations WHERE media_id=?) AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`, now, now, SearchPriorityImport, mediaID, mediaID, now); err != nil {
+			return fmt.Errorf("schedule replaced media searches: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tracks WHERE media_id = ?`, mediaID); err != nil {
@@ -771,8 +799,9 @@ func (r *Repository) UpsertSearchStateWithPriority(ctx context.Context, mediaID 
 
 // SettlePendingSearch completes an unleased pending search with a manual
 // outcome, so a search that a manual run just satisfied is not repeated.
-func (r *Repository) SettlePendingSearch(ctx context.Context, mediaID int64, language domain.Language, outcome string) error {
-	_, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='complete', attempt=0, failure_attempt=0, next_attempt_at_ns=0, queue_order_ns=0, last_outcome=?, resume_providers_json='[]', resume_route_signature='' WHERE media_id=? AND language=? AND state='pending' AND lease_owner IS NULL AND lease_until_ns IS NULL`, outcome, mediaID, language.String())
+// A lease that expired at now (its owner stopped) counts as unleased.
+func (r *Repository) SettlePendingSearch(ctx context.Context, mediaID int64, language domain.Language, outcome string, now time.Time) error {
+	_, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='complete', attempt=0, failure_attempt=0, next_attempt_at_ns=0, queue_order_ns=0, last_outcome=?, resume_providers_json='[]', resume_route_signature='', rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL WHERE media_id=? AND language=? AND state='pending' AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`, outcome, mediaID, language.String(), now.UnixNano())
 	if err != nil {
 		return fmt.Errorf("settle manual search: %w", err)
 	}
@@ -856,7 +885,7 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		return nil, fmt.Errorf("begin search lease: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	query := `SELECT media_id, language, attempt, failure_attempt, priority, resume_providers_json, resume_route_signature, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE media.deleted=0 AND state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`
+	query := `SELECT media_id, language, attempt, failure_attempt, priority, resume_providers_json, resume_route_signature, resume_saved_at_ns, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE media.deleted=0 AND state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`
 	args := []any{now.UnixNano(), now.UnixNano()}
 	if scope := r.searchScope; scope != nil {
 		if len(scope.instances) == 0 || len(scope.languages) == 0 {
@@ -896,25 +925,33 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		priority        SearchPriority
 		resumeProviders []string
 		resumeSignature string
+		resumeSavedAt   time.Time
+		malformedResume bool
 	}
 	var dueRows []due
 	for rows.Next() {
 		var item due
 		var encodedProviders string
 		var fingerprint domain.MediaFingerprint
-		var modTime int64
-		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt, &item.failureAttempt, &item.priority, &encodedProviders, &item.resumeSignature, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); err != nil {
+		var modTime, savedAt int64
+		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt, &item.failureAttempt, &item.priority, &encodedProviders, &item.resumeSignature, &savedAt, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan due search: %w", err)
 		}
 		fingerprint.ModTime = time.Unix(0, modTime).UTC()
-		if !r.currentResumeScope(item.language, fingerprint, item.resumeSignature) {
+		// A list older than the search-result cache would skip providers whose
+		// answer the cache itself no longer trusts.
+		expired := savedAt == 0 || now.Sub(time.Unix(0, savedAt)) >= ResumeProvidersTTL
+		if expired || !r.currentResumeScope(item.language, fingerprint, item.resumeSignature) {
 			encodedProviders, item.resumeSignature = "[]", ""
+		} else {
+			item.resumeSavedAt = time.Unix(0, savedAt).UTC()
 		}
 		item.resumeProviders, err = r.decodeSearchResume(item.language, encodedProviders)
 		if err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("decode due search resume state: %w", err)
+			// One malformed row must not stop every search from leasing: it
+			// runs the full route and its saved progress is reset below.
+			item.resumeProviders, item.resumeSignature, item.resumeSavedAt, item.malformedResume = []string{}, "", time.Time{}, true
 		}
 		dueRows = append(dueRows, item)
 	}
@@ -932,7 +969,16 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		if err != nil {
 			return nil, err
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE search_states SET lease_owner=?, lease_until_ns=? WHERE media_id=? AND language=? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`, jobID, leaseUntil.UnixNano(), item.mediaID, item.language, now.UnixNano())
+		if item.malformedResume {
+			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET resume_providers_json='[]', resume_route_signature='', resume_saved_at_ns=0 WHERE media_id=? AND language=?`, item.mediaID, item.language); err != nil {
+				return nil, fmt.Errorf("reset malformed search resume state: %w", err)
+			}
+			r.events.For("store").Log(ctx, slog.LevelWarn, "search.resume_reset", "saved provider progress was malformed and has been reset",
+				slog.Int64("media_id", item.mediaID), slog.String("language", item.language))
+		}
+		// An expired lease is unleased: the new job reads current state, so a
+		// rerun the previous owner left requested is already covered.
+		result, err := tx.ExecContext(ctx, `UPDATE search_states SET lease_owner=?, lease_until_ns=?, rerun_requested=0 WHERE media_id=? AND language=? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`, jobID, leaseUntil.UnixNano(), item.mediaID, item.language, now.UnixNano())
 		if err != nil {
 			return nil, fmt.Errorf("claim due search: %w", err)
 		}
@@ -941,7 +987,7 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 			return nil, fmt.Errorf("count claimed search: %w", err)
 		}
 		if claimed == 1 {
-			leases = append(leases, SearchLease{MediaID: item.mediaID, Language: item.language, JobID: jobID, Attempt: item.attempt, FailureAttempt: item.failureAttempt, LeaseUntil: leaseUntil, Priority: item.priority, ResumeProviders: item.resumeProviders, ResumeRouteSignature: item.resumeSignature})
+			leases = append(leases, SearchLease{MediaID: item.mediaID, Language: item.language, JobID: jobID, Attempt: item.attempt, FailureAttempt: item.failureAttempt, LeaseUntil: leaseUntil, Priority: item.priority, ResumeProviders: item.resumeProviders, ResumeRouteSignature: item.resumeSignature, ResumeSavedAt: item.resumeSavedAt})
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -995,6 +1041,7 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 	}
 	fingerprint.ModTime = time.Unix(0, modTime).UTC()
 	resumeProvidersJSON, resumeSignature := "[]", ""
+	resumeSavedAt := int64(0)
 	retainedCount := 0
 	if completion.PreserveResume && !deleted && !rerunScheduled && r.currentResumeScope(language, fingerprint, completion.ResumeRouteSignature) {
 		resumeProvidersJSON, err = encodeResumeProviders(completion.ResumeProviders)
@@ -1006,6 +1053,11 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		}
 		resumeSignature = completion.ResumeRouteSignature
 		retainedCount = len(completion.ResumeProviders)
+		savedAt := completion.ResumeSavedAt
+		if savedAt.IsZero() {
+			savedAt = time.Now()
+		}
+		resumeSavedAt = savedAt.UnixNano()
 	}
 	var result sql.Result
 	if deleted {
@@ -1024,8 +1076,9 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		priority=CASE WHEN rerun_requested=1 OR ?=0 THEN priority ELSE ? END,
 		resume_providers_json=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '[]' END,
 		resume_route_signature=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '' END,
+		resume_saved_at_ns=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE 0 END,
 		rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL
-		WHERE lease_owner=?`, state, completion.MissingAttemptFloor, completion.ResetMissingAttempt, advanceMissing, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.PreserveQueueOrder, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.JobID)
+		WHERE lease_owner=?`, state, completion.MissingAttemptFloor, completion.ResetMissingAttempt, advanceMissing, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.PreserveQueueOrder, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.PreserveResume, resumeSavedAt, completion.JobID)
 	}
 	if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("complete search: %w", err)
@@ -1202,12 +1255,12 @@ func (r *Repository) RetryThrottledSearches(ctx context.Context, now time.Time, 
 	if len(languages) == 0 {
 		return 0, nil
 	}
-	args := []any{now.UnixNano(), now.UnixNano()}
+	args := []any{now.UnixNano(), now.UnixNano(), now.UnixNano()}
 	for _, language := range languages {
 		args = append(args, language.String())
 	}
 	result, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='pending', next_attempt_at_ns=?
-		WHERE last_outcome='throttled' AND lease_owner IS NULL AND (state='complete' OR next_attempt_at_ns>?)
+		WHERE last_outcome='throttled' AND (lease_until_ns IS NULL OR lease_until_ns <= ?) AND (state='complete' OR next_attempt_at_ns>?)
 		AND language IN (`+strings.TrimSuffix(strings.Repeat("?,", len(languages)), ",")+`)
 		AND media_id IN (SELECT id FROM media WHERE deleted=0)`, args...)
 	if err != nil {
@@ -1718,6 +1771,15 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 		if mutation.Media.Ref != mutation.Ref {
 			return false, fmt.Errorf("media event reference does not match hydrated media")
 		}
+		stale, err := deletedAfterEventTx(ctx, tx, mutation)
+		if err != nil {
+			return false, err
+		}
+		if stale {
+			// A delete applied after this change happened; a late or retried
+			// import must not revive the row.
+			return false, nil
+		}
 		alreadyApplied := false
 		if mutation.Replay {
 			alreadyApplied, err = replayOfAppliedImportTx(ctx, tx, mutation)
@@ -1789,7 +1851,7 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			return false, fmt.Errorf("find deleted media: %w", err)
 		}
 		if err == nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted=1 WHERE id=?`, mediaID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted=1, updated_at_ns=MAX(updated_at_ns, ?) WHERE id=?`, mutation.At.UnixNano(), mediaID); err != nil {
 				return false, fmt.Errorf("mark deleted media: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, queue_order_ns=0, rerun_requested=0, resume_providers_json='[]', resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
@@ -1803,6 +1865,18 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 		return false, fmt.Errorf("unsupported media event type %q", mutation.Type)
 	}
 	return true, nil
+}
+
+// deletedAfterEventTx reports whether the import or rename's file or entity
+// was deleted by a change applied after the event happened.
+func deletedAfterEventTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMutation) (bool, error) {
+	var stale bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media WHERE instance=? AND kind=? AND (file_id=? OR entity_id=?) AND deleted=1 AND updated_at_ns > ?)`,
+		mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID, mutation.EntityID, mutation.At.UnixNano()).Scan(&stale)
+	if err != nil {
+		return false, fmt.Errorf("check deleted media: %w", err)
+	}
+	return stale, nil
 }
 
 func validateMediaMutation(mutation MediaEventMutation) error {

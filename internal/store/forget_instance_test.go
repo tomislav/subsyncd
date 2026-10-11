@@ -11,8 +11,8 @@ import (
 
 // seedForgetInstance indexes one episode for name with a search, an audit
 // event, an unattributed event that names only its media, a candidate, a
-// rejection, an installation with a rollback copy, a pending notification and
-// a reconciliation replay.
+// rejection, an installation with a rollback copy, a pending notification, a
+// reconciliation replay, a waiting webhook and a pending install.
 func seedForgetInstance(t *testing.T, repo *Repository, name string, now time.Time) int64 {
 	t.Helper()
 	ctx := t.Context()
@@ -42,6 +42,8 @@ func seedForgetInstance(t *testing.T, repo *Repository, name string, now time.Ti
 		{`INSERT INTO candidate_rejections(media_id,language,provider_id,result_id,candidate_signature,reason_code,tool_signature,media_path,media_file_id,media_size,media_mod_time_ns,rejected_at_ns,expires_at_ns) VALUES (?,'en','p','r','sig','content','tool','/media/show.mkv',42,100,1,1,0)`, []any{mediaID}},
 		{`INSERT INTO events(event_type,media_id,created_at_ns) VALUES (?,?,1)`, []any{"unattributed-" + name, mediaID}},
 		{`INSERT INTO reconciliation_replays(event_id,instance) VALUES (?,?)`, []any{"replay-" + name, name}},
+		{`INSERT INTO webhook_inbox(instance,body,received_at_ns) VALUES (?,'{}',1)`, []any{name}},
+		{`INSERT INTO pending_installs(media_id,language,destination,checksum,created_at_ns) VALUES (?,'en','/media/show.en.srt','sum',1)`, []any{mediaID}},
 	} {
 		if _, err := repo.store.db.Exec(statement.sql, statement.args...); err != nil {
 			t.Fatal(err)
@@ -64,6 +66,8 @@ func countForgetRows(t *testing.T, repo *Repository, name string) map[string]int
 		"unattributed":  `SELECT count(*) FROM events WHERE event_type='unattributed-' || ?1`,
 		"notifications": `SELECT count(*) FROM notifications WHERE json_extract(payload_json,'$.media.ref.instance')=?1`,
 		"replays":       `SELECT count(*) FROM reconciliation_replays WHERE instance=?1`,
+		"webhooks":      `SELECT count(*) FROM webhook_inbox WHERE instance=?1`,
+		"pending":       `SELECT count(*) FROM pending_installs JOIN media ON media.id=pending_installs.media_id WHERE media.instance=?1`,
 	} {
 		var count int
 		if err := repo.store.db.QueryRow(query, name).Scan(&count); err != nil {
@@ -96,6 +100,10 @@ func TestForgetInstanceRemovesOnlyThatInstance(t *testing.T) {
 		if count == 0 {
 			t.Errorf("sonarr-main %s were removed", label)
 		}
+	}
+	var pending int
+	if err := repo.store.db.QueryRow(`SELECT count(*) FROM pending_installs`).Scan(&pending); err != nil || pending != 1 {
+		t.Fatalf("pending installs = %d/%v, want only sonarr-main's", pending, err)
 	}
 }
 

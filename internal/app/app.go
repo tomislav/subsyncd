@@ -76,11 +76,13 @@ type App struct {
 	LapseRunner syncer.Runner
 	ProbeRunner inventory.CommandRunner
 	Worker      Runner
-	Handler     http.Handler
-	Listener    net.Listener
-	Events      *observability.Emitter
-	Command     string
-	Clock       provider.Clock
+	// Webhooks applies accepted webhooks in the background while serving.
+	Webhooks *catalog.WebhookInbox
+	Handler  http.Handler
+	Listener net.Listener
+	Events   *observability.Emitter
+	Command  string
+	Clock    provider.Clock
 
 	mutationRelease func()
 	readOnly        bool
@@ -225,6 +227,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	if events == nil {
 		events = observability.Discard()
 	}
+	repository = repository.WithEvents(events)
 	httpClient := options.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -293,6 +296,11 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	sort.Strings(notifierNames)
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner, MediaRoots: cfg.MediaRoots}}
 	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
+	// Holding the mutation lock, no other process can be mid-install: any
+	// pending install was interrupted by a crash.
+	if _, err := installer.RecoverPendingInstalls(ctx); err != nil {
+		events.For("app").Log(ctx, slog.LevelWarn, "install.recovery_incomplete", "some interrupted subtitle installs could not be settled; retried at the next start", events.ErrorAttrs("pending_install", err)...)
+	}
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
 	// Languages share providers, so a refusal confirms across all of them.
 	refusals := &workflow.RefusalLedger{}
@@ -327,7 +335,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		}
 	}
 	reconcilers := make(map[string]catalog.Reconciler, len(cfg.Instances))
-	webhookInstances := make(map[string]httpapi.Instance, len(cfg.Instances))
+	webhookHandlers := make(map[string]catalog.WebhookHandler, len(cfg.Instances))
 	for _, instance := range cfg.Instances {
 		arrCatalog := catalogs[instance.Name]
 		reconciliationCatalog, ok := arrCatalog.(catalog.ReconciliationCatalog)
@@ -340,7 +348,12 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		}
 		reconciler := catalog.Reconciler{Instance: instance.Name, Kind: kind, LibraryScope: libraryDiscoveryScope(instance, cfg.MediaRoots), Catalog: reconciliationCatalog, Store: repository, Languages: languages, Now: clock.Now, OnCommitted: notify, Events: events}
 		reconcilers[instance.Name] = reconciler
-		webhookInstances[instance.Name] = httpapi.Instance{Token: instance.WebhookToken, Handler: catalog.WebhookHandler{Instance: instance.Name, InstanceType: instance.Type, Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnApplied: notify}}
+		webhookHandlers[instance.Name] = catalog.WebhookHandler{Instance: instance.Name, InstanceType: instance.Type, Catalog: arrCatalog, Store: repository, Languages: languages, Now: clock.Now, OnApplied: notify}
+	}
+	webhooks := &catalog.WebhookInbox{Store: repository, Handlers: webhookHandlers, Now: clock.Now, Events: events}
+	webhookInstances := make(map[string]httpapi.Instance, len(cfg.Instances))
+	for _, instance := range cfg.Instances {
+		webhookInstances[instance.Name] = httpapi.Instance{Token: instance.WebhookToken, Handler: webhooks.Handler(instance.Name)}
 	}
 
 	reconcilerInterfaces := make(map[string]worker.Reconciler, len(reconcilers))
@@ -358,10 +371,10 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			resumeRoutes[language] = store.ProviderResumeRoute{Signature: service.RouteSignature(language), Providers: cfg.Languages[language].AllProviders()}
 		}
 		workerRepository := repository.WithSearchScope(instances, languages).WithProviderResumeRoutes(resumeRoutes)
-		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events}
+		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events, MediaRoots: cfg.MediaRoots}
 	}
 
-	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Listener: options.Listener, Events: events, Clock: clock}
+	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, Listener: options.Listener, Events: events, Clock: clock}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
@@ -530,6 +543,14 @@ func (a *App) Serve(ctx context.Context) error {
 	defer func() { cacheTicker.Stop(); stopCache(); <-cacheDone }()
 	serverDone := make(chan error, 1)
 	workerDone := make(chan error, 1)
+	webhooksDone := make(chan struct{})
+	go func() {
+		defer close(webhooksDone)
+		if a.Webhooks != nil {
+			a.Webhooks.Run(runCtx)
+		}
+	}()
+	defer func() { <-webhooksDone }()
 	go func() { serverDone <- server.Serve(listener) }()
 	go func() { workerDone <- a.Worker.Run(runCtx) }()
 
@@ -718,7 +739,7 @@ func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, l
 	}
 	if !active && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
 		// The revival queued this language too; this run already answered it.
-		if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome)); err != nil {
+		if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome), a.Clock.Now()); err != nil {
 			return "", err
 		}
 	}
