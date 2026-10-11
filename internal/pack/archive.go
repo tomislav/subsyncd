@@ -104,14 +104,17 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 			return Manifest{}, &ContentError{Err: err}
 		}
 		memberExtension := filepath.Ext(safeName)
+		var text []byte
+		var extension string
 		if strings.EqualFold(memberExtension, ".sub") {
-			decoded, err := decodeText(raw.body)
+			decoded, err := decodeSubtitle(raw.body)
 			if err != nil || !isMicroDVD(decoded) {
 				// A binary VobSub .sub (with its .idx) is not a text
 				// subtitle; it is ignored like any other extra file.
 				continue
 			}
-			if _, err := microDVDToSRT(decoded); err != nil {
+			converted, err := microDVDToSRT(decoded)
+			if err != nil {
 				// Nor is a MicroDVD file without a usable frame rate an
 				// unreadable subtitle that makes selection doubt the rest:
 				// it is ignored, and only explains an archive with nothing
@@ -121,8 +124,10 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 				}
 				continue
 			}
+			text, extension, err = validateSubtitle(converted, ".srt")
+		} else {
+			text, extension, err = normalizeSubtitle(raw.body, memberExtension)
 		}
-		text, extension, err := normalizeSubtitle(raw.body, memberExtension)
 		if err != nil {
 			// One unreadable file must not cost the other episodes in a
 			// season pack; selection decides whether the target is here.
@@ -417,13 +422,10 @@ func HasArchiveMagic(payload []byte) bool {
 }
 
 func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error) {
-	text, err := decodeText(payload)
+	text, err := decodeSubtitle(payload)
 	if err != nil {
 		return nil, "", err
 	}
-	text = bytes.ReplaceAll(text, []byte("\r\n"), []byte("\n"))
-	text = bytes.ReplaceAll(text, []byte("\r"), []byte("\n"))
-	text = bytes.TrimPrefix(text, []byte{0xef, 0xbb, 0xbf})
 	extension = strings.ToLower(extension)
 	if extension == ".sub" || extension == "" && isMicroDVD(text) {
 		converted, err := microDVDToSRT(text)
@@ -432,6 +434,25 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 		}
 		text, extension = converted, ".srt"
 	}
+	return validateSubtitle(text, extension)
+}
+
+// decodeSubtitle decodes a subtitle's text to UTF-8 with "\n" line endings
+// (CR-only files included) and no byte order mark.
+func decodeSubtitle(payload []byte) ([]byte, error) {
+	text, err := decodeText(payload)
+	if err != nil {
+		return nil, err
+	}
+	text = bytes.ReplaceAll(text, []byte("\r\n"), []byte("\n"))
+	text = bytes.ReplaceAll(text, []byte("\r"), []byte("\n"))
+	return bytes.TrimPrefix(text, []byte{0xef, 0xbb, 0xbf}), nil
+}
+
+// validateSubtitle parses decoded text as extension (or the first format that
+// reads it when extension is empty), then repairs and orders its cues.
+func validateSubtitle(text []byte, extension string) ([]byte, string, error) {
+	var err error
 	var subtitles *astisub.Subtitles
 	parse := func(ext string) (*astisub.Subtitles, error) {
 		switch ext {
@@ -478,9 +499,9 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 		return nil, "", err
 	}
 	repaired, err := subtitleorder.Repair(text, extension, cues)
-	if errors.Is(err, subtitleorder.ErrUnsafe) && startsInOrder(subtitles.Items, cues) {
+	if errors.Is(err, subtitleorder.ErrUnsafe) && onlyTidies(subtitles.Items, cues) {
 		// The records could not be matched to the cues for a repair that only
-		// tidies up (an unclosed <i>, an empty or retimed cue); the file
+		// tidies up (an unclosed <i>, an empty or repeated cue); the file
 		// plays as it is, so keep it rather than reject it.
 		return text, extension, nil
 	}
@@ -490,15 +511,16 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 	return repaired, extension, nil
 }
 
-// startsInOrder reports whether the cues a repair keeps already start in file
-// order as parsed, so the subtitle needs no reordering.
-func startsInOrder(items []*astisub.Item, cues []subtitleorder.Cue) bool {
+// onlyTidies reports whether the cues a repair keeps already start in file
+// order as parsed and none needs new times (a mistyped start, or an end before
+// its start), so the subtitle plays correctly without the repair.
+func onlyTidies(items []*astisub.Item, cues []subtitleorder.Cue) bool {
 	var previous time.Duration
 	for i, item := range items {
 		if cues[i].Drop {
 			continue
 		}
-		if item.StartAt < previous {
+		if cues[i].Retime || item.EndAt < item.StartAt || item.StartAt < previous {
 			return false
 		}
 		previous = item.StartAt

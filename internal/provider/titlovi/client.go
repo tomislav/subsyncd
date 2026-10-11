@@ -72,6 +72,12 @@ func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
 
+// RecordDownloadRefusal pauses downloads after one delivered a limit or login
+// message instead of a subtitle.
+func (c *Client) RecordDownloadRefusal(ctx context.Context) error {
+	return c.transport.RecordDownloadRefusal(ctx)
+}
+
 func (c *Client) SearchCacheVersion() string { return "titlovi-evidence-v2" }
 
 func (c *Client) Capabilities() baseprovider.Capabilities {

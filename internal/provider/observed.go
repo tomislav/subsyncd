@@ -84,6 +84,10 @@ func (p *observedProvider) CheckDownloadAvailability(ctx context.Context) error 
 	return CheckDownloadAvailability(ctx, p.Provider)
 }
 
+func (p *observedProvider) RecordDownloadRefusal(ctx context.Context) error {
+	return RecordDownloadRefusal(ctx, p.Provider)
+}
+
 func (p *observedProvider) CheckSearchAvailability(ctx context.Context) error {
 	return CheckSearchAvailability(ctx, p.Provider)
 }

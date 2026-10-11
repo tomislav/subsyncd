@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 // DownloadAvailability is an optional, read-only preflight for acquisition.
@@ -15,6 +16,22 @@ type DownloadAvailability interface {
 // SearchAvailability is checked only when reusable search results are absent.
 type SearchAvailability interface {
 	CheckSearchAvailability(context.Context) error
+}
+
+// DownloadRefusalRecorder is an optional hook for a download that delivered
+// the provider's limit or login message instead of a subtitle. It pauses the
+// provider's downloads and returns the CooldownError to report.
+type DownloadRefusalRecorder interface {
+	RecordDownloadRefusal(context.Context) error
+}
+
+// RecordDownloadRefusal pauses p's downloads after a refused download. It
+// returns nil when p cannot record a cooldown.
+func RecordDownloadRefusal(ctx context.Context, p Provider) error {
+	if recorder, ok := p.(DownloadRefusalRecorder); ok {
+		return recorder.RecordDownloadRefusal(ctx)
+	}
+	return nil
 }
 
 // AvailabilityError keeps state-store read/write failures terminal across tiers.
@@ -97,4 +114,23 @@ func (g *Gate) checkAvailability(ctx context.Context, providerID string, include
 		return blocked
 	}
 	return nil
+}
+
+// downloadRefusalWindow is how long downloads pause after a refused download
+// when the provider has no known quota reset.
+const downloadRefusalWindow = time.Hour
+
+// RecordDownloadRefusal persists a download cooldown until the provider's
+// known download quota reset, or for an hour, and returns it as a
+// CooldownError.
+func (c Client) RecordDownloadRefusal(ctx context.Context) error {
+	resetAt := FallbackReset(c.Clock.Now(), c.ProviderType, CooldownDownloadQuota)
+	if resetAt.IsZero() {
+		resetAt = c.Clock.Now().Add(downloadRefusalWindow)
+	}
+	resetAt, err := c.PersistCooldown(ctx, OperationDownload, CooldownDownloadQuota, resetAt)
+	if err != nil {
+		return err
+	}
+	return &CooldownError{ProviderID: c.ProviderID, Scope: OperationDownload, Reason: string(CooldownDownloadQuota), ResetAt: resetAt}
 }

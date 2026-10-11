@@ -328,12 +328,58 @@ func TestRetryThrottledSearchesMakesThemDue(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	retried, err := repo.RetryThrottledSearches(ctx, now)
+	retried, err := repo.RetryThrottledSearches(ctx, now, []domain.Language{"en", "hr", "pt"})
 	if err != nil || retried != 2 {
 		t.Fatalf("retried = %d, %v; want the two throttled searches", retried, err)
 	}
 	due, err := repo.LeaseDueSearches(ctx, now, 3, time.Minute)
 	if err != nil || len(due) != 2 || due[0].Language == "pt" || due[1].Language == "pt" {
 		t.Fatalf("due = %+v, %v; want en and hr", due, err)
+	}
+}
+
+func TestRetryThrottledSearchesLeavesDeletedLeasedAndUnconfigured(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	repo := openTestRepository(t)
+	kept := insertTestMedia(t, repo, 1, now)
+	deleted := insertTestMedia(t, repo, 2, now)
+	queued := now.Add(-2 * time.Hour)
+	for _, language := range []domain.Language{"en", "hr", "pt"} {
+		requireSearchState(t, repo, kept, language, queued, SearchPriorityMissing)
+	}
+	requireSearchState(t, repo, deleted, "en", queued, SearchPriorityMissing)
+	leases, err := repo.LeaseDueSearches(ctx, now, 4, time.Minute)
+	if err != nil || len(leases) != 4 {
+		t.Fatalf("leases = %d, %v", len(leases), err)
+	}
+	for _, lease := range leases {
+		next := now.Add(6 * time.Hour)
+		if lease.MediaID == kept && lease.Language == "en" {
+			next = now.Add(30 * time.Minute)
+		}
+		if _, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: lease.JobID, Outcome: "throttled", NextAttemptAt: next, PreserveQueueOrder: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := repo.store.db.ExecContext(ctx, `UPDATE media SET deleted=1 WHERE id=?`, deleted); err != nil {
+		t.Fatal(err)
+	}
+	// The throttled en search is leased again; its lease has expired by the
+	// retry below, but the worker that owns it completes it.
+	if leased, err := repo.LeaseDueSearches(ctx, now.Add(30*time.Minute), 4, time.Minute); err != nil || len(leased) != 1 || leased[0].Language != "en" {
+		t.Fatalf("leased = %+v, %v; want the en search", leased, err)
+	}
+	// pt is no longer configured.
+	retried, err := repo.RetryThrottledSearches(ctx, now.Add(time.Hour), []domain.Language{"en", "hr"})
+	if err != nil || retried != 1 {
+		t.Fatalf("retried = %d, %v; want only hr: configured, unleased and of live media", retried, err)
+	}
+	var next int64
+	if err := repo.store.db.QueryRowContext(ctx, `SELECT next_attempt_at_ns FROM search_states WHERE media_id=? AND language='hr'`, kept).Scan(&next); err != nil || next != now.Add(time.Hour).UnixNano() {
+		t.Fatalf("hr next attempt = %d, %v; want it due", next, err)
+	}
+	if retried, err := repo.RetryThrottledSearches(ctx, now, nil); err != nil || retried != 0 {
+		t.Fatalf("retried = %d, %v with no languages", retried, err)
 	}
 }

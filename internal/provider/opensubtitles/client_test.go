@@ -736,3 +736,38 @@ func TestQuotaResetIsClampedToMaximumCooldown(t *testing.T) {
 		t.Fatalf("error = %v, want quota reset %s", err, want)
 	}
 }
+
+func TestSignedDownloadRedirectRefusalIsNotAProviderOutage(t *testing.T) {
+	for name, location := range map[string]string{
+		"redirect loop":  "https://cdn.example.test/signed",
+		"plain HTTP hop": "http://plain.example.test/file",
+	} {
+		t.Run(name, func(t *testing.T) {
+			hops := 0
+			c := reviewClient(t, func(r *http.Request) (*http.Response, error) {
+				switch {
+				case r.URL.Path == "/api/v1/login":
+					return reviewResponse(r, 200, `{"token":"token"}`), nil
+				case r.URL.Path == "/api/v1/download":
+					return reviewResponse(r, 200, `{"link":"https://cdn.example.test/signed","file_name":"sub.srt"}`), nil
+				default:
+					hops++
+					response := reviewResponse(r, http.StatusFound, "")
+					response.Header.Set("Location", location)
+					return response, nil
+				}
+			})
+			_, err := c.Download(context.Background(), domain.Candidate{DownloadRef: "1"}, io.Discard)
+			var redirect *baseprovider.RedirectError
+			if !errors.As(err, &redirect) {
+				t.Fatalf("error = %T %v; want a redirect refusal", err, err)
+			}
+			if name == "redirect loop" && hops != baseprovider.MaxDownloadRedirects {
+				t.Fatalf("followed %d hops; want %d", hops, baseprovider.MaxDownloadRedirects)
+			}
+			if err := c.CheckDownloadAvailability(context.Background()); err != nil {
+				t.Fatalf("download availability = %v; a refused redirect is not a provider outage", err)
+			}
+		})
+	}
+}

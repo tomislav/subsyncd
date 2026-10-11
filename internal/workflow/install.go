@@ -98,14 +98,19 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err != nil {
 		return store.Installation{}, err
 	}
-	payload, err := validatedSubtitle(request.SourcePath, request.Media)
+	payload, err := readSubtitleSource(request.SourcePath)
 	if err != nil {
 		return store.Installation{}, err
 	}
-	// The recorded checksum is of the stripped text, so the installed file
-	// still counts as managed and unedited.
+	// Advert cues are stripped before validation, so one placed past the end
+	// of the media does not fail the overrun check, and the text validated is
+	// the text installed. The recorded checksum is of the stripped text, so
+	// the installed file still counts as managed and unedited.
 	if i.StripWatermarks {
 		payload = watermark.Strip(filepath.Ext(request.SourcePath), payload)
+	}
+	if err := validateSubtitlePayload(request.SourcePath, payload, request.Media); err != nil {
+		return store.Installation{}, err
 	}
 	existing, found, err := i.Repository.GetInstallation(ctx, request.MediaID, request.Language)
 	if err != nil {
@@ -221,6 +226,11 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 		return restore(err)
 	}
 	if err := verifyMediaUnchanged(request.Media.Fingerprint, i.MediaRoots); err != nil {
+		return restore(err)
+	}
+	// A job abandoned past its time limit keeps running with a canceled
+	// context; it must not publish after its search was completed.
+	if err := ctx.Err(); err != nil {
 		return restore(err)
 	}
 	if err := i.publishStaged(stagedPath, destination, replacing); err != nil {
@@ -398,7 +408,19 @@ func containedDestination(path string, roots []string) (string, string, error) {
 }
 
 func validatedSubtitle(path string, media domain.Media) ([]byte, error) {
-	mediaDuration := media.Duration
+	payload, err := readSubtitleSource(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSubtitlePayload(path, payload, media); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// readSubtitleSource reads an installation source that is a regular UTF-8
+// text file of a sensible size.
+func readSubtitleSource(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("installation source is not a regular file")
@@ -413,18 +435,25 @@ func validatedSubtitle(path string, media domain.Media) ([]byte, error) {
 	if !utf8.Valid(payload) || bytes.IndexByte(payload, 0) >= 0 {
 		return nil, &subtitleValidationError{reason: "installation source is not UTF-8 text"}
 	}
+	return payload, nil
+}
+
+// validateSubtitlePayload checks the syntax and timing of the text that will
+// be installed, against the media's duration.
+func validateSubtitlePayload(path string, payload []byte, media domain.Media) error {
+	mediaDuration := media.Duration
 	subtitles, supported, err := parseSubtitlePayload(path, payload)
 	if !supported {
-		return nil, &subtitleValidationError{reason: "installation source has unsupported extension"}
+		return &subtitleValidationError{reason: "installation source has unsupported extension"}
 	}
 	if err != nil || subtitles == nil || len(subtitles.Items) == 0 || len(subtitles.Items) > 100_000 {
-		return nil, &subtitleValidationError{reason: "installation source subtitle syntax is invalid"}
+		return &subtitleValidationError{reason: "installation source subtitle syntax is invalid"}
 	}
 	previous := subtitles.Items[0].StartAt
 	var last time.Duration
 	for _, item := range subtitles.Items {
 		if item.StartAt < 0 || item.EndAt < item.StartAt || item.StartAt < previous {
-			return nil, &subtitleValidationError{reason: "installation source timestamps are invalid"}
+			return &subtitleValidationError{reason: "installation source timestamps are invalid"}
 		}
 		previous = item.StartAt
 		if item.EndAt > last {
@@ -432,12 +461,9 @@ func validatedSubtitle(path string, media domain.Media) ([]byte, error) {
 		}
 	}
 	if mediaDuration > 0 && last > mediaDuration+5*time.Minute {
-		return nil, &subtitleValidationError{reason: "installation source extends more than five minutes past media duration"}
+		return &subtitleValidationError{reason: "installation source extends more than five minutes past media duration"}
 	}
-	if err := rangeCoverageError(last, media); err != nil {
-		return nil, err
-	}
-	return payload, nil
+	return rangeCoverageError(last, media)
 }
 
 // checkRangeCoverage rejects a subtitle for a multi-episode file whose last

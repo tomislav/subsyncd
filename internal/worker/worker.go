@@ -41,6 +41,12 @@ const (
 // errJobTimedOut ends a search job that ran past Worker.JobTimeout.
 var errJobTimedOut = errors.New("subtitle job exceeded its time limit")
 
+// defaultJobGrace is how long a search job may take to return after its time
+// limit cancels it. A workflow blocked in a call that ignores cancellation (a
+// read on a hung mount) is abandoned after it, so it cannot hold the worker
+// slot forever.
+const defaultJobGrace = 2 * time.Minute
+
 type Clock interface{ Now() time.Time }
 
 type Workflow interface {
@@ -98,8 +104,9 @@ type Worker struct {
 	RenewInterval     time.Duration
 	ShutdownTimeout   time.Duration
 	ReconcileInterval time.Duration
-	// JobTimeout cancels a search job that runs longer, stops renewing its
-	// lease and schedules it as a failure; 0 uses defaultJobTimeout.
+	// JobTimeout cancels a search job that runs longer and schedules it as a
+	// failure, abandoning it defaultJobGrace later if it has not returned;
+	// 0 uses defaultJobTimeout.
 	JobTimeout        time.Duration
 	SearchBatch       int
 	MaxWorkflows      int
@@ -117,6 +124,8 @@ type Worker struct {
 	mediaFailures     int
 	mediaPause        time.Duration
 	mediaPausedUntil  time.Time
+	// jobGrace overrides defaultJobGrace in tests.
+	jobGrace time.Duration
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -292,6 +301,10 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 	if limit <= 0 {
 		limit = defaultJobTimeout
 	}
+	grace := w.jobGrace
+	if grace <= 0 {
+		grace = defaultJobGrace
+	}
 	timeoutCtx, cancelTimeout := context.WithTimeoutCause(ctx, limit, errJobTimedOut)
 	defer cancelTimeout()
 	jobCtx, cancelJob := context.WithCancel(timeoutCtx)
@@ -317,7 +330,9 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		jobCtx = observability.WithAttrs(jobCtx, slog.String("media_title", observability.MediaTitle(media)))
 	}
 	events.Log(jobCtx, slog.LevelInfo, "job.started", "subtitle job started")
-	renewal := w.renewSearchLease(jobCtx, cancelJob, lease.JobID)
+	// Renewal is not bound to the time limit: the lease stays ours until the
+	// workflow returns or is abandoned, so the timeout is recorded as owner.
+	renewal := w.renewSearchLease(ctx, cancelJob, lease.JobID)
 	var result workflow.Result
 	if err == nil {
 		if media.UnsupportedReason != "" {
@@ -347,17 +362,34 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			request.ResumeProviders = append([]string(nil), lease.ResumeProviders...)
 			request.ResumeRouteSignature = lease.ResumeRouteSignature
 		}
-		result, err = w.Workflow.Run(workflowCtx, request)
+		var abandoned bool
+		result, abandoned, err = w.runWorkflow(workflowCtx, request, limit+grace)
+		if abandoned {
+			// The workflow ignored cancellation; its goroutine keeps running
+			// with a canceled context, which stops it before it publishes.
+			err = fmt.Errorf("%w (%s, abandoned after a further %s)", errJobTimedOut, limit, grace)
+		}
 	}
+	timedOut := context.Cause(timeoutCtx) == errJobTimedOut && ctx.Err() == nil
 	if renewErr := renewal.finish(); renewErr != nil {
-		events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
-		return renewErr
+		if !timedOut || !errors.Is(renewErr, context.DeadlineExceeded) {
+			events.Log(jobCtx, slog.LevelWarn, "job.lease_lost", "subtitle job lease was lost", events.ErrorAttrs("lease_renewal", renewErr)...)
+			return renewErr
+		}
+		// A renewal cut short by the job's own deadline is the timeout, not
+		// a lost lease.
 	}
-	if context.Cause(timeoutCtx) == errJobTimedOut && ctx.Err() == nil {
-		// The lease is still ours until it expires: record the failure so the
-		// search retries on the failure schedule instead of at once.
-		err = fmt.Errorf("%w (%s)", errJobTimedOut, limit)
-		events.Log(jobCtx, slog.LevelWarn, "job.timed_out", "subtitle job exceeded its time limit", slog.Duration("limit", limit))
+	if timedOut {
+		// A workflow that still returned a result in time keeps it; one that
+		// failed or was abandoned is recorded as a timeout while the lease is
+		// still ours, so the search retries on the failure schedule instead of
+		// at once.
+		if err != nil {
+			if !errors.Is(err, errJobTimedOut) {
+				err = fmt.Errorf("%w (%s)", errJobTimedOut, limit)
+			}
+			events.Log(jobCtx, slog.LevelWarn, "job.timed_out", "subtitle job exceeded its time limit", slog.Duration("limit", limit))
+		}
 		jobCtx = context.WithoutCancel(jobCtx)
 	}
 	if jobCtx.Err() != nil {
@@ -397,6 +429,28 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 	w.logRerun(jobCtx, completionResult)
 	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, completionResult.ResumeProviderCount, nil, w.releaseAttrs(media, completion)...)
 	return nil
+}
+
+// runWorkflow runs the workflow and waits for it at most wait. abandoned
+// reports that it had not returned by then.
+func (w *Worker) runWorkflow(ctx context.Context, request workflow.Request, wait time.Duration) (result workflow.Result, abandoned bool, err error) {
+	type outcome struct {
+		result workflow.Result
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := w.Workflow.Run(ctx, request)
+		done <- outcome{result, err}
+	}()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case finished := <-done:
+		return finished.result, false, finished.err
+	case <-timer.C:
+		return workflow.Result{}, true, nil
+	}
 }
 
 func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Result, media domain.Media) (store.SearchCompletion, error) {

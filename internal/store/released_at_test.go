@@ -195,3 +195,37 @@ func TestMediaReleaseDateBeforeNineteenSeventyIsKnown(t *testing.T) {
 		t.Fatalf("after undated update = %s err=%v, want %s", got.ReleasedAt, err, released)
 	}
 }
+
+func TestLibraryDiscoveryKeepsTheRuntimeOfAReplacedFile(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx, at := t.Context(), time.Now().UTC()
+	if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://sonarr", at); err != nil {
+		t.Fatal(err)
+	}
+	media := testMedia()
+	media.Duration = 42 * time.Minute
+	if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "initial", Type: "import", Ref: media.Ref, EntityID: media.EntityID, Media: media, Languages: []domain.Language{"hr"}, At: at}); err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := repo.FindMedia(ctx, media.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sonarr replaced the file and the webhook was missed: the entity matches
+	// the stored row, but its runtime is the new file's.
+	listed := media
+	listed.Ref.FileID, listed.Fingerprint.FileID = 43, 43
+	listed.Fingerprint.Path = "/media/show.proper.mkv"
+	listed.Duration = 44 * time.Minute
+	_, revision, err := repo.LibraryDiscoveryState(ctx, "sonarr-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CommitLibraryDiscovery(ctx, "sonarr-main", "scope", revision, []domain.Media{listed}, []domain.Language{"hr"}, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetMedia(ctx, id)
+	if err != nil || got.Duration != media.Duration {
+		t.Fatalf("duration = %s err=%v; the old file's row keeps %s", got.Duration, err, media.Duration)
+	}
+}

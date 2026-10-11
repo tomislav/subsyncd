@@ -125,17 +125,53 @@ func TestRepairReadsCuesLikeTheParser(t *testing.T) {
 }
 
 func TestUnsafeRepairKeepsAnOrderedSubtitleAsItIs(t *testing.T) {
-	// Two-digit milliseconds parse, but the timing cannot be rewritten; the
-	// backwards cue plays as it is rather than losing the subtitle.
-	body := "1\n00:00:05,00 --> 00:00:04,000\nA\n\n2\n00:00:07,000 --> 00:00:08,000\nB\n"
+	// "1984" before the next timing line reads as that cue's index, so closing
+	// the <i> cannot rewrite the records without losing it; the cues already
+	// play in order, so the subtitle is kept as it is.
+	body := "1\n00:00:01,000 --> 00:00:02,000\n<i>The year was\n1984\n00:00:05,000 --> 00:00:06,000\nLater\n"
 	if got := normalizedMember(t, "Show.S01E01.srt", body); got != body {
 		t.Fatalf("normalized =\n%q\nwant it unchanged", got)
 	}
 	// When the cues also need reordering, the subtitle is still rejected.
-	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: "1\n00:00:05,00 --> 00:00:04,000\nA\n\n2\n00:00:01,000 --> 00:00:02,000\nB\n"}})
+	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: "1\n00:00:05,000 --> 00:00:06,000\nThe year was\n1984\n00:00:01,000 --> 00:00:02,000\nFirst\n"}})
 	var content *ContentError
 	if !errors.As(err, &content) || !strings.Contains(err.Error(), "out of order") {
 		t.Fatalf("error = %v; want the out-of-order rejection", err)
+	}
+}
+
+func TestUnsafeRetimeIsRejected(t *testing.T) {
+	// Two-digit milliseconds, colon milliseconds and no milliseconds parse,
+	// but such a timing cannot be rewritten: a cue that ends before it starts
+	// cannot be kept as it is, since install rejects it.
+	for name, body := range map[string]string{
+		"two-digit milliseconds": "1\n00:00:05,00 --> 00:00:04,00\nA\n\n2\n00:00:07,00 --> 00:00:08,00\nB\n",
+		"colon milliseconds":     "1\n00:00:05:000 --> 00:00:04:000\n<i>A\n\n2\n00:00:07:000 --> 00:00:08:000\nB\n",
+		"no milliseconds":        "1\n00:00:05 --> 00:00:04\nA\n\n2\n00:00:07 --> 00:00:08\nB\n",
+	} {
+		_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: body}})
+		var content *ContentError
+		if !errors.As(err, &content) {
+			t.Errorf("%s: error = %v; want a content rejection", name, err)
+		}
+	}
+}
+
+func TestNonNumericIndexStaysOutOfTheText(t *testing.T) {
+	body := "1.\n00:00:05,000 --> 00:00:06,000\nSecond\n\n2.\n00:00:01,000 --> 00:00:02,000\nFirst\n"
+	want := "1\n00:00:01,000 --> 00:00:02,000\nFirst\n\n2\n00:00:05,000 --> 00:00:06,000\nSecond\n"
+	if got := normalizedMember(t, "Show.S01E01.srt", body); got != want {
+		t.Fatalf("normalized =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestCarriageReturnMicroDVDIsConverted(t *testing.T) {
+	manifest, _, err := extractZIP(t, []zipEntry{{name: "Movie.sub", body: "{1}{1}25.000\r{25}{50}Hello\r{60}{90}World\r"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Members) != 1 {
+		t.Fatalf("members = %d; want the CR-only MicroDVD file converted", len(manifest.Members))
 	}
 }
 

@@ -110,3 +110,34 @@ func TestRepairWebVTTCueEndsAtBlankLine(t *testing.T) {
 		t.Fatalf("Reorder() = %q, %v\nwant %q", got, err, want)
 	}
 }
+
+func TestRepairTakesTheLineBeforeATimingLineAsTheIndex(t *testing.T) {
+	// astisub drops the line before a timing line as the index whatever it
+	// says, so "2." must not end up in the text of the cue before it.
+	in := "1.\n00:00:05,000 --> 00:00:06,000\nSecond\n\n2.\n00:00:01,000 --> 00:00:02,000\nFirst\n"
+	want := "1\n00:00:01,000 --> 00:00:02,000\nFirst\n\n2\n00:00:05,000 --> 00:00:06,000\nSecond\n"
+	got, err := Reorder([]byte(in), ".srt", []time.Duration{5 * time.Second, time.Second})
+	if err != nil || string(got) != want {
+		t.Fatalf("Reorder() = %q, %v\nwant %q", got, err, want)
+	}
+	in = "1.\n00:00:01,000 --> 00:00:02,000\n<i>First\n\n2.\n00:00:05,000 --> 00:00:06,000\nSecond\n"
+	want = "1\n00:00:01,000 --> 00:00:02,000\n<i>First</i>\n\n2\n00:00:05,000 --> 00:00:06,000\nSecond\n"
+	got, err = Repair([]byte(in), ".srt", []Cue{{Start: time.Second, End: 2 * time.Second}, {Start: 5 * time.Second, End: 6 * time.Second}})
+	if err != nil || string(got) != want {
+		t.Fatalf("Repair() = %q, %v\nwant %q", got, err, want)
+	}
+}
+
+func TestRepairRefusesToLoseANumericLastLineOfText(t *testing.T) {
+	// "1984" directly before a timing line reads as the next cue's index, but
+	// it is not the next cue number: rewriting would drop it.
+	in := "1\n00:00:05,000 --> 00:00:06,000\nThe year was\n1984\n00:00:01,000 --> 00:00:02,000\nFirst\n"
+	_, err := Reorder([]byte(in), ".srt", []time.Duration{5 * time.Second, time.Second})
+	if !errors.Is(err, ErrUnsafe) {
+		t.Fatalf("Reorder() error = %v; want ErrUnsafe", err)
+	}
+	ordered := "1\n00:00:01,000 --> 00:00:02,000\nThe year was\n1984\n00:00:05,000 --> 00:00:06,000\nLater\n"
+	if got, err := Reorder([]byte(ordered), ".srt", []time.Duration{time.Second, 5 * time.Second}); err != nil || string(got) != ordered {
+		t.Fatalf("ordered text changed: %q, %v", got, err)
+	}
+}

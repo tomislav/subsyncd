@@ -742,7 +742,8 @@ func (a *App) Retry(ctx context.Context, providerID string) (string, error) {
 	}
 	// Throttled searches do not record which provider held them back, so all
 	// of them become due; one still blocked elsewhere is throttled again.
-	retried, err := a.Repository.RetryThrottledSearches(ctx, a.Clock.Now())
+	// Languages no longer configured are never leased, so they stay as they are.
+	retried, err := a.Repository.RetryThrottledSearches(ctx, a.Clock.Now(), sortedLanguages(a.Config))
 	if err != nil {
 		return "", err
 	}

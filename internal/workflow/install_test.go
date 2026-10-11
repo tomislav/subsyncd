@@ -773,3 +773,19 @@ func TestFreshInstallKeepsPublishedLinkWhenStagingCleanupFails(t *testing.T) {
 		t.Fatalf("published subtitle was not recorded: record calls = %d", repository.recordCalls)
 	}
 }
+
+func TestInstallerDoesNotPublishForACanceledJob(t *testing.T) {
+	// A job abandoned past its time limit runs on with a canceled context.
+	root := t.TempDir()
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+	request := installRequest(t, source, filepath.Join(root, "Movie.en.srt"))
+	installer := Installer{Repository: &installationRepository{}, MediaRoots: []string{root, filepath.Dir(request.Media.Fingerprint.Path)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := installer.Install(ctx, request); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v; want the cancellation", err)
+	}
+	if _, err := os.Lstat(request.DestinationPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination exists (%v); a canceled job must not publish", err)
+	}
+}

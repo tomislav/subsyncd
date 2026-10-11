@@ -50,3 +50,28 @@ func TestInstallerKeepsWatermarksByDefault(t *testing.T) {
 		t.Fatalf("installed %q; want the subtitle unchanged when stripping is off", payload)
 	}
 }
+
+func TestInstallerStripsWatermarksBeforeTheOverrunCheck(t *testing.T) {
+	// The advert cue at 01:52:08 is more than five minutes past a 100-minute
+	// film; without it the subtitle fits.
+	root := t.TempDir()
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), watermarkedSRT)
+	request := installRequest(t, source, filepath.Join(root, "Movie.hr.srt"))
+	request.Media.Duration = 100 * time.Minute
+	installer := Installer{Repository: &installationRepository{}, MediaRoots: []string{root, filepath.Dir(request.Media.Fingerprint.Path)}, StripWatermarks: true}
+	installation, err := installer.Install(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(installation.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != string(watermark.Strip(".srt", []byte(watermarkedSRT))) {
+		t.Fatalf("installed %q; want the stripped subtitle", payload)
+	}
+	// Without stripping, the advert still fails the check.
+	if _, err := validatedSubtitle(source, request.Media); err == nil {
+		t.Fatal("the unstripped subtitle passed the overrun check")
+	}
+}

@@ -200,3 +200,39 @@ func TestDownloadAvailabilityCancellationDoesNotAccessState(t *testing.T) {
 		t.Fatalf("availability=%v", err)
 	}
 }
+
+func TestDownloadRefusalPausesDownloadsUntilTheKnownReset(t *testing.T) {
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	for providerType, want := range map[string]time.Time{
+		"subdl":   time.Date(2026, 9, 11, 0, 15, 0, 0, time.UTC),
+		"titlovi": now.Add(time.Hour),
+	} {
+		t.Run(providerType, func(t *testing.T) {
+			clock := testutil.NewClock(now)
+			client := Client{ProviderID: "p", ProviderType: providerType, Gate: NewGate(&memoryStateStore{states: map[string]store.ProviderState{}}, clock, 1), Clock: clock}
+			err := RecordDownloadRefusal(t.Context(), Observe(&refusalProvider{fakeProvider: &fakeProvider{id: "p"}, client: client}, observability.Discard()))
+			var cooldown *CooldownError
+			if !errors.As(err, &cooldown) || cooldown.Scope != OperationDownload || !cooldown.ResetAt.Equal(want) {
+				t.Fatalf("error = %v; want a download cooldown until %s", err, want)
+			}
+			if err := client.CheckDownloadAvailability(t.Context()); !errors.As(err, &cooldown) {
+				t.Fatalf("availability = %v; want downloads paused", err)
+			}
+			if err := client.CheckSearchAvailability(t.Context()); err != nil {
+				t.Fatalf("search availability = %v; searches stay available", err)
+			}
+		})
+	}
+	if err := RecordDownloadRefusal(t.Context(), &fakeProvider{id: "p"}); err != nil {
+		t.Fatalf("a provider without the hook records nothing: %v", err)
+	}
+}
+
+type refusalProvider struct {
+	*fakeProvider
+	client Client
+}
+
+func (p *refusalProvider) RecordDownloadRefusal(ctx context.Context) error {
+	return p.client.RecordDownloadRefusal(ctx)
+}

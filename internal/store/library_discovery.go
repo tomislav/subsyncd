@@ -96,8 +96,11 @@ func (r *Repository) commitLibraryDiscovery(ctx context.Context, instance, scope
 					return fmt.Errorf("record media release date: %w", err)
 				}
 			}
+			// The runtime belongs to the listed file: a row still holding a
+			// replaced file (a missed webhook) keeps its own until history
+			// reconciles it.
 			if duration := int64(media.Duration); duration > 0 {
-				if _, err := tx.ExecContext(ctx, `UPDATE media SET duration_ns=? WHERE id=? AND duration_ns!=?`, duration, id, duration); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE media SET duration_ns=? WHERE id=? AND file_id=? AND duration_ns!=?`, duration, id, media.Ref.FileID, duration); err != nil {
 					return fmt.Errorf("record media duration: %w", err)
 				}
 			}

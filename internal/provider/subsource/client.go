@@ -88,6 +88,12 @@ func (c *Client) CheckDownloadAvailability(ctx context.Context) error {
 	return c.transport.CheckDownloadAvailability(ctx)
 }
 
+// RecordDownloadRefusal pauses downloads after one delivered a limit or login
+// message instead of a subtitle.
+func (c *Client) RecordDownloadRefusal(ctx context.Context) error {
+	return c.transport.RecordDownloadRefusal(ctx)
+}
+
 func (c *Client) SearchCacheVersion() string { return "subsource-v1" }
 
 func (c *Client) CanReuseCachedCandidate(candidate domain.Candidate) bool {

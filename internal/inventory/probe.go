@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -31,6 +32,60 @@ const defaultProbeTimeout = 5 * time.Minute
 // time, which is how a hung mount looks; the media is unavailable for now.
 var ErrProbeTimedOut = errors.New("ffprobe timed out reading the media file")
 
+// maxStuckProbes is how many timed-out ffprobe runs may still be blocked at
+// once. Each holds a process and a goroutine until its read returns, so
+// beyond this no new run starts and every probe times out at once.
+const maxStuckProbes = 4
+
+// stuckProbes counts the timed-out ffprobe runs still blocked, per media
+// path, so a retry on a hung mount does not start another one beside them.
+var stuckProbes = &probeRegistry{paths: map[string]int{}}
+
+type probeRegistry struct {
+	mu    sync.Mutex
+	paths map[string]int
+	total int
+}
+
+// probeRun is one ffprobe run; its fields are guarded by the registry.
+type probeRun struct {
+	finished, abandoned bool
+}
+
+// blocked reports whether a new run must not start: one for mediaPath is
+// still blocked, or too many are.
+func (r *probeRegistry) blocked(mediaPath string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.paths[mediaPath] > 0 || r.total >= maxStuckProbes
+}
+
+// abandon records a run that is no longer awaited, unless it already ended.
+func (r *probeRegistry) abandon(run *probeRun, mediaPath string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if run.finished || run.abandoned {
+		return
+	}
+	run.abandoned = true
+	r.paths[mediaPath]++
+	r.total++
+}
+
+// finish records that a run's process returned.
+func (r *probeRegistry) finish(run *probeRun, mediaPath string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run.finished = true
+	if !run.abandoned {
+		return
+	}
+	r.total--
+	if r.paths[mediaPath]--; r.paths[mediaPath] <= 0 {
+		delete(r.paths, mediaPath)
+	}
+}
+
 type Probe struct {
 	Path   string
 	Runner CommandRunner
@@ -43,6 +98,12 @@ func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
 	if timeout <= 0 {
 		timeout = defaultProbeTimeout
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if stuckProbes.blocked(mediaPath) {
+		return nil, ErrProbeTimedOut
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	type output struct {
@@ -53,8 +114,10 @@ func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
 	// read returns, so the result is awaited only until the deadline; a late
 	// run finishes in the background.
 	done := make(chan output, 1)
+	run := &probeRun{}
 	go func() {
 		stdout, _, err := p.Runner.Run(probeCtx, p.Path, "-v", "error", "-show_streams", "-show_format", "-of", "json", mediaPath)
+		stuckProbes.finish(run, mediaPath)
 		done <- output{stdout, err}
 	}()
 	var stdout []byte
@@ -68,6 +131,7 @@ func (p Probe) Tracks(ctx context.Context, mediaPath string) ([]Track, error) {
 			return nil, fmt.Errorf("ffprobe failed: %w", result.err)
 		}
 	case <-probeCtx.Done():
+		stuckProbes.abandon(run, mediaPath)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

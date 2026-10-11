@@ -67,11 +67,11 @@ func repair(text []byte, extension string, cues []Cue, closeItalics bool) ([]byt
 	}
 	content, bom, trailing := splitContent(text)
 	lines := strings.Split(content, "\n")
-	blocks := cueBlocks(lines, extension == ".vtt")
+	blocks, ambiguous := cueBlocks(lines, extension == ".vtt")
 	if sorted && !edits && (!closeItalics || !hasUnclosedItalics(lines, blocks)) {
 		return text, nil
 	}
-	if len(blocks) != len(cues) {
+	if ambiguous || len(blocks) != len(cues) {
 		return nil, ErrUnsafe
 	}
 	order := keptInStartOrder(cues)
@@ -155,9 +155,15 @@ type cueBlock struct {
 // or without a blank line before it or spaces around the arrow. An SRT cue
 // runs up to the next cue's index or timing line, so a blank line inside it
 // does not move its text to another cue; a WebVTT cue ends at a blank line.
-// The line before a timing line is the cue's index when it is a number (SRT)
-// or follows a blank line (WebVTT).
-func cueBlocks(lines []string, vtt bool) []cueBlock {
+// In SRT the non-blank line just before a timing line is the cue's index,
+// whatever it says ("1", "1."), as astisub reads it; in WebVTT it is the cue's
+// identifier when it follows a blank line.
+//
+// ambiguous reports an SRT index line that directly follows another cue's text
+// or timing line and is not the next cue number, such as a last line of text
+// "1984" before a timing line with no blank line between them: astisub drops
+// it as an index, so a rewrite would lose it.
+func cueBlocks(lines []string, vtt bool) (blocks []cueBlock, ambiguous bool) {
 	first := 0
 	if vtt {
 		// astisub skips everything up to the WEBVTT header.
@@ -168,7 +174,7 @@ func cueBlocks(lines []string, vtt bool) []cueBlock {
 			}
 		}
 	}
-	var blocks []cueBlock
+	previousNumber := -1
 	for i := first; i < len(lines); i++ {
 		if !isTimingLine(lines[i], vtt) {
 			continue
@@ -178,12 +184,27 @@ func cueBlocks(lines []string, vtt bool) []cueBlock {
 		if len(blocks) > 0 {
 			previous = blocks[len(blocks)-1].timing
 		}
+		number := -1
 		if i-1 > previous && strings.TrimSpace(lines[i-1]) != "" {
-			_, err := strconv.Atoi(strings.TrimSpace(lines[i-1]))
-			if (!vtt && err == nil) || (vtt && i-2 > previous && strings.TrimSpace(lines[i-2]) == "") {
+			separated := i-2 < first || strings.TrimSpace(lines[i-2]) == ""
+			if vtt {
+				if i-2 > previous && separated {
+					block.start = i - 1
+				}
+			} else {
 				block.start = i - 1
+				if value, err := strconv.Atoi(strings.TrimSpace(lines[i-1])); err == nil {
+					number = value
+				}
+				// Without a blank line before it, the index is only told
+				// apart from text by being the next cue number.
+				next := number >= 0 && (number == len(blocks)+1 || (previousNumber >= 0 && number == previousNumber+1))
+				if !separated && !next {
+					ambiguous = true
+				}
 			}
 		}
+		previousNumber = number
 		blocks = append(blocks, block)
 	}
 	for i := range blocks {
@@ -203,7 +224,7 @@ func cueBlocks(lines []string, vtt bool) []cueBlock {
 		}
 		blocks[i].end = end
 	}
-	return blocks
+	return blocks, ambiguous
 }
 
 func isTimingLine(line string, vtt bool) bool {

@@ -1191,13 +1191,23 @@ func (r *Repository) ClearProviderState(ctx context.Context, providerID string) 
 	return nil
 }
 
-// RetryThrottledSearches makes every search whose last outcome was a provider
-// throttle due at now, including one an older version completed without a
-// retry time. It reports how many searches it changed.
-func (r *Repository) RetryThrottledSearches(ctx context.Context, now time.Time) (int64, error) {
+// RetryThrottledSearches makes every search of the given (configured)
+// languages whose last outcome was a provider throttle due at now, including
+// one an older version completed without a retry time. Searches of deleted
+// media, of languages no longer configured, and leased searches are left as
+// they are. It reports how many searches it changed.
+func (r *Repository) RetryThrottledSearches(ctx context.Context, now time.Time, languages []domain.Language) (int64, error) {
+	if len(languages) == 0 {
+		return 0, nil
+	}
+	args := []any{now.UnixNano(), now.UnixNano()}
+	for _, language := range languages {
+		args = append(args, language.String())
+	}
 	result, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='pending', next_attempt_at_ns=?
 		WHERE last_outcome='throttled' AND lease_owner IS NULL AND (state='complete' OR next_attempt_at_ns>?)
-		AND media_id IN (SELECT id FROM media WHERE deleted=0)`, now.UnixNano(), now.UnixNano())
+		AND language IN (`+strings.TrimSuffix(strings.Repeat("?,", len(languages)), ",")+`)
+		AND media_id IN (SELECT id FROM media WHERE deleted=0)`, args...)
 	if err != nil {
 		return 0, fmt.Errorf("retry throttled searches: %w", err)
 	}

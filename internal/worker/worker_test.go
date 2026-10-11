@@ -542,6 +542,60 @@ func TestJobPastItsTimeLimitIsCanceledAndScheduledAsFailure(t *testing.T) {
 	}
 }
 
+func TestJobIgnoringCancellationIsAbandonedAfterTheGrace(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	// A workflow blocked in a read on a hung mount, deaf to cancellation.
+	service := &stubbornWorkflow{started: make(chan struct{}), release: make(chan struct{})}
+	defer close(service.release)
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.JobTimeout = 50 * time.Millisecond
+	worker.jobGrace = 150 * time.Millisecond
+	worker.RenewInterval = 20 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- worker.RunOnce(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errJobTimedOut) {
+			t.Fatalf("error = %v; want the job time limit", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker kept waiting for a workflow that ignores cancellation")
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if len(repository.searchCompletions) != 1 || repository.searchCompletions[0].Outcome != "workflow_error" || !repository.searchCompletions[0].AdvanceFailureAttempt {
+		t.Fatalf("completions = %#v; want one failure completion", repository.searchCompletions)
+	}
+	// Renewal continued past the bare limit (50 ms) until the job was
+	// abandoned (200 ms), so the failure was recorded by the lease owner.
+	if repository.searchRenewals < 5 {
+		t.Fatalf("renewals = %d; want renewal to continue through the grace period", repository.searchRenewals)
+	}
+}
+
+// deadlineWorkflow returns its result as soon as its context is canceled: a
+// workflow that finishes exactly at the time limit.
+type deadlineWorkflow struct{ outcome workflow.Result }
+
+func (w deadlineWorkflow) Run(ctx context.Context, _ workflow.Request) (workflow.Result, error) {
+	<-ctx.Done()
+	return w.outcome, nil
+}
+
+func TestJobSucceedingAtItsTimeLimitKeepsItsResult(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	worker := testWorker(repository, deadlineWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeNoResult}}, testutil.NewClock(now))
+	worker.JobTimeout = 20 * time.Millisecond
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.searchCompletions) != 1 || repository.searchCompletions[0].Outcome != string(workflow.OutcomeNoResult) || repository.searchCompletions[0].AdvanceFailureAttempt {
+		t.Fatalf("completions = %#v; want the workflow's own result", repository.searchCompletions)
+	}
+}
+
 func TestRunOnceSchedulesNoResultAsMissingPriority(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)

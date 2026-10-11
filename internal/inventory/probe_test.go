@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -142,4 +143,80 @@ func TestProbeGivesUpOnAHungMount(t *testing.T) {
 	if _, err := (Probe{Path: "ffprobe", Runner: runner, Timeout: time.Minute}).Tracks(ctx, "/media/show.mkv"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v; a canceled job is not a probe timeout", err)
 	}
+}
+
+// countingHungRunner counts the ffprobe processes it starts; each blocks until
+// released.
+type countingHungRunner struct {
+	mu      sync.Mutex
+	starts  int
+	release chan struct{}
+}
+
+func (h *countingHungRunner) Run(context.Context, string, ...string) ([]byte, []byte, error) {
+	h.mu.Lock()
+	h.starts++
+	h.mu.Unlock()
+	<-h.release
+	return nil, nil, errors.New("released")
+}
+
+func (h *countingHungRunner) started() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.starts
+}
+
+func waitForNoStuckProbes(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stuckProbes.mu.Lock()
+		total := stuckProbes.total
+		stuckProbes.mu.Unlock()
+		if total == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d stuck probes remain", total)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestStuckProbeIsNotStartedAgain(t *testing.T) {
+	waitForNoStuckProbes(t)
+	runner := &countingHungRunner{release: make(chan struct{})}
+	probe := Probe{Path: "ffprobe", Runner: runner, Timeout: 10 * time.Millisecond}
+	for range 3 {
+		if _, err := probe.Tracks(context.Background(), "/media/stuck.mkv"); !errors.Is(err, ErrProbeTimedOut) {
+			t.Fatalf("error = %v; want ErrProbeTimedOut", err)
+		}
+	}
+	if got := runner.started(); got != 1 {
+		t.Fatalf("ffprobe started %d times; want one while the first is still blocked", got)
+	}
+	close(runner.release)
+	waitForNoStuckProbes(t)
+	// Once the blocked run returns, the path is probed again.
+	healthy := Probe{Path: "ffprobe", Runner: &fakeRunner{stdout: []byte(`{"streams":[]}`)}}
+	if _, err := healthy.Tracks(context.Background(), "/media/stuck.mkv"); err != nil {
+		t.Fatalf("probe after release: %v", err)
+	}
+}
+
+func TestTooManyStuckProbesStopNewOnes(t *testing.T) {
+	waitForNoStuckProbes(t)
+	runner := &countingHungRunner{release: make(chan struct{})}
+	probe := Probe{Path: "ffprobe", Runner: runner, Timeout: 10 * time.Millisecond}
+	for i := range maxStuckProbes + 2 {
+		if _, err := probe.Tracks(context.Background(), fmt.Sprintf("/media/hung-%d.mkv", i)); !errors.Is(err, ErrProbeTimedOut) {
+			t.Fatalf("error = %v; want ErrProbeTimedOut", err)
+		}
+	}
+	if got := runner.started(); got != maxStuckProbes {
+		t.Fatalf("ffprobe started %d times; want at most %d stuck", got, maxStuckProbes)
+	}
+	close(runner.release)
+	waitForNoStuckProbes(t)
 }
