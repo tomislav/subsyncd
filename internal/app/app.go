@@ -294,6 +294,8 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner, MediaRoots: cfg.MediaRoots}}
 	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
+	// Languages share providers, so a refusal confirms across all of them.
+	refusals := &workflow.RefusalLedger{}
 	for language, route := range cfg.Languages {
 		providerIDs := route.Providers
 		ordered := make([]provider.Provider, 0, len(providerIDs))
@@ -305,7 +307,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 			Synchronizer: lapse, Installer: installer, Repository: repository, Providers: providers, ProviderOrder: append([]string(nil), providerIDs...),
 			MinimumScore: cfg.MinimumReleaseScore, MinimumUpgradeDelta: workflow.DefaultMinimumUpgradeDelta, PackTTL: cfg.PackCache.TTL,
 			LapsePolicy:          workflow.LapsePolicy{Mode: cfg.Sync.Policy, BypassScore: cfg.Sync.BypassScore, RequireIdentityAnchor: cfg.Sync.RequireIdentityAnchor, RequireEpisodeEvidence: cfg.Sync.RequireEpisodeEvidence, RequireReleaseGroup: cfg.Sync.RequireReleaseGroup, LapseForPacks: cfg.Sync.LapseForPacks, LapseForUpgrades: cfg.Sync.LapseForUpgrades},
-			AllowHearingImpaired: cfg.AllowHearingImpaired, MaxUpgradeChecks: cfg.UpgradeChecks, Clock: clock, Events: events,
+			AllowHearingImpaired: cfg.AllowHearingImpaired, MaxUpgradeChecks: cfg.UpgradeChecks, Clock: clock, Events: events, Refusals: refusals,
 		}
 		if len(route.FallbackProviders) > 0 {
 			fallback := make([]provider.Provider, 0, len(route.FallbackProviders))
@@ -810,11 +812,12 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 	if err != nil {
 		return "", err
 	}
-	// Rejections made under older selection or subtitle rules no longer count;
-	// they are left out of the list and only counted.
+	// Rejections made under older selection or subtitle rules, another LAPSE
+	// version or policy, or for a replaced media file no longer count; they
+	// are left out of the list and only counted.
 	var active []store.CandidateRejection
 	for _, rejection := range rejections {
-		if workflow.RejectionActive(rejection) {
+		if service := a.Workflows[language]; service != nil && service.RejectionActive(rejection, media.Fingerprint) {
 			active = append(active, rejection)
 		}
 	}

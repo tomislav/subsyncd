@@ -92,26 +92,34 @@ func (r *probeRegistry) finish(run *probeRun) {
 	}
 }
 
-// probeMount names the mount a media path is read through: the longest
-// configured media root containing it, or else its first two directories
-// ("/mnt/media"), which is where network mounts usually sit.
+// probeMount names the mount a media path is read through, from the path
+// alone: the longest configured media root containing it plus the next
+// directory below it ("/media" + "tv" is "/media/tv"), since one root often
+// holds several network mounts, or else the path's first two directories
+// ("/mnt/media"), which is where network mounts usually sit. It never touches
+// the filesystem: a stat on a hung mount blocks as the probe did.
 func probeMount(mediaPath string, roots []string) string {
 	clean := filepath.Clean(mediaPath)
-	mount := ""
+	separator := string(filepath.Separator)
+	mount, matched := "", false
 	for _, root := range roots {
 		root = filepath.Clean(root)
-		if (clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) || root == string(filepath.Separator)) && len(root) > len(mount) {
-			mount = root
+		if (clean == root || strings.HasPrefix(clean, root+separator) || root == separator) && (!matched || len(root) > len(mount)) {
+			mount, matched = root, true
 		}
 	}
-	if mount != "" {
+	if !matched {
+		mount = separator
+		if parts := strings.SplitN(strings.TrimPrefix(filepath.Dir(clean), separator), separator, 3); len(parts) > 0 && parts[0] != "" {
+			return separator + filepath.Join(parts[:min(len(parts), 2)]...)
+		}
 		return mount
 	}
-	parts := strings.SplitN(strings.TrimPrefix(filepath.Dir(clean), string(filepath.Separator)), string(filepath.Separator), 3)
-	if len(parts) > 2 {
-		parts = parts[:2]
+	relative, err := filepath.Rel(mount, filepath.Dir(clean))
+	if err != nil || relative == "." || strings.HasPrefix(relative, "..") {
+		return mount
 	}
-	return string(filepath.Separator) + strings.Join(parts, string(filepath.Separator))
+	return filepath.Join(mount, strings.SplitN(relative, separator, 2)[0])
 }
 
 type Probe struct {

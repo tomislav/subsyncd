@@ -611,8 +611,19 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "bad-1", CandidateSignature: "candidate", ArtifactChecksum: "artifact", ReasonCode: "lapse_unsure", ToolSignature: "tool", MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 100, MediaModTimeNS: now.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(24 * time.Hour)}); err != nil {
+	tool := application.Workflows["en"].RejectionToolSignature()
+	if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "bad-1", CandidateSignature: "candidate", ArtifactChecksum: "artifact", ReasonCode: "lapse_unsure", ToolSignature: tool, MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 100, MediaModTimeNS: now.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(24 * time.Hour)}); err != nil {
 		t.Fatal(err)
+	}
+	// Rows lookup ignores for another LAPSE version or policy, or for the
+	// media file before it was replaced, are superseded too.
+	for _, row := range []struct {
+		result, tool string
+		size         int64
+	}{{"older-lapse", "lapse-0.0.0/policy-0", 100}, {"replaced-media", tool, 99}} {
+		if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: row.result, CandidateSignature: "candidate", ArtifactChecksum: "artifact", ReasonCode: "lapse_unsure", ToolSignature: row.tool, MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: row.size, MediaModTimeNS: now.UnixNano(), RejectedAt: now}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Legacy bare-signature rows of versioned reasons are ignored by lookup, so
@@ -622,13 +633,13 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 		{"legacy-selection", "candidate/member-abc", "pack_selection"},
 		{"current-selection", fmt.Sprintf("candidate/pack-selection-v%d", pack.SelectionRulesVersion), "pack_selection"},
 	} {
-		if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: row.result, CandidateSignature: row.signature, ArtifactChecksum: "artifact", ReasonCode: row.reason, ToolSignature: "tool", MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 100, MediaModTimeNS: now.UnixNano(), RejectedAt: now}); err != nil {
+		if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: row.result, CandidateSignature: row.signature, ArtifactChecksum: "artifact", ReasonCode: row.reason, ToolSignature: tool, MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 100, MediaModTimeNS: now.UnixNano(), RejectedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	output, err := application.Explain(context.Background(), "tv", "movie", 7, "en")
-	if err != nil || !strings.Contains(output, "candidate_rejections: 2\n") || !strings.Contains(output, "candidate_rejections_superseded: 2") || !strings.Contains(output, "expires=never") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") || !strings.Contains(output, "result=current-selection") || strings.Contains(output, "result=legacy-") {
+	if err != nil || !strings.Contains(output, "candidate_rejections: 2\n") || !strings.Contains(output, "candidate_rejections_superseded: 4") || !strings.Contains(output, "expires=never") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") || !strings.Contains(output, "result=current-selection") || strings.Contains(output, "result=legacy-") || strings.Contains(output, "result=older-lapse") || strings.Contains(output, "result=replaced-media") {
 		t.Fatalf("Explain() = %q/%v", output, err)
 	}
 }

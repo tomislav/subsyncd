@@ -256,7 +256,7 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 				return nil, c.decodeLimit(ctx, baseprovider.OperationSearch, response.Body, response.Header, err)
 			}
 		}
-		return nil, c.rejectedCredentials(ctx, err)
+		return nil, c.rejectedCredentials(ctx, response, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -611,10 +611,12 @@ func (c *Client) decodeLimit(ctx context.Context, operation baseprovider.Operati
 }
 
 // limitCode classifies a SubDL error code or message as a limit: its own codes,
-// wording naming a daily, download or quota limit that was reached or exceeded
-// ("You have reached your daily download limit", "API quota exceeded"), or too
-// many requests. Other mentions of a limit ("must not exceed the limit of 30",
-// "unlimited downloads") are not limits. It returns "" for anything else.
+// wording naming a limit or quota that was reached, exceeded or exhausted
+// ("You have reached your daily download limit", "Request limit reached",
+// "API quota exceeded", "Quota exhausted"), or too many requests. Other
+// mentions of a limit ("must not exceed the limit of 30", "unlimited
+// downloads") and other things exceeded ("Max file size exceeded for
+// download") are not limits. It returns "" for anything else.
 func limitCode(message string) string {
 	normalized := strings.ToLower(strings.TrimSpace(message))
 	switch normalized {
@@ -624,7 +626,7 @@ func limitCode(message string) string {
 	switch {
 	case strings.Contains(normalized, "too many requests") || strings.Contains(normalized, "rate limit"):
 		return "rate_limit"
-	case containsAny(normalized, "daily", "download", "quota") && containsAny(normalized, "reached", "exceeded", "limit reached", "limit exceeded"):
+	case containsAny(strings.ReplaceAll(normalized, "unlimited", ""), "limit", "quota") && containsAny(normalized, "reached", "exceeded", "exhausted"):
 		return "daily_limit"
 	}
 	return ""
@@ -672,26 +674,48 @@ func (c *Client) refusal(ctx context.Context, operation baseprovider.Operation, 
 }
 
 // invalidAPIKey reports a message saying the API key or token is invalid,
-// wrong, missing, banned, revoked, expired or unauthorized.
+// wrong, missing, banned, revoked, expired or unauthorized. It must name the
+// API key, or a token other than a download token ("Download token expired"
+// is about one link, not the account).
 func invalidAPIKey(message string) bool {
 	message = strings.ToLower(message)
-	if !containsAny(message, "api key", "api_key", "apikey", "api-key", "token", " key") {
+	apiKey := containsAny(message, "api key", "api_key", "apikey", "api-key")
+	if !apiKey && !(strings.Contains(message, "token") && !strings.Contains(message, "download")) {
 		return false
 	}
-	return containsAny(message, "invalid", "not valid", "wrong", "incorrect", "missing", "required", "expired", "revoked", "disabled", "banned", "blocked", "suspended", "unauthorized", "unauthorised", "not authorized", "not found", "unknown")
+	return containsAny(message, "invalid", "not valid", "wrong", "incorrect", "missing", "required", "expired", "revoked", "disabled", "banned", "blocked", "suspended", "unauthorized", "unauthorised", "not authorized", "unknown")
 }
 
-// rejectedCredentials disables the provider after an HTTP 401, which SubDL
-// answers only for a key it does not accept.
-func (c *Client) rejectedCredentials(ctx context.Context, err error) error {
+// rejectedCredentials disables the provider after an HTTP 401 from SubDL's own
+// API or download host, which SubDL answers only for a key it does not
+// accept. A 401 from another host a download was redirected to (a CDN) says
+// nothing about the key and fails only that download.
+func (c *Client) rejectedCredentials(ctx context.Context, response *http.Response, err error) error {
 	var authentication *baseprovider.AuthenticationError
 	if !errors.As(err, &authentication) {
 		return err
+	}
+	if !c.ownHost(response) {
+		return fmt.Errorf("SubDL download returned HTTP %d from a redirect target", http.StatusUnauthorized)
 	}
 	if disableErr := c.transport.DisableAuthentication(ctx, "SubDL API key rejected (HTTP 401)"); disableErr != nil {
 		return fmt.Errorf("disable SubDL provider: %w", disableErr)
 	}
 	return &baseprovider.AuthenticationError{Message: "API key rejected"}
+}
+
+// ownHost reports whether a response came from the host of SubDL's
+// configured API or download base URL rather than from a redirect target.
+func (c *Client) ownHost(response *http.Response) bool {
+	if response == nil || response.Request == nil || response.Request.URL == nil {
+		return true
+	}
+	for _, raw := range []string{c.config.BaseURL, c.config.DownloadBaseURL} {
+		if base, err := url.Parse(raw); err == nil && strings.EqualFold(base.Host, response.Request.URL.Host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operation, code string, reset time.Time) error {
@@ -784,7 +808,7 @@ func (c *Client) Download(ctx context.Context, candidate domain.Candidate, write
 				return baseprovider.DownloadMetadata{}, c.decodeLimit(ctx, baseprovider.OperationDownload, response.Body, response.Header, err)
 			}
 		}
-		return baseprovider.DownloadMetadata{}, c.rejectedCredentials(ctx, err)
+		return baseprovider.DownloadMetadata{}, c.rejectedCredentials(ctx, response, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

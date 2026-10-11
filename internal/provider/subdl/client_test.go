@@ -410,7 +410,12 @@ func TestLimitWordingNeedsAReachedDailyDownloadOrQuotaLimit(t *testing.T) {
 			t.Errorf("limitCode(%q) = %q, want no limit", message, got)
 		}
 	}
-	for _, message := range []string{"You have reached your daily download limit", "Daily download limit exceeded", "API quota exceeded", "You have reached your daily limit", "Download limit reached", "daily_limit"} {
+	for _, message := range []string{"Max file size exceeded for download", "Download link expired"} {
+		if got := limitCode(message); got != "" {
+			t.Errorf("limitCode(%q) = %q, want no limit", message, got)
+		}
+	}
+	for _, message := range []string{"You have reached your daily download limit", "Daily download limit exceeded", "API quota exceeded", "You have reached your daily limit", "Download limit reached", "daily_limit", "Request limit reached", "You have reached your limit", "Quota exhausted"} {
 		if got := limitCode(message); got != "daily_limit" {
 			t.Errorf("limitCode(%q) = %q, want daily_limit", message, got)
 		}
@@ -453,6 +458,40 @@ func TestRejectedKeyOrTokenAndAny401DisableProvider(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestOnlyAPIKeyMessagesDisableProvider(t *testing.T) {
+	for _, message := range []string{"Download token expired", "Subtitle not found for this key", "Invalid download token", "Subtitle not found"} {
+		if invalidAPIKey(message) {
+			t.Errorf("invalidAPIKey(%q) = true; want false", message)
+		}
+	}
+	for _, message := range []string{"API key banned", "invalid token", "Your token has expired", "apikey is required", "Unknown api_key"} {
+		if !invalidAPIKey(message) {
+			t.Errorf("invalidAPIKey(%q) = false; want true", message)
+		}
+	}
+}
+
+func TestDownload401FromRedirectTargetDoesNotDisableProvider(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer cdn.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, cdn.URL+"/file.zip", http.StatusFound)
+	}))
+	defer server.Close()
+	client, states := newTestClientWithState(t, server, 1<<20)
+	client.config.DownloadHosts = append(client.config.DownloadHosts, cdn.Listener.Addr().String())
+	_, err := client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/redirected"}, io.Discard)
+	var authentication *baseprovider.AuthenticationError
+	if err == nil || errors.As(err, &authentication) {
+		t.Fatalf("error = %T %v; want a download failure that is not an authentication error", err, err)
+	}
+	if state, err := states.GetProviderState(context.Background(), "subdl-main", string(baseprovider.OperationAuth)); err == nil && state.Disabled {
+		t.Fatal("a redirect target's 401 disabled the provider")
 	}
 }
 

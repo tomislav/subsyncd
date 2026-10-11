@@ -268,16 +268,27 @@ func TestCanceledProbeIsNotCountedAsStuck(t *testing.T) {
 }
 
 func TestProbeMountFollowsMediaRoots(t *testing.T) {
+	// A root's subdirectories are often separate mounts ("/media/tv" and
+	// "/media/movies"), so each one has its own stuck-probe limit.
 	roots := []string{"/media", "/media/nfs"}
 	for path, want := range map[string]string{
-		"/media/nfs/show/e1.mkv": "/media/nfs",
-		"/media/local/movie.mkv": "/media",
-		"/data/tv/show/e1.mkv":   "/data/tv",
-		"/data/movie.mkv":        "/data",
-		"/movie.mkv":             "/",
+		"/media/nfs/show/e1.mkv":      "/media/nfs/show",
+		"/media/local/movie.mkv":      "/media/local",
+		"/media/tv/show/s1/e1.mkv":    "/media/tv",
+		"/media/movies/film/film.mkv": "/media/movies",
+		"/media/movie.mkv":            "/media",
+		"/data/tv/show/e1.mkv":        "/data/tv",
+		"/data/movie.mkv":             "/data",
+		"/movie.mkv":                  "/",
 	} {
 		if got := probeMount(path, roots); got != want {
 			t.Errorf("probeMount(%q) = %q; want %q", path, got, want)
+		}
+	}
+	// A root of "/" does not make the limit global.
+	for path, want := range map[string]string{"/tv/show/e1.mkv": "/tv", "/movies/film.mkv": "/movies", "/film.mkv": "/"} {
+		if got := probeMount(path, []string{"/"}); got != want {
+			t.Errorf("probeMount(%q, /) = %q; want %q", path, got, want)
 		}
 	}
 }

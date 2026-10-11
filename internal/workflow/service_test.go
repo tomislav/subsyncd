@@ -220,7 +220,7 @@ func TestServiceSkipsARejectedCachedPackMember(t *testing.T) {
 	}
 	now := service.Clock.Now()
 	fingerprint := request.Media.Fingerprint
-	repository.rejections = append(repository.rejections, store.CandidateRejection{MediaID: request.MediaID, Language: "en", ProviderID: "provider", ResultID: "pack", CandidateSignature: signature, ArtifactChecksum: "member-checksum", ReasonCode: "lapse_unsure", ToolSignature: service.rejectionToolSignature(), MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(time.Hour)})
+	repository.rejections = append(repository.rejections, store.CandidateRejection{MediaID: request.MediaID, Language: "en", ProviderID: "provider", ResultID: "pack", CandidateSignature: signature, ArtifactChecksum: "member-checksum", ReasonCode: "lapse_unsure", ToolSignature: service.RejectionToolSignature(), MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(time.Hour)})
 
 	result, err := service.Run(context.Background(), request)
 	if err != nil || result.Outcome != OutcomeNoResult || synchronizer.analyzeCalls != 0 || len(result.Decisions) != 1 || result.Decisions[0].Stage != "candidate_rejection" {
@@ -285,7 +285,7 @@ func TestServiceExactCandidatesSkipIneligibleRejectedAndDeterministicFailures(t 
 				fingerprint := request.Media.Fingerprint
 				repository.rejections = append(repository.rejections, store.CandidateRejection{
 					MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
-					CandidateSignature: signature + rejectionRulesVersion("invalid_subtitle"), ReasonCode: "invalid_subtitle", ToolSignature: service.rejectionToolSignature(),
+					CandidateSignature: signature + rejectionRulesVersion("invalid_subtitle"), ReasonCode: "invalid_subtitle", ToolSignature: service.RejectionToolSignature(),
 					MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(time.Hour),
 				})
 			},

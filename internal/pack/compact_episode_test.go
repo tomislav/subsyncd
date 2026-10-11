@@ -99,10 +99,19 @@ func TestCompactEpisodeNumbersAreNotAnimeAbsoluteNumbers(t *testing.T) {
 		// A site tag is not an anime group tag.
 		{"[TorrentCouch.com].Malcolm.in.the.Middle.607.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7}, true},
 		{"[www.Site] Show.607.srt", domain.Media{Title: "Show", Season: 6, Episode: 7}, true},
-		// A known absolute number decides alone; the name shape does not override it.
+		// A number between spaced dashes followed by an episode title is TV
+		// naming, with or without a known absolute number.
 		{"Malcolm in the Middle - 607 - Hal Coaches.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7, AbsoluteEpisode: 129}, true},
+		{"Malcolm in the Middle - 607 - Hal Coaches.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7}, true},
 		{"[TorrentCouch.com].Malcolm.in.the.Middle.607.srt", domain.Media{Title: "Malcolm in the Middle", Season: 6, Episode: 7, AbsoluteEpisode: 129}, true},
+		// The anime shape still decides when the absolute number is known
+		// and the number would pass the plausibility test.
 		{"[SubsPlease] One Piece - 607 (1080p).srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 520}, false},
+		{"[SubsPlease] One Piece - 607 (1080p).srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 137}, false},
+		{"[Erai-raws] One Piece - 607 [1080p].srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 137}, false},
+		{"One Piece - 607.srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 137}, false},
+		{"One Piece - 607 (1080p).srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 137}, false},
+		{"[SubsPlease] One Piece - 607 - Title.srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 137}, false},
 		// Seasons that average 100 episodes or more: 607 is as likely absolute.
 		{"one.piece.607.srt", domain.Media{Title: "One Piece", Season: 6, Episode: 7, AbsoluteEpisode: 520}, false},
 		{"show.107.srt", domain.Media{Title: "Show", Season: 1, Episode: 7, AbsoluteEpisode: 12}, false},

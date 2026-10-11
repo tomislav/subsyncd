@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"maps"
 	"mime"
 	"os"
 	"path"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/pack"
@@ -23,9 +26,10 @@ import (
 // message instead of a subtitle: an HTML login or limit page, a JSON error
 // body, or Titlovi's placeholder subtitle. It is a provider problem that is
 // retried, never a rejection of the candidate. Refusal marks a limit or login
-// message (or the placeholder), which pauses the provider's downloads once a
-// second candidate of the same provider confirms it in the same run; Limit
-// marks an explicit limit or quota in a JSON body, which pauses them at once.
+// message, which pauses the provider's downloads once a second candidate of
+// the same provider confirms it (see RefusalLedger); Limit marks an
+// unambiguous refusal, an explicit limit or quota in a JSON body or Titlovi's
+// placeholder, which pauses them at once.
 type ProviderResponseError struct {
 	Reason  string
 	Refusal bool
@@ -80,11 +84,48 @@ func checkProviderResponse(payloadPath, contentType string) error {
 	case mediaType == "text/html" && strings.HasPrefix(lower, "<"):
 		return &ProviderResponseError{Reason: "HTML page"}
 	case len(head) <= sniffLimit && (strings.HasPrefix(lower, "{") || strings.HasPrefix(lower, "[")) && json.Valid(text):
-		message := strings.ReplaceAll(strings.ToLower(string(text)), "_", " ")
+		message := strings.ReplaceAll(strings.ToLower(jsonMessage(text)), "_", " ")
 		limit := limitPhrases.MatchString(message)
-		return &ProviderResponseError{Reason: "JSON body", Refusal: limit || loginPhrases.MatchString(message), Limit: limit}
+		return &ProviderResponseError{Reason: "JSON body", Refusal: limit || loginPhrases.MatchString(message) || unauthorizedAccess.MatchString(message), Limit: limit}
 	}
 	return nil
+}
+
+// jsonMessageFields are the fields of a JSON error body that carry its
+// message. Only their string values are read: a field name such as
+// "remaining_quota" says nothing about the answer.
+var jsonMessageFields = map[string]bool{"error": true, "message": true, "status": true, "detail": true}
+
+// jsonMessage joins the string values of a JSON body's message fields, in
+// the body or in objects nested under them ({"error":{"message":"..."}}), and
+// in each object of a top-level array.
+func jsonMessage(text []byte) string {
+	var body any
+	if json.Unmarshal(text, &body) != nil {
+		return ""
+	}
+	var parts []string
+	var collect func(value any, message bool)
+	collect = func(value any, message bool) {
+		switch value := value.(type) {
+		case string:
+			if message {
+				parts = append(parts, value)
+			}
+		case map[string]any:
+			for key, field := range value {
+				if jsonMessageFields[strings.ToLower(key)] {
+					collect(field, true)
+				}
+			}
+		case []any:
+			for _, item := range value {
+				collect(item, message)
+			}
+		}
+	}
+	collect(body, false)
+	return strings.Join(parts, " ")
 }
 
 // phrasePattern matches any of phrases as whole words, with any run of
@@ -102,36 +143,43 @@ func phrasePattern(phrases ...string) *regexp.Regexp {
 }
 
 // limitPhrases mark a message that refuses downloads for now because of a
-// download limit or quota; loginPhrases one that asks to log in. Underscores
-// in the message count as spaces, so "limit_exceeded" is "limit exceeded".
+// download limit or quota; loginPhrases one that asks to log in, and
+// unauthorizedAccess one that calls a download or access unauthorized
+// ("Unauthorized access", "unauthorized to download"), not any use of the word
+// ("Unauthorized reproduction prohibited"). Underscores in the message count
+// as spaces, so "limit_exceeded" is "limit exceeded".
 var (
-	limitPhrases = phrasePattern("download limit", "daily limit", "limit reached", "limit exceeded", "quota", "too many requests", "too many downloads")
-	loginPhrases = phrasePattern("unauthorized", "not authorized", "log in to", "login required", "please log in", "please login", "sign in to")
+	limitPhrases       = phrasePattern("download limit", "daily limit", "limit reached", "limit exceeded", "quota", "too many requests", "too many downloads")
+	loginPhrases       = phrasePattern("not authorized", "log in to", "login required", "please log in", "please login", "sign in to")
+	unauthorizedAccess = regexp.MustCompile(`\bunauthori[sz]ed(?:\s+\S+){0,2}?\s+(?:access|download|downloads|downloading)\b|\b(?:access|download|downloads|downloading)(?:\s+\S+){0,2}?\s+unauthori[sz]ed\b`)
 	// passwordField is an <input> whose type is password.
 	passwordField = regexp.MustCompile(`<input\b[^>]*\btype\s*=\s*["']?password\b`)
-	// hiddenElement is a script or style element or a comment, which may
-	// mention "quota" or a password field without the page saying so.
-	hiddenElement = regexp.MustCompile(`(?s)<(script|style)\b.*?(?:</(?:script|style)\s*>|$)|<!--.*?(?:-->|$)`)
+	// hiddenElement is an element whose text the page does not show as its
+	// message (script, style, noscript, textarea, template) or a comment,
+	// which may mention "quota" or a password field without the page saying
+	// so.
+	hiddenElement = regexp.MustCompile(`(?s)<(script|style|noscript|textarea|template)\b.*?(?:</(?:script|style|noscript|textarea|template)\s*>|$)|<!--.*?(?:-->|$)`)
 	markupTag     = regexp.MustCompile(`(?s)<[^>]*>`)
 )
 
-// loginFormTextLimit is how much visible text a page with a password field
-// may have to count as a login page. A site page with a login box in its
-// header (a 404 page, a deleted subtitle's page) has far more.
+// loginFormTextLimit is how much visible text a page may have to count as a
+// login page. A site page with a login box in its header or a "Log in to post
+// a comment" prompt (a 404 page, a deleted subtitle's page) has far more.
 const loginFormTextLimit = 2 << 10
 
 // refusalDocument recognizes an HTML limit or login page by its visible text,
-// with scripts, styles and comments removed: a limit or login message, or a
+// with scripts, styles, other unshown elements and comments removed: a limit
+// message or an unauthorized download on any page, or a login message or
 // password field on a page that is little more than a login form. A
 // navigation "Login" link on an ordinary error page does not count.
 func refusalDocument(text []byte) bool {
 	markup := hiddenElement.ReplaceAllString(strings.ToLower(string(text)), " ")
 	visible := strings.Join(strings.Fields(html.UnescapeString(markupTag.ReplaceAllString(markup, " "))), " ")
 	message := strings.ReplaceAll(visible, "_", " ")
-	if limitPhrases.MatchString(message) || loginPhrases.MatchString(message) {
+	if limitPhrases.MatchString(message) || unauthorizedAccess.MatchString(message) {
 		return true
 	}
-	return len(visible) < loginFormTextLimit && passwordField.MatchString(markup)
+	return len(visible) < loginFormTextLimit && (loginPhrases.MatchString(message) || passwordField.MatchString(markup))
 }
 
 // checkPlaceholderMembers recognizes an archive holding only Titlovi's
@@ -145,50 +193,88 @@ func checkPlaceholderMembers(manifest pack.Manifest) error {
 			return nil
 		}
 	}
-	return &ProviderResponseError{Reason: "Titlovi placeholder message", Refusal: true}
+	return &ProviderResponseError{Reason: "Titlovi placeholder message", Refusal: true, Limit: true}
 }
 
-// refusalLedger remembers, for one workflow run, the first refused download
-// of each provider. One candidate's page is not enough to pause a provider: a
-// deleted subtitle can redirect to a site page that reads like a refusal, and
-// pausing on it would retry the same candidate first after every cooldown.
-type refusalLedger struct {
-	first map[string]refusalWitness
+// refusalWindow is how close together two refusals of one provider must be
+// to confirm each other.
+const refusalWindow = 30 * time.Minute
+
+// RefusalLedger remembers recent refused downloads of each provider, across
+// workflow runs and languages. One candidate's page is not enough to pause a
+// provider: a deleted subtitle can redirect to a site page that reads like a
+// refusal, and pausing on it would retry the same candidate first after every
+// cooldown. Two distinct candidates of the same provider refusing within
+// refusalWindow, in one search or in several, confirm it. The zero value is
+// ready to use and safe for concurrent runs.
+type RefusalLedger struct {
+	mu        sync.Mutex
+	witnesses map[string]refusalWitness
 }
 
 type refusalWitness struct {
 	resultID string
-	err      *ProviderResponseError
+	at       time.Time
+	// run and err identify the failure the refusal produced, which a
+	// confirmation in the same run marks as the provider being unavailable.
+	run *refusalRun
+	err *ProviderResponseError
+}
+
+// refusalRun is one workflow run's view of the ledger.
+type refusalRun struct {
+	ledger *RefusalLedger
+	now    func() time.Time
+}
+
+// witness records a refusal and reports the earlier refusal of another
+// candidate of the same provider that confirms it, if any. Each provider holds
+// at most one unconfirmed refusal, since any other candidate confirms it; a
+// confirmation clears it, as the cooldown it records takes over. Refusals
+// older than refusalWindow are pruned.
+func (l *RefusalLedger) witness(providerID string, current refusalWitness) (refusalWitness, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	maps.DeleteFunc(l.witnesses, func(_ string, w refusalWitness) bool { return current.at.Sub(w.at) > refusalWindow })
+	earlier, seen := l.witnesses[providerID]
+	if seen && earlier.resultID != current.resultID {
+		delete(l.witnesses, providerID)
+		return earlier, true
+	}
+	if seen && earlier.run == current.run {
+		// The candidate refused again in the same run: keep the failure it
+		// first produced, and refresh its time.
+		current.err = earlier.err
+	}
+	if l.witnesses == nil {
+		l.witnesses = map[string]refusalWitness{}
+	}
+	l.witnesses[providerID] = current
+	return refusalWitness{}, false
 }
 
 // refusedDownload turns a limit or login message into a download cooldown of
 // the provider, so the search ends as throttled and keeps its place instead of
-// failing candidate after candidate. The first refusal of a provider in a run
-// fails only its candidate, as an ordinary error page does; a refusal from a
-// second, distinct candidate of that provider confirms it. An explicit limit
-// in a JSON body pauses at once. Any other error is returned as it is.
-func refusedDownload(ctx context.Context, adapter provider.Provider, candidate domain.Candidate, ledger *refusalLedger, err error) error {
+// failing candidate after candidate. An unconfirmed refusal fails only its
+// candidate, as a retryable provider error like an ordinary error page; a
+// refusal from a second, distinct candidate of that provider within
+// refusalWindow confirms it. An explicit limit (a JSON limit, Titlovi's
+// placeholder) pauses at once. Any other error is returned as it is.
+func refusedDownload(ctx context.Context, adapter provider.Provider, candidate domain.Candidate, run *refusalRun, err error) error {
 	var message *ProviderResponseError
 	if !errors.As(err, &message) || !message.Refusal {
 		return err
 	}
 	var first refusalWitness
 	if !message.Limit {
-		if ledger == nil {
+		if run == nil || run.ledger == nil {
 			return err
 		}
-		if ledger.first == nil {
-			ledger.first = map[string]refusalWitness{}
-		}
-		witness, seen := ledger.first[candidate.ProviderID]
-		if !seen {
-			ledger.first[candidate.ProviderID] = refusalWitness{resultID: candidate.ResultID, err: message}
+		earlier, confirmed := run.ledger.witness(candidate.ProviderID, refusalWitness{resultID: candidate.ResultID, at: run.now(), run: run, err: message})
+		if !confirmed {
 			return err
 		}
-		if witness.resultID == candidate.ResultID {
-			return err
-		}
-		first = witness
+		first = earlier
 	}
 	recorded := provider.RecordDownloadRefusal(ctx, adapter)
 	if recorded == nil {
@@ -200,7 +286,10 @@ func refusedDownload(ctx context.Context, adapter provider.Provider, candidate d
 		// workflow like every other one.
 		return &provider.AvailabilityError{Err: recorded}
 	}
-	if first.err != nil {
+	if first.err != nil && first.run == run {
+		// The earlier refusal failed a candidate of this run, which now
+		// counts as the provider being unavailable too. A refusal from
+		// another run belongs to that run and is left alone.
 		first.err.confirmed = recorded
 	}
 	return recorded

@@ -39,7 +39,7 @@ type Request struct {
 	memberScope          string
 	attemptedArtifacts   map[candidateArtifactIdentity]struct{}
 	lapseTimeout         *lapseTimeoutLatch
-	refusals             *refusalLedger
+	refusals             *refusalRun
 	MediaID              int64
 	Media                domain.Media
 	Language             domain.Language
@@ -165,6 +165,9 @@ type Service struct {
 	Clock            WorkflowClock
 	RandomUnit       func() float64
 	Events           *observability.Emitter
+	// Refusals confirms providers' refused downloads across runs; services
+	// sharing providers should share it. Nil keeps a ledger per run.
+	Refusals *RefusalLedger
 }
 
 type downloadedCandidate struct {
@@ -296,7 +299,10 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	}
 	request.attemptedArtifacts = make(map[candidateArtifactIdentity]struct{})
 	request.lapseTimeout = &lapseTimeoutLatch{}
-	request.refusals = &refusalLedger{}
+	request.refusals = &refusalRun{ledger: s.Refusals, now: s.Clock.Now}
+	if request.refusals.ledger == nil {
+		request.refusals.ledger = &RefusalLedger{}
+	}
 
 	result, runErr = s.runProviderTiers(ctx, request, existing, activeInstallation, &candidateCount)
 	if runErr == nil && activeInstallation && InstallationMatchesMedia(existing, request.Media) &&
@@ -1041,11 +1047,16 @@ func (s *Service) candidateRejection(ctx context.Context, request Request, candi
 // normalization and pack selection rules rather than the media or LAPSE.
 var versionedRejectionReasons = []string{"invalid_subtitle", "pack_selection"}
 
-// RejectionActive reports whether a stored rejection still counts. A rejection
-// whose reason follows versioned rules counts only when it was recorded under
-// the current rules version; older ones, including legacy bare-signature rows,
-// are ignored by lookup.
-func RejectionActive(rejection store.CandidateRejection) bool {
+// RejectionActive reports whether a stored rejection still counts for the
+// media file with fingerprint, as lookup decides: it must have been recorded
+// under the current LAPSE tool signature, for that exact media file, and, when
+// its reason follows versioned rules, under the current rules version. Other
+// rows, including legacy bare-signature ones, are ignored by lookup.
+func (s *Service) RejectionActive(rejection store.CandidateRejection, fingerprint domain.MediaFingerprint) bool {
+	if rejection.ToolSignature != s.RejectionToolSignature() || rejection.MediaPath != fingerprint.Path || rejection.MediaFileID != fingerprint.FileID ||
+		rejection.MediaSize != fingerprint.Size || rejection.MediaModTimeNS != fingerprint.ModTime.UnixNano() {
+		return false
+	}
 	suffix := rejectionRulesVersion(rejection.ReasonCode)
 	return suffix == "" || strings.HasSuffix(rejection.CandidateSignature, suffix)
 }
@@ -1075,7 +1086,7 @@ func (s *Service) candidateRejectionIdentity(request Request, candidate domain.C
 	fingerprint := request.Media.Fingerprint
 	return store.CandidateRejection{
 		MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
-		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ToolSignature: s.rejectionToolSignature(),
+		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ToolSignature: s.RejectionToolSignature(),
 		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(),
 	}, nil
 }
@@ -1120,7 +1131,7 @@ func (s *Service) recordCandidateRejection(ctx context.Context, request Request,
 	fingerprint := request.Media.Fingerprint
 	rejection := store.CandidateRejection{
 		MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
-		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ReasonCode: reasonCode, ToolSignature: s.rejectionToolSignature(),
+		CandidateSignature: signature, ArtifactChecksum: artifactChecksum, ReasonCode: reasonCode, ToolSignature: s.RejectionToolSignature(),
 		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now,
 	}
 	if err := s.Repository.PutCandidateRejection(ctx, rejection); err != nil {
@@ -1196,7 +1207,9 @@ func candidateSignature(candidate domain.Candidate, media ...domain.Media) (stri
 	return fmt.Sprintf("%x", sum[:]), nil
 }
 
-func (s *Service) rejectionToolSignature() string {
+// RejectionToolSignature names the LAPSE version and policy that candidate
+// rejections are recorded under; a rejection counts only under the same one.
+func (s *Service) RejectionToolSignature() string {
 	version := "unknown"
 	if versioned, ok := s.Synchronizer.(interface{ CompatibilityVersion() string }); ok {
 		version = versioned.CompatibilityVersion()

@@ -272,7 +272,7 @@ func TestRulesVersionReopensOnlySubtitleAndSelectionRejections(t *testing.T) {
 		}
 		if err := db.Repository().PutCandidateRejection(ctx, store.CandidateRejection{
 			MediaID: request.MediaID, Language: request.Language.String(), ProviderID: candidate.ProviderID, ResultID: candidate.ResultID,
-			CandidateSignature: signature, ArtifactChecksum: "sum", ReasonCode: reason, ToolSignature: service.rejectionToolSignature(),
+			CandidateSignature: signature, ArtifactChecksum: "sum", ReasonCode: reason, ToolSignature: service.RejectionToolSignature(),
 			MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: service.Clock.Now(),
 		}); err != nil {
 			t.Fatal(err)
