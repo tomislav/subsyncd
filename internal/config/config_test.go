@@ -660,3 +660,21 @@ func TestUpgradeChecksDefaultsAcceptsZeroAndRejectsOutOfRange(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallStripWatermarksDefaultsOffAndHonorsTrue(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := loadText(t, validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Install.StripWatermarks {
+		t.Fatal("omitted install.strip_watermarks should default to false")
+	}
+	cfg, err = loadText(t, validConfig(root, "install:\n  strip_watermarks: true\nlanguages:\n  en: {providers: [subdl-main]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Install.StripWatermarks {
+		t.Fatal("explicit install.strip_watermarks: true was ignored")
+	}
+}

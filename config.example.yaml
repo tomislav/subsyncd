@@ -196,6 +196,10 @@ install:
   # changing the owner fails; gid works only for a group PUID already belongs to.
   # uid: 1000
   # gid: 1000
+  # Drop subtitle-site advert cues (www.titlovi.com, "Preuzeto sa ...",
+  # Addic7ed signatures, OpenSubtitles adverts) from SRT subtitles before they
+  # are installed. Credits and dialogue are kept. Default: false.
+  strip_watermarks: false
 
 # Optional. Asks Silo to rescan a folder after a subtitle is installed.
 silo:

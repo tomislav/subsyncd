@@ -12,10 +12,11 @@ import (
 // subtitle site's address or "downloaded from" line: Titlovi adds
 // "www.titlovi.com" and "Preuzeto sa www.titlovi.com" to many of its
 // subtitles, and re-uploads elsewhere carry them along. Spaced-out dots and
-// a "@" handle form are accepted. It also matches a single line of a cue:
+// a "@" handle form are accepted, as are hyphens for dots ("www-titlovi.com")
+// and Addic7ed's bare ".addic7ed." form. It also matches a single line of a cue:
 // such a line is dropped and the cue's other lines are kept. Text that merely
 // mentions a site ("Preveo: ... za www.titlovi.com") is not matched.
-var siteWatermark = regexp.MustCompile(`(?i)^(?:preuzeto\s+sa?\s+)?(?:@|(?:https?://)?(?:www\s*\.\s*)?)(?:(?:divx-)?tit?lovi\s*\.\s*com|addic7ed\s*\.\s*com|subscene(?:\s*\.\s*com)?|prijevodi-online\s*\.\s*org)/?$`)
+var siteWatermark = regexp.MustCompile(`(?i)^(?:preuzeto\s+sa?\s+)?(?:@|(?:https?://)?(?:www\s*[.-]\s*)?)(?:(?:divx-)?tit?lovi\s*[.-]\s*com|\.?addic7ed(?:\s*[.-]\s*com)?\.?|subscene(?:\s*\.\s*com)?|prijevodi-online\s*\.\s*org|podnapisi\s*\.\s*net)/?$`)
 
 // openSubtitlesAdvert matches the adverts OpenSubtitles inserts ("Advertise
 // your product or brand here", "become VIP member", "rate this subtitle"),
@@ -30,10 +31,11 @@ var cueMarkup = regexp.MustCompile(`<[^>]*>|\{[^}]*\}`)
 
 // signatureCredit matches the credit line of a site signature cue, such as
 // Addic7ed's "Synced and corrected by <name>", "provided by <name>" or
-// "WEB-DL resync by <name>". It only counts together with a site address line
+// "WEB-DL resync by <name>", or the Croatian "Transkript <name>" and
+// "Hvala na transkriptu <name>". It only counts together with a site address line
 // in the same cue, so a credit on its own, or dialogue such as "corrected by
 // now.", is kept.
-var signatureCredit = regexp.MustCompile(`(?i)^(?:(?:web-?dl|web-?rip|blu-?ray|b[dr]-?rip|hdtv|dvd-?rip)\s+)?(?:(?:re-?)?sync(?:ed)?|subtitles?|corrections?|corrected|provided)(?:\s*(?:and|&)\s*correct(?:ed|ions))?\s+by\s+\S`)
+var signatureCredit = regexp.MustCompile(`(?i)^(?:(?:(?:web-?dl|web-?rip|blu-?ray|b[dr]-?rip|hdtv|dvd-?rip)\s+)?(?:(?:re-?)?sync(?:ed)?|subtitles?|corrections?|corrected|provided)(?:\s*(?:and|&)\s*correct(?:ed|ions))?\s+by|(?:hvala\s+na\s+)?transkript[au]?)\s+\S`)
 
 // isSignature reports whether every line of a cue is a site address or a
 // signature credit, with at least one address: Addic7ed's

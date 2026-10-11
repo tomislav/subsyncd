@@ -141,6 +141,9 @@ type InstallConfig struct {
 	FileMode os.FileMode
 	UID      *int
 	GID      *int
+	// StripWatermarks drops subtitle-site advert cues from SRT subtitles
+	// before they are installed. Off unless the config turns it on.
+	StripWatermarks bool
 }
 
 type SiloConfig struct {
@@ -207,9 +210,10 @@ type rawSyncConfig struct {
 }
 
 type rawInstallConfig struct {
-	FileMode string `yaml:"file_mode"`
-	UID      *int   `yaml:"uid"`
-	GID      *int   `yaml:"gid"`
+	FileMode        string `yaml:"file_mode"`
+	UID             *int   `yaml:"uid"`
+	GID             *int   `yaml:"gid"`
+	StripWatermarks bool   `yaml:"strip_watermarks"`
 }
 
 type providerCommon struct {
@@ -441,7 +445,7 @@ func normalize(raw rawConfig) (Config, error) {
 		}
 		installMode = os.FileMode(parsed)
 	}
-	cfg.Install = InstallConfig{FileMode: installMode, UID: raw.Install.UID, GID: raw.Install.GID}
+	cfg.Install = InstallConfig{FileMode: installMode, UID: raw.Install.UID, GID: raw.Install.GID, StripWatermarks: raw.Install.StripWatermarks}
 
 	for id, settings := range raw.Providers {
 		var common providerCommon

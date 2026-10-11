@@ -86,6 +86,8 @@ type Installer struct {
 	NotifierNames []string
 	Now           func() time.Time
 	Events        *observability.Emitter
+	// StripWatermarks drops subtitle-site advert cues from SRT subtitles.
+	StripWatermarks bool
 }
 
 func (i Installer) Install(ctx context.Context, request InstallRequest) (store.Installation, error) {
@@ -102,7 +104,9 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	// The recorded checksum is of the stripped text, so the installed file
 	// still counts as managed and unedited.
-	payload = watermark.Strip(filepath.Ext(request.SourcePath), payload)
+	if i.StripWatermarks {
+		payload = watermark.Strip(filepath.Ext(request.SourcePath), payload)
+	}
 	existing, found, err := i.Repository.GetInstallation(ctx, request.MediaID, request.Language)
 	if err != nil {
 		return store.Installation{}, fmt.Errorf("read existing installation: %w", err)

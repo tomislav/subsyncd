@@ -118,6 +118,13 @@ func TestStripRemovesAddic7edSignatureCues(t *testing.T) {
 		"- provided by kabubuki / corrected by chamallow -\n- www.addic7ed.com -",
 		"Sync and corrections by <font color=\"#00ffff\">explosiveskull</font>\nWEB-DL resync by <font color=\"#ff0000\">GoldenBeard</font>\nwww.addic7ed.com",
 		"http://www.divx-titlovi.com",
+		"-www-titlovi.com-",
+		"www-titlovi-com",
+		".addic7ed.",
+		"Transkript<font color=#ec14bd> honeybunny</font>\n<font color=#ec14bd>.addic7ed.</font>",
+		"Hvala na transkriptu<font color=#ec14bd> honeybunny</font>\n<font color=#ec14bd>.addic7ed.</font>",
+		"podnapisi.net",
+		"www.podnapisi.net",
 	} {
 		if !cueStripped(text) {
 			t.Errorf("cue %q was kept; want it removed", text)
@@ -132,6 +139,9 @@ func TestStripKeepsCreditsWithoutASiteAndDialogue(t *testing.T) {
 		"corrected by now.",
 		"- Who synced this?\n- www.addic7ed.com, I think.",
 		"Provided by the state.",
+		"Transkript honeybunny",
+		"Hvala na transkriptu, Ana.",
+		"addic7ed is down again",
 	} {
 		if cueStripped(text) {
 			t.Errorf("cue %q was removed; want it kept", text)

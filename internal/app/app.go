@@ -282,7 +282,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	sort.Strings(notifierNames)
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner}}
-	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events}
+	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
 	for language, route := range cfg.Languages {
 		providerIDs := route.Providers
