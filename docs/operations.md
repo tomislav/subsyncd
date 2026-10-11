@@ -193,7 +193,7 @@ docker compose up -d
 docker compose exec subsyncd subsyncd doctor
 ```
 
-To pin a build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or SHA tag. For rollback, use the matching image and complete stopped-data backup together: an older image refuses a database that a newer one has upgraded. Databases from unsupported pre-release builds are rejected at startup and need a fresh data directory.
+To pin a build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or SHA tag. For rollback, use the matching image and complete stopped-data backup together, and remove config keys the older image does not know (for example `install.strip_watermarks`, added after `sha-25a2eae`), since unknown keys stop it from starting: an older image refuses a database that a newer one has upgraded. Databases from unsupported pre-release builds are rejected at startup and need a fresh data directory.
 
 Allow the container to stop fully before starting another process against the same media. The supplied Compose file allows 75 seconds for shutdown, which covers both fixed 30-second shutdown windows; do not lower it.
 

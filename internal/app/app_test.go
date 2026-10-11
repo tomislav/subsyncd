@@ -334,7 +334,7 @@ install: {file_mode: "0644"}
 			t.Errorf("record %d event = %#v, want %q", index, records[index]["event"], event)
 		}
 	}
-	if records[0]["version"] != "sha-test" || records[0]["command"] != "doctor" || records[0]["instance_count"] != float64(1) || records[0]["provider_count"] != float64(1) || records[0]["language_count"] != float64(1) {
+	if records[0]["version"] != "sha-test" || records[0]["command"] != "doctor" || records[0]["instance_count"] != float64(1) || records[0]["provider_count"] != float64(1) || records[0]["language_count"] != float64(1) || records[0]["strip_watermarks"] != false {
 		t.Fatalf("startup fields = %#v", records[0])
 	}
 }
