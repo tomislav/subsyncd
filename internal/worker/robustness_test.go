@@ -153,6 +153,62 @@ func TestReconcileTimingSurvivesRestart(t *testing.T) {
 	}
 }
 
+type discoveryReconciler struct {
+	workerReconciler
+	pending bool
+	err     error
+	checks  int
+}
+
+func (r *discoveryReconciler) DiscoveryPending(context.Context) (bool, error) {
+	r.checks++
+	return r.pending, r.err
+}
+
+func TestRestartWithPendingDiscoveryReconcilesAtOnce(t *testing.T) {
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	repository := &releasingRepository{workerRepository: newWorkerRepository(0, now), timings: map[string]store.ReconcileTiming{
+		"changed":    {LastAttempt: now.Add(-time.Hour)},
+		"unchanged":  {LastAttempt: now.Add(-time.Hour)},
+		"backoff":    {LastAttempt: now.Add(-time.Minute), Failures: 1},
+		"deferred":   {LastAttempt: now.Add(-time.Minute), Deferred: true},
+		"unreadable": {LastAttempt: now.Add(-time.Hour)},
+	}}
+	changed := &discoveryReconciler{pending: true}
+	unchanged := &discoveryReconciler{}
+	backoff := &discoveryReconciler{pending: true}
+	deferred := &discoveryReconciler{pending: true}
+	unreadable := &discoveryReconciler{err: errors.New("database locked")}
+	worker := testWorker(repository.workerRepository, &workerWorkflow{}, clock)
+	worker.Repository = repository
+	worker.Reconcilers = map[string]Reconciler{"changed": changed, "unchanged": unchanged, "backoff": backoff, "deferred": deferred, "unreadable": unreadable}
+	if err := worker.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if changed.calls != 1 {
+		t.Fatalf("a scope change waited for the saved interval: calls = %d", changed.calls)
+	}
+	if unchanged.calls != 0 || unreadable.calls != 0 {
+		t.Fatalf("restart reran completed discovery: unchanged/unreadable calls = %d/%d", unchanged.calls, unreadable.calls)
+	}
+	if backoff.calls != 0 || backoff.checks != 0 || deferred.calls != 0 || deferred.checks != 0 {
+		t.Fatalf("pending discovery overrode a backoff or deferral: backoff %d/%d deferred %d/%d", backoff.calls, backoff.checks, deferred.calls, deferred.checks)
+	}
+	if saved := repository.timings["changed"]; !saved.LastAttempt.Equal(now) {
+		t.Fatalf("released reconciliation timing not saved: %+v", saved)
+	}
+	// The check runs once per worker: a discovery that stays pending after
+	// its run waits for the saved interval like any other.
+	clock.Advance(time.Minute)
+	if err := worker.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if changed.calls != 1 || changed.checks != 1 {
+		t.Fatalf("pending discovery reconciled every dispatch: calls/checks = %d/%d", changed.calls, changed.checks)
+	}
+}
+
 func TestOneDeadFileOnAReadableMountDoesNotPauseTheQueue(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "Show"), 0o755); err != nil {

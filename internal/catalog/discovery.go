@@ -15,6 +15,27 @@ type libraryDiscoveryStore interface {
 	CommitPartialLibraryDiscovery(context.Context, string, int64, []domain.Media, []domain.Language, time.Time) error
 }
 
+// DiscoveryPending reports whether the next Run would enumerate the library:
+// the instance's saved discovery scope differs from the configured one (a new
+// instance, a changed type/URL/mappings/roots, or a scope version bump).
+func (r Reconciler) DiscoveryPending(ctx context.Context) (bool, error) {
+	if r.LibraryScope == "" {
+		return false, nil
+	}
+	if _, ok := r.Catalog.(LibraryCatalog); !ok {
+		return false, nil
+	}
+	repository, ok := r.Store.(libraryDiscoveryStore)
+	if !ok {
+		return false, nil
+	}
+	scope, _, err := repository.LibraryDiscoveryState(ctx, r.Instance)
+	if err != nil {
+		return false, fmt.Errorf("read library discovery state: %w", err)
+	}
+	return scope != r.LibraryScope, nil
+}
+
 // DiscoverLibrary fills catalog gaps independently of the history cursor.
 // Injected catalogs may implement only history; concrete Arr adapters also
 // implement full enumeration. Assembly and diagnostics never invoke this.

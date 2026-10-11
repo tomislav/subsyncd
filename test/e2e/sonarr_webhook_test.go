@@ -97,12 +97,7 @@ func TestSonarrSingleFileWebhookInstallsAndDeduplicatesAfterRestart(t *testing.T
 		return a
 	}
 	post := func(a *app.App) {
-		req := httptest.NewRequest(http.MethodPost, "/webhooks/sonarr-main?token=webhook-key", strings.NewReader(`{"eventType":"Download","isUpgrade":true,"series":{"id":10},"episodes":[{"id":102,"seasonNumber":2,"episodeNumber":2}],"episodeFile":{"id":42,"path":"/remote/tv/Show.S02E02.mkv","size":196608,"sceneName":"Show.S02E02.1080p.WEB-DL-GROUP","quality":"WEBDL-1080p"}}`))
-		response := httptest.NewRecorder()
-		a.Handler.ServeHTTP(response, req)
-		if response.Code != http.StatusNoContent {
-			t.Fatalf("webhook status = %d: %s", response.Code, response.Body.String())
-		}
+		deliverInstanceWebhook(t, a, "sonarr-main", `{"eventType":"Download","isUpgrade":true,"series":{"id":10},"episodes":[{"id":102,"seasonNumber":2,"episodeNumber":2}],"episodeFile":{"id":42,"path":"/remote/tv/Show.S02E02.mkv","size":196608,"sceneName":"Show.S02E02.1080p.WEB-DL-GROUP","quality":"WEBDL-1080p"}}`)
 	}
 	first := build()
 	defer first.Close()

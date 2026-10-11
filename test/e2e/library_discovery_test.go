@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"subsyncd/internal/app"
 	"subsyncd/internal/config"
@@ -72,8 +73,9 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 			cfg := e2eConfig(t, root, arr.URL, provider.URL, "")
 			cfg.Silo.Enabled = false
 			cfg.Instances = []config.InstanceConfig{{Name: "library", Type: kind, URL: arr.URL, APIKey: "arr-key", WebhookToken: "webhook-key", PathMappings: []config.PathMapping{{Remote: "/remote/library", Local: root}}}}
+			now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 			build := func() *app.App {
-				a, err := app.New(context.Background(), cfg, app.Options{LapseRunner: &countingLapseRunner{}, ProbeRunner: probeRunner{}, HTTPClient: provider.Client()})
+				a, err := app.New(context.Background(), cfg, app.Options{Clock: fixedE2EClock{now: now}, LapseRunner: &countingLapseRunner{}, ProbeRunner: probeRunner{}, HTTPClient: provider.Client()})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -105,13 +107,47 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 			if err := a.Close(); err != nil {
 				t.Fatal(err)
 			}
+			// Reconciliation timing is saved per instance, so a restart soon
+			// after a reconciliation keeps its six-hour schedule instead of
+			// enumerating the Arr library again (docs/development/operations.md).
+			now = now.Add(time.Minute)
 			b := build()
 			defer b.Close()
 			if err := b.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 				t.Fatal(err)
 			}
+			if enumerations.Load() != 2 || hydrations.Load() != 1 || calls.download.Load() != 1 {
+				t.Fatalf("early restart enumeration/hydration/download calls = %d/%d/%d, want 2/1/1", enumerations.Load(), hydrations.Load(), calls.download.Load())
+			}
+			if err := b.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// Once the interval has passed, a restart reconciles at once:
+			// history and the identity snapshot, without another discovery.
+			now = now.Add(6 * time.Hour)
+			c := build()
+			defer c.Close()
+			if err := c.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
 			if enumerations.Load() != 3 || hydrations.Load() != 1 || calls.download.Load() != 1 {
-				t.Fatalf("restart enumeration/hydration/download calls = %d/%d/%d, want 3/1/1", enumerations.Load(), hydrations.Load(), calls.download.Load())
+				t.Fatalf("due restart enumeration/hydration/download calls = %d/%d/%d, want 3/1/1", enumerations.Load(), hydrations.Load(), calls.download.Load())
+			}
+			if err := c.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// A changed discovery scope (here another media root; also a
+			// scope version bump) runs its pass at the next start, inside
+			// the saved interval: discovery plus the identity snapshot.
+			now = now.Add(time.Minute)
+			cfg.MediaRoots = append(cfg.MediaRoots, t.TempDir())
+			d := build()
+			defer d.Close()
+			if err := d.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if enumerations.Load() != 5 || calls.download.Load() != 1 {
+				t.Fatalf("scope-change restart enumeration/download calls = %d/%d, want 5/1", enumerations.Load(), calls.download.Load())
 			}
 		})
 	}

@@ -828,6 +828,7 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 				attempts[name] = timing
 			}
 		}
+		w.releasePendingDiscoveries(ctx, attempts)
 		w.reconcileAttempts = attempts
 	}
 	names := make([]string, 0, len(w.Reconcilers))
@@ -896,6 +897,41 @@ func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
 			slog.String("instance", name), slog.String("outcome", "success"), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
 	}
 	return errors.Join(failures...)
+}
+
+// discoveryPendingReconciler reports whether its next run enumerates the
+// library because the configured discovery scope changed.
+type discoveryPendingReconciler interface {
+	DiscoveryPending(context.Context) (bool, error)
+}
+
+// releasePendingDiscoveries makes an instance due at startup when its last
+// reconciliation succeeded but its library discovery is pending again: the
+// scope changed with this start (new mappings or roots, another URL, a scope
+// version bump), and waiting out the saved six-hour interval would delay the
+// pass that change exists to trigger. A failure backoff or a deferral (a
+// discovery still waiting for an unreadable mount) keeps its saved timing.
+// Checked once per worker, so a discovery that stays incomplete cannot make
+// every dispatch reconcile.
+func (w *Worker) releasePendingDiscoveries(ctx context.Context, attempts map[string]reconcileAttempt) {
+	for name, attempt := range attempts {
+		if attempt.LastAttempt.IsZero() || attempt.Failures > 0 || attempt.Deferred {
+			continue
+		}
+		reconciler, ok := w.Reconcilers[name].(discoveryPendingReconciler)
+		if !ok {
+			continue
+		}
+		pending, err := reconciler.DiscoveryPending(ctx)
+		if err != nil {
+			// The saved schedule stands; reconciliation reads the state again.
+			w.report(err)
+			continue
+		}
+		if pending {
+			delete(attempts, name)
+		}
+	}
 }
 
 // setReconcileAttempt records an attempt in memory and, when supported, in

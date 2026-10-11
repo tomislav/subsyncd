@@ -56,9 +56,9 @@ func TestWebhookWakeDispatchesPersistedSearch(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- background.Run(ctx) }()
 
-	postWebhook(t, api, `{"eventType":"Download","movieFile":{"id":1,"path":"/media/one.mkv","size":100}}`)
+	postWebhook(t, api, `{"eventType":"Download","movieFile":{"id":1,"path":"/media/one.mkv","size":100}}`, http.StatusNoContent)
 	first := waitForWakeWorkflow(t, service.started)
-	postWebhook(t, api, `{"eventType":"Download","movieFile":{"id":2,"path":"/media/two.mkv","size":100}}`)
+	postWebhook(t, api, `{"eventType":"Download","movieFile":{"id":2,"path":"/media/two.mkv","size":100}}`, http.StatusNoContent)
 	second := waitForWakeWorkflow(t, service.started)
 	if first == second {
 		t.Fatalf("webhook dispatch IDs = %d/%d", first, second)
@@ -72,6 +72,24 @@ func TestWebhookWakeDispatchesPersistedSearch(t *testing.T) {
 }
 
 func TestProviderResumeSurvivesRestart(t *testing.T) {
+	// The saved clean-empty providers survive a restart while their answers are
+	// within the six-hour search-result cache (store.ResumeProvidersTTL); a
+	// cooldown that outlasts it asks them again (docs/development/providers.md).
+	for _, test := range []struct {
+		name          string
+		cooldown      time.Duration
+		restartCalled int64
+	}{
+		{name: "within cache TTL", cooldown: 5 * time.Hour, restartCalled: 1},
+		{name: "outlasting cache TTL", cooldown: store.ResumeProvidersTTL + 2*time.Hour, restartCalled: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testProviderResumeRestart(t, test.cooldown, test.restartCalled)
+		})
+	}
+}
+
+func testProviderResumeRestart(t *testing.T, cooldown time.Duration, restartCalled int64) {
 	ctx := t.Context()
 	root := t.TempDir()
 	mediaPath := filepath.Join(root, "Movie.2026.mkv")
@@ -83,7 +101,7 @@ func TestProviderResumeSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC)
-	reset := now.Add(8 * time.Hour)
+	reset := now.Add(cooldown)
 	var providerNow atomic.Int64
 	providerNow.Store(now.UnixNano())
 	providers := map[string]*providerResumeFake{
@@ -124,7 +142,7 @@ func TestProviderResumeSurvivesRestart(t *testing.T) {
 		application.Worker.(*worker.Worker).RandomUnit = func() float64 { return 0 }
 		return application
 	}
-	readResume := func(mediaID int64) (string, string) {
+	readResume := func(mediaID int64) (string, string, int64) {
 		t.Helper()
 		database, err := sql.Open("sqlite", filepath.Join(cfg.DataDir, "subsyncd.db"))
 		if err != nil {
@@ -132,10 +150,11 @@ func TestProviderResumeSurvivesRestart(t *testing.T) {
 		}
 		defer database.Close()
 		var encoded, signature string
-		if err := database.QueryRow(`SELECT resume_providers_json,resume_route_signature FROM search_states WHERE media_id=? AND language='en'`, mediaID).Scan(&encoded, &signature); err != nil {
+		var savedAt int64
+		if err := database.QueryRow(`SELECT resume_providers_json,resume_route_signature,resume_saved_at_ns FROM search_states WHERE media_id=? AND language='en'`, mediaID).Scan(&encoded, &signature, &savedAt); err != nil {
 			t.Fatal(err)
 		}
-		return encoded, signature
+		return encoded, signature, savedAt
 	}
 
 	first := build(now)
@@ -164,9 +183,11 @@ func TestProviderResumeSurvivesRestart(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	encoded, signature := readResume(mediaID)
-	if encoded != `["titlovi","subdl"]` || signature == "" {
-		t.Fatalf("persisted first resume = %s/%q", encoded, signature)
+	encoded, signature, savedAt := readResume(mediaID)
+	// Dated by the injected clock at the first completion, which the restart's
+	// lease measures the TTL against.
+	if encoded != `["titlovi","subdl"]` || signature == "" || savedAt != now.UnixNano() {
+		t.Fatalf("persisted first resume = %s/%q saved at %d, want %d", encoded, signature, savedAt, now.UnixNano())
 	}
 
 	providerNow.Store(reset.UnixNano())
@@ -181,15 +202,15 @@ func TestProviderResumeSurvivesRestart(t *testing.T) {
 	if secondStatus.LastOutcome != string(workflow.OutcomeNoResult) || secondStatus.Attempt != 1 || secondStatus.FailureAttempt != 0 || secondStatus.Priority != store.SearchPriorityMissing || !secondStatus.NextAttemptAt.After(reset) {
 		t.Fatalf("second status = %+v", secondStatus)
 	}
-	if providers["open"].calls.Load() != 2 || providers["titlovi"].calls.Load() != 1 || providers["subdl"].calls.Load() != 1 {
-		t.Fatalf("restart provider calls = open:%d titlovi:%d subdl:%d", providers["open"].calls.Load(), providers["titlovi"].calls.Load(), providers["subdl"].calls.Load())
+	if providers["open"].calls.Load() != 2 || providers["titlovi"].calls.Load() != restartCalled || providers["subdl"].calls.Load() != restartCalled {
+		t.Fatalf("restart provider calls = open:%d titlovi:%d subdl:%d, want 2/%d/%d", providers["open"].calls.Load(), providers["titlovi"].calls.Load(), providers["subdl"].calls.Load(), restartCalled, restartCalled)
 	}
 	if err := second.Close(); err != nil {
 		t.Fatal(err)
 	}
-	encoded, signature = readResume(mediaID)
-	if encoded != `[]` || signature != "" {
-		t.Fatalf("final resume = %s/%q", encoded, signature)
+	encoded, signature, savedAt = readResume(mediaID)
+	if encoded != `[]` || signature != "" || savedAt != 0 {
+		t.Fatalf("final resume = %s/%q saved at %d", encoded, signature, savedAt)
 	}
 }
 
@@ -334,7 +355,7 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 	}
 
 	first := build()
-	postWebhook(t, first.Handler, webhook)
+	deliverWebhook(t, first, webhook)
 	if err := first.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +376,7 @@ func TestWebhookToLapseInstallSiloAndRestartDeduplication(t *testing.T) {
 
 	second := build()
 	defer second.Close()
-	postWebhook(t, second.Handler, webhook)
+	deliverWebhook(t, second, webhook)
 	if err := second.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +434,7 @@ func TestManualAndDaemonInstallationsKeepDurableNotificationAcrossFailureAndRest
 					t.Fatal(err)
 				}
 			} else {
-				postWebhook(t, first.Handler, `{"eventType":"Download","movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608,"sceneName":"Movie.2024.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}}`)
+				deliverWebhook(t, first, `{"eventType":"Download","movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608,"sceneName":"Movie.2024.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}}`)
 				if err := first.Worker.(*worker.Worker).RunOnce(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -513,7 +534,7 @@ func TestEmbeddedSubtitlePreventsProviderAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer application.Close()
-	postWebhook(t, application.Handler, `{"eventType":"Download","movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608}}`)
+	deliverWebhook(t, application, `{"eventType":"Download","movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608}}`)
 	if err := application.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +568,7 @@ func TestExactHashInstallsWithoutLapseOrBroadSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer application.Close()
-	postWebhook(t, application.Handler, `{"eventType":"Download","movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608,"sceneName":"Movie.2024.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}}`)
+	deliverWebhook(t, application, `{"eventType":"Download","movieFile":{"id":42,"path":"/remote/movies/Movie.2024.mkv","size":196608,"sceneName":"Movie.2024.1080p.WEB-DL-GROUP","releaseGroup":"GROUP"}}`)
 	if err := application.Worker.(*worker.Worker).RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -831,11 +852,53 @@ func e2eConfig(t *testing.T, root, arrURL, providerURL, siloURL string) config.C
 	}
 }
 
-func postWebhook(t *testing.T, handler http.Handler, body string) {
+// deliverWebhook posts a webhook to a.Handler, which stores it and answers
+// 202, and runs the application's inbox processor until the webhook has been
+// applied and removed from the inbox, as the daemon does in the background.
+func deliverWebhook(t *testing.T, a *app.App, body string) {
+	t.Helper()
+	deliverInstanceWebhook(t, a, "radarr-main", body)
+}
+
+func deliverInstanceWebhook(t *testing.T, a *app.App, instance, body string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Webhooks.Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	postInstanceWebhook(t, a.Handler, instance, body, http.StatusAccepted)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		waiting, err := a.Repository.WebhookInboxCounts(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(waiting) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("webhook was not applied within 10s; waiting = %v", waiting)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func postWebhook(t *testing.T, handler http.Handler, body string, wantStatus int) {
+	t.Helper()
+	postInstanceWebhook(t, handler, "radarr-main", body, wantStatus)
+}
+
+func postInstanceWebhook(t *testing.T, handler http.Handler, instance, body string, wantStatus int) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/webhooks/radarr-main?token=webhook-key", strings.NewReader(body))
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/webhooks/"+instance+"?token=webhook-key", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -844,7 +907,7 @@ func postWebhook(t *testing.T, handler http.Handler, body string) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
+	if response.StatusCode != wantStatus {
 		payload, _ := io.ReadAll(response.Body)
 		t.Fatalf("webhook status = %d: %s", response.StatusCode, payload)
 	}

@@ -800,6 +800,39 @@ func TestReconcilerContinuesHistoryAfterDeferredLibraryDiscovery(t *testing.T) {
 	}
 }
 
+func TestReconcilerDiscoveryPendingFollowsScope(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := db.Repository()
+	if err := repo.EnsureInstance(ctx, "radarr-lq", "radarr", "http://arr.invalid", now); err != nil {
+		t.Fatal(err)
+	}
+	catalog := &deferringLibraryCatalog{fakeReconcileCatalog: &fakeReconcileCatalog{snapshot: completeSnapshot(domain.MediaMovie)}}
+	reconciler := Reconciler{Instance: "radarr-lq", Kind: domain.MediaMovie, LibraryScope: "scope-v1", Catalog: catalog, Store: repo, Languages: []domain.Language{"en"}, Now: func() time.Time { return now }}
+	if pending, err := reconciler.DiscoveryPending(ctx); err != nil || !pending {
+		t.Fatalf("new instance pending = %v, %v; want true", pending, err)
+	}
+	if err := reconciler.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := reconciler.DiscoveryPending(ctx); err != nil || pending {
+		t.Fatalf("completed discovery pending = %v, %v; want false", pending, err)
+	}
+	reconciler.LibraryScope = "scope-v2"
+	if pending, err := reconciler.DiscoveryPending(ctx); err != nil || !pending {
+		t.Fatalf("changed scope pending = %v, %v; want true", pending, err)
+	}
+	historyOnly := Reconciler{Instance: "radarr-lq", Kind: domain.MediaMovie, LibraryScope: "scope-v2", Catalog: catalog.fakeReconcileCatalog, Store: repo}
+	if pending, err := historyOnly.DiscoveryPending(ctx); err != nil || pending {
+		t.Fatalf("history-only catalog pending = %v, %v; want false", pending, err)
+	}
+}
+
 func TestReconcilerPreservesTypedHistoryDeferral(t *testing.T) {
 	deferral := &DeferredHistoryError{Entities: []HistoryDeferral{{Kind: domain.MediaEpisode, EntityID: 8094, Title: "Example Show - S07E10"}}}
 	catalog := &fakeReconcileCatalog{err: deferral, snapshot: completeSnapshot(domain.MediaEpisode)}
