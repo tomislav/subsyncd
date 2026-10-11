@@ -1465,7 +1465,7 @@ func TestUpgradeCompletionAdvancesOnlyUnchangedChecks(t *testing.T) {
 		t.Fatalf("retained=%#v err=%v", retained, err)
 	}
 	missing, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeNoResult}, domain.Media{})
-	if err != nil || !missing.ResetMissingAttempt || !missing.NextAttemptAt.Equal(now.Add(30*time.Minute)) {
+	if err != nil || !missing.ResetMissingAttempt || !missing.NextAttemptAt.Equal(now.Add(6*time.Hour+36*time.Minute)) {
 		t.Fatalf("missing=%#v err=%v", missing, err)
 	}
 	installed, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeInstalled, NextUpgrade: now.Add(7 * 24 * time.Hour)}, domain.Media{})
@@ -1507,7 +1507,7 @@ func TestProviderSearchRetriesUseRandomJitterByDefault(t *testing.T) {
 		result           workflow.Result
 		minimum, maximum time.Duration
 	}{
-		{"missing", workflow.Result{Outcome: workflow.OutcomeNoResult}, 27 * time.Minute, 33 * time.Minute},
+		{"missing", workflow.Result{Outcome: workflow.OutcomeNoResult}, 6 * time.Hour, 7*time.Hour + 12*time.Minute},
 		{"cooldown", workflow.Result{Outcome: workflow.OutcomeThrottled, RetryAt: now.Add(10 * time.Minute)}, 10 * time.Minute, 11 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1532,7 +1532,7 @@ func TestProviderSearchRetriesUseRandomJitterByDefault(t *testing.T) {
 
 func TestMissingCompletionSkipsEarlyRetriesForAgedMedia(t *testing.T) {
 	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
-	w := &Worker{Clock: testutil.NewClock(now), RandomUnit: func() float64 { return 0.5 }, AgedAfter: 30 * 24 * time.Hour}
+	w := &Worker{Clock: testutil.NewClock(now), RandomUnit: func() float64 { return 0 }, AgedAfter: 30 * 24 * time.Hour}
 	aged := domain.Media{ReleasedAt: now.Add(-400 * 24 * time.Hour)}
 	recent := domain.Media{ReleasedAt: now.Add(-3 * 24 * time.Hour)}
 	missing := store.SearchLease{JobID: "job", Priority: store.SearchPriorityMissing}
@@ -1542,7 +1542,7 @@ func TestMissingCompletionSkipsEarlyRetriesForAgedMedia(t *testing.T) {
 			t.Fatalf("%s aged completion=%#v err=%v", outcome, completion, err)
 		}
 		completion, err = w.workflowCompletion(missing, workflow.Result{Outcome: outcome}, recent)
-		if err != nil || !completion.NextAttemptAt.Equal(now.Add(30*time.Minute)) || completion.MissingAttemptFloor != 0 {
+		if err != nil || !completion.NextAttemptAt.Equal(now.Add(6*time.Hour)) || completion.MissingAttemptFloor != 0 {
 			t.Fatalf("%s recent completion=%#v err=%v", outcome, completion, err)
 		}
 	}

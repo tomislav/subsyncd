@@ -56,7 +56,7 @@ type Config struct {
 	// subtitle before its upgrade checks stop; 0 never stops them.
 	UpgradeChecks int
 	// AgedReleaseDays is how long after release a missing subtitle skips the
-	// quick early retries and is searched weekly, then fortnightly; 0 keeps the
+	// early retries and is searched weekly, then fortnightly; 0 keeps the
 	// full schedule for everything.
 	AgedReleaseDays int
 	ProviderHTTP    ProviderHTTPConfig

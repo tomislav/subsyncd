@@ -5,13 +5,14 @@ import (
 )
 
 // missingIntervals are the gaps between the absolute missing-subtitle
-// milestones: 0, 30m, 2h, 8h, 24h, 3d, 7d, 14d, then every 14d.
+// milestones: 0, 6h, 12h, 24h, 3d, 7d, 14d, then every 14d. No retry comes
+// sooner than six hours, the provider search-result cache lifetime: an earlier
+// check would reuse the cached answer and could not find a new subtitle.
 var missingIntervals = [...]time.Duration{
 	0,
-	30 * time.Minute,
-	90 * time.Minute,
 	6 * time.Hour,
-	16 * time.Hour,
+	6 * time.Hour,
+	12 * time.Hour,
 	48 * time.Hour,
 	96 * time.Hour,
 	168 * time.Hour,
@@ -20,7 +21,7 @@ var missingIntervals = [...]time.Duration{
 
 // AgedMissingAttempt is the missing attempt whose interval is the 7-day step;
 // media released long ago starts its retries there.
-const AgedMissingAttempt = 7
+const AgedMissingAttempt = 6
 
 var workflowFailureDelays = [...]time.Duration{
 	time.Minute,
@@ -50,7 +51,9 @@ func MissingDelay(attempt int, randomUnit float64) time.Duration {
 	} else if randomUnit > 1 {
 		randomUnit = 1
 	}
-	factor := 0.9 + 0.2*randomUnit
+	// Jitter only delays (0 to +20%), so a retry never lands inside the
+	// six-hour search cache of the previous search.
+	factor := 1 + 0.2*randomUnit
 	return time.Duration(float64(missingIntervals[attempt]) * factor)
 }
 

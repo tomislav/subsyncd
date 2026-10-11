@@ -17,8 +17,8 @@ type Clock interface {
 type Scheduler struct {
 	Clock      Clock
 	RandomUnit func() float64
-	// AgedAfter is how long after release a missing subtitle skips the quick
-	// early retries; 0 keeps the full schedule for everything.
+	// AgedAfter is how long after release a missing subtitle skips the early
+	// retries; 0 keeps the full schedule for everything.
 	AgedAfter time.Duration
 }
 
@@ -48,7 +48,7 @@ func (s Scheduler) Missing(jobID string, attempt int, releasedAt time.Time) stor
 }
 
 // aged reports whether media released at releasedAt is old enough at now to
-// skip the quick early retries. An unknown or future release date is not.
+// skip the early retries. An unknown or future release date is not.
 func (s Scheduler) aged(releasedAt, now time.Time) bool {
 	return s.AgedAfter > 0 && !releasedAt.IsZero() && !releasedAt.After(now) && now.Sub(releasedAt) >= s.AgedAfter
 }

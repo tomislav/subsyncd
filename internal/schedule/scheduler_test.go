@@ -25,7 +25,7 @@ func TestSchedulerBuildsMissingCompletionFromInjectedClock(t *testing.T) {
 	if completion.Priority != store.SearchPriorityMissing {
 		t.Fatalf("missing priority = %d, want %d", completion.Priority, store.SearchPriorityMissing)
 	}
-	if want := now.Add(90 * time.Minute); !completion.NextAttemptAt.Equal(want) {
+	if want := now.Add(6*time.Hour + 36*time.Minute); !completion.NextAttemptAt.Equal(want) {
 		t.Fatalf("next attempt = %s, want %s", completion.NextAttemptAt, want)
 	}
 }
@@ -54,7 +54,7 @@ func TestSchedulerBuildsFailureCompletionWithoutAdvancingMissingAttempt(t *testi
 
 func TestSchedulerSkipsEarlyMissingRetriesForAgedMedia(t *testing.T) {
 	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
-	scheduler := Scheduler{Clock: fixedClock{now: now}, RandomUnit: func() float64 { return 0.5 }, AgedAfter: 30 * 24 * time.Hour}
+	scheduler := Scheduler{Clock: fixedClock{now: now}, RandomUnit: func() float64 { return 0 }, AgedAfter: 30 * 24 * time.Hour}
 	week, fortnight := 7*24*time.Hour, 14*24*time.Hour
 	cases := []struct {
 		name     string
@@ -63,9 +63,9 @@ func TestSchedulerSkipsEarlyMissingRetriesForAgedMedia(t *testing.T) {
 		next     time.Duration
 		floor    int
 	}{
-		{"unknown release keeps the full schedule", 1, time.Time{}, 30 * time.Minute, 0},
-		{"recent release keeps the full schedule", 1, now.Add(-29 * 24 * time.Hour), 30 * time.Minute, 0},
-		{"future release keeps the full schedule", 1, now.Add(24 * time.Hour), 30 * time.Minute, 0},
+		{"unknown release keeps the full schedule", 1, time.Time{}, 6 * time.Hour, 0},
+		{"recent release keeps the full schedule", 1, now.Add(-29 * 24 * time.Hour), 6 * time.Hour, 0},
+		{"future release keeps the full schedule", 1, now.Add(24 * time.Hour), 6 * time.Hour, 0},
 		{"release exactly at the cutoff is aged", 1, now.Add(-30 * 24 * time.Hour), week, AgedMissingAttempt},
 		{"aged first retry waits a week", 1, now.Add(-400 * 24 * time.Hour), week, AgedMissingAttempt},
 		{"aged search past the weekly step waits a fortnight", AgedMissingAttempt + 1, now.Add(-400 * 24 * time.Hour), fortnight, 0},
@@ -86,18 +86,18 @@ func TestSchedulerSkipsEarlyMissingRetriesForAgedMedia(t *testing.T) {
 
 func TestSchedulerAgedRuleDisabled(t *testing.T) {
 	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
-	scheduler := Scheduler{Clock: fixedClock{now: now}, RandomUnit: func() float64 { return 0.5 }}
+	scheduler := Scheduler{Clock: fixedClock{now: now}, RandomUnit: func() float64 { return 0 }}
 	completion := scheduler.Missing("job", 1, now.Add(-400*24*time.Hour))
-	if want := now.Add(30 * time.Minute); !completion.NextAttemptAt.Equal(want) || completion.MissingAttemptFloor != 0 {
+	if want := now.Add(6 * time.Hour); !completion.NextAttemptAt.Equal(want) || completion.MissingAttemptFloor != 0 {
 		t.Fatalf("completion = %#v, want the full schedule", completion)
 	}
 }
 
 func TestAgedMissingAttemptIsTheWeeklyStep(t *testing.T) {
-	if got := MissingDelay(AgedMissingAttempt, 0.5); got != 7*24*time.Hour {
+	if got := MissingDelay(AgedMissingAttempt, 0); got != 7*24*time.Hour {
 		t.Fatalf("aged step delay = %s, want 7 days", got)
 	}
-	if got := MissingDelay(AgedMissingAttempt+1, 0.5); got != 14*24*time.Hour {
+	if got := MissingDelay(AgedMissingAttempt+1, 0); got != 14*24*time.Hour {
 		t.Fatalf("step after the aged step = %s, want 14 days", got)
 	}
 }

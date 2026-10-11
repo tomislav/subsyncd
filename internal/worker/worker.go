@@ -81,7 +81,7 @@ type Worker struct {
 	ReconcilePriorities map[string]int
 	RandomUnit          func() float64
 	// AgedAfter lets missing searches for media released this long ago skip the
-	// quick early retries; 0 keeps the full schedule.
+	// early retries; 0 keeps the full schedule.
 	AgedAfter         time.Duration
 	OnError           func(error)
 	PollInterval      time.Duration
@@ -417,7 +417,7 @@ func (w *Worker) scheduler() schedule.Scheduler {
 }
 
 // releaseAttrs logs how long ago the media was released and whether its
-// missing search skipped the quick early retries.
+// missing search skipped the early retries.
 func (w *Worker) releaseAttrs(media domain.Media, completion store.SearchCompletion) []slog.Attr {
 	if media.ReleasedAt.IsZero() {
 		return nil

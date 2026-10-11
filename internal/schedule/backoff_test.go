@@ -11,29 +11,29 @@ func TestMissingDelayProducesAbsoluteMilestonesAcrossAttempts(t *testing.T) {
 	}
 
 	wants := []time.Duration{
-		30 * time.Minute,
-		2 * time.Hour,
-		8 * time.Hour,
+		6 * time.Hour,
+		12 * time.Hour,
 		24 * time.Hour,
 		72 * time.Hour,
 		168 * time.Hour,
 		336 * time.Hour,
 		672 * time.Hour,
+		1008 * time.Hour,
 	}
 	elapsed := time.Duration(0)
 	for attempt, want := range wants {
-		elapsed += MissingDelay(attempt+1, 0.5)
+		elapsed += MissingDelay(attempt+1, 0)
 		if elapsed != want {
 			t.Errorf("elapsed after missing attempt %d = %s, want %s", attempt+1, elapsed, want)
 		}
 	}
 }
 
-func TestMissingDelayAppliesTenPercentJitter(t *testing.T) {
+func TestMissingDelayJitterOnlyDelaysUpToTwentyPercent(t *testing.T) {
 	tests := []struct {
 		random float64
 		want   time.Duration
-	}{{0, 27 * time.Minute}, {0.5, 30 * time.Minute}, {1, 33 * time.Minute}}
+	}{{0, 6 * time.Hour}, {0.5, 6*time.Hour + 36*time.Minute}, {1, 7*time.Hour + 12*time.Minute}}
 	for _, test := range tests {
 		if got := MissingDelay(1, test.random); got != test.want {
 			t.Errorf("MissingDelay(1, %v) = %s, want %s", test.random, got, test.want)

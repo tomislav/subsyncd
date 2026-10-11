@@ -143,9 +143,9 @@ minimum_release_score: 35
 upgrade_checks: 4
 
 # Days after release (episode air date, or a movie's digital release from
-# Radarr) after which a missing subtitle skips the quick early retries: once a
-# search finds nothing, the next one is a week later, then every two weeks.
-# Subtitles for older media rarely appear within hours. Media with an unknown
+# Radarr) after which a missing subtitle skips the early retries (6h, 12h, 24h,
+# 3d): once a search finds nothing, the next one is a week later, then every
+# two weeks. Subtitles for older media rarely appear within days. Media with an unknown
 # release date keeps the full schedule. 0 keeps the full schedule for
 # everything. Default: 30.
 aged_release_days: 30
