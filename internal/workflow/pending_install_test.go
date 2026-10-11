@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
 
@@ -83,6 +85,15 @@ func TestInstallLeavesPendingRecordWhenItCannotUndo(t *testing.T) {
 	}
 	if len(repository.pending) != 1 {
 		t.Fatalf("pending installs = %+v, want the unrecorded publication kept for the startup sweep", repository.pending)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range repository.pending {
+		if item.PublishedInode == 0 || item.PublishedInode != fileInode(info) {
+			t.Fatalf("pending inode = %d, want the published file's %d", item.PublishedInode, fileInode(info))
+		}
 	}
 }
 
@@ -174,5 +185,83 @@ func TestRollbackCleanupErrorNamesTheRollbackCopy(t *testing.T) {
 	_, err := installer.Install(context.Background(), installRequest(t, source, destination))
 	if err == nil || !strings.Contains(err.Error(), "remove rollback copy of previous subtitle") || strings.Contains(err.Error(), "unused") {
 		t.Fatalf("Install() error = %v", err)
+	}
+}
+
+func TestRecoverPendingInstallComparesFileIdentity(t *testing.T) {
+	const previous = "1\n00:00:01,000 --> 00:00:02,000\nPrevious\n"
+	for _, test := range []struct {
+		name        string
+		replaced    bool // another run published the same text since
+		wantContent string
+		wantOutcome string
+	}{
+		{name: "the published file is undone", wantContent: previous, wantOutcome: "undone"},
+		{name: "a later file with the same text is kept", replaced: true, wantContent: installSRT, wantOutcome: "cleaned"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			destination := writeInstallFile(t, filepath.Join(root, "Movie.en.srt"), installSRT)
+			info, err := os.Lstat(destination)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rollback := writeInstallFile(t, filepath.Join(root, ".subsyncd-rollback-1"), previous)
+			installations := &installationRepository{found: true, installation: store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(previous))}}
+			repository := newPendingRepository(installations)
+			if _, err := repository.BeginPendingInstall(context.Background(), store.PendingInstall{MediaID: 1, Language: "en", Destination: destination, Checksum: checksumBytes([]byte(installSRT)), RollbackPath: rollback, PublishedInode: fileInode(info)}); err != nil {
+				t.Fatal(err)
+			}
+			if test.replaced {
+				publishOver(t, destination, installSRT)
+			}
+			var logs bytes.Buffer
+			events, err := observability.New(&logs, observability.Options{Level: "info"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installer := Installer{Repository: repository, MediaRoots: []string{root}, Events: events}
+			if settled, err := installer.RecoverPendingInstalls(context.Background()); err != nil || settled != 1 {
+				t.Fatalf("RecoverPendingInstalls() = %d, %v", settled, err)
+			}
+			if !strings.Contains(logs.String(), `"outcome":"`+test.wantOutcome+`"`) {
+				t.Fatalf("logs = %s, want outcome %s", logs.String(), test.wantOutcome)
+			}
+			if payload, err := os.ReadFile(destination); err != nil || string(payload) != test.wantContent {
+				t.Fatalf("destination = %q, %v; want %q", payload, err, test.wantContent)
+			}
+			if _, err := os.Lstat(rollback); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rollback copy remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoverPendingInstallKeepsRowWhenDestinationIsUninspectable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := t.TempDir()
+	destination := writeInstallFile(t, filepath.Join(root, "Movie.en.srt"), installSRT)
+	repository := newPendingRepository(&installationRepository{})
+	if _, err := repository.BeginPendingInstall(context.Background(), store.PendingInstall{MediaID: 1, Language: "en", Destination: destination, Checksum: checksumBytes([]byte(installSRT))}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	installer := Installer{Repository: repository, MediaRoots: []string{root}}
+	if settled, err := installer.RecoverPendingInstalls(context.Background()); err == nil || settled != 0 {
+		t.Fatalf("RecoverPendingInstalls() = %d, %v; want an error", settled, err)
+	}
+	if len(repository.pending) != 1 {
+		t.Fatalf("pending installs = %+v, want the row kept for the next start", repository.pending)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if payload, err := os.ReadFile(destination); err != nil || string(payload) != installSRT {
+		t.Fatalf("destination = %q, %v; want it left alone", payload, err)
 	}
 }

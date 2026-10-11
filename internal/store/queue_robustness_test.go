@@ -195,12 +195,12 @@ func TestPendingInstallRoundTrip(t *testing.T) {
 	repo := openTestRepository(t)
 	ctx := t.Context()
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	id, err := repo.BeginPendingInstall(ctx, PendingInstall{MediaID: 1, Language: "en", Destination: "/media/show.en.srt", Checksum: "c", StagedPath: "/media/.subsyncd-stage-1", CreatedAt: now})
+	id, err := repo.BeginPendingInstall(ctx, PendingInstall{MediaID: 1, Language: "en", Destination: "/media/show.en.srt", Checksum: "c", StagedPath: "/media/.subsyncd-stage-1", PublishedInode: 1<<63 + 5, CreatedAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pending, err := repo.ListPendingInstalls(ctx)
-	if err != nil || len(pending) != 1 || pending[0].ID != id || pending[0].StagedPath != "/media/.subsyncd-stage-1" || !pending[0].CreatedAt.Equal(now) {
+	if err != nil || len(pending) != 1 || pending[0].ID != id || pending[0].StagedPath != "/media/.subsyncd-stage-1" || pending[0].PublishedInode != 1<<63+5 || !pending[0].CreatedAt.Equal(now) {
 		t.Fatalf("pending = %+v/%v", pending, err)
 	}
 	if err := repo.FinishPendingInstall(ctx, id); err != nil {

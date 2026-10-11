@@ -510,43 +510,167 @@ func TestInstallReportsFirstInstallRemovalFailure(t *testing.T) {
 
 func TestFailedInstallDoesNotRollBackANewerSubtitle(t *testing.T) {
 	// A run abandoned while publishing fails its database write later, after
-	// another run installed a newer subtitle; that one stays.
+	// another run published a newer subtitle; that one stays, even when its
+	// text is the same as this run's.
+	replacement := strings.Replace(installSRT, "Hello", "Replacement", 1)
 	newer := strings.Replace(installSRT, "Hello", "Newer", 1)
 	for _, replacing := range []bool{false, true} {
-		t.Run(fmt.Sprintf("replacing=%t", replacing), func(t *testing.T) {
-			root := t.TempDir()
-			destination := filepath.Join(root, "Movie.en.srt")
-			repository := &installationRepository{}
-			if replacing {
-				writeInstallFile(t, destination, installSRT)
-				repository.found = true
-				repository.installation = store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(installSRT))}
-			}
-			source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), strings.Replace(installSRT, "Hello", "Replacement", 1))
-			installer := Installer{Repository: repository, MediaRoots: []string{root}, Fault: func(stage InstallStage) error {
-				if stage != StageDatabase {
-					return nil
+		for _, content := range []string{newer, replacement} {
+			t.Run(fmt.Sprintf("replacing=%t/same_text=%t", replacing, content == replacement), func(t *testing.T) {
+				root := t.TempDir()
+				destination := filepath.Join(root, "Movie.en.srt")
+				repository := &installationRepository{}
+				if replacing {
+					writeInstallFile(t, destination, installSRT)
+					repository.found = true
+					repository.installation = store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(installSRT))}
 				}
-				writeInstallFile(t, destination, newer)
-				return errors.New("database unavailable")
-			}}
-			if _, err := installer.Install(context.Background(), installRequest(t, source, destination)); err == nil || !strings.Contains(err.Error(), "database unavailable") {
-				t.Fatalf("Install() error = %v", err)
-			}
-			if payload, err := os.ReadFile(destination); err != nil || string(payload) != newer {
-				t.Fatalf("destination = %q, %v; want the newer subtitle kept", payload, err)
-			}
-			entries, err := os.ReadDir(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, entry := range entries {
-				if strings.HasPrefix(entry.Name(), ".subsyncd-") {
-					t.Fatalf("%s remains; this run's rollback copy is removed", entry.Name())
+				source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), replacement)
+				var newerInfo os.FileInfo
+				installer := Installer{Repository: repository, MediaRoots: []string{root}, Fault: func(stage InstallStage) error {
+					if stage != StageDatabase {
+						return nil
+					}
+					newerInfo = publishOver(t, destination, content)
+					return errors.New("database unavailable")
+				}}
+				if _, err := installer.Install(context.Background(), installRequest(t, source, destination)); err == nil || !strings.Contains(err.Error(), "database unavailable") {
+					t.Fatalf("Install() error = %v", err)
 				}
-			}
-		})
+				info, err := os.Lstat(destination)
+				if err != nil || !os.SameFile(info, newerInfo) {
+					t.Fatalf("destination = %v, %v; want the newer subtitle kept", info, err)
+				}
+				entries, err := os.ReadDir(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), ".subsyncd-") {
+						t.Fatalf("%s remains; this run's rollback copy is removed", entry.Name())
+					}
+				}
+			})
+		}
 	}
+}
+
+func TestFailedReplacementKeepsSubtitleRecordedByANewerRun(t *testing.T) {
+	// A run paused just before its rename publishes after another run
+	// installed and recorded the same text. The file is this run's, but the
+	// record is the newer run's: restoring the older subtitle would leave a
+	// file the record does not match.
+	root := t.TempDir()
+	destination := writeInstallFile(t, filepath.Join(root, "Movie.en.srt"), installSRT)
+	replacement := strings.Replace(installSRT, "Hello", "Replacement", 1)
+	repository := &installationRepository{found: true, installation: store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(installSRT))}}
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), replacement)
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, Fault: func(stage InstallStage) error {
+		if stage != StageDatabase {
+			return nil
+		}
+		repository.installation = store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(replacement)), RollbackPath: filepath.Join(root, ".subsyncd-rollback-newer")}
+		return errors.New("database unavailable")
+	}}
+	if _, err := installer.Install(context.Background(), installRequest(t, source, destination)); err == nil || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if payload, err := os.ReadFile(destination); err != nil || string(payload) != replacement {
+		t.Fatalf("destination = %q, %v; want the recorded text kept", payload, err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(root, ".subsyncd-*"))
+	if len(matches) != 0 {
+		t.Fatalf("%v remain; this run's rollback copy is removed", matches)
+	}
+}
+
+func TestFailedReplacementWithUninspectableDestinationIsLeftForStartup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := t.TempDir()
+	destination := writeInstallFile(t, filepath.Join(root, "Movie.en.srt"), installSRT)
+	replacement := strings.Replace(installSRT, "Hello", "Replacement", 1)
+	installations := &installationRepository{found: true, installation: store.Installation{MediaID: 1, Language: "en", Path: destination, Checksum: checksumBytes([]byte(installSRT))}}
+	repository := newPendingRepository(installations)
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), replacement)
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, Fault: func(stage InstallStage) error {
+		if stage != StageDatabase {
+			return nil
+		}
+		// Not even the destination's inode can be read.
+		if err := os.Chmod(root, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("database unavailable")
+	}}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	_, err := installer.Install(context.Background(), installRequest(t, source, destination))
+	if err == nil || !strings.Contains(err.Error(), "inspect subtitle destination before rollback") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if payload, err := os.ReadFile(destination); err != nil || string(payload) != replacement {
+		t.Fatalf("destination = %q, %v; want it left alone", payload, err)
+	}
+	if len(repository.pending) != 1 {
+		t.Fatalf("pending installs = %+v, want the publication kept for the startup sweep", repository.pending)
+	}
+	// The startup sweep, able to look, restores the previous subtitle from
+	// the rollback copy that was kept.
+	if settled, err := installer.RecoverPendingInstalls(context.Background()); err != nil || settled != 1 {
+		t.Fatalf("RecoverPendingInstalls() = %d, %v", settled, err)
+	}
+	if payload, err := os.ReadFile(destination); err != nil || string(payload) != installSRT {
+		t.Fatalf("destination = %q, %v; want the previous subtitle restored", payload, err)
+	}
+}
+
+func TestFailedFirstInstallWithUninspectableDestinationStillTriesRemoval(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	// No other run publishes over a sidecar it has not recorded, so the
+	// destination is still this run's and removal is attempted rather than
+	// leaving an untracked subtitle silently.
+	root := t.TempDir()
+	destination := filepath.Join(root, "Movie.en.srt")
+	repository := newPendingRepository(&installationRepository{})
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), installSRT)
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, Fault: func(stage InstallStage) error {
+		if stage != StageDatabase {
+			return nil
+		}
+		if err := os.Chmod(root, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("database unavailable")
+	}}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	_, err := installer.Install(context.Background(), installRequest(t, source, destination))
+	if err == nil || !strings.Contains(err.Error(), "remove newly published subtitle") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if len(repository.pending) != 1 {
+		t.Fatalf("pending installs = %+v, want the publication kept for the startup sweep", repository.pending)
+	}
+}
+
+// publishOver replaces path the way another run publishes: a new file
+// renamed into place.
+func publishOver(t *testing.T, path, content string) os.FileInfo {
+	t.Helper()
+	staged := writeInstallFile(t, path+".other", content)
+	if err := os.Rename(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
 }
 
 func TestInstallPreservesRollbackWhenRestoreFails(t *testing.T) {

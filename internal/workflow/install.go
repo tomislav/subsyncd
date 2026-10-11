@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -181,6 +182,12 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 			return failStaging(fmt.Errorf("chown staged subtitle: %w", err))
 		}
 	}
+	// Linking and renaming keep the file's identity, so this is how the
+	// published subtitle is told apart from a later one with the same text.
+	stagedInfo, err := stagedFile.Stat()
+	if err != nil {
+		return failStaging(fmt.Errorf("inspect staged subtitle: %w", err))
+	}
 	if err := closeStaged(); err != nil {
 		return failStaging(fmt.Errorf("close staged subtitle: %w", err))
 	}
@@ -194,7 +201,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	committedFile := false
 	published := checksumBytes(payload)
-	pendingID, err := i.beginPendingInstall(ctx, store.PendingInstall{MediaID: request.MediaID, Language: request.Language.String(), Destination: destination, Checksum: published, StagedPath: stagedPath, RollbackPath: rollbackPath})
+	pendingID, err := i.beginPendingInstall(ctx, store.PendingInstall{MediaID: request.MediaID, Language: request.Language.String(), Destination: destination, Checksum: published, StagedPath: stagedPath, RollbackPath: rollbackPath, PublishedInode: fileInode(stagedInfo)})
 	if err != nil {
 		if rollbackPath != "" {
 			_ = os.Remove(rollbackPath)
@@ -209,12 +216,24 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 				i.finishPendingInstall(ctx, pendingID)
 			}
 		}()
-		if committedFile && !destinationHolds(destination, published) {
-			// A run abandoned while publishing can fail its database write
-			// long after; another run may have installed a newer subtitle
-			// since. Only this run's own publication is rolled back.
-			committedFile = false
-			i.Events.For("workflow").Log(ctx, slog.LevelWarn, "install.rollback_skipped", "subtitle rollback skipped because the destination changed after publication")
+		keepRollback := false
+		if committedFile {
+			owned, err := i.ownsPublication(ctx, request, destination, stagedInfo, replacing, existing, found)
+			switch {
+			case err != nil:
+				// Unsure whose subtitle the destination holds: leave it and the
+				// rollback copy, and keep the pending record for the startup
+				// sweep rather than risk overwriting a newer install.
+				committedFile = false
+				keepRollback = true
+				restoreErrors = append(restoreErrors, err)
+			case !owned:
+				// A run abandoned while publishing can fail its database write
+				// long after; another run may have installed a newer subtitle
+				// since. Only this run's own publication is rolled back.
+				committedFile = false
+				i.Events.For("workflow").Log(ctx, slog.LevelWarn, "install.rollback_skipped", "subtitle rollback skipped because the destination changed after publication")
+			}
 		}
 		if committedFile {
 			if rollbackPath == "" {
@@ -232,7 +251,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 				}
 			}
 		}
-		if rollbackPath != "" && !committedFile {
+		if rollbackPath != "" && !committedFile && !keepRollback {
 			if removeErr := os.Remove(rollbackPath); removeErr != nil {
 				restoreErrors = append(restoreErrors, fmt.Errorf("remove rollback copy of previous subtitle: %w", removeErr))
 			}
@@ -606,15 +625,56 @@ func writeAll(writer io.Writer, payload []byte) error {
 	return nil
 }
 
-// destinationHolds reports whether destination is still a regular file with
-// the given checksum.
-func destinationHolds(destination, checksum string) bool {
+// ownsPublication reports whether destination still holds the file this run
+// published (published is the staged file's information) and, for a
+// replacement, no other run has recorded an installation since, so rolling
+// back cannot discard a newer install. The file is compared by identity, not
+// content: another run may have published the same text. An error means the
+// answer is unknown.
+//
+// When the destination cannot be inspected, a first install is still treated
+// as this run's: no other run publishes over a sidecar it has not recorded, so
+// only an outside writer could have replaced it, and leaving it would leave an
+// untracked subtitle that blocks every later install. A replacement is not
+// restored when unsure, as that could overwrite a newer install.
+func (i Installer) ownsPublication(ctx context.Context, request InstallRequest, destination string, published os.FileInfo, replacing bool, existing store.Installation, found bool) (bool, error) {
 	info, err := os.Lstat(destination)
-	if err != nil || !info.Mode().IsRegular() {
-		return false
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
-	payload, err := os.ReadFile(destination)
-	return err == nil && checksumBytes(payload) == checksum
+	if err != nil {
+		if !replacing {
+			return true, nil
+		}
+		return false, fmt.Errorf("inspect subtitle destination before rollback: %w", err)
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(info, published) {
+		return false, nil
+	}
+	if !replacing {
+		return true, nil
+	}
+	// A run paused before its rename can publish after another run installed
+	// and recorded a subtitle; its file is then this run's, but the record is
+	// the other run's, and the rollback copy is older than both.
+	current, currentFound, err := i.Repository.GetInstallation(context.WithoutCancel(ctx), request.MediaID, request.Language)
+	if err != nil {
+		return false, fmt.Errorf("read installation before rollback: %w", err)
+	}
+	return currentFound == found && sameInstallationRecord(current, existing), nil
+}
+
+func sameInstallationRecord(a, b store.Installation) bool {
+	return filepath.Clean(a.Path) == filepath.Clean(b.Path) && a.Checksum == b.Checksum && a.RollbackPath == b.RollbackPath &&
+		a.ProviderID == b.ProviderID && a.CandidateID == b.CandidateID
+}
+
+// fileInode returns a file's inode number, or 0 when the platform has none.
+func fileInode(info os.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(stat.Ino)
+	}
+	return 0
 }
 
 func checksumBytes(payload []byte) string {

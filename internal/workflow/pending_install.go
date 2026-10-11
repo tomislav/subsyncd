@@ -106,10 +106,13 @@ func (i Installer) recoverPendingInstall(ctx context.Context, item store.Pending
 	}
 	recorded := found && filepath.Clean(installation.Path) == destination && installation.Checksum == item.Checksum
 	outcome := "cleaned"
-	switch {
-	case recorded:
+	owned := false
+	if recorded {
 		outcome = "recorded"
-	case destinationHolds(destination, item.Checksum):
+	} else if owned, err = pendingPublicationOwned(destination, item); err != nil {
+		return "", err
+	}
+	if owned {
 		outcome = "undone"
 		if item.RollbackPath != "" && regularFile(item.RollbackPath) {
 			if err := os.Rename(item.RollbackPath, destination); err != nil {
@@ -134,6 +137,31 @@ func (i Installer) recoverPendingInstall(ctx context.Context, item store.Pending
 		return "", err
 	}
 	return outcome, nil
+}
+
+// pendingPublicationOwned reports whether destination still holds the file a
+// pending install published: the same inode and checksum. The inode tells it
+// apart from a later publication of the same text; the checksum guards
+// against a reused inode number. Rows without an inode compare the checksum
+// alone. An unreadable destination is an error, so the row is kept and
+// retried at the next start: no run is active then that could settle it, and
+// undoing blind could overwrite a newer install.
+func pendingPublicationOwned(destination string, item store.PendingInstall) (bool, error) {
+	info, err := os.Lstat(destination)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect subtitle destination: %w", err)
+	}
+	if !info.Mode().IsRegular() || (item.PublishedInode != 0 && fileInode(info) != item.PublishedInode) {
+		return false, nil
+	}
+	payload, err := os.ReadFile(destination)
+	if err != nil {
+		return false, fmt.Errorf("read subtitle destination: %w", err)
+	}
+	return checksumBytes(payload) == item.Checksum, nil
 }
 
 func regularFile(path string) bool {

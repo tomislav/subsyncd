@@ -18,7 +18,12 @@ type PendingInstall struct {
 	Checksum     string
 	StagedPath   string
 	RollbackPath string
-	CreatedAt    time.Time
+	// PublishedInode is the inode of the published file, 0 when unknown.
+	// The device number is not kept: it can change across a restart (device
+	// mapper, network and overlay mounts), while the destination path
+	// already fixes the filesystem.
+	PublishedInode uint64
+	CreatedAt      time.Time
 }
 
 func (r *Repository) BeginPendingInstall(ctx context.Context, pending PendingInstall) (int64, error) {
@@ -28,8 +33,8 @@ func (r *Repository) BeginPendingInstall(ctx context.Context, pending PendingIns
 	if pending.CreatedAt.IsZero() {
 		pending.CreatedAt = time.Now()
 	}
-	result, err := r.store.db.ExecContext(ctx, `INSERT INTO pending_installs(media_id, language, destination, checksum, staged_path, rollback_path, created_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		pending.MediaID, pending.Language, pending.Destination, pending.Checksum, pending.StagedPath, pending.RollbackPath, pending.CreatedAt.UnixNano())
+	result, err := r.store.db.ExecContext(ctx, `INSERT INTO pending_installs(media_id, language, destination, checksum, staged_path, rollback_path, published_inode, created_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		pending.MediaID, pending.Language, pending.Destination, pending.Checksum, pending.StagedPath, pending.RollbackPath, int64(pending.PublishedInode), pending.CreatedAt.UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("record pending install: %w", err)
 	}
@@ -48,17 +53,18 @@ func (r *Repository) FinishPendingInstall(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) ListPendingInstalls(ctx context.Context) ([]PendingInstall, error) {
-	rows, err := r.store.db.QueryContext(ctx, `SELECT id, media_id, language, destination, checksum, staged_path, rollback_path, created_at_ns FROM pending_installs ORDER BY id`)
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id, media_id, language, destination, checksum, staged_path, rollback_path, published_inode, created_at_ns FROM pending_installs ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending installs: %w", err)
 	}
 	var pending []PendingInstall
 	for rows.Next() {
 		var item PendingInstall
-		var created int64
-		if err := rows.Scan(&item.ID, &item.MediaID, &item.Language, &item.Destination, &item.Checksum, &item.StagedPath, &item.RollbackPath, &created); err != nil {
+		var inode, created int64
+		if err := rows.Scan(&item.ID, &item.MediaID, &item.Language, &item.Destination, &item.Checksum, &item.StagedPath, &item.RollbackPath, &inode, &created); err != nil {
 			return nil, errors.Join(fmt.Errorf("scan pending install: %w", err), rows.Close())
 		}
+		item.PublishedInode = uint64(inode)
 		item.CreatedAt = time.Unix(0, created).UTC()
 		pending = append(pending, item)
 	}
