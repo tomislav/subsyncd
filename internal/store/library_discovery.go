@@ -83,11 +83,18 @@ func (r *Repository) commitLibraryDiscovery(ctx context.Context, instance, scope
 		}
 		snapshotEntities[media.Ref.FileID] = media.EntityID
 		snapshotFiles[media.EntityID] = media.Ref.FileID
-		_, _, _, _, _, found, err := findMediaIdentityTx(ctx, tx, media)
+		id, _, _, _, _, found, err := findMediaIdentityTx(ctx, tx, media)
 		if err != nil {
 			return err
 		}
 		if found {
+			// Known media keeps its row; only a newly known release date is filled
+			// in, which backfills rows created before the date was recorded.
+			if released := releasedAtNS(media); released != 0 {
+				if _, err := tx.ExecContext(ctx, `UPDATE media SET released_at_ns=? WHERE id=? AND released_at_ns!=?`, released, id, released); err != nil {
+					return fmt.Errorf("record media release date: %w", err)
+				}
+			}
 			continue
 		}
 		identity := fmt.Sprintf("%s\x00%s\x00%d\x00%d", instance, media.Ref.Kind, media.EntityID, media.Ref.FileID)

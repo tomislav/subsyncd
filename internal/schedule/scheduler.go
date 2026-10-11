@@ -17,21 +17,40 @@ type Clock interface {
 type Scheduler struct {
 	Clock      Clock
 	RandomUnit func() float64
+	// AgedAfter is how long after release a missing subtitle skips the quick
+	// early retries; 0 keeps the full schedule for everything.
+	AgedAfter time.Duration
 }
 
-func (s Scheduler) Missing(jobID string, attempt int) store.SearchCompletion {
+// Missing schedules the next search for a subtitle still missing after the
+// given attempt. Media released at least AgedAfter ago jumps to the weekly step
+// (then fortnightly): its subtitles won't appear within hours, so the quick
+// early retries would only repeat every provider search.
+func (s Scheduler) Missing(jobID string, attempt int, releasedAt time.Time) store.SearchCompletion {
 	randomUnit := rand.Float64()
 	if s.RandomUnit != nil {
 		randomUnit = s.RandomUnit()
 	}
-	return store.SearchCompletion{
+	completion := store.SearchCompletion{
 		JobID:                 jobID,
 		Outcome:               "missing",
-		NextAttemptAt:         s.Clock.Now().Add(MissingDelay(attempt, randomUnit)),
 		AdvanceMissingAttempt: true,
 		ResetFailureAttempt:   true,
 		Priority:              store.SearchPriorityMissing,
 	}
+	now := s.Clock.Now()
+	if s.aged(releasedAt, now) && attempt < AgedMissingAttempt {
+		attempt = AgedMissingAttempt
+		completion.MissingAttemptFloor = AgedMissingAttempt
+	}
+	completion.NextAttemptAt = now.Add(MissingDelay(attempt, randomUnit))
+	return completion
+}
+
+// aged reports whether media released at releasedAt is old enough at now to
+// skip the quick early retries. An unknown or future release date is not.
+func (s Scheduler) aged(releasedAt, now time.Time) bool {
+	return s.AgedAfter > 0 && !releasedAt.IsZero() && !releasedAt.After(now) && now.Sub(releasedAt) >= s.AgedAfter
 }
 
 func (s Scheduler) Failure(jobID string, failureAttempt int, outcome string) store.SearchCompletion {

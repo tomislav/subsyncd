@@ -27,7 +27,7 @@ func TestRadarrGetMediaHydratesFileAndMovie(t *testing.T) {
 		case "/api/v3/moviefile/2001":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 2001, "movieId": 20, "path": "/remote/movies/Example Movie/Example.Movie.2024.mkv", "size": 4321, "dateAdded": "2026-09-04T11:00:00Z", "sceneName": "Example.Movie.2024.2160p.AMZN.WEB-DL-GROUP", "releaseGroup": "GROUP", "edition": "Extended", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-2160p", "resolution": 2160, "source": "webdl"}}, "mediaInfo": map[string]any{"runTime": "02:03:04"}})
 		case "/api/v3/movie/20":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 20, "title": "Example Movie", "alternateTitles": []map[string]any{{"title": "Primjer filma"}}, "year": 2024, "imdbId": "tt7654321", "tmdbId": 2468})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 20, "title": "Example Movie", "alternateTitles": []map[string]any{{"title": "Primjer filma"}}, "year": 2024, "imdbId": "tt7654321", "tmdbId": 2468, "inCinemas": "2024-02-27T00:00:00Z", "physicalRelease": "2024-05-14T00:00:00Z", "digitalRelease": "2024-04-15T00:00:00Z", "releaseDate": "2024-02-27T00:00:00Z"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -56,6 +56,30 @@ func TestRadarrGetMediaHydratesFileAndMovie(t *testing.T) {
 	}
 	if media.OriginalFilename == "" || media.ReleaseGroup != "GROUP" || media.Edition != "Extended" || media.Resolution != "2160p" || media.Source != "webdl" || media.Duration != 2*time.Hour+3*time.Minute+4*time.Second {
 		t.Fatalf("release metadata = %#v", media)
+	}
+	if want := time.Date(2024, 4, 15, 0, 0, 0, 0, time.UTC); !media.ReleasedAt.Equal(want) {
+		t.Fatalf("released at = %s, want the digital release %s", media.ReleasedAt, want)
+	}
+}
+
+func TestRadarrReleaseDateFallsBackFromDigitalToPhysicalToCinema(t *testing.T) {
+	day := func(month, date int) arrTime {
+		return arrTime(time.Date(2024, time.Month(month), date, 0, 0, 0, 0, time.UTC))
+	}
+	cases := []struct {
+		name  string
+		movie radarrMovie
+		want  time.Time
+	}{
+		{"digital", radarrMovie{DigitalRelease: day(4, 15), PhysicalRelease: day(5, 14), InCinemas: day(2, 27)}, time.Date(2024, 4, 15, 0, 0, 0, 0, time.UTC)},
+		{"physical", radarrMovie{PhysicalRelease: day(5, 14), InCinemas: day(2, 27)}, time.Date(2024, 5, 14, 0, 0, 0, 0, time.UTC)},
+		{"cinema plus 90 days", radarrMovie{InCinemas: day(2, 27)}, time.Date(2024, 5, 27, 0, 0, 0, 0, time.UTC)},
+		{"unknown", radarrMovie{}, time.Time{}},
+	}
+	for _, tc := range cases {
+		if got := tc.movie.releasedAt(); !got.Equal(tc.want) {
+			t.Fatalf("%s: released at = %s, want %s", tc.name, got, tc.want)
+		}
 	}
 }
 

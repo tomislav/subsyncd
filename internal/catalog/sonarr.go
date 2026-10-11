@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -185,6 +186,26 @@ type arrQuality struct {
 	} `json:"quality"`
 }
 
+// arrTime is an optional Arr date. A missing, empty or unparsable value decodes
+// as zero instead of failing the whole lookup.
+type arrTime time.Time
+
+func (t *arrTime) UnmarshalJSON(data []byte) error {
+	*t = arrTime{}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil || text == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return nil
+	}
+	*t = arrTime(parsed.UTC())
+	return nil
+}
+
+func (t arrTime) Time() time.Time { return time.Time(t) }
+
 type arrMediaInfo struct {
 	RunTime string `json:"runTime"`
 }
@@ -203,13 +224,14 @@ type sonarrEpisodeFile struct {
 }
 
 type sonarrEpisode struct {
-	ID                    int64  `json:"id"`
-	SeriesID              int64  `json:"seriesId"`
-	EpisodeFileID         int64  `json:"episodeFileId"`
-	SeasonNumber          int    `json:"seasonNumber"`
-	EpisodeNumber         int    `json:"episodeNumber"`
-	AbsoluteEpisodeNumber int    `json:"absoluteEpisodeNumber"`
-	Title                 string `json:"title"`
+	ID                    int64   `json:"id"`
+	SeriesID              int64   `json:"seriesId"`
+	EpisodeFileID         int64   `json:"episodeFileId"`
+	SeasonNumber          int     `json:"seasonNumber"`
+	EpisodeNumber         int     `json:"episodeNumber"`
+	AbsoluteEpisodeNumber int     `json:"absoluteEpisodeNumber"`
+	Title                 string  `json:"title"`
+	AirDateUTC            arrTime `json:"airDateUtc"`
 }
 
 type arrAlternateTitle struct {
@@ -316,6 +338,8 @@ func (s *Sonarr) hydrateMedia(ctx context.Context, ref domain.MediaRef) (domain.
 		Quality:          file.Quality.Quality.Name,
 		Duration:         parseRuntime(file.MediaInfo.RunTime),
 	}
+	// A multi-episode file counts as released when its first episode aired.
+	media.ReleasedAt = episode.AirDateUTC.Time()
 	if len(episodes) > 1 {
 		applyEpisodeRange(&media, episodes)
 	}

@@ -30,7 +30,7 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 		case r.URL.Path == "/api/v3/episodefile/1001":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/Example Show/Example.Show.S01E02.mkv", "size": 1234, "dateAdded": "2026-09-04T10:00:00Z", "sceneName": "Example.Show.S01E02.1080p.NF.WEB-DL-GROUP", "releaseGroup": "GROUP", "quality": map[string]any{"quality": map[string]any{"name": "WEBDL-1080p", "resolution": 1080, "source": "webdl"}}, "mediaInfo": map[string]any{"runTime": "00:42:30"}})
 		case r.URL.Path == "/api/v3/episode" && r.URL.Query().Get("episodeFileId") == "1001":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "absoluteEpisodeNumber": 14, "title": "Second Episode"}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "absoluteEpisodeNumber": 14, "title": "Second Episode", "airDate": "2026-07-15", "airDateUtc": "2026-07-15T04:45:00Z"}})
 		case r.URL.Path == "/api/v3/series/10":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Example Show", "alternateTitles": []map[string]any{{"title": "Primjer"}}, "year": 2024, "imdbId": "tt1234567", "tvdbId": 7654})
 		default:
@@ -64,6 +64,9 @@ func TestSonarrGetMediaHydratesFileEpisodeAndSeries(t *testing.T) {
 	}
 	if media.ExternalIDs.IMDb != "tt1234567" || media.ExternalIDs.TVDB != 7654 || media.OriginalFilename == "" || media.ReleaseGroup != "GROUP" || media.Quality != "WEBDL-1080p" || media.Duration != 42*time.Minute+30*time.Second {
 		t.Fatalf("release metadata = %#v", media)
+	}
+	if want := time.Date(2026, 7, 15, 4, 45, 0, 0, time.UTC); !media.ReleasedAt.Equal(want) {
+		t.Fatalf("released at = %s, want %s", media.ReleasedAt, want)
 	}
 }
 
@@ -159,8 +162,8 @@ func TestSonarrGetMediaIndexesConsecutiveMultiEpisodeFileAsRange(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1001, "seriesId": 10, "path": "/remote/tv/show.mkv", "size": 1234, "dateAdded": "2026-09-04T10:00:00Z"})
 		case r.URL.Path == "/api/v3/episode":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "absoluteEpisodeNumber": 12, "title": "Second"},
-				{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 11, "title": "First"},
+				{"id": 102, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 2, "absoluteEpisodeNumber": 12, "title": "Second", "airDateUtc": "2020-01-08T02:00:00Z"},
+				{"id": 101, "seriesId": 10, "seasonNumber": 1, "episodeNumber": 1, "absoluteEpisodeNumber": 11, "title": "First", "airDateUtc": "2020-01-01T02:00:00Z"},
 			})
 		case r.URL.Path == "/api/v3/series/10":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "title": "Show"})
@@ -179,6 +182,9 @@ func TestSonarrGetMediaIndexesConsecutiveMultiEpisodeFileAsRange(t *testing.T) {
 	}
 	if media.EntityID != 101 || media.Season != 1 || media.Episode != 1 || media.EpisodeEnd != 2 || media.AbsoluteEpisode != 11 || media.AbsoluteEpisodeEnd != 12 || media.EpisodeTitle != "First" || media.UnsupportedReason != "" || !media.IsEpisodeRange() {
 		t.Fatalf("multi-episode media = %#v", media)
+	}
+	if want := time.Date(2020, 1, 1, 2, 0, 0, 0, time.UTC); !media.ReleasedAt.Equal(want) {
+		t.Fatalf("multi-episode released at = %s, want the first episode's %s", media.ReleasedAt, want)
 	}
 	if len(episodeIDs) != 2 || episodeIDs[0] != 101 || episodeIDs[1] != 102 {
 		t.Fatalf("attached episode IDs = %v, want [101 102]", episodeIDs)
@@ -566,4 +572,21 @@ func listDeferredSonarrHistory(t *testing.T, count int, seriesAvailable bool) (*
 		t.Fatalf("ListChanges() error = %v, want %d deferrals", err, count)
 	}
 	return deferral, seriesRequests
+}
+
+func TestArrTimeTreatsMissingOrMalformedDatesAsUnknown(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"at":null}`, `{"at":""}`, `{"at":"not a date"}`, `{"at":"2026-07-15"}`, `{"at":17}`} {
+		var value struct {
+			At arrTime `json:"at"`
+		}
+		if err := json.Unmarshal([]byte(raw), &value); err != nil || !value.At.Time().IsZero() {
+			t.Fatalf("%s decoded to %s err=%v, want zero", raw, value.At.Time(), err)
+		}
+	}
+	var value struct {
+		At arrTime `json:"at"`
+	}
+	if err := json.Unmarshal([]byte(`{"at":"2024-04-15T00:00:00Z"}`), &value); err != nil || !value.At.Time().Equal(time.Date(2024, 4, 15, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("decoded %s err=%v", value.At.Time(), err)
+	}
 }

@@ -661,6 +661,37 @@ func TestUpgradeChecksDefaultsAcceptsZeroAndRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+func TestAgedReleaseDaysDefaultsAcceptsZeroAndRejectsOutOfRange(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name  string
+		block string
+		want  int
+	}{
+		{name: "omitted", want: 30},
+		{name: "explicit", block: "aged_release_days: 90\n", want: 90},
+		{name: "disabled", block: "aged_release_days: 0\n", want: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := loadText(t, validConfig(root, test.block+`languages:
+  en: {providers: [subdl-main]}
+`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AgedReleaseDays != test.want {
+				t.Fatalf("aged_release_days = %d, want %d", cfg.AgedReleaseDays, test.want)
+			}
+		})
+	}
+	for _, value := range []int{-1, 3651} {
+		t.Run(fmt.Sprintf("value_%d", value), func(t *testing.T) {
+			_, err := loadText(t, validConfig(root, fmt.Sprintf("aged_release_days: %d\nlanguages:\n  en: {providers: [subdl-main]}\n", value)))
+			assertErrorContains(t, err, "aged_release_days", "0", "3650")
+		})
+	}
+}
+
 func TestInstallStripWatermarksDefaultsOffAndHonorsTrue(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := loadText(t, validConfig(root, "languages:\n  en: {providers: [subdl-main]}\n"))

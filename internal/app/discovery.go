@@ -11,6 +11,7 @@ import (
 
 // A scope change permits another background discovery pass. Credentials and
 // language changes do not invalidate completion; language backfill is separate.
+// library-v2 reran discovery once to backfill media release dates.
 func libraryDiscoveryScope(instance config.InstanceConfig, mediaRoots []string) string {
 	mappings := append([]config.PathMapping(nil), instance.PathMappings...)
 	sort.Slice(mappings, func(i, j int) bool {
@@ -27,7 +28,7 @@ func libraryDiscoveryScope(instance config.InstanceConfig, mediaRoots []string) 
 		URL      string
 		Mappings []config.PathMapping
 		Roots    []string
-	}{"library-v1", instance.Type, instance.URL, mappings, roots})
+	}{"library-v2", instance.Type, instance.URL, mappings, roots})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

@@ -21,6 +21,7 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/notifier"
 	"subsyncd/internal/observability"
+	"subsyncd/internal/schedule"
 	"subsyncd/internal/store"
 	"subsyncd/internal/testutil"
 	"subsyncd/internal/workflow"
@@ -1459,15 +1460,15 @@ func TestUpgradeCompletionAdvancesOnlyUnchangedChecks(t *testing.T) {
 	now := time.Now()
 	w := &Worker{Clock: testutil.NewClock(now), RandomUnit: func() float64 { return 0.5 }}
 	lease := store.SearchLease{JobID: "upgrade", Priority: store.SearchPriorityUpgrade, Attempt: 3}
-	retained, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeSatisfied, NextUpgrade: now.Add(90 * 24 * time.Hour)})
+	retained, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeSatisfied, NextUpgrade: now.Add(90 * 24 * time.Hour)}, domain.Media{})
 	if err != nil || !retained.AdvanceUpgradeAttempt || retained.ResetMissingAttempt || retained.Priority != store.SearchPriorityUpgrade {
 		t.Fatalf("retained=%#v err=%v", retained, err)
 	}
-	missing, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeNoResult})
+	missing, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeNoResult}, domain.Media{})
 	if err != nil || !missing.ResetMissingAttempt || !missing.NextAttemptAt.Equal(now.Add(30*time.Minute)) {
 		t.Fatalf("missing=%#v err=%v", missing, err)
 	}
-	installed, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeInstalled, NextUpgrade: now.Add(7 * 24 * time.Hour)})
+	installed, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeInstalled, NextUpgrade: now.Add(7 * 24 * time.Hour)}, domain.Media{})
 	if err != nil || !installed.ResetMissingAttempt || installed.AdvanceUpgradeAttempt {
 		t.Fatalf("installed=%#v err=%v", installed, err)
 	}
@@ -1477,7 +1478,7 @@ func TestUpgradeCompletionEndsChecksWhenTheWorkflowSchedulesNoMore(t *testing.T)
 	now := time.Now()
 	w := &Worker{Clock: testutil.NewClock(now)}
 	lease := store.SearchLease{JobID: "upgrade", Priority: store.SearchPriorityUpgrade, Attempt: 3}
-	done, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeSatisfied})
+	done, err := w.workflowCompletion(lease, workflow.Result{Outcome: workflow.OutcomeSatisfied}, domain.Media{})
 	if err != nil || !done.NextAttemptAt.IsZero() || done.AdvanceUpgradeAttempt || !done.ResetMissingAttempt {
 		t.Fatalf("completion=%#v err=%v; want a terminal completion with no next attempt", done, err)
 	}
@@ -1512,7 +1513,7 @@ func TestProviderSearchRetriesUseRandomJitterByDefault(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			seen := map[time.Time]bool{}
 			for i := 0; i < 32; i++ {
-				completion, err := w.workflowCompletion(store.SearchLease{JobID: "job", Priority: store.SearchPriorityMissing}, tc.result)
+				completion, err := w.workflowCompletion(store.SearchLease{JobID: "job", Priority: store.SearchPriorityMissing}, tc.result, domain.Media{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1526,5 +1527,33 @@ func TestProviderSearchRetriesUseRandomJitterByDefault(t *testing.T) {
 				t.Fatal("default provider retry times are fixed, not jittered")
 			}
 		})
+	}
+}
+
+func TestMissingCompletionSkipsEarlyRetriesForAgedMedia(t *testing.T) {
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	w := &Worker{Clock: testutil.NewClock(now), RandomUnit: func() float64 { return 0.5 }, AgedAfter: 30 * 24 * time.Hour}
+	aged := domain.Media{ReleasedAt: now.Add(-400 * 24 * time.Hour)}
+	recent := domain.Media{ReleasedAt: now.Add(-3 * 24 * time.Hour)}
+	missing := store.SearchLease{JobID: "job", Priority: store.SearchPriorityMissing}
+	for _, outcome := range []workflow.Outcome{workflow.OutcomeNoResult, workflow.OutcomeRejected} {
+		completion, err := w.workflowCompletion(missing, workflow.Result{Outcome: outcome}, aged)
+		if err != nil || !completion.NextAttemptAt.Equal(now.Add(7*24*time.Hour)) || completion.MissingAttemptFloor != schedule.AgedMissingAttempt {
+			t.Fatalf("%s aged completion=%#v err=%v", outcome, completion, err)
+		}
+		completion, err = w.workflowCompletion(missing, workflow.Result{Outcome: outcome}, recent)
+		if err != nil || !completion.NextAttemptAt.Equal(now.Add(30*time.Minute)) || completion.MissingAttemptFloor != 0 {
+			t.Fatalf("%s recent completion=%#v err=%v", outcome, completion, err)
+		}
+	}
+	// A provider limit is not a finished search: it resumes after the reset.
+	throttled, err := w.workflowCompletion(missing, workflow.Result{Outcome: workflow.OutcomeThrottled, RetryAt: now.Add(time.Hour)}, aged)
+	if err != nil || throttled.NextAttemptAt.After(now.Add(2*time.Hour)) || throttled.MissingAttemptFloor != 0 {
+		t.Fatalf("throttled completion=%#v err=%v", throttled, err)
+	}
+	// An upgrade check that finds nothing restarts the missing phase, aged too.
+	upgrade, err := w.workflowCompletion(store.SearchLease{JobID: "job", Priority: store.SearchPriorityUpgrade, Attempt: 2}, workflow.Result{Outcome: workflow.OutcomeNoResult}, aged)
+	if err != nil || !upgrade.NextAttemptAt.Equal(now.Add(7*24*time.Hour)) || !upgrade.ResetMissingAttempt || upgrade.MissingAttemptFloor != schedule.AgedMissingAttempt {
+		t.Fatalf("upgrade completion=%#v err=%v", upgrade, err)
 	}
 }

@@ -80,17 +80,20 @@ type Worker struct {
 	// discovery) by instance queue_priority, highest first; ties run by name.
 	ReconcilePriorities map[string]int
 	RandomUnit          func() float64
-	OnError             func(error)
-	PollInterval        time.Duration
-	LeaseDuration       time.Duration
-	RenewInterval       time.Duration
-	ShutdownTimeout     time.Duration
-	ReconcileInterval   time.Duration
-	SearchBatch         int
-	MaxWorkflows        int
-	NotificationBatch   int
-	Wake                <-chan struct{}
-	Events              *observability.Emitter
+	// AgedAfter lets missing searches for media released this long ago skip the
+	// quick early retries; 0 keeps the full schedule.
+	AgedAfter         time.Duration
+	OnError           func(error)
+	PollInterval      time.Duration
+	LeaseDuration     time.Duration
+	RenewInterval     time.Duration
+	ShutdownTimeout   time.Duration
+	ReconcileInterval time.Duration
+	SearchBatch       int
+	MaxWorkflows      int
+	NotificationBatch int
+	Wake              <-chan struct{}
+	Events            *observability.Emitter
 	// Routes pauses leasing for routes whose providers are all unavailable.
 	Routes RouteGate
 
@@ -356,7 +359,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow", completion.NextAttemptAt, started, completionResult.ResumeProviderCount, err)
 		return err
 	}
-	completion, err := w.workflowCompletion(lease, result)
+	completion, err := w.workflowCompletion(lease, result, media)
 	if err != nil {
 		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow_outcome", time.Time{}, started, len(lease.ResumeProviders), err)
 		return err
@@ -367,11 +370,11 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		return err
 	}
 	w.logRerun(jobCtx, completionResult)
-	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, completionResult.ResumeProviderCount, nil)
+	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, completionResult.ResumeProviderCount, nil, w.releaseAttrs(media, completion)...)
 	return nil
 }
 
-func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Result) (store.SearchCompletion, error) {
+func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Result, media domain.Media) (store.SearchCompletion, error) {
 	completion := store.SearchCompletion{JobID: lease.JobID, Outcome: string(result.Outcome)}
 	switch result.Outcome {
 	case workflow.OutcomeSatisfied:
@@ -394,7 +397,7 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		if lease.Priority == store.SearchPriorityUpgrade {
 			attempt = 1
 		}
-		completion = schedule.Scheduler{Clock: w.Clock, RandomUnit: w.RandomUnit}.Missing(lease.JobID, attempt)
+		completion = w.scheduler().Missing(lease.JobID, attempt, media.ReleasedAt)
 		completion.ResetMissingAttempt = lease.Priority == store.SearchPriorityUpgrade
 		completion.Outcome = string(result.Outcome)
 		completion.Priority = store.SearchPriorityMissing
@@ -407,6 +410,23 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
 	}
 	return completion, nil
+}
+
+func (w *Worker) scheduler() schedule.Scheduler {
+	return schedule.Scheduler{Clock: w.Clock, RandomUnit: w.RandomUnit, AgedAfter: w.AgedAfter}
+}
+
+// releaseAttrs logs how long ago the media was released and whether its
+// missing search skipped the quick early retries.
+func (w *Worker) releaseAttrs(media domain.Media, completion store.SearchCompletion) []slog.Attr {
+	if media.ReleasedAt.IsZero() {
+		return nil
+	}
+	attrs := []slog.Attr{slog.Int("release_age_days", int(w.Clock.Now().Sub(media.ReleasedAt)/(24*time.Hour)))}
+	if completion.MissingAttemptFloor > 0 {
+		attrs = append(attrs, slog.String("schedule", "aged"))
+	}
+	return attrs
 }
 
 func preserveProviderResume(lease store.SearchLease, result workflow.Result, completion *store.SearchCompletion) {
@@ -881,13 +901,14 @@ func (w *Worker) logRerun(ctx context.Context, result store.SearchCompletionResu
 		slog.String("priority", store.SearchPriorityImport.String()))
 }
 
-func (w *Worker) logJobCompleted(ctx context.Context, level slog.Level, outcome, reason string, next time.Time, started time.Time, resumeProviderCount int, err error) {
+func (w *Worker) logJobCompleted(ctx context.Context, level slog.Level, outcome, reason string, next time.Time, started time.Time, resumeProviderCount int, err error, extra ...slog.Attr) {
 	attrs := []slog.Attr{
 		slog.String("outcome", outcome),
 		slog.String("reason", reason),
 		slog.Int64("duration_ms", time.Since(started).Milliseconds()),
 		slog.Int("resume_provider_count", resumeProviderCount),
 	}
+	attrs = append(attrs, extra...)
 	if !next.IsZero() {
 		attrs = append(attrs, slog.Time("next_attempt_at", next))
 	}

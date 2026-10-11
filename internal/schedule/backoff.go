@@ -18,6 +18,10 @@ var missingIntervals = [...]time.Duration{
 	336 * time.Hour,
 }
 
+// AgedMissingAttempt is the missing attempt whose interval is the 7-day step;
+// media released long ago starts its retries there.
+const AgedMissingAttempt = 7
+
 var workflowFailureDelays = [...]time.Duration{
 	time.Minute,
 	5 * time.Minute,

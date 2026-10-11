@@ -23,6 +23,8 @@ const (
 	defaultMinimumReleaseScore             = 35
 	defaultUpgradeChecks                   = 4
 	maxUpgradeChecks                       = 100
+	defaultAgedReleaseDays                 = 30
+	maxAgedReleaseDays                     = 3650
 	maxQueuePriority                       = 1000
 	defaultRequestsPerSecond               = 1
 	defaultBurst                           = 1
@@ -53,12 +55,16 @@ type Config struct {
 	// UpgradeChecks is how many upgrade checks in a row may keep the installed
 	// subtitle before its upgrade checks stop; 0 never stops them.
 	UpgradeChecks int
-	ProviderHTTP  ProviderHTTPConfig
-	LapseCache    LapseCacheConfig
-	PackCache     PackCacheConfig
-	Sync          SyncConfig
-	Install       InstallConfig
-	Silo          SiloConfig
+	// AgedReleaseDays is how long after release a missing subtitle skips the
+	// quick early retries and is searched weekly, then fortnightly; 0 keeps the
+	// full schedule for everything.
+	AgedReleaseDays int
+	ProviderHTTP    ProviderHTTPConfig
+	LapseCache      LapseCacheConfig
+	PackCache       PackCacheConfig
+	Sync            SyncConfig
+	Install         InstallConfig
+	Silo            SiloConfig
 }
 
 type ServerConfig struct {
@@ -170,6 +176,7 @@ type rawConfig struct {
 	AllowHearingImpaired *bool                     `yaml:"allow_hearing_impaired"`
 	MinimumReleaseScore  int                       `yaml:"minimum_release_score"`
 	UpgradeChecks        *int                      `yaml:"upgrade_checks"`
+	AgedReleaseDays      *int                      `yaml:"aged_release_days"`
 	ProviderHTTP         rawProviderHTTPConfig     `yaml:"provider_http"`
 	LapseCache           rawLapseCacheConfig       `yaml:"lapse_cache"`
 	PackCache            rawPackCacheConfig        `yaml:"pack_cache"`
@@ -364,6 +371,10 @@ func normalize(raw rawConfig) (Config, error) {
 	if raw.UpgradeChecks != nil {
 		cfg.UpgradeChecks = *raw.UpgradeChecks
 	}
+	cfg.AgedReleaseDays = defaultAgedReleaseDays
+	if raw.AgedReleaseDays != nil {
+		cfg.AgedReleaseDays = *raw.AgedReleaseDays
+	}
 	workerMaxConcurrent := defaultWorkerMaxConcurrent
 	if raw.Worker.MaxConcurrent != nil {
 		workerMaxConcurrent = *raw.Worker.MaxConcurrent
@@ -529,6 +540,9 @@ func (c Config) Validate() error {
 	}
 	if c.UpgradeChecks < 0 || c.UpgradeChecks > maxUpgradeChecks {
 		return fmt.Errorf("upgrade_checks must be between 0 and %d", maxUpgradeChecks)
+	}
+	if c.AgedReleaseDays < 0 || c.AgedReleaseDays > maxAgedReleaseDays {
+		return fmt.Errorf("aged_release_days must be between 0 and %d", maxAgedReleaseDays)
 	}
 	if c.Install.FileMode.Perm() == 0 || c.Install.FileMode.Perm()&0o111 != 0 {
 		return fmt.Errorf("install file_mode must be a nonzero octal mode without execute bits")

@@ -142,6 +142,14 @@ minimum_release_score: 35
 # keep checking for a preferred one. 0 checks forever. Default: 4.
 upgrade_checks: 4
 
+# Days after release (episode air date, or a movie's digital release from
+# Radarr) after which a missing subtitle skips the quick early retries: once a
+# search finds nothing, the next one is a week later, then every two weeks.
+# Subtitles for older media rarely appear within hours. Media with an unknown
+# release date keeps the full schedule. 0 keeps the full schedule for
+# everything. Default: 30.
+aged_release_days: 30
+
 pack_cache:
   # Season-pack downloads are kept so later episodes need no new download.
   ttl: 24h                 # How long a pack is kept. Default: 24h.

@@ -181,6 +181,28 @@ type radarrMovie struct {
 	Year            int                 `json:"year"`
 	IMDbID          string              `json:"imdbId"`
 	TMDBID          int64               `json:"tmdbId"`
+	DigitalRelease  arrTime             `json:"digitalRelease"`
+	PhysicalRelease arrTime             `json:"physicalRelease"`
+	InCinemas       arrTime             `json:"inCinemas"`
+}
+
+// cinemaToHomeRelease approximates the digital release of a movie Radarr only
+// knows the cinema date of.
+const cinemaToHomeRelease = 90 * 24 * time.Hour
+
+// releasedAt is when subtitles for the movie can be expected: the digital
+// release (when WEB releases and their subtitles appear), else the physical
+// release, else the cinema release plus cinemaToHomeRelease. Zero if unknown.
+func (m radarrMovie) releasedAt() time.Time {
+	switch {
+	case !m.DigitalRelease.Time().IsZero():
+		return m.DigitalRelease.Time()
+	case !m.PhysicalRelease.Time().IsZero():
+		return m.PhysicalRelease.Time()
+	case !m.InCinemas.Time().IsZero():
+		return m.InCinemas.Time().Add(cinemaToHomeRelease)
+	}
+	return time.Time{}
 }
 
 func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Media, error) {
@@ -225,6 +247,7 @@ func (r *Radarr) GetMedia(ctx context.Context, ref domain.MediaRef) (domain.Medi
 		Edition:          file.Edition,
 		Quality:          file.Quality.Quality.Name,
 		Duration:         parseRuntime(file.MediaInfo.RunTime),
+		ReleasedAt:       movie.releasedAt(),
 	}, nil
 }
 

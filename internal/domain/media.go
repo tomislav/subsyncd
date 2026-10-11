@@ -60,6 +60,9 @@ type Media struct {
 	Quality            string            `json:"quality,omitempty"`
 	Duration           time.Duration     `json:"duration,omitempty"`
 	UnsupportedReason  UnsupportedReason `json:"unsupported_reason,omitempty"`
+	// ReleasedAt is when the episode aired or the movie was released digitally;
+	// zero when the Arr app doesn't know.
+	ReleasedAt time.Time `json:"released_at,omitzero"`
 }
 
 // CheckedUnsupportedEpisodeEnd records that an unsupported multi-episode file
