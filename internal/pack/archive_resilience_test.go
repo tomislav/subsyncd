@@ -82,21 +82,49 @@ func TestExtractSortsSlightlyOutOfOrderCues(t *testing.T) {
 	}
 }
 
-func TestExtractStillRejectsInvalidCueTimes(t *testing.T) {
-	backwards := "1\n00:00:05,000 --> 00:00:04,000\nEnds before it starts\n"
-	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: backwards}})
+func TestExtractStillRejectsNegativeCueTimes(t *testing.T) {
+	negative := "1\n-00:00:05,000 --> 00:00:04,000\nBefore the film\n"
+	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: negative}})
 	var content *ContentError
 	if !errors.As(err, &content) {
 		t.Fatalf("error = %T %v; want a content rejection", err, err)
 	}
 }
 
-func TestExtractRejectsACueFarOutOfPlace(t *testing.T) {
-	typo := "1\n00:19:58,000 --> 00:19:59,000\nBefore\n\n2\n00:01:59,000 --> 00:02:00,000\nTypo for 00:19:59\n\n3\n00:20:01,000 --> 00:20:02,000\nAfter\n"
-	_, _, err := extractZIP(t, []zipEntry{{name: "Show.S01E08.srt", body: typo}})
-	var content *ContentError
-	if !errors.As(err, &content) {
-		t.Fatalf("error = %T %v; a cue minutes out of place is a broken subtitle, not overlap", err, err)
+func TestExtractRepairsACueThatEndsBeforeItStarts(t *testing.T) {
+	// Malcolm in the Middle S03E19 on Titlovi: 00:04:21,290 --> 00:04:20,590.
+	backwards := "1\n00:00:05,000 --> 00:00:04,000\nEnds before it starts\n\n2\n00:00:20,000 --> 00:00:21,000\nNext\n"
+	manifest, destination, err := extractZIP(t, []zipEntry{{name: "Show.S01E01.srt", body: backwards}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(destination, manifest.Members[0].SafeName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One second plus 50 ms for each of the 21 characters.
+	want := "1\n00:00:05,000 --> 00:00:07,050\nEnds before it starts\n\n2\n00:00:20,000 --> 00:00:21,000\nNext\n"
+	if string(content) != want {
+		t.Fatalf("normalized subtitle =\n%q\nwant\n%q", content, want)
+	}
+}
+
+func TestExtractKeepsASubtitleWithAMisplacedCue(t *testing.T) {
+	// A single cue far out of place is put at the time it states: from the
+	// timestamps alone it cannot be told apart from a credit line written
+	// out of order, and one misplaced line is better than no subtitle.
+	misplaced := "1\n00:19:58,000 --> 00:19:59,000\nBefore\n\n2\n00:01:59,000 --> 00:02:00,000\nOut of place\n\n3\n00:20:01,000 --> 00:20:02,000\nAfter\n"
+	manifest, destination, err := extractZIP(t, []zipEntry{{name: "Show.S01E08.srt", body: misplaced}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(destination, manifest.Members[0].SafeName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "1\n00:01:59,000 --> 00:02:00,000\nOut of place\n\n2\n00:19:58,000 --> 00:19:59,000\nBefore\n\n3\n00:20:01,000 --> 00:20:02,000\nAfter\n"
+	if string(content) != want {
+		t.Fatalf("normalized subtitle =\n%q\nwant\n%q", content, want)
 	}
 }
 

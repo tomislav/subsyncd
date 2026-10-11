@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/asticode/go-astisub"
@@ -101,7 +100,16 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 			return Manifest{}, &ContentError{Err: fmt.Errorf("archive contains duplicate subtitle name %q", safeName)}
 		}
 		seen[lower] = struct{}{}
-		text, extension, err := normalizeSubtitle(raw.body, filepath.Ext(safeName))
+		memberExtension := filepath.Ext(safeName)
+		if strings.EqualFold(memberExtension, ".sub") {
+			decoded, err := decodeText(raw.body)
+			if err != nil || !isMicroDVD(decoded) {
+				// A binary VobSub .sub (with its .idx) is not a text
+				// subtitle; it is ignored like any other extra file.
+				continue
+			}
+		}
+		text, extension, err := normalizeSubtitle(raw.body, memberExtension)
 		if err != nil {
 			// One unreadable file must not cost the other episodes in a
 			// season pack; selection decides whether the target is here.
@@ -112,6 +120,10 @@ func Extract(ctx context.Context, candidate domain.Candidate, src io.Reader, con
 			continue
 		}
 		if filepath.Ext(safeName) == "" {
+			safeName += extension
+		} else if strings.EqualFold(filepath.Ext(safeName), ".sub") {
+			// Movie.sub becomes Movie.sub.srt, so it cannot collide with a
+			// Movie.srt shipped beside it.
 			safeName += extension
 		}
 		path := filepath.Join(staging, safeName)
@@ -347,7 +359,7 @@ func safeMemberName(name string, maxDepth int) (string, error) {
 
 func isSubtitleExtension(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".srt", ".ass", ".ssa", ".vtt":
+	case ".srt", ".ass", ".ssa", ".vtt", ".sub":
 		return true
 	}
 	return false
@@ -374,6 +386,13 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 	text = bytes.ReplaceAll(text, []byte("\r"), []byte("\n"))
 	text = bytes.TrimPrefix(text, []byte{0xef, 0xbb, 0xbf})
 	extension = strings.ToLower(extension)
+	if extension == ".sub" || extension == "" && isMicroDVD(text) {
+		converted, err := microDVDToSRT(text)
+		if err != nil {
+			return nil, "", err
+		}
+		text, extension = converted, ".srt"
+	}
 	var subtitles *astisub.Subtitles
 	parse := func(ext string) (*astisub.Subtitles, error) {
 		switch ext {
@@ -404,32 +423,24 @@ func normalizeSubtitle(payload []byte, extension string) ([]byte, string, error)
 	if len(subtitles.Items) > 100_000 {
 		return nil, "", fmt.Errorf("subtitle contains too many cues")
 	}
-	starts := make([]time.Duration, 0, len(subtitles.Items))
-	var latest time.Duration
 	for _, item := range subtitles.Items {
-		if item.StartAt < 0 || item.EndAt < item.StartAt {
+		if item.StartAt < 0 || item.EndAt < 0 {
 			return nil, "", fmt.Errorf("subtitle timestamps are invalid")
 		}
-		// Overlapping lines are a few seconds apart; a cue minutes earlier
-		// than one before it is a timing typo that sorting would misplace.
-		if item.StartAt < latest-maximumCueDisorder {
-			return nil, "", fmt.Errorf("subtitle has a cue far out of order")
-		}
-		latest = max(latest, item.StartAt)
-		starts = append(starts, item.StartAt)
 	}
-	// Uploads often carry a few overlapping or misplaced cues; put them in
-	// order rather than discard the subtitle. LAPSE still checks the timing.
-	ordered, err := subtitleorder.Reorder(text, extension, starts)
+	// Uploads often carry misplaced cues, a mistyped time or an empty cue;
+	// repair and order them rather than discard the subtitle. LAPSE still
+	// checks the timing.
+	cues, err := planRepairs(subtitles.Items, extension)
+	if err != nil {
+		return nil, "", err
+	}
+	repaired, err := subtitleorder.Repair(text, extension, cues)
 	if err != nil {
 		return nil, "", fmt.Errorf("subtitle timestamps are out of order: %w", err)
 	}
-	return ordered, extension, nil
+	return repaired, extension, nil
 }
-
-// maximumCueDisorder is how far a cue may start before an earlier one and
-// still be put in order.
-const maximumCueDisorder = 10 * time.Second
 
 // macOSMetadata reports archive entries macOS adds beside real files: the
 // __MACOSX folder and AppleDouble "._name" resource forks, which carry a
