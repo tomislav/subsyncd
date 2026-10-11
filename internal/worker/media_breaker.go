@@ -29,12 +29,14 @@ const (
 
 // recordSearchResult feeds the media breaker: a search that failed on
 // unreadable media counts towards a pause, anything else resets both the
-// count and the pause length. A failure whose mount still lists its files is
-// one dead file (one Arr removed, or a corrupt one) and counts neither way.
+// count and the pause length. A missing file (not-found class) whose mount
+// still lists its files is one dead file, one Arr removed, and counts neither
+// way. Timeouts, read errors and mount errnos always count: altmount keeps
+// listing directories from its metadata while reads hang or fail.
 func (w *Worker) recordSearchResult(ctx context.Context, err error, mediaPath string) {
 	unavailable := workflow.MediaUnavailable(err)
-	if unavailable && w.mediaMountReadable(mediaPath) {
-		w.Events.For("worker").Log(ctx, slog.LevelInfo, "queue.media_file_unavailable", "media file is unreadable but its mount is readable; queue not paused")
+	if unavailable && workflow.MediaMissing(err) && w.mediaMountReadable(mediaPath) {
+		w.Events.For("worker").Log(ctx, slog.LevelInfo, "queue.media_file_unavailable", "media file is missing but its mount is readable; queue not paused")
 		return
 	}
 	w.breakerMu.Lock()

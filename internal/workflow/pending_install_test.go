@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
@@ -18,8 +19,9 @@ import (
 // records the real store keeps.
 type pendingRepository struct {
 	*installationRepository
-	pending map[int64]store.PendingInstall
-	nextID  int64
+	pending   map[int64]store.PendingInstall
+	nextID    int64
+	finishErr error
 }
 
 func newPendingRepository(installations *installationRepository) *pendingRepository {
@@ -34,8 +36,21 @@ func (r *pendingRepository) BeginPendingInstall(_ context.Context, pending store
 }
 
 func (r *pendingRepository) FinishPendingInstall(_ context.Context, id int64) error {
+	if r.finishErr != nil {
+		return r.finishErr
+	}
 	delete(r.pending, id)
 	return nil
+}
+
+// RecordInstallationWithNotifications clears the pending row with the record,
+// as the real store does in one transaction.
+func (r *pendingRepository) RecordInstallationWithNotifications(ctx context.Context, installation store.Installation, requests []store.NotificationRequest) ([]store.NotificationEnqueueResult, error) {
+	results, err := r.installationRepository.RecordInstallationWithNotifications(ctx, installation, requests)
+	if err == nil {
+		delete(r.pending, installation.PendingInstallID)
+	}
+	return results, err
 }
 
 func (r *pendingRepository) ListPendingInstalls(context.Context) ([]store.PendingInstall, error) {
@@ -264,4 +279,70 @@ func TestRecoverPendingInstallKeepsRowWhenDestinationIsUninspectable(t *testing.
 	if payload, err := os.ReadFile(destination); err != nil || string(payload) != installSRT {
 		t.Fatalf("destination = %q, %v; want it left alone", payload, err)
 	}
+}
+
+func TestRecordedInstallClearsItsPendingRecordWithTheRecord(t *testing.T) {
+	// Clearing the row is part of recording the installation, not a later
+	// statement that can fail and leave a stale row for weeks.
+	root := t.TempDir()
+	destination := filepath.Join(root, "Movie.en.srt")
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), installSRT)
+	repository := newPendingRepository(&installationRepository{})
+	repository.finishErr = errors.New("database is locked")
+	installer := Installer{Repository: repository, MediaRoots: []string{root}}
+	installation, err := installer.Install(context.Background(), installRequest(t, source, destination))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.pending) != 0 {
+		t.Fatalf("pending installs = %+v, want the row cleared with the record", repository.pending)
+	}
+	if repository.recorded.PendingInstallID == 0 || installation.PendingInstallID != 0 {
+		t.Fatalf("recorded pending ID = %d, returned %d; want the record to name the row and the result not to", repository.recorded.PendingInstallID, installation.PendingInstallID)
+	}
+}
+
+func TestAbandonedRecoveryChangesNothing(t *testing.T) {
+	// Startup gave up on a recovery stuck on a hung mount: once its blocked
+	// call returns, it must not undo anything behind the daemon's back.
+	root := t.TempDir()
+	destination := writeInstallFile(t, filepath.Join(root, "Movie.en.srt"), installSRT)
+	staged := writeInstallFile(t, filepath.Join(root, ".subsyncd-stage-1"), installSRT)
+	repository := newPendingRepository(&installationRepository{})
+	if _, err := repository.BeginPendingInstall(context.Background(), store.PendingInstall{MediaID: 1, Language: "en", Destination: destination, Checksum: checksumBytes([]byte(installSRT)), StagedPath: staged}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	installer := Installer{Repository: repository, MediaRoots: []string{root}}
+	if settled, err := installer.RecoverPendingInstalls(ctx); settled != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("RecoverPendingInstalls() = %d, %v; want nothing settled", settled, err)
+	}
+	for _, path := range []string{destination, staged} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("abandoned recovery changed %s: %v", filepath.Base(path), err)
+		}
+	}
+	if len(repository.pending) != 1 {
+		t.Fatalf("pending installs = %+v, want the row kept for the next start", repository.pending)
+	}
+	// Mid-row: the checks finished but recovery was given up on meanwhile.
+	ctx, cancel = context.WithCancel(context.Background())
+	installer.Repository = cancelOnInstallationRead{pendingRepository: repository, cancel: cancel}
+	if settled, _ := installer.RecoverPendingInstalls(ctx); settled != 0 {
+		t.Fatalf("settled %d after cancellation", settled)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("recovery canceled mid-row removed the subtitle: %v", err)
+	}
+}
+
+type cancelOnInstallationRead struct {
+	*pendingRepository
+	cancel context.CancelFunc
+}
+
+func (r cancelOnInstallationRead) GetInstallation(ctx context.Context, mediaID int64, language domain.Language) (store.Installation, bool, error) {
+	r.cancel()
+	return r.pendingRepository.GetInstallation(ctx, mediaID, language)
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func missingMedia() error {
-	return &workflow.MediaUnavailableError{Err: errors.New("stat media: no such file or directory")}
+	return &workflow.MediaUnavailableError{Err: errors.New("stat media: no such file or directory"), Missing: true}
 }
 
 func TestMediaUnavailableFailureKeepsItsQueuePosition(t *testing.T) {

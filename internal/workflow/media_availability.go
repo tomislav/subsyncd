@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
@@ -17,7 +19,16 @@ import (
 // file Arr removed. Only failures reading the media file itself carry it; a
 // missing binary, cache or scratch file does not. The worker keeps such a
 // search's queue position and pauses when several fail in a row.
-type MediaUnavailableError struct{ Err error }
+//
+// Missing marks the not-found class: the file (or its directory) does not
+// exist. Only that class may be one dead file on a healthy mount; hangs, read
+// errors and errnos of a crashed or stale mount are storage trouble, even
+// when the directory still lists (altmount serves listings from metadata
+// while reads hang).
+type MediaUnavailableError struct {
+	Err     error
+	Missing bool
+}
 
 func (e *MediaUnavailableError) Error() string { return e.Err.Error() }
 func (e *MediaUnavailableError) Unwrap() error { return e.Err }
@@ -26,6 +37,13 @@ func (e *MediaUnavailableError) Unwrap() error { return e.Err }
 func MediaUnavailable(err error) bool {
 	var unavailable *MediaUnavailableError
 	return errors.As(err, &unavailable)
+}
+
+// MediaMissing reports whether err is a MediaUnavailableError of the
+// not-found class.
+func MediaMissing(err error) bool {
+	var unavailable *MediaUnavailableError
+	return errors.As(err, &unavailable) && unavailable.Missing
 }
 
 func mediaAccessErrno(err error) bool {
@@ -42,7 +60,7 @@ func markIfMediaUnreadable(err error, media domain.Media) error {
 		return &MediaUnavailableError{Err: err}
 	}
 	if _, statErr := os.Stat(media.Fingerprint.Path); mediaAccessErrno(statErr) {
-		return &MediaUnavailableError{Err: err}
+		return &MediaUnavailableError{Err: err, Missing: errors.Is(statErr, os.ErrNotExist)}
 	}
 	return err
 }
@@ -52,7 +70,7 @@ func markIfMediaUnreadable(err error, media domain.Media) error {
 func checkMediaAvailable(media domain.Media) error {
 	info, err := os.Stat(media.Fingerprint.Path)
 	if errors.Is(err, os.ErrNotExist) {
-		return &MediaUnavailableError{Err: errors.New("media file is missing; retry after catalog or filesystem recovery")}
+		return &MediaUnavailableError{Err: errors.New("media file is missing; retry after catalog or filesystem recovery"), Missing: true}
 	}
 	if err != nil {
 		// Keep only the errno, never the path.
@@ -71,10 +89,34 @@ func checkMediaAvailable(media domain.Media) error {
 // mediaReadProbeBytes is how much of the media checkMediaReadable reads.
 const mediaReadProbeBytes = 64 << 10
 
+// mediaReadTimeout bounds checkMediaReadable. A variable for tests.
+var mediaReadTimeout = time.Minute
+
+// readMediaProbe is the check checkMediaReadable bounds. A variable for tests.
+var readMediaProbe = probeMediaReads
+
 // checkMediaReadable is checkMediaAvailable plus a small read from the start
 // and the middle of the file, so a mount that still answers stat but fails
-// reads also ends the search instead of rejecting a candidate.
-func checkMediaReadable(media domain.Media) error {
+// reads also ends the search instead of rejecting a candidate. A check that
+// does not finish within mediaReadTimeout (a hung mount) counts as unreadable
+// media; its goroutine is left blocked in the system call.
+func checkMediaReadable(ctx context.Context, media domain.Media) error {
+	probe, timeout := readMediaProbe, mediaReadTimeout
+	done := make(chan error, 1)
+	go func() { done <- probe(media) }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return &MediaUnavailableError{Err: fmt.Errorf("media read did not finish within %s", timeout)}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func probeMediaReads(media domain.Media) error {
 	if err := checkMediaAvailable(media); err != nil {
 		return err
 	}

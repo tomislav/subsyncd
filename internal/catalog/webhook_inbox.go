@@ -31,6 +31,20 @@ const (
 	maxWebhookAttempts = 6
 )
 
+// A processor whose Drain fails (the inbox cannot be read or written) waits
+// before trying again, from webhookInboxErrorDelay doubling up to
+// webhookInboxMaxErrorDelay, instead of re-running the same webhooks against
+// Arr at once. A Drain that succeeds resets the delay. Variables for tests.
+var (
+	webhookInboxErrorDelay    = 5 * time.Second
+	webhookInboxMaxErrorDelay = 5 * time.Minute
+)
+
+// nextWebhookErrorDelay is the wait after another failed Drain.
+func nextWebhookErrorDelay(previous time.Duration) time.Duration {
+	return min(max(2*previous, webhookInboxErrorDelay), webhookInboxMaxErrorDelay)
+}
+
 // WebhookInbox answers Arr webhooks as soon as they are durably stored and
 // applies them in the background: one processor per instance applies that
 // instance's webhooks in arrival order, so a media item's changes keep their
@@ -105,19 +119,32 @@ func (b *WebhookInbox) Run(ctx context.Context) {
 
 func (b *WebhookInbox) process(ctx context.Context, instance string) {
 	events := b.Events.For("http")
+	var errorDelay time.Duration
 	for ctx.Err() == nil {
-		if err := b.Drain(ctx, instance); err != nil && ctx.Err() == nil {
-			events.Log(ctx, slog.LevelError, "webhook.failed", "webhook inbox unavailable",
-				append([]slog.Attr{slog.String("instance", instance), slog.String("outcome", "inbox_unavailable")}, events.ErrorAttrs("webhook_inbox", err)...)...)
+		err := b.Drain(ctx, instance)
+		if ctx.Err() != nil {
+			return
 		}
 		delay := webhookInboxPoll
-		if next, found, err := b.Store.NextWebhookAt(ctx, instance); err == nil && found {
-			delay = min(max(next.Sub(b.Now()), 0), webhookInboxPoll)
+		wake := b.wakes[instance]
+		if err != nil {
+			errorDelay = nextWebhookErrorDelay(errorDelay)
+			delay = errorDelay
+			// A new webhook does not cut the wait short: the failure is the
+			// inbox's, not the webhook's.
+			wake = nil
+			events.Log(ctx, slog.LevelError, "webhook.failed", "webhook inbox unavailable",
+				append([]slog.Attr{slog.String("instance", instance), slog.String("outcome", "inbox_unavailable"), slog.Time("retry_at", b.Now().Add(delay).UTC())}, events.ErrorAttrs("webhook_inbox", err)...)...)
+		} else {
+			errorDelay = 0
+			if next, found, err := b.Store.NextWebhookAt(ctx, instance); err == nil && found {
+				delay = min(max(next.Sub(b.Now()), 0), webhookInboxPoll)
+			}
 		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
-		case <-b.wakes[instance]:
+		case <-wake:
 		case <-timer.C:
 		}
 		timer.Stop()

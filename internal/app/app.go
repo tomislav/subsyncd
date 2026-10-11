@@ -251,6 +251,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	if err := repository.SetInstanceQueuePriorities(ctx, queuePriorities); err != nil {
 		return nil, err
 	}
+	warnOrphanedWebhooks(ctx, repository, events, cfg)
 
 	providers, err := buildProviders(cfg, database, repository, clock, httpClient, options.Providers, events)
 	if err != nil {
@@ -296,11 +297,11 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	sort.Strings(notifierNames)
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner, MediaRoots: cfg.MediaRoots}}
 	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
-	// Holding the mutation lock, no other process can be mid-install: any
-	// pending install was interrupted by a crash.
-	if _, err := installer.RecoverPendingInstalls(ctx); err != nil {
-		events.For("app").Log(ctx, slog.LevelWarn, "install.recovery_incomplete", "some interrupted subtitle installs could not be settled; retried at the next start", events.ErrorAttrs("pending_install", err)...)
-	}
+	// Only a mutable assembly gets here (read-only diagnostics returned
+	// above): it holds the mutation lock, so no other process can be
+	// mid-install and any pending install was interrupted by a crash. It runs
+	// before the worker exists, so no install of this process races it.
+	recoverPendingInstalls(ctx, installer, events, pendingInstallRecoveryTimeout)
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
 	// Languages share providers, so a refusal confirms across all of them.
 	refusals := &workflow.RefusalLedger{}
@@ -378,6 +379,71 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
+}
+
+// warnOrphanedWebhooks reports webhooks stored for instances that are no
+// longer configured. Nothing processes them; forget-instance deletes them
+// with the instance's other records.
+func warnOrphanedWebhooks(ctx context.Context, repository *store.Repository, events *observability.Emitter, cfg config.Config) {
+	appEvents := events.For("app")
+	counts, err := repository.WebhookInboxCounts(ctx)
+	if err != nil {
+		// Only a warning is lost; the inbox processor reports an unreadable inbox.
+		return
+	}
+	configured := make(map[string]bool, len(cfg.Instances))
+	for _, instance := range cfg.Instances {
+		configured[instance.Name] = true
+	}
+	instances := make([]string, 0, len(counts))
+	for instance := range counts {
+		if !configured[instance] {
+			instances = append(instances, instance)
+		}
+	}
+	sort.Strings(instances)
+	for _, instance := range instances {
+		appEvents.Log(ctx, slog.LevelWarn, "webhook.inbox_orphaned", "stored webhooks belong to an instance that is no longer configured; run forget-instance to delete them",
+			slog.String("instance", observability.SafeText(instance)), slog.Int("webhook_count", counts[instance]))
+	}
+}
+
+// pendingInstallRecoveryTimeout bounds the startup sweep of interrupted
+// installs, which reads subtitle destinations on the media mounts.
+var pendingInstallRecoveryTimeout = 30 * time.Second
+
+type pendingInstallRecoverer interface {
+	RecoverPendingInstalls(context.Context) (int, error)
+}
+
+// recoverPendingInstalls settles installs a crash interrupted, waiting at most
+// timeout. A sweep stuck on a hung mount is abandoned so startup continues;
+// its context is canceled, so once the blocked call returns it changes
+// nothing more, and its rows are kept for the next start. The residual risk
+// is the one filesystem call already in flight when it was abandoned: if that
+// is the undo itself, it lands late. It only arises on a mount that hangs,
+// where the daemon's own installs to it fail too.
+func recoverPendingInstalls(ctx context.Context, recoverer pendingInstallRecoverer, events *observability.Emitter, timeout time.Duration) {
+	appEvents := events.For("app")
+	recoveryCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := recoverer.RecoverPendingInstalls(recoveryCtx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			appEvents.Log(ctx, slog.LevelWarn, "install.recovery_incomplete", "some interrupted subtitle installs could not be settled; retried at the next start", appEvents.ErrorAttrs("pending_install", err)...)
+		}
+	case <-recoveryCtx.Done():
+		if ctx.Err() != nil {
+			return
+		}
+		appEvents.Log(ctx, slog.LevelWarn, "install.recovery_timed_out", "settling interrupted subtitle installs took too long; continuing startup and retrying them at the next start",
+			slog.Int64("timeout_ms", timeout.Milliseconds()))
+	}
 }
 
 func buildCatalogs(cfg config.Config, supplied map[string]catalog.Catalog, events *observability.Emitter) (map[string]catalog.Catalog, error) {

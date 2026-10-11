@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,4 +119,57 @@ func TestWebhookInboxRunAppliesStoredWebhooksAtStart(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+// failingDeleteInbox is a readable inbox whose writes fail, as on a full
+// disk or a database that went read-only.
+type failingDeleteInbox struct {
+	WebhookInboxStore
+	deletes atomic.Int64
+}
+
+func (s *failingDeleteInbox) DeleteWebhook(context.Context, int64) error {
+	s.deletes.Add(1)
+	return errors.New("attempt to write a readonly database")
+}
+
+func TestWebhookInboxBacksOffWhenTheInboxFails(t *testing.T) {
+	previousDelay, previousMax := webhookInboxErrorDelay, webhookInboxMaxErrorDelay
+	webhookInboxErrorDelay, webhookInboxMaxErrorDelay = 40*time.Millisecond, time.Second
+	t.Cleanup(func() { webhookInboxErrorDelay, webhookInboxMaxErrorDelay = previousDelay, previousMax })
+
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	catalog := &fakeEventCatalog{media: domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}}
+	inbox, repository := newTestInbox(t, &fakeEventStore{}, catalog, &now)
+	if _, err := repository.EnqueueWebhook(t.Context(), "main", []byte(`{"eventType":"Download","episodeFile":{"id":1001}}`), now); err != nil {
+		t.Fatal(err)
+	}
+	failing := &failingDeleteInbox{WebhookInboxStore: repository}
+	inbox.Store = failing
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); inbox.Run(ctx) }()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	<-done
+	// 40, 80 and 160 ms waits fit in 300 ms: at most four passes, where
+	// retrying at once would call Arr thousands of times.
+	if attempts := failing.deletes.Load(); attempts < 2 || attempts > 4 {
+		t.Fatalf("passes over the failing inbox = %d, want 2-4 with a growing wait", attempts)
+	}
+}
+
+func TestWebhookInboxErrorDelayDoublesToItsCap(t *testing.T) {
+	var delays []time.Duration
+	delay := time.Duration(0)
+	for range 9 {
+		delay = nextWebhookErrorDelay(delay)
+		delays = append(delays, delay)
+	}
+	want := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	for index := range want {
+		if delays[index] != want[index] {
+			t.Fatalf("delays = %v, want %v", delays, want)
+		}
+	}
 }

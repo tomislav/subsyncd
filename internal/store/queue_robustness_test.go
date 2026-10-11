@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -254,19 +256,164 @@ func TestInPlaceReplacementSearchesInstalledLanguagesAgain(t *testing.T) {
 	if err := repo.RecordInstallation(ctx, Installation{MediaID: mediaID, Language: "en", Path: "/media/show.en.srt", Checksum: "c", MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.store.db.Exec(`UPDATE search_states SET state='complete', next_attempt_at_ns=0, last_outcome='installed', priority=? WHERE media_id=?`, SearchPriorityUpgrade, mediaID); err != nil {
+	if _, err := repo.store.db.Exec(`UPDATE search_states SET state='complete', attempt=2, failure_attempt=1, next_attempt_at_ns=0, last_outcome='installed', priority=? WHERE media_id=?`, SearchPriorityMissing, mediaID); err != nil {
 		t.Fatal(err)
 	}
-	replaced := media.Fingerprint
+	// A new mtime alone (a remount, a metadata repair) is not a replacement.
+	touched := media.Fingerprint
+	touched.ModTime = touched.ModTime.Add(time.Hour)
+	if err := repo.ReplaceTrackInventory(ctx, mediaID, media.Fingerprint, touched, nil); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := repo.GetSearchStatus(ctx, mediaID, "en"); err != nil || status.State != "complete" {
+		t.Fatalf("installed language after an mtime-only change = %+v/%v, want nothing searched again", status, err)
+	}
+	replaced := touched
 	replaced.Size++
-	if err := repo.ReplaceTrackInventory(ctx, mediaID, media.Fingerprint, replaced, nil); err != nil {
+	if err := repo.ReplaceTrackInventory(ctx, mediaID, touched, replaced, nil); err != nil {
 		t.Fatal(err)
 	}
 	status, err := repo.GetSearchStatus(ctx, mediaID, "en")
 	if err != nil || status.State != "pending" || status.Priority != SearchPriorityImport || status.NextAttemptAt.After(time.Now()) {
 		t.Fatalf("installed language after in-place replacement = %+v/%v, want an immediate import search", status, err)
 	}
+	if status.Attempt != 2 || status.FailureAttempt != 1 || status.LastOutcome != "installed" {
+		t.Fatalf("history after in-place replacement = %+v, want attempts and last outcome kept", status)
+	}
 	if status, err := repo.GetSearchStatus(ctx, mediaID, "hr"); err != nil || status.State != "complete" {
 		t.Fatalf("language without an installation = %+v/%v, want unchanged", status, err)
+	}
+}
+
+func TestDeleteTimeIsNotMovedByOtherWrites(t *testing.T) {
+	// A delete at T+1h, then a re-import of the entity at T+1.5h replayed by
+	// reconciliation. An unrelated write (an inventory refresh) that moved
+	// the row's updated_at past the re-import before the delete must not make
+	// the re-import look older than the delete.
+	for _, bumped := range []bool{false, true} {
+		repo := openTestRepository(t)
+		ctx := t.Context()
+		start := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+		if err := repo.EnsureInstance(ctx, "sonarr-main", "sonarr", "http://s.invalid", start); err != nil {
+			t.Fatal(err)
+		}
+		old := testMedia()
+		old.EntityID, old.Ref.FileID, old.Fingerprint.FileID = 101, 1001, 1001
+		if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "import-old", Type: "import", EntityID: 101, Ref: old.Ref, Media: old, Languages: []domain.Language{"en"}, At: start}); err != nil {
+			t.Fatal(err)
+		}
+		if bumped {
+			if _, err := repo.store.db.Exec(`UPDATE media SET updated_at_ns=? WHERE file_id=1001`, start.Add(2*time.Hour).UnixNano()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "delete-old", Type: "delete", EntityID: 101, Ref: old.Ref, At: start.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		fresh := testMedia()
+		fresh.EntityID, fresh.Ref.FileID, fresh.Fingerprint.FileID = 101, 1002, 1002
+		fresh.Fingerprint.Path = "/media/new.mkv"
+		applied, err := repo.ApplyMediaEvent(ctx, MediaEventMutation{EventID: "import-new", Type: "import", EntityID: 101, Ref: fresh.Ref, Media: fresh, Languages: []domain.Language{"en"}, At: start.Add(90 * time.Minute), Replay: true})
+		if err != nil || !applied {
+			t.Fatalf("bumped=%t: re-import after the delete applied=%t err=%v", bumped, applied, err)
+		}
+		var live int
+		if err := repo.store.db.QueryRow(`SELECT count(*) FROM media WHERE deleted=0`).Scan(&live); err != nil || live != 1 {
+			t.Fatalf("bumped=%t: live media = %d/%v, want the re-imported file", bumped, live, err)
+		}
+	}
+}
+
+func TestRecordingAnInstallationClearsItsPendingRow(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := PendingInstall{MediaID: mediaID, Language: "en", Destination: "/media/show.en.srt", Checksum: "c"}
+	stale, err := repo.BeginPendingInstall(ctx, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := Installation{MediaID: mediaID, Language: "en", Path: "/media/show.en.srt", Checksum: "c", MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(), PendingInstallID: stale}
+	// A record that fails keeps the row for the startup sweep.
+	changed := installation
+	changed.MediaSize++
+	if _, err := repo.RecordInstallationWithNotifications(ctx, changed, nil); err == nil {
+		t.Fatal("record with a changed media fingerprint succeeded")
+	}
+	if rows, err := repo.ListPendingInstalls(ctx); err != nil || len(rows) != 1 {
+		t.Fatalf("pending after a failed record = %+v/%v, want it kept", rows, err)
+	}
+	if _, err := repo.RecordInstallationWithNotifications(ctx, installation, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := repo.ListPendingInstalls(ctx); err != nil || len(rows) != 0 {
+		t.Fatalf("pending after the record = %+v/%v, want it cleared in the same transaction", rows, err)
+	}
+}
+
+func TestWebhookInboxCountsPerInstance(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	for _, instance := range []string{"radarr", "gone", "gone"} {
+		if _, err := repo.EnqueueWebhook(ctx, instance, []byte(`{}`), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts, err := repo.WebhookInboxCounts(ctx)
+	if err != nil || !reflect.DeepEqual(counts, map[string]int{"radarr": 1, "gone": 2}) {
+		t.Fatalf("counts = %v/%v", counts, err)
+	}
+}
+
+func TestMigrationDatesExistingDeletesFromTheirLastUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if _, err := old.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() >= "021_" {
+			continue
+		}
+		contents, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.Exec(string(contents)); err != nil {
+			t.Fatalf("%s: %v", entry.Name(), err)
+		}
+		if _, err := old.Exec(`INSERT INTO schema_migrations(version) VALUES (?)`, entry.Name()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := old.Exec(`INSERT INTO media(id,instance,kind,entity_id,file_id,path,size,mod_time_ns,title,deleted,updated_at_ns) VALUES (1,'radarr','movie',1,11,'/media/a.mkv',100,1,'A',1,500),(2,'radarr','movie',2,22,'/media/b.mkv',100,1,'B',0,700)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	for id, want := range map[int]int64{1: 500, 2: 0} {
+		var deletedAt int64
+		if err := migrated.db.QueryRow(`SELECT deleted_at_ns FROM media WHERE id=?`, id).Scan(&deletedAt); err != nil || deletedAt != want {
+			t.Fatalf("media %d deleted_at_ns = %d/%v, want %d", id, deletedAt, err, want)
+		}
 	}
 }

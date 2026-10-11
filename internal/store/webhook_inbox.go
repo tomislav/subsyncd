@@ -85,3 +85,25 @@ func (r *Repository) RetryWebhook(ctx context.Context, id int64, next time.Time)
 	}
 	return nil
 }
+
+// WebhookInboxCounts reports how many webhooks wait for each instance.
+func (r *Repository) WebhookInboxCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT instance, count(*) FROM webhook_inbox GROUP BY instance ORDER BY instance`)
+	if err != nil {
+		return nil, fmt.Errorf("count waiting webhooks: %w", err)
+	}
+	counts := map[string]int{}
+	for rows.Next() {
+		var instance string
+		var count int
+		if err := rows.Scan(&instance, &count); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan waiting webhook count: %w", err)
+		}
+		counts[instance] = count
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("count waiting webhooks: %w", err)
+	}
+	return counts, nil
+}

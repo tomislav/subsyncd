@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -572,9 +573,11 @@ func (c *Client) requestDownloadLink(ctx context.Context, fileID int64, allowRef
 	if decoded.Remaining != nil && *decoded.Remaining <= 0 {
 		// This was the last download of the quota: it still proceeds, and
 		// the next one waits for the reset instead of spending a request on
-		// a refusal.
+		// a refusal. The link already cost a download, so a cooldown that
+		// cannot be saved is logged and the link still used; the next
+		// download is then refused and pauses the quota itself.
 		if _, err := c.transport.PersistCooldown(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, c.quotaReset(decoded, response.Header)); err != nil {
-			return downloadResponse{}, err
+			c.transport.ReportCooldownFailure(ctx, baseprovider.OperationDownload, baseprovider.CooldownDownloadQuota, err)
 		}
 	}
 	return decoded, nil
@@ -599,10 +602,23 @@ func (c *Client) quotaRefusal(ctx context.Context, response *http.Response) erro
 	return &baseprovider.QuotaError{Scope: baseprovider.OperationDownload, ResetAt: resetAt, Message: "OpenSubtitles download quota"}
 }
 
+// quotaAllowance matches OpenSubtitles' quota wording ("You have downloaded
+// your allowed 20 subtitles", "allowed downloads").
+var quotaAllowance = regexp.MustCompile(`allowed (\d+ )?(downloads|subtitles)|downloaded your allowed`)
+
+// quotaMessage reports whether a refusal speaks of the download quota: its
+// reset time or an exhausted remaining count, or a message that names
+// downloads or the quota and says it is used up (or will be renewed). A bare "allowed" (as in "not
+// allowed" for a blocked key) or a rate limit ("Throttle limit reached") is
+// not the quota.
 func quotaMessage(decoded downloadResponse) bool {
+	if decoded.ResetTimeUTC != "" || (decoded.Remaining != nil && *decoded.Remaining <= 0) {
+		return true
+	}
 	message := strings.ToLower(decoded.Message)
-	return decoded.ResetTimeUTC != "" || (decoded.Remaining != nil && *decoded.Remaining <= 0) ||
-		strings.Contains(message, "quota") || strings.Contains(message, "download limit") || strings.Contains(message, "allowed")
+	subject := strings.Contains(message, "download") || strings.Contains(message, "quota")
+	usedUp := strings.Contains(message, "reached") || strings.Contains(message, "exceeded") || strings.Contains(message, "renewed") || quotaAllowance.MatchString(message)
+	return subject && usedUp
 }
 
 // quotaReset is the download quota's reset: the response's reset time, a

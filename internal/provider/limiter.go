@@ -275,6 +275,13 @@ func (g *Gate) previousState(ctx context.Context, providerID, scope string) (sto
 	return state, true, nil
 }
 
+// reportCooldownSaveFailed logs a cooldown that could not be saved while the
+// response that called for it is still used.
+func (g *Gate) reportCooldownSaveFailed(ctx context.Context, providerID string, operation Operation, kind CooldownKind, err error) {
+	attrs := append(g.stateAttrs(providerID, string(operation)), slog.String("reason", string(kind)))
+	g.events.Log(ctx, slog.LevelWarn, "provider.cooldown_save_failed", "provider cooldown could not be saved", append(attrs, g.events.ErrorAttrs("provider_state", err)...)...)
+}
+
 func (g *Gate) stateAttrs(providerID, scope string) []slog.Attr {
 	g.mu.Lock()
 	providerType := g.types[providerID]

@@ -39,9 +39,10 @@ func (i Installer) beginPendingInstall(ctx context.Context, pending store.Pendin
 	return id, nil
 }
 
-// finishPendingInstall clears the record once the install is recorded or
-// fully undone. A failure leaves it to the startup sweep, which finds the
-// install already settled and only clears the record.
+// finishPendingInstall clears the record once the install is fully undone
+// (recording an install clears it in the same transaction). A failure leaves
+// it to the startup sweep, which finds the install already settled and only
+// clears the record.
 func (i Installer) finishPendingInstall(ctx context.Context, id int64) {
 	recorder, ok := i.Repository.(pendingInstallStore)
 	if !ok || id == 0 {
@@ -65,6 +66,12 @@ func (i Installer) now() time.Time {
 // subtitle from its rollback copy or removing the unrecorded one, so it is not
 // left as an untracked sidecar that blocks future installs. Staging and unused
 // rollback copies are removed. It returns how many records it settled.
+//
+// Only the rows present when it starts are settled, and it stops before the
+// next filesystem change once ctx ends: startup gives up on a recovery stuck
+// on a hung mount and starts the daemon, and the abandoned call must not then
+// undo anything behind the daemon's back. Unsettled rows are kept for the
+// next start.
 func (i Installer) RecoverPendingInstalls(ctx context.Context) (int, error) {
 	recovery, ok := i.Repository.(pendingInstallRecovery)
 	if !ok {
@@ -77,6 +84,10 @@ func (i Installer) RecoverPendingInstalls(ctx context.Context) (int, error) {
 	settled := 0
 	var failures []error
 	for _, item := range pending {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
 		outcome, err := i.recoverPendingInstall(ctx, item)
 		if err != nil {
 			failures = append(failures, err)
@@ -112,6 +123,11 @@ func (i Installer) recoverPendingInstall(ctx context.Context, item store.Pending
 	} else if owned, err = pendingPublicationOwned(destination, item); err != nil {
 		return "", err
 	}
+	// The checks above can block on a hung mount; once recovery has been
+	// given up on, change nothing.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if owned {
 		outcome = "undone"
 		if item.RollbackPath != "" && regularFile(item.RollbackPath) {
@@ -124,6 +140,9 @@ func (i Installer) recoverPendingInstall(ctx context.Context, item store.Pending
 		if err := syncDirectory(parent); err != nil {
 			return "", err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	var cleanup []error
 	if item.StagedPath != "" {

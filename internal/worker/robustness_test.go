@@ -2,12 +2,16 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"subsyncd/internal/inventory"
 	"subsyncd/internal/store"
 	"subsyncd/internal/testutil"
 	"subsyncd/internal/workflow"
@@ -183,6 +187,43 @@ func TestOneDeadFileOnAReadableMountDoesNotPauseTheQueue(t *testing.T) {
 			}
 			if paused := service.calls < mediaBreakerThreshold+2; paused != test.paused {
 				t.Fatalf("paused = %t after %d calls, want %t", paused, service.calls, test.paused)
+			}
+		})
+	}
+}
+
+func TestHungOrFailingReadsPauseTheQueueEvenWhenTheMountLists(t *testing.T) {
+	// altmount lists directories from its metadata while reads hang or fail.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Show"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(root, "Show", "episode.mkv")
+	if err := os.WriteFile(mediaPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, err := range map[string]error{
+		"probe timed out": &workflow.MediaUnavailableError{Err: inventory.ErrProbeTimedOut},
+		"EIO":             &workflow.MediaUnavailableError{Err: fmt.Errorf("read media: %w", syscall.EIO)},
+		"ENOTCONN":        &workflow.MediaUnavailableError{Err: fmt.Errorf("open media: %w", syscall.ENOTCONN)},
+		"read timed out":  &workflow.MediaUnavailableError{Err: errors.New("media read timed out")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+			repository := newWorkerRepository(mediaBreakerThreshold+2, now)
+			for id, media := range repository.media {
+				media.Fingerprint.Path = mediaPath
+				repository.media[id] = media
+			}
+			service := &workerWorkflow{err: err}
+			worker := testWorker(repository, service, testutil.NewClock(now))
+			worker.MediaRoots = []string{root}
+			worker.SearchBatch = 1
+			for range mediaBreakerThreshold + 2 {
+				_ = worker.RunOnce(t.Context())
+			}
+			if service.calls != mediaBreakerThreshold {
+				t.Fatalf("workflow calls = %d, want the queue paused after %d", service.calls, mediaBreakerThreshold)
 			}
 		})
 	}

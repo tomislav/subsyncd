@@ -214,6 +214,12 @@ func (c Client) PersistCooldown(ctx context.Context, operation Operation, kind C
 	return c.Gate.persist(ctx, Throttle{ProviderID: c.ProviderID, Scope: operation, Reason: string(kind), Remaining: 0, ResetAt: resetAt})
 }
 
+// ReportCooldownFailure logs a PersistCooldown failure the caller recovers
+// from, such as a successful download whose answer also ended the quota.
+func (c Client) ReportCooldownFailure(ctx context.Context, operation Operation, kind CooldownKind, err error) {
+	c.Gate.reportCooldownSaveFailed(ctx, c.ProviderID, operation, kind, err)
+}
+
 func (c Client) DisableAuthentication(ctx context.Context, reason string) error {
 	return c.Gate.Persist(ctx, Throttle{ProviderID: c.ProviderID, Scope: OperationAuth, Reason: reason, Remaining: 0, Disabled: true})
 }

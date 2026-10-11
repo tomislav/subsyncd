@@ -311,6 +311,10 @@ type Installation struct {
 	MediaFileID    int64
 	MediaSize      int64
 	MediaModTimeNS int64
+	// PendingInstallID, when set, names the pending_installs row this
+	// installation settles. Recording deletes it in the same transaction, so
+	// a recorded install never leaves a pending row behind. It is not stored.
+	PendingInstallID int64
 }
 
 // MediaEventMutation is the persistence-level representation of an Arr event.
@@ -696,6 +700,11 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, e
 		return ErrStaleInventory
 	}
 	contentChanged := existingFileID != fingerprint.FileID || existingSize != fingerprint.Size || existingModTime != fingerprint.ModTime.UnixNano()
+	// Only a new size marks the file as replaced in place. A changed mtime
+	// alone is common without new bytes (a remount, a metadata repair, a
+	// mount upgrade touching the whole library) and would otherwise send
+	// every installed language back to the providers and LAPSE.
+	replacedInPlace := existingSize != fingerprint.Size
 	now := time.Now().UTC().UnixNano()
 	result, err := tx.ExecContext(ctx, `UPDATE media SET path=?, file_id=?, size=?, mod_time_ns=?, updated_at_ns=? WHERE id=?`, fingerprint.Path, fingerprint.FileID, fingerprint.Size, fingerprint.ModTime.UnixNano(), now, mediaID)
 	if err != nil {
@@ -715,11 +724,15 @@ func (r *Repository) ReplaceTrackInventory(ctx context.Context, mediaID int64, e
 		if _, err := tx.ExecContext(ctx, `UPDATE search_states SET resume_providers_json='[]',resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
 			return fmt.Errorf("clear replaced media search resume: %w", err)
 		}
+	}
+	if replacedInPlace {
 		// The file was replaced in place, behind Arr's back: a subtitle
-		// installed for the old bytes may be out of sync. Search again now,
-		// like a replacement import, for every other language that has one;
-		// the running search (leased) handles its own.
-		if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=?, queue_order_ns=?, last_outcome='', priority=MAX(priority, ?), rerun_requested=0
+		// installed for the old bytes may be out of sync. Search again now at
+		// import priority for every other language that has one; the running
+		// search (leased) handles its own. Attempt counters and the last
+		// outcome are kept: they describe the language's history, and the
+		// search that runs now replaces the outcome anyway.
+		if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='pending', next_attempt_at_ns=?, queue_order_ns=?, priority=MAX(priority, ?)
 			WHERE media_id=? AND language IN (SELECT language FROM installations WHERE media_id=?) AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`, now, now, SearchPriorityImport, mediaID, mediaID, now); err != nil {
 			return fmt.Errorf("schedule replaced media searches: %w", err)
 		}
@@ -1693,6 +1706,11 @@ func (r *Repository) RecordInstallationWithNotifications(ctx context.Context, in
 		}
 		results = append(results, NotificationEnqueueResult{Notifier: request.Notifier, DedupeKey: request.DedupeKey, Inserted: inserted})
 	}
+	if installation.PendingInstallID != 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM pending_installs WHERE id=?`, installation.PendingInstallID); err != nil {
+			return nil, fmt.Errorf("clear pending install: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit installation: %w", err)
 	}
@@ -1851,7 +1869,7 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 			return false, fmt.Errorf("find deleted media: %w", err)
 		}
 		if err == nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted=1, updated_at_ns=MAX(updated_at_ns, ?) WHERE id=?`, mutation.At.UnixNano(), mediaID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE media SET deleted_at_ns=CASE WHEN deleted=1 THEN MAX(deleted_at_ns, ?1) ELSE ?1 END, deleted=1, updated_at_ns=MAX(updated_at_ns, ?1) WHERE id=?2`, mutation.At.UnixNano(), mediaID); err != nil {
 				return false, fmt.Errorf("mark deleted media: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, queue_order_ns=0, rerun_requested=0, resume_providers_json='[]', resume_route_signature='' WHERE media_id=?`, mediaID); err != nil {
@@ -1868,10 +1886,12 @@ func applyMediaMutationTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMu
 }
 
 // deletedAfterEventTx reports whether the import or rename's file or entity
-// was deleted by a change applied after the event happened.
+// was deleted by a change applied after the event happened. It compares the
+// delete's own time (deleted_at_ns), not updated_at_ns, which inventory and
+// other writes also move.
 func deletedAfterEventTx(ctx context.Context, tx *sql.Tx, mutation MediaEventMutation) (bool, error) {
 	var stale bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media WHERE instance=? AND kind=? AND (file_id=? OR entity_id=?) AND deleted=1 AND updated_at_ns > ?)`,
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media WHERE instance=? AND kind=? AND (file_id=? OR entity_id=?) AND deleted=1 AND deleted_at_ns > ?)`,
 		mutation.Ref.Instance, mutation.Ref.Kind, mutation.Ref.FileID, mutation.EntityID, mutation.At.UnixNano()).Scan(&stale)
 	if err != nil {
 		return false, fmt.Errorf("check deleted media: %w", err)

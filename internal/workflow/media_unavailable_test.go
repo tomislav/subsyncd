@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
 )
 
@@ -55,5 +57,32 @@ func TestProbeTimeoutIsMediaUnavailable(t *testing.T) {
 	service.Inventory = &fakeInventory{err: fmt.Errorf("probe media: %w", inventory.ErrProbeTimedOut)}
 	if _, err := service.Run(t.Context(), request); !MediaUnavailable(err) {
 		t.Fatalf("Run() = %v; want media-unavailable for a hung mount", err)
+	}
+}
+
+func TestOnlyNotFoundFailuresAreMediaMissing(t *testing.T) {
+	request := serviceRequest(t)
+	if err := checkMediaReadable(t.Context(), request.Media); err != nil {
+		t.Fatalf("readable media = %v", err)
+	}
+	gone := request.Media
+	gone.Fingerprint.Path += ".gone"
+	if err := checkMediaReadable(t.Context(), gone); !MediaMissing(err) {
+		t.Fatalf("missing media = %v, want the not-found class", err)
+	}
+	if err := markIfMediaUnreadable(fmt.Errorf("probe media: %w", inventory.ErrProbeTimedOut), request.Media); !MediaUnavailable(err) || MediaMissing(err) {
+		t.Fatalf("probe timeout = %v, want media-unavailable but not missing", err)
+	}
+}
+
+func TestHungMediaReadIsMediaUnavailable(t *testing.T) {
+	previousTimeout, previousProbe := mediaReadTimeout, readMediaProbe
+	release := make(chan struct{})
+	mediaReadTimeout = 20 * time.Millisecond
+	readMediaProbe = func(domain.Media) error { <-release; return nil }
+	t.Cleanup(func() { close(release); mediaReadTimeout, readMediaProbe = previousTimeout, previousProbe })
+	err := checkMediaReadable(t.Context(), serviceRequest(t).Media)
+	if !MediaUnavailable(err) || MediaMissing(err) {
+		t.Fatalf("hung read = %v, want media-unavailable (a deferral) but not missing", err)
 	}
 }

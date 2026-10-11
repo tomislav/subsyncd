@@ -300,11 +300,13 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	if err := i.inject(StageDatabase); err != nil {
 		return restore(err)
 	}
-	enqueued, err := i.Repository.RecordInstallationWithNotifications(ctx, installation, requests)
+	// Recording clears the pending row in the same transaction.
+	record := installation
+	record.PendingInstallID = pendingID
+	enqueued, err := i.Repository.RecordInstallationWithNotifications(ctx, record, requests)
 	if err != nil {
 		return restore(fmt.Errorf("record installed subtitle: %w", err))
 	}
-	i.finishPendingInstall(ctx, pendingID)
 	i.logEnqueuedNotifications(ctx, enqueued)
 	if found && existing.RollbackPath != "" && filepath.Clean(existing.RollbackPath) != filepath.Clean(rollbackPath) {
 		if err := i.inject(StageCleanup); err == nil {
