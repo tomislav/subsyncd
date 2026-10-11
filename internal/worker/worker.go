@@ -423,60 +423,151 @@ func (w *Worker) processNotifications(ctx context.Context, leases []store.Notifi
 }
 
 func (w *Worker) processNotificationsContexts(dispatchCtx, ctx context.Context, leases []store.NotificationLease) error {
+	groups := w.coalesceNotifications(leases)
 	semaphore := make(chan struct{}, w.MaxWorkflows)
-	errorsByIndex := make([]error, len(leases))
+	errorsByIndex := make([]error, len(groups))
 	var wait sync.WaitGroup
-	for index, lease := range leases {
+	for index, group := range groups {
 		wait.Add(1)
-		go func(index int, lease store.NotificationLease) {
+		go func(index int, group []notificationDelivery) {
 			defer wait.Done()
-			errorsByIndex[index] = w.processNotificationLeaseContexts(dispatchCtx, ctx, lease, semaphore)
-		}(index, lease)
+			errorsByIndex[index] = w.processNotificationGroupContexts(dispatchCtx, ctx, group, semaphore)
+		}(index, group)
 	}
 	wait.Wait()
 	return errors.Join(errorsByIndex...)
 }
 
-func (w *Worker) processNotificationLeaseContexts(dispatchCtx, ctx context.Context, lease store.NotificationLease, semaphore chan struct{}) error {
+// notificationDelivery is a leased intent with its payload decoded once.
+type notificationDelivery struct {
+	lease     store.NotificationLease
+	payload   workflow.NotificationPayload
+	decodeErr error
+}
+
+// coalesceNotifications groups leases that one delivery satisfies, keeping
+// lease order. Every leased intent was committed after its subtitle was
+// published, so one request covers all of a group's subtitles; sending one
+// per lease made Silo reject the concurrent duplicates of an active scan.
+func (w *Worker) coalesceNotifications(leases []store.NotificationLease) [][]notificationDelivery {
+	groups := make([][]notificationDelivery, 0, len(leases))
+	byKey := make(map[string]int)
+	for _, lease := range leases {
+		delivery := notificationDelivery{lease: lease}
+		delivery.decodeErr = json.Unmarshal(lease.PayloadJSON, &delivery.payload)
+		if key, ok := w.notificationCoalesceKey(delivery); ok {
+			if index, found := byKey[key]; found {
+				groups[index] = append(groups[index], delivery)
+				continue
+			}
+			byKey[key] = len(groups)
+		}
+		groups = append(groups, []notificationDelivery{delivery})
+	}
+	return groups
+}
+
+func (w *Worker) notificationCoalesceKey(delivery notificationDelivery) (string, bool) {
+	coalescer, ok := w.Notifiers[delivery.lease.Notifier].(notifier.Coalescer)
+	if !ok || delivery.decodeErr != nil {
+		return "", false
+	}
+	key, err := coalescer.CoalesceKey(delivery.payload.Media, delivery.payload.SubtitlePath)
+	if err != nil {
+		return "", false
+	}
+	return delivery.lease.Notifier + "\x00" + key, true
+}
+
+// groupMember is one lease of a coalesced group with its own lease context,
+// so losing one member's lease abandons only that member.
+type groupMember struct {
+	lease   store.NotificationLease
+	ctx     context.Context
+	cancel  context.CancelFunc
+	renewal leaseRenewal
+}
+
+// processNotificationGroupContexts delivers the first lease of a group and
+// completes every member whose lease is still held with that outcome. Each
+// member keeps its own renewal and its own attempt-based retry delay. If the
+// first member's lease is lost, the group is abandoned like a single lease.
+func (w *Worker) processNotificationGroupContexts(dispatchCtx, ctx context.Context, group []notificationDelivery, semaphore chan struct{}) error {
 	if err := dispatchCtx.Err(); err != nil {
 		return err
 	}
 	started := time.Now()
-	jobCtx, cancelJob := context.WithCancel(ctx)
-	defer cancelJob()
-	jobCtx = observability.WithAttrs(jobCtx,
-		slog.String("notification_id", lease.JobID),
-		slog.String("notifier", lease.Notifier),
-		slog.Int("attempt", lease.Attempt),
-	)
-	renewal := w.renewNotificationLease(jobCtx, cancelJob, lease.JobID)
+	members := make([]groupMember, len(group))
+	for index, delivery := range group {
+		memberCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		memberCtx = observability.WithAttrs(memberCtx,
+			slog.String("notification_id", delivery.lease.JobID),
+			slog.String("notifier", delivery.lease.Notifier),
+			slog.Int("attempt", delivery.lease.Attempt),
+		)
+		members[index] = groupMember{lease: delivery.lease, ctx: memberCtx, cancel: cancel}
+		members[index].renewal = w.renewNotificationLease(memberCtx, cancel, delivery.lease.JobID)
+	}
+	leader := members[0]
+	finishAll := func() error {
+		var failures []error
+		for _, member := range members {
+			failures = append(failures, member.renewal.finish())
+		}
+		return errors.Join(failures...)
+	}
 	select {
 	case semaphore <- struct{}{}:
 	case <-dispatchCtx.Done():
-		return errors.Join(renewal.finish(), dispatchCtx.Err())
-	case <-jobCtx.Done():
-		return errors.Join(renewal.finish(), jobCtx.Err())
+		return errors.Join(finishAll(), dispatchCtx.Err())
+	case <-leader.ctx.Done():
+		return errors.Join(finishAll(), leader.ctx.Err())
 	}
 	defer func() { <-semaphore }()
-	if err := errors.Join(dispatchCtx.Err(), jobCtx.Err()); err != nil {
-		return errors.Join(renewal.finish(), err)
+	if err := errors.Join(dispatchCtx.Err(), leader.ctx.Err()); err != nil {
+		return errors.Join(finishAll(), err)
 	}
-	var payload workflow.NotificationPayload
-	err := json.Unmarshal(lease.PayloadJSON, &payload)
-	destination := w.Notifiers[lease.Notifier]
+	err := group[0].decodeErr
+	destination := w.Notifiers[leader.lease.Notifier]
 	if err == nil && destination == nil {
-		err = fmt.Errorf("notifier %q is not configured", lease.Notifier)
+		err = fmt.Errorf("notifier %q is not configured", leader.lease.Notifier)
 	}
 	if err == nil {
-		err = destination.SubtitleChanged(jobCtx, payload.Media, payload.SubtitlePath)
+		err = destination.SubtitleChanged(leader.ctx, group[0].payload.Media, group[0].payload.SubtitlePath)
 	}
-	if renewErr := renewal.finish(); renewErr != nil {
-		return renewErr
+	if renewErr := leader.renewal.finish(); renewErr != nil {
+		return errors.Join(renewErr, finishFollowers(members[1:]))
 	}
-	if jobCtx.Err() != nil {
-		return jobCtx.Err()
+	if leader.ctx.Err() != nil {
+		return errors.Join(leader.ctx.Err(), finishFollowers(members[1:]))
 	}
-	deliveryErr := err
+	var failures []error
+	for index, member := range members {
+		if index > 0 {
+			if renewErr := member.renewal.finish(); renewErr != nil {
+				failures = append(failures, renewErr)
+				continue
+			}
+			if member.ctx.Err() != nil {
+				failures = append(failures, member.ctx.Err())
+				continue
+			}
+		}
+		failures = append(failures, w.completeNotification(member.ctx, member.lease, err, started))
+	}
+	return errors.Join(failures...)
+}
+
+func finishFollowers(followers []groupMember) error {
+	var failures []error
+	for _, follower := range followers {
+		failures = append(failures, follower.renewal.finish())
+	}
+	return errors.Join(failures...)
+}
+
+func (w *Worker) completeNotification(jobCtx context.Context, lease store.NotificationLease, deliveryErr error, started time.Time) error {
 	completion := store.NotificationCompletion{JobID: lease.JobID, Result: "success"}
 	if deliveryErr != nil {
 		completion.Result = "permanent_error"

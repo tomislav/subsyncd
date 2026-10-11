@@ -67,6 +67,35 @@ func decodeSiloPayload(request *http.Request, payload any) error {
 	return decoder.Decode(payload)
 }
 
+func TestSiloCoalesceKeyIsMappedScanDirectory(t *testing.T) {
+	notifier, err := NewSilo(SiloConfig{Enabled: true, BaseURL: "http://silo:8080", APIKey: "sa_secret", PathMappings: []PathMapping{{From: "/local/media", To: "/mnt/library"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coalescer, ok := notifier.(Coalescer)
+	if !ok {
+		t.Fatalf("Silo notifier does not implement Coalescer")
+	}
+	first, err := coalescer.CoalesceKey(domain.Media{Fingerprint: domain.MediaFingerprint{Path: "/local/media/shows/Show/Season 01/e01.mkv"}}, "/local/media/shows/Show/Season 01/e01.hr.srt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := coalescer.CoalesceKey(domain.Media{Fingerprint: domain.MediaFingerprint{Path: "/local/media/shows/Show/Season 01/e02.mkv"}}, "/local/media/shows/Show/Season 01/e02.en.srt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := coalescer.CoalesceKey(domain.Media{Fingerprint: domain.MediaFingerprint{Path: "/local/media/shows/Show/Season 02/e01.mkv"}}, "/local/media/shows/Show/Season 02/e01.hr.srt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "/mnt/library/shows/Show/Season 01" || second != first || other == first {
+		t.Fatalf("coalesce keys = %q, %q, %q", first, second, other)
+	}
+	if _, err := coalescer.CoalesceKey(domain.Media{}, ""); err == nil {
+		t.Fatal("empty media path produced a coalesce key")
+	}
+}
+
 func TestRewritePathSupportsRootMappingsAndLongestPrefix(t *testing.T) {
 	tests := []struct {
 		name     string

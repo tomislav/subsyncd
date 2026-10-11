@@ -179,7 +179,7 @@ Use Silo's reachable native API address and an admin API key. The mapping transl
 
 A failed Silo refresh does not undo an installed subtitle. This integration requires Silo API v2 and sends `POST /api/v2/scan`; v1 is not supported. Set `silo.url` to the server base URL without `/api/v2`. Existing URL, admin-key, and path-mapping settings remain valid when upgrading. See [the API contract](references/silo.md).
 
-Replacing a movie or episode file queues a fresh refresh when subsyncd installs its subtitle, even when the subtitle bytes match the previous installation. Repeated notifications for the same media file, subtitle destination, language and content are sent once.
+Replacing a movie or episode file queues a fresh refresh when subsyncd installs its subtitle, even when the subtitle bytes match the previous installation. Repeated notifications for the same media file, subtitle destination, language and content are sent once. Notifications due together for files in the same folder are sent as one Silo scan.
 
 ## Back up and update
 

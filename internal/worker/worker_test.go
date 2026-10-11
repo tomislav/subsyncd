@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -604,6 +607,54 @@ func TestRunOnceRetriesTemporaryNotificationWithoutChangingSearchState(t *testin
 	}
 	if len(repository.searchCompletions) != 0 {
 		t.Fatalf("notification retry changed search state: %#v", repository.searchCompletions)
+	}
+}
+
+func TestRunOnceCoalescesNotificationsForTheSameScanDirectory(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	episode := func(path string) domain.Media {
+		return domain.Media{Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaEpisode}, Fingerprint: domain.MediaFingerprint{Path: path}}
+	}
+	for _, test := range []struct {
+		name        string
+		err         error
+		wantResult  string
+		wantRetryAt []time.Time
+	}{
+		{name: "delivered", wantResult: "success", wantRetryAt: []time.Time{{}, {}, {}}},
+		{name: "retryable", err: &notifier.DeliveryError{StatusCode: 502, Retryable: true, Reason: "502"}, wantResult: "retryable_error", wantRetryAt: []time.Time{now.Add(5 * time.Minute), now.Add(5 * time.Minute), now.Add(15 * time.Minute)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newWorkerRepository(0, now)
+			repository.notifications = []store.NotificationLease{
+				{ID: 1, Notifier: "silo", PayloadJSON: notificationJSON(t, episode("/media/Show/Season 01/e01.mkv"), "/media/Show/Season 01/e01.hr.srt"), Attempt: 1, JobID: "season-1-e01"},
+				{ID: 2, Notifier: "silo", PayloadJSON: notificationJSON(t, episode("/media/Show/Season 02/e01.mkv"), "/media/Show/Season 02/e01.hr.srt"), Attempt: 1, JobID: "season-2-e01"},
+				{ID: 3, Notifier: "silo", PayloadJSON: notificationJSON(t, episode("/media/Show/Season 01/e02.mkv"), "/media/Show/Season 01/e02.en.srt"), Attempt: 2, JobID: "season-1-e02"},
+			}
+			delivery := &coalescingNotifier{err: test.err}
+			worker := testWorker(repository, &workerWorkflow{}, testutil.NewClock(now))
+			worker.Notifiers = map[string]notifier.Notifier{"silo": delivery}
+			if err := worker.RunOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			sort.Strings(delivery.directories)
+			if !reflect.DeepEqual(delivery.directories, []string{"/media/Show/Season 01", "/media/Show/Season 02"}) {
+				t.Fatalf("delivered directories = %q", delivery.directories)
+			}
+			completions := map[string]store.NotificationCompletion{}
+			for _, completion := range repository.notificationCompletions {
+				completions[completion.JobID] = completion
+			}
+			for index, jobID := range []string{"season-1-e01", "season-2-e01", "season-1-e02"} {
+				completion, ok := completions[jobID]
+				if !ok || completion.Result != test.wantResult || !completion.NextAttemptAt.Equal(test.wantRetryAt[index]) {
+					t.Fatalf("completion %s = %#v (present %v)", jobID, completion, ok)
+				}
+			}
+			if len(repository.notificationCompletions) != 3 {
+				t.Fatalf("completions = %#v", repository.notificationCompletions)
+			}
+		})
 	}
 }
 
@@ -1315,6 +1366,31 @@ type workerNotifier struct {
 
 func (n *workerNotifier) SubtitleChanged(context.Context, domain.Media, string) error {
 	n.calls++
+	return n.err
+}
+
+type coalescingNotifier struct {
+	mu          sync.Mutex
+	directories []string
+	err         error
+	wait        <-chan struct{}
+}
+
+func (n *coalescingNotifier) CoalesceKey(media domain.Media, _ string) (string, error) {
+	return path.Dir(media.Fingerprint.Path), nil
+}
+
+func (n *coalescingNotifier) SubtitleChanged(ctx context.Context, media domain.Media, _ string) error {
+	if n.wait != nil {
+		select {
+		case <-n.wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.directories = append(n.directories, path.Dir(media.Fingerprint.Path))
 	return n.err
 }
 

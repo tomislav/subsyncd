@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -129,10 +131,60 @@ func TestNotificationCompletesWhenFinishCancelsInFlightRenewal(t *testing.T) {
 	lease := store.NotificationLease{ID: 1, Notifier: "silo", PayloadJSON: notificationJSON(t, repository.media[1], "/media/movie.en.srt"), JobID: "notification-1"}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := w.processNotificationLeaseContexts(ctx, ctx, lease, make(chan struct{}, 1)); err != nil {
+	if err := w.processNotificationGroupContexts(ctx, ctx, w.coalesceNotifications([]store.NotificationLease{lease})[0], make(chan struct{}, 1)); err != nil {
 		t.Fatalf("successful notification abandoned: %v", err)
 	}
 	if len(repository.notificationCompletions) != 1 || repository.notificationCompletions[0].Result != "success" {
 		t.Fatalf("completions=%#v", repository.notificationCompletions)
+	}
+}
+
+type losingRenewalRepository struct {
+	*workerRepository
+	lostJobID string
+	lost      chan struct{}
+	once      sync.Once
+}
+
+func (r *losingRenewalRepository) RenewNotificationLease(_ context.Context, jobID string, _ time.Time, _ time.Duration) error {
+	if jobID != r.lostJobID {
+		return nil
+	}
+	r.once.Do(func() { close(r.lost) })
+	return errLeaseLost
+}
+
+var errLeaseLost = errors.New("notification lease lost")
+
+func TestLostFollowerLeaseAbandonsOnlyThatFollower(t *testing.T) {
+	now := time.Now()
+	repository := newWorkerRepository(1, now)
+	losing := &losingRenewalRepository{workerRepository: repository, lostJobID: "follower-lost", lost: make(chan struct{})}
+	w := testWorker(repository, &workerWorkflow{}, testutil.NewClock(now))
+	w.Repository = losing
+	w.RenewInterval = time.Millisecond
+	delivery := &coalescingNotifier{wait: losing.lost}
+	w.Notifiers = map[string]notifier.Notifier{"silo": delivery}
+	media := repository.media[1]
+	leases := []store.NotificationLease{
+		{ID: 1, Notifier: "silo", PayloadJSON: notificationJSON(t, media, "/media/movie.en.srt"), JobID: "leader"},
+		{ID: 2, Notifier: "silo", PayloadJSON: notificationJSON(t, media, "/media/movie.hr.srt"), JobID: "follower-lost"},
+		{ID: 3, Notifier: "silo", PayloadJSON: notificationJSON(t, media, "/media/movie.de.srt"), JobID: "follower-kept"},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := w.processNotificationsContexts(ctx, ctx, leases)
+	if !errors.Is(err, errLeaseLost) {
+		t.Fatalf("lost lease error = %v", err)
+	}
+	if len(delivery.directories) != 1 {
+		t.Fatalf("deliveries = %q", delivery.directories)
+	}
+	completed := map[string]string{}
+	for _, completion := range repository.notificationCompletions {
+		completed[completion.JobID] = completion.Result
+	}
+	if !reflect.DeepEqual(completed, map[string]string{"leader": "success", "follower-kept": "success"}) {
+		t.Fatalf("completions = %#v", completed)
 	}
 }

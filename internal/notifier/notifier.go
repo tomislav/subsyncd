@@ -11,6 +11,13 @@ type Notifier interface {
 	SubtitleChanged(context.Context, domain.Media, string) error
 }
 
+// Coalescer is implemented by notifiers that can satisfy several pending
+// deliveries with one request. Deliveries with equal keys from the same
+// notifier are interchangeable once their subtitles are installed.
+type Coalescer interface {
+	CoalesceKey(media domain.Media, subtitlePath string) (string, error)
+}
+
 type Noop struct{}
 
 func (Noop) SubtitleChanged(context.Context, domain.Media, string) error { return nil }

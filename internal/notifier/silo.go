@@ -74,21 +74,35 @@ func NewSilo(config SiloConfig) (Notifier, error) {
 	return &Silo{endpoint: base, apiKey: config.APIKey, mappings: mappings, client: &client}, nil
 }
 
-func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitlePath string) error {
+// CoalesceKey is the directory Silo scans. One subtree scan discovers every
+// sibling subtitle already installed there.
+func (s *Silo) CoalesceKey(media domain.Media, subtitlePath string) (string, error) {
+	return s.scanPath(media, subtitlePath)
+}
+
+func (s *Silo) scanPath(media domain.Media, subtitlePath string) (string, error) {
 	target := media.Fingerprint.Path
 	if target == "" {
 		target = subtitlePath
 	}
 	if target == "" {
-		return &DeliveryError{Reason: "media path is empty"}
+		return "", &DeliveryError{Reason: "media path is empty"}
 	}
 	mapped, err := rewritePath(target, s.mappings)
 	if err != nil {
-		return &DeliveryError{Reason: "path mapping is invalid"}
+		return "", &DeliveryError{Reason: "path mapping is invalid"}
+	}
+	return pathpkg.Dir(mapped), nil
+}
+
+func (s *Silo) SubtitleChanged(ctx context.Context, media domain.Media, subtitlePath string) error {
+	scanPath, err := s.scanPath(media, subtitlePath)
+	if err != nil {
+		return err
 	}
 	payload, err := json.Marshal(struct {
 		Path string `json:"path"`
-	}{Path: pathpkg.Dir(mapped)})
+	}{Path: scanPath})
 	if err != nil {
 		return &DeliveryError{Reason: "encode request"}
 	}
