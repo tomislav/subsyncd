@@ -243,7 +243,7 @@ func TestWorkflowLogsLapseVerdictMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := broadCandidate("weak")
-	rejection := &syncer.VerdictError{Verdict: "nothing", Result: domain.SyncResult{Verdict: "nothing", Mode: "auto/shifted", Reference: "embedded", OffsetMS: -199731, Ratio: 1, Confidence: 0.49, Coverage: 1, Parts: 1}}
+	rejection := &syncer.VerdictError{Verdict: "nothing", Result: domain.SyncResult{Verdict: "nothing", Mode: "auto/shifted", Reference: "embedded", OffsetMS: -199731, Ratio: 1, Confidence: 0.49, Sigma: 3.36, Margin: 0.19, Coverage: 1, Parts: 1}}
 	service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{candidate}}}, nil, &fakeSynchronizer{synchronizeErr: rejection}, &fakeInstaller{})
 	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
 	service.Events = events
@@ -252,7 +252,7 @@ func TestWorkflowLogsLapseVerdictMetrics(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	failed := workflowEvents(workflowLogRecords(t, logs.String()), "lapse.failed")
-	if len(failed) != 1 || failed[0]["level"] != "warn" || failed[0]["verdict"] != "nothing" || failed[0]["reference"] != "embedded" || failed[0]["mode"] != "auto/shifted" || failed[0]["offset_ms"] != float64(-199731) || failed[0]["confidence"] != 0.49 || failed[0]["coverage"] != float64(1) {
+	if len(failed) != 1 || failed[0]["level"] != "warn" || failed[0]["verdict"] != "nothing" || failed[0]["reference"] != "embedded" || failed[0]["mode"] != "auto/shifted" || failed[0]["offset_ms"] != float64(-199731) || failed[0]["confidence"] != 0.49 || failed[0]["sigma"] != 3.36 || failed[0]["margin"] != 0.19 || failed[0]["coverage"] != float64(1) {
 		t.Fatalf("LAPSE verdict failure = %#v", failed)
 	}
 }

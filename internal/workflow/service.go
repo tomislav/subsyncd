@@ -894,6 +894,8 @@ func lapseAttrs(s *Service, phase string, candidate domain.Candidate, result dom
 		slog.Int64("offset_ms", result.OffsetMS),
 		slog.Float64("ratio", result.Ratio),
 		slog.Float64("confidence", result.Confidence),
+		slog.Float64("sigma", result.Sigma),
+		slog.Float64("margin", result.Margin),
 		slog.Float64("agreement", result.Agreement),
 		slog.Float64("coverage", result.Coverage),
 		slog.Int("parts", result.Parts),

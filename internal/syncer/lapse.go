@@ -406,7 +406,7 @@ func (r lapseReport) validate() error {
 }
 
 func (r lapseReport) syncResult() domain.SyncResult {
-	return domain.SyncResult{Verdict: r.Verdict, Mode: r.Mode, Reference: r.Reference, OffsetMS: r.OffsetMS, Ratio: r.Ratio, Confidence: r.Confidence, Agreement: r.Agreement, Coverage: r.Coverage, Parts: r.Parts, Splits: len(r.Splits)}
+	return domain.SyncResult{Verdict: r.Verdict, Mode: r.Mode, Reference: r.Reference, OffsetMS: r.OffsetMS, Ratio: r.Ratio, Confidence: r.Confidence, Sigma: r.Sigma, Margin: r.Margin, Agreement: r.Agreement, Coverage: r.Coverage, Parts: r.Parts, Splits: len(r.Splits)}
 }
 
 func analysisCopy(source string) (string, string, error) {

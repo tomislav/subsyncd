@@ -297,7 +297,7 @@ func TestLapseFailuresDoNotExposeRawProcessOutput(t *testing.T) {
 				if errors.As(err, &noSpeech) != test.noSpeech || test.noSpeech && errors.As(err, &processExit) || errors.As(err, &verdict) != (test.verdict != "") || verdict != nil && verdict.Verdict != test.verdict {
 					t.Fatalf("wrong failure classification: %T %v", err, err)
 				}
-				if test.name == "nothing" && (verdict.Result.Reference != "vad" || verdict.Result.Confidence != 0.11 || verdict.Result.Coverage != 0.4 || verdict.Result.Agreement != 0.125) {
+				if test.name == "nothing" && (verdict.Result.Reference != "vad" || verdict.Result.Confidence != 0.11 || verdict.Result.Coverage != 0.4 || verdict.Result.Agreement != 0.125 || verdict.Result.Sigma != 1.2 || verdict.Result.Margin != 0.01) {
 					t.Fatalf("verdict error dropped LAPSE metrics: %#v", verdict.Result)
 				}
 			}
