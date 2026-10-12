@@ -178,9 +178,13 @@ type Service struct {
 	// the installed subtitle; 0 never stops them. Fallback installations keep
 	// checking for a preferred provider.
 	MaxUpgradeChecks int
-	Clock            WorkflowClock
-	RandomUnit       func() float64
-	Events           *observability.Emitter
+	// AgedAfter is how long after release a fallback installation stops
+	// getting the quick promotion checks (aged_release_days, as for missing
+	// searches); 0 gives no release the quick checks.
+	AgedAfter  time.Duration
+	Clock      WorkflowClock
+	RandomUnit func() float64
+	Events     *observability.Emitter
 	// Refusals confirms providers' refused downloads across runs; services
 	// sharing providers should share it. Nil keeps a ledger per run.
 	Refusals *RefusalLedger
@@ -345,7 +349,7 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		s.setReassessmentResult(&result, existing, domain.Candidate{ProviderID: existing.ProviderID, ResultID: existing.CandidateID, ExactHash: exact}, score, s.Clock.Now())
 	}
 	if runErr == nil {
-		s.scheduleUpgrade(&result, request.UpgradeAttempt)
+		s.scheduleUpgrade(&result, request.UpgradeAttempt, request.Media.ReleasedAt, existing.InstalledAt)
 	}
 	return result, runErr
 }
@@ -370,7 +374,7 @@ func (s *Service) replaceInstalled(ctx context.Context, request Request, existin
 	switch result.Outcome {
 	case OutcomeNoResult, OutcomeRejected:
 	default:
-		s.scheduleUpgrade(&result, request.UpgradeAttempt)
+		s.scheduleUpgrade(&result, request.UpgradeAttempt, request.Media.ReleasedAt, existing.InstalledAt)
 		return result, nil
 	}
 	if len(result.ProviderErrors) > 0 {

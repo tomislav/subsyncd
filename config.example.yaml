@@ -144,7 +144,9 @@ upgrade_checks: 4
 # 3d): once a search finds nothing, the next one is a week later, then every
 # two weeks. Subtitles for older media rarely appear within days. Media with an unknown
 # release date keeps the full schedule. 0 keeps the full schedule for
-# everything. Default: 30.
+# everything. A fallback subtitle for media younger than this is rechecked
+# for a preferred one on the same early steps before going weekly; with 0,
+# fallback subtitles are always rechecked weekly. Default: 30.
 aged_release_days: 30
 
 pack_cache:

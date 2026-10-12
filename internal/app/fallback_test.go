@@ -38,6 +38,7 @@ func TestFallbackCoordinatorsPreserveLanguageTiers(t *testing.T) {
 	cfg.Languages["en"] = config.LanguageConfig{Providers: []string{"english"}, FallbackProviders: []string{"backup", "third"}}
 	cfg.Languages["hr"] = config.LanguageConfig{Providers: []string{"third", "backup"}, FallbackProviders: []string{"english"}}
 	cfg.Languages["de"] = config.LanguageConfig{Providers: []string{"english"}}
+	cfg.AgedReleaseDays = 30
 	a, err := New(t.Context(), cfg, fallbackAppOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +46,9 @@ func TestFallbackCoordinatorsPreserveLanguageTiers(t *testing.T) {
 	defer a.Close()
 	for language, route := range cfg.Languages {
 		service := a.Workflows[language]
+		if want := time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour; service.AgedAfter != want {
+			t.Fatalf("%s aged after = %v, want %v", language, service.AgedAfter, want)
+		}
 		if !reflect.DeepEqual(service.ProviderOrder, route.Providers) || !reflect.DeepEqual(service.FallbackProviderOrder, route.FallbackProviders) {
 			t.Fatalf("%s orders = %v/%v", language, service.ProviderOrder, service.FallbackProviderOrder)
 		}

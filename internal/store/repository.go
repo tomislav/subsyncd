@@ -334,6 +334,10 @@ type Installation struct {
 	// installation settles. Recording deletes it in the same transaction, so
 	// a recorded install never leaves a pending row behind. It is not stored.
 	PendingInstallID int64
+	// InstalledAt is when the installation was last recorded, as
+	// GetInstallation reads it; recording ignores it and stores the current
+	// time.
+	InstalledAt time.Time
 }
 
 // MediaEventMutation is the persistence-level representation of an Arr event.
@@ -1683,12 +1687,16 @@ func (r *Repository) DeletePack(ctx context.Context, packID int64) error {
 
 func (r *Repository) GetInstallation(ctx context.Context, mediaID int64, language domain.Language) (Installation, bool, error) {
 	var installation Installation
-	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, fallback, candidate_signature, artifact_checksum FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath, &installation.MediaPath, &installation.MediaFileID, &installation.MediaSize, &installation.MediaModTimeNS, &installation.Fallback, &installation.CandidateSignature, &installation.ArtifactChecksum)
+	var installedAt int64
+	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, fallback, candidate_signature, artifact_checksum, installed_at_ns FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath, &installation.MediaPath, &installation.MediaFileID, &installation.MediaSize, &installation.MediaModTimeNS, &installation.Fallback, &installation.CandidateSignature, &installation.ArtifactChecksum, &installedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Installation{}, false, nil
 	}
 	if err != nil {
 		return Installation{}, false, fmt.Errorf("get installation: %w", err)
+	}
+	if installedAt != 0 {
+		installation.InstalledAt = time.Unix(0, installedAt).UTC()
 	}
 	return installation, true, nil
 }

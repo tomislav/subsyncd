@@ -111,6 +111,47 @@ func TestProviderTierExactFallbackKeepsPromotionScheduleWhenPreferredEmpty(t *te
 	}
 }
 
+func TestProviderTierRecentReleaseGetsQuickPromotionChecks(t *testing.T) {
+	day := 24 * time.Hour
+	t.Run("install", func(t *testing.T) {
+		for _, scenario := range []string{"empty", "cooldown"} {
+			fallback := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{fallbackCandidate("exact", true)}}}
+			s, _ := tierService(t, &fakeSearcher{}, fallback)
+			s.AgedAfter = 30 * day
+			now := s.Clock.Now()
+			// A cooldown ending before the first quick check still wins.
+			want := now.Add(6*time.Hour + 36*time.Minute)
+			if scenario == "cooldown" {
+				s.Searcher.(*fakeSearcher).result.Errors = map[string]error{"provider": &provider.CooldownError{ProviderID: "provider", ResetAt: now.Add(time.Hour)}}
+				want = now.Add(time.Hour)
+			}
+			request := serviceRequest(t)
+			request.Media.ReleasedAt = now.Add(-2 * day)
+			result, err := s.Run(t.Context(), request)
+			if err != nil || result.Outcome != OutcomeInstalled || !result.NextUpgrade.Equal(want) {
+				t.Fatalf("%s: result=%+v err=%v want next=%v", scenario, result, err, want)
+			}
+		}
+	})
+	t.Run("unchanged check", func(t *testing.T) {
+		request := serviceRequest(t)
+		s, _ := tierService(t, &fakeSearcher{}, &fakeSearcher{})
+		s.AgedAfter = 30 * day
+		now := s.Clock.Now()
+		request.Media.ReleasedAt = now.Add(-2 * day)
+		request.UpgradeAttempt = 1
+		existing := matchingInstallation(request, fallbackCandidate("old", true), []byte(`{"total":100,"contributions":[{"signal":"exact_hash","points":100}]}`))
+		existing.Fallback = true
+		existing.InstalledAt = now.Add(-7 * time.Hour)
+		s.Repository = &workflowRepository{installation: existing, found: true}
+		s.Inventory = &fakeInventory{current: managedSidecarInventory(existing)}
+		result, err := s.Run(t.Context(), request)
+		if want := now.Add(13*time.Hour + 12*time.Minute); err != nil || result.Outcome != OutcomeSatisfied || !result.NextUpgrade.Equal(want) {
+			t.Fatalf("result=%+v err=%v want next=%v", result, err, want)
+		}
+	})
+}
+
 func TestProviderTierPublicationFailureAndCancellationNeverStartFallback(t *testing.T) {
 	for _, cancel := range []bool{false, true} {
 		t.Run(map[bool]string{false: "publication", true: "cancel"}[cancel], func(t *testing.T) {

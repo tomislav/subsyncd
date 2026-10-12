@@ -81,6 +81,8 @@ func TestInstallerRefreshesIdenticalOwnedContentWithoutPublication(t *testing.T)
 		t.Fatalf("identical promotion: %v", err)
 	}
 	persisted, found, err := database.Repository().GetInstallation(t.Context(), request.MediaID, request.Language)
+	// Recording stamps its own time; the returned copy keeps the earlier one.
+	got.InstalledAt, persisted.InstalledAt = time.Time{}, time.Time{}
 	if err != nil || !found || !reflect.DeepEqual(got, persisted) {
 		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}

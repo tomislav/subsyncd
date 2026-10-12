@@ -75,22 +75,45 @@ func installedScore(installation store.Installation) (domain.Score, bool, error)
 	return score, false, nil
 }
 
+// recentFallbackChecks are the unchanged promotion checks, by upgrade attempt,
+// for a fallback installation of a recent release: the missing-search early
+// steps, because a preferred provider often publishes days after release.
+var recentFallbackChecks = [...]time.Duration{6 * time.Hour, 12 * time.Hour, 24 * time.Hour, 72 * time.Hour}
+
 // scheduleUpgrade spreads ordinary checks and lengthens repeated unchanged
 // assessments, and ends them after MaxUpgradeChecks unchanged checks. A preferred-provider reset earlier than the base interval remains
 // authoritative, without jitter or backoff delaying its recovery check.
-func (s *Service) scheduleUpgrade(result *Result, attempt int) {
+// A fallback installation of a release younger than AgedAfter is checked on
+// the recentFallbackChecks steps first; installedAt tells whether its later
+// checks follow those steps.
+func (s *Service) scheduleUpgrade(result *Result, attempt int, releasedAt, installedAt time.Time) {
 	if result.NextUpgrade.IsZero() {
 		return
 	}
 	now := s.Clock.Now()
 	base := s.nextUpgradeAt(now, result.Score, result.Candidate).Sub(now)
-	if result.upgradeRecovery {
-		return
-	}
 	if result.Outcome != OutcomeSatisfied {
 		attempt = 0
 	}
-	if s.MaxUpgradeChecks > 0 && attempt >= s.MaxUpgradeChecks && !s.isFallbackProvider(result.Candidate.ProviderID) {
+	fallback := s.isFallbackProvider(result.Candidate.ProviderID)
+	if fallback && s.recentRelease(releasedAt, now) && attempt < len(recentFallbackChecks) {
+		// Jitter only delays, like missing searches, so no check lands inside
+		// the six-hour search cache of the previous one.
+		step := recentFallbackChecks[attempt]
+		next := now.Add(step + time.Duration(float64(step)*0.2*s.randomUnit()))
+		if !result.upgradeRecovery || next.Before(result.NextUpgrade) {
+			result.NextUpgrade = next
+		}
+		return
+	}
+	if result.upgradeRecovery {
+		return
+	}
+	if fallback && s.recentRelease(releasedAt, installedAt) {
+		// The early steps already used do not stretch the weekly cadence.
+		attempt = max(0, attempt-len(recentFallbackChecks))
+	}
+	if s.MaxUpgradeChecks > 0 && attempt >= s.MaxUpgradeChecks && !fallback {
 		result.NextUpgrade = time.Time{}
 		return
 	}
@@ -101,10 +124,20 @@ func (s *Service) scheduleUpgrade(result *Result, attempt int) {
 			attempt--
 		}
 	}
+	result.NextUpgrade = now.Add(base + time.Duration(float64(base)*0.1*(2*s.randomUnit()-1)))
+}
+
+// recentRelease reports whether media released at releasedAt was younger than
+// AgedAfter at "at". An unknown or later release date, or a zero AgedAfter, is
+// not recent.
+func (s *Service) recentRelease(releasedAt, at time.Time) bool {
+	return s.AgedAfter > 0 && !releasedAt.IsZero() && !at.IsZero() && !releasedAt.After(at) && at.Sub(releasedAt) < s.AgedAfter
+}
+
+func (s *Service) randomUnit() float64 {
 	unit := rand.Float64()
 	if s.RandomUnit != nil {
 		unit = s.RandomUnit()
 	}
-	unit = max(0, min(1, unit))
-	result.NextUpgrade = now.Add(base + time.Duration(float64(base)*0.1*(2*unit-1)))
+	return max(0, min(1, unit))
 }

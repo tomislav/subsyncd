@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestFallbackInstallationPersistence(t *testing.T) {
@@ -20,8 +21,12 @@ func TestFallbackInstallationPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	installation := Installation{MediaID: id, Language: "en", Path: "/media/x.en.srt", Checksum: "sum", ProviderID: "backup", CandidateID: "one", Fallback: true, ScoreJSON: []byte(`{}`), SyncResultJSON: []byte(`{}`), MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}
+	before := time.Now()
 	if err := repo.RecordInstallation(ctx, installation); err != nil {
 		t.Fatal(err)
+	}
+	if got, _, err := repo.GetInstallation(ctx, id, "en"); err != nil || got.InstalledAt.Before(before) || got.InstalledAt.After(time.Now()) {
+		t.Fatalf("installed at = %v, %v; want the recording time", got.InstalledAt, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
