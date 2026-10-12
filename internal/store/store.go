@@ -158,7 +158,11 @@ func validateAppliedMigrations(ctx context.Context, db *sql.DB, allowed map[stri
 			return fmt.Errorf("scan applied migration: %w", err)
 		}
 		if _, ok := allowed[version]; !ok {
-			return fmt.Errorf("unsupported database migration %q; rebuild from an empty data directory", version)
+			// Migrations only go forward, so an older build cannot open a
+			// database a newer one upgraded. Starting from an empty data
+			// directory would throw away every installation record.
+			return fmt.Errorf("unsupported database migration %q: the database was upgraded by a newer subsyncd and migrations are forward-only; "+
+				"to run this older version, restore the data backup taken before that upgrade together with this image, or run the newer image", version)
 		}
 	}
 	if err := rows.Err(); err != nil {

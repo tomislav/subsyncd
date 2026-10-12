@@ -45,8 +45,12 @@ func TestOpenRejectsUnknownMigrationLineage(t *testing.T) {
 	_ = db.Close()
 
 	_, err = Open(context.Background(), path)
-	if err == nil || !strings.Contains(err.Error(), `unsupported database migration "001_initial.sql"; rebuild from an empty data directory`) {
+	if err == nil || !strings.Contains(err.Error(), `unsupported database migration "001_initial.sql": the database was upgraded by a newer subsyncd and migrations are forward-only`) {
 		t.Fatalf("Open() error = %v", err)
+	}
+	// The advice restores a backup instead of discarding the data directory.
+	if msg := err.Error(); !strings.Contains(msg, "restore the data backup taken before that upgrade") || strings.Contains(msg, "empty data directory") {
+		t.Fatalf("Open() error advice = %v", err)
 	}
 }
 
