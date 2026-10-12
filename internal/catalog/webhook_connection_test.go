@@ -111,6 +111,8 @@ type syncRequest struct {
 	Body     []byte
 }
 
+func (r syncRequest) String() string { return r.Method + " " + r.Path }
+
 type syncReply struct {
 	Status int
 	Body   string
@@ -128,6 +130,7 @@ type fakeSyncArr struct {
 	listReplies []syncReply
 	postReplies []syncReply
 	putReplies  []syncReply
+	delay       time.Duration
 }
 
 func newFakeSyncArr(t *testing.T, kind string, connections ...map[string]any) *fakeSyncArr {
@@ -170,6 +173,13 @@ func (a *fakeSyncArr) setSchema(mutate func(template map[string]any)) {
 
 func (a *fakeSyncArr) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
+	if a.delay > 0 {
+		select {
+		case <-time.After(a.delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, syncRequest{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery, Body: body})
@@ -612,17 +622,72 @@ func TestSyncAdoptsSameHostOldToken(t *testing.T) {
 }
 
 func TestSyncAdoptsOtherHostMatchingToken(t *testing.T) {
+	others := syncOthers("sonarr")
 	handMade := syncResource("sonarr", 7, "subsyncd", "Webhook", "http://old-host:9000/webhooks/"+syncInstance+"?token="+syncToken, syncFlags(sonarrRequired...))
-	arr := newFakeSyncArr(t, "sonarr", handMade)
+	arr := newFakeSyncArr(t, "sonarr", append(others, handMade)...)
 	h := newSyncHarness(t, arr)
 
 	if err := h.sync.Sync(context.Background()); err != nil {
 		t.Fatalf("Sync() = %v", err)
 	}
 	expectPut(t, arr, 7, handMade, func(want map[string]any) { setTestFieldValue(want, "url", syncDesiredURL()) })
+	arr.assertUntouched(others, 1, 2, 3)
 	h.expectEvent(t, "webhook.connection_adopted", "info", map[string]any{"connection_id": float64(7)})
 	h.expectEvent(t, "webhook.connection_repaired", "info", map[string]any{"changed": "url"})
 	h.expectRecorded(t, 7)
+}
+
+func TestSyncSameHostOtherPrefixNotAdopted(t *testing.T) {
+	const base = "https://proxy/main"
+	canary := syncResource("sonarr", 7, "subsyncd (canary)", "Webhook", "https://proxy/canary/webhooks/"+syncInstance+"?token=other", syncFlags(sonarrRequired...))
+	others := append(syncOthers("sonarr"), canary)
+	arr := newFakeSyncArr(t, "sonarr", others...)
+	h := newSyncHarness(t, arr)
+	h.sync.BaseURL = base
+
+	if err := h.sync.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync() = %v", err)
+	}
+	posts := arr.writesBy(http.MethodPost)
+	if len(posts) != 1 || len(arr.writes()) != 1 {
+		t.Fatalf("writes = %+v, want one POST", arr.writes())
+	}
+	expectCreated(t, posts[0], "sonarr", "subsyncd (proxy)", WebhookURLFor(base, syncInstance, syncToken), sonarrRequired)
+	arr.assertUntouched(others, 1, 2, 3, 7)
+	h.expectEvent(t, "webhook.connection_foreign", "info", map[string]any{"count": float64(1)})
+	h.expectNoEvent(t, "webhook.connection_adopted")
+	h.expectRecorded(t, 100)
+}
+
+func TestSyncSameHostMatchesEffectivePort(t *testing.T) {
+	for _, test := range []struct {
+		base, hook string
+		adopted    bool
+	}{
+		{"http://subsyncd:8097", "http://subsyncd:8097/webhooks/" + syncInstance + "?token=old", true},
+		{"http://h", "http://h:80/webhooks/" + syncInstance + "?token=old", true},
+		{"http://h:80", "HTTP://H/webhooks/" + syncInstance + "?token=old", true},
+		{"https://h/", "https://h:443/webhooks/" + syncInstance + "?token=old", true},
+		{"https://h", "http://h/webhooks/" + syncInstance + "?token=old", false},
+		{"http://h", "http://h:8080/webhooks/" + syncInstance + "?token=old", false},
+		{"http://h/main", "http://h/webhooks/" + syncInstance + "?token=old", false},
+	} {
+		t.Run(test.base+" "+test.hook, func(t *testing.T) {
+			handMade := syncResource("sonarr", 7, "subsyncd", "Webhook", test.hook, syncFlags(sonarrRequired...))
+			arr := newFakeSyncArr(t, "sonarr", handMade)
+			h := newSyncHarness(t, arr)
+			h.sync.BaseURL = test.base
+
+			if err := h.sync.Sync(context.Background()); err != nil {
+				t.Fatalf("Sync() = %v", err)
+			}
+			adopted := len(arr.writesBy(http.MethodPut)) == 1 && len(arr.writesBy(http.MethodPost)) == 0
+			created := len(arr.writesBy(http.MethodPut)) == 0 && len(arr.writesBy(http.MethodPost)) == 1
+			if test.adopted && !adopted || !test.adopted && !created {
+				t.Fatalf("adopted = %t, writes = %+v", test.adopted, arr.writes())
+			}
+		})
+	}
 }
 
 func TestSyncLeavesForeignDeploymentAlone(t *testing.T) {
@@ -913,6 +978,17 @@ func TestSyncArrDown(t *testing.T) {
 	arr.server.Close()
 
 	expectSyncError(t, h.sync.Sync(context.Background()), "arr_unreachable", 0)
+	h.expectNothingRecorded(t)
+}
+
+func TestSyncDeadlineIsUnreachable(t *testing.T) {
+	arr := newFakeSyncArr(t, "sonarr")
+	arr.delay = 5 * time.Second
+	h := newSyncHarness(t, arr)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	expectSyncError(t, h.sync.Sync(ctx), "arr_unreachable", 0)
 	h.expectNothingRecorded(t)
 }
 

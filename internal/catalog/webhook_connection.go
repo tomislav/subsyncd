@@ -208,13 +208,34 @@ func (s WebhookConnectionSync) matchConnections(connections []arrResource, base 
 			continue
 		}
 		candidates++
-		sameHost := strings.EqualFold(hook.Scheme, base.Scheme) && strings.EqualFold(hook.Host, base.Host)
+		// The same origin is ours only at exactly our path: another
+		// deployment behind the same proxy differs only by path prefix.
+		sameEndpoint := sameWebhookOrigin(hook, base) && hook.Path == strings.TrimRight(base.Path, "/")+"/webhooks/"+s.Instance
 		tokens := hook.Query()["token"]
-		if sameHost || len(tokens) == 1 && sameWebhookSecret(tokens[0], s.Token) {
+		if sameEndpoint || len(tokens) == 1 && sameWebhookSecret(tokens[0], s.Token) {
 			ours = append(ours, connection)
 		}
 	}
 	return candidates, ours
+}
+
+// sameWebhookOrigin compares scheme and host name case-insensitively and the
+// effective port, so http://h and http://h:80 are the same origin.
+func sameWebhookOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }
 
 // sameWebhookSecret compares in constant time, as httpapi does.
