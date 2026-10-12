@@ -142,7 +142,7 @@ Sonarr and Radarr test the URL whenever they save a connection with events enabl
 To add the webhooks by hand instead, leave `webhook_base_url` unset. In each application's **Settings → Connect**, add a webhook using the URL that subsyncd prints for the instance:
 
 ```bash
-docker compose exec subsyncd subsyncd webhook-url --instance sonarr-main
+docker compose exec subsyncd subsyncd webhook-url --instance sonarr-main --base http://subsyncd:8097
 ```
 
 The URL looks like this, where the token is one subsyncd generated for the instance and keeps in its database:
@@ -151,7 +151,7 @@ The URL looks like this, where the token is one subsyncd generated for the insta
 http://subsyncd:8097/webhooks/sonarr-main?token=SONARR_WEBHOOK_TOKEN
 ```
 
-Pass `--base http://HOST:PORT` to print the URL for another address. For an instance outside Docker, use your Docker host's address and the published port.
+Use the address Sonarr or Radarr reach subsyncd at as `--base`; for an instance outside Docker, that is your Docker host's address and the published port. Without `--base` (and with `server.webhook_base_url` unset) the command prints only the `/webhooks/...?token=...` path and query.
 
 For a manual webhook, enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches, and other event types are accepted and ignored. subsyncd answers a webhook as soon as it has saved it and applies it right after, so Arr never waits on subsyncd's own lookups.
 
@@ -169,7 +169,7 @@ docker compose exec subsyncd subsyncd doctor
 
 To stay on a particular build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. Back up `data/` with the service stopped before upgrading; it holds search history, caches, and records of installed subtitles.
 
-Upgrading from a build that read `webhook_token` from the configuration: remove `webhook_token` from every instance first, because startup refuses the old key. The first start generates a new token for each instance. With `server.webhook_base_url` set, subsyncd updates the connection in Sonarr or Radarr itself. Otherwise run `subsyncd webhook-url --instance NAME` for each instance and put the new URL in its webhook.
+Upgrading from a build that read `webhook_token` from the configuration: remove `webhook_token` from every instance first, because startup refuses the old key. The first start generates a new token for each instance. With `server.webhook_base_url` set, subsyncd updates the connection in Sonarr or Radarr itself. Otherwise run `subsyncd webhook-url --instance NAME --base URL` for each instance and put the new URL in its webhook.
 
 ## Logs and troubleshooting
 
