@@ -64,7 +64,7 @@ The rest of this page writes commands as `subsyncd COMMAND`; add the `docker com
 
 ## The daemon and one-shot commands
 
-Only one process may change subsyncd's saved state at a time; `data/subsyncd.lock` enforces this. Read-only commands just read the database, so they run beside the daemon.
+Only one process may change subsyncd's saved state at a time; `data/subsyncd.lock` enforces this. Read-only commands just read the database, so they run beside the daemon. Apart from `analyze-sync`, they never read a media file. Every command, read-only ones included, does check at startup that each configured media root exists: a missing root fails the command, and a hung mount can stall it.
 
 `search`, `reject`, `scan` and `retry` hand their request to the running daemon through the control socket `data/subsyncd.sock`, so you never stop the daemon for them. Without a running daemon they run to completion in their own process:
 
@@ -160,7 +160,7 @@ subsyncd missing --language hr --title "Show" --limit 20
 
 - `--instance`, `--language` and `--title` narrow the list; `--limit` (default 50) cuts it, and `total` gives the full count.
 - Rows follow the queue: what would run next comes first, languages never searched come last. A search running now is listed without a next attempt time.
-- It never reads media files, so it works while storage is down.
+- It reads no media file, only the database. Like every command, it first checks that each media root exists, so a missing root fails it and a hung mount can stall it.
 
 Each row has a `reason` and an `action`. The action is a complete command with the real instance, kind, file ID and language.
 
@@ -182,7 +182,7 @@ subsyncd recent --since 72h --language hr --limit 20
 
 `recent` lists finished searches and rejections, newest first, from the last 24 hours. `--since` takes a duration such as `90m` or `72h`; `--instance` and `--language` narrow the list, and `--limit` (default 50) cuts it. History is kept for 30 days.
 
-Each row has the title, language, outcome, provider and release when there was one, a `reason`, whether the search was `manual`, and when it finished. With `--json` it also has `instance`, `kind` and `file_id`.
+Each row has the title, language, outcome, provider and release when there was one, a `reason`, whether the search was `manual`, and when it finished. It also shows `instance` and `kind`; `file_id` is in the `--json` output only.
 
 | Outcome | Meaning |
 | --- | --- |
@@ -280,7 +280,7 @@ docker compose up -d
 
 ## Machine-readable output
 
-Every command except `serve` accepts `--json`. Standard output then carries exactly one JSON object, on success or failure; log lines still go to standard error.
+Every command except `serve` and `version` accepts `--json`. Standard output then carries exactly one JSON object, on success or failure; log lines still go to standard error. Help (`--help`, `help COMMAND`) stays plain text even with `--json`.
 
 ```bash
 subsyncd doctor --json
@@ -290,14 +290,14 @@ subsyncd doctor --json
 {"schema":"subsyncd.cli/v1","command":"doctor","ok":true,"result":{"configuration":"ok","sqlite":"ok","media_roots":1,"lapse":"compatible","ffprobe":"available","webhooks":"manual"}}
 ```
 
-A failure has `"ok":false` and an `error` with a stable `code` and a readable `message` instead of `result`. Times are RFC 3339 and field names are snake_case. Output never contains credentials or absolute paths, except `webhook-url`, which prints the token by design.
+A failure has `"ok":false` and an `error` with a stable `code` and a readable `message` instead of `result`. Times are RFC 3339 and field names are snake_case. Output never contains credentials or absolute paths, with two exceptions: `webhook-url` prints the token by design, and an error loading the configuration file can name that file's path.
 
-**Exit status:** 0 for success (including `running`), 1 for a failure, 2 when the command line itself is invalid. A `usage` error reported by the daemon exits 1, so scripts should branch on `error.code`, not the exit status.
+**Exit status:** 0 for success (including `running`), 1 for a failure, 2 when the command line itself does not parse. A `usage` error found later, once the database is open (such as `reject` without the `--language` it needs to pick one of several languages, an invalid `webhook-url --base`, or `forget-instance` for a configured instance), exits 1, with or without a running daemon. Scripts should branch on `error.code`, not the exit status.
 
 | Code | Meaning |
 | --- | --- |
 | `usage` | A flag or value is missing, unknown or invalid for the command. |
-| `unknown_instance` | The instance is not configured (for `forget-instance`: the database has no records for it). |
+| `unknown_instance` | The instance is not configured (for `forget-instance`: the database has no records for it; for `webhook-url` and `rotate-webhook-token`: it has no webhook token yet, because subsyncd has not started since it was added). |
 | `unknown_provider` | The provider is not configured. |
 | `unknown_language` | The language tag is invalid or not configured. |
 | `media_not_found` | `--title` or `--path` matched no indexed file, or `--file-id` is not indexed (except for `search`). |

@@ -3,8 +3,11 @@
 # Copy this file to config/config.yaml and edit the copy. Keep that copy
 # private: it holds every credential subsyncd uses.
 #
-# Values marked "required" must be set. Everything else shows its default and
-# can be deleted if you are happy with that default.
+# Values marked "required" must be set. A value whose comment gives a default
+# shows that default and can be deleted if you are happy with it. The other
+# values are examples to replace: the instances, providers, languages and Silo
+# settings, and server.webhook_base_url, which is unset by default (deleting
+# it means adding the Sonarr/Radarr webhooks by hand).
 #
 # Credentials: replace each quoted placeholder. Keep the single quotes; to
 # write an apostrophe inside a quoted value, type it twice ('it''s').
@@ -29,7 +32,8 @@ media_roots:
 server:
   # Address for webhooks and health checks. Default: 0.0.0.0:8097.
   listen: 0.0.0.0:8097
-  # Address for the webhooks subsyncd adds to Sonarr/Radarr; unset: add by hand.
+  # Address for the webhooks subsyncd adds to Sonarr/Radarr. Default: unset,
+  # which means adding them by hand.
   webhook_base_url: http://subsyncd:8097
 
 logging:
@@ -136,24 +140,20 @@ languages:
 # Include hearing-impaired (SDH/HI) subtitles. Default: false.
 allow_hearing_impaired: false
 # Lowest score, 1 to 100, a non-exact match needs to be considered. Higher is
-# stricter. Default: 35. Raise it (60 is a good start) if sync.policy is never.
+# stricter. Default (also for 0): 35. Raise it (60 is a good start) if
+# sync.policy is never.
 minimum_release_score: 35
 
-# How many upgrade checks in a row may find nothing better before subsyncd
-# stops looking for a better subtitle. Checks back off from 7-90 days to 90
-# days, so 4 covers roughly 4 to 12 months. Subtitles from fallback providers
-# keep checking for a preferred one. 0 to 100; 0 checks forever. Default: 4.
+# When subsyncd searches again: docs/development/providers/scheduling.md.
+# Upgrade checks in a row that keep a subtitle before subsyncd stops looking
+# for a better one; fallback subtitles never stop. 0 to 100; 0 never stops.
+# Default: 4.
 upgrade_checks: 4
 
-# Days after release (episode air date, or a movie's digital release from
-# Radarr) after which a missing subtitle skips the early retries (6h, 12h, 24h,
-# 3d): once a search finds nothing, the next one is a week later, then every
-# two weeks. Subtitles for older media rarely appear within days. Media with
-# an unknown release date keeps the full schedule. 0 keeps the full schedule
-# for everything. A fallback subtitle for media younger than this is rechecked
-# for a preferred one about 6h, 12h, 24h and 3d after install, then a week
-# later, then less often; with 0, fallback subtitles start at a week.
-# 0 to 3650. Default: 30.
+# Release age in days from which missing searches skip their early retries;
+# younger media gets early fallback rechecks instead. 0 turns both off.
+# Release date: the air date, or a movie's digital, else physical, else cinema
+# release plus 90 days. 0 to 3650. Default: 30.
 aged_release_days: 30
 
 pack_cache:
@@ -189,7 +189,8 @@ sync:
   policy: confidence
   # The settings below only apply when policy is confidence. Each "true" makes
   # skipping LAPSE harder; all default to true.
-  # Minimum score, 1 to 100, for a match to skip LAPSE. Default: 75.
+  # Minimum score, 1 to 100, for a match to skip LAPSE.
+  # Default (also for 0): 75.
   bypass_score: 75
   # Skipping LAPSE needs a matching external ID or title and year.
   require_identity_anchor: true

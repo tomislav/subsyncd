@@ -132,7 +132,7 @@ Events marked warn or error usually need a look; info events are listed because 
 | `notification.skipped` | info | No rescan was sent: `reason` `rescan_disabled` or `unknown_arr_id`. |
 | `notification.retry_scheduled` | warn | No answer, a timeout or a retryable status; tried again at `retry_at`. |
 | `notification.abandoned` | warn | Arr refused the rescan (such as 404 or 401); not retried. |
-| `notification.failed` | error | Silo refused the scan for good (such as 404, 410 or 422), or the result could not be saved. |
+| `notification.failed` | error | Silo refused the scan for good (such as 404, 410 or 422), an Arr rescan request was invalid or named the wrong media kind, or the result could not be saved. |
 | `notification.prune_failed` | warn | Deleting notifications finished over 30 days ago failed; retried within a minute. `notification.pruned` (debug) reports each cleanup. |
 
 A failed notification never undoes a subtitle change.
@@ -146,7 +146,7 @@ A failed notification never undoes a subtitle change.
 | `command.failed` | error | A one-shot command failed; the redacted error says why. |
 | `control.request_completed` | info | The daemon carried out a command the CLI handed it (`command`, `outcome`, `duration_ms`). |
 | `control.request_failed` | warn | The daemon refused or failed such a command, with the error `code` the CLI shows. |
-| `worker.drain_timed_out`, `worker.drain_abandoned` | warn | At shutdown, running searches did not stop within the 30-second window; they run again after the restart. |
+| `worker.drain_timed_out`, `worker.drain_abandoned` | warn | At shutdown, running searches did not finish within the first 30-second window and were canceled (`drain_timed_out`), or still had not stopped 30 seconds after that (`drain_abandoned`). They run again after the restart. |
 
 The developer [event catalogue](development/logging.md) lists every event with its fields.
 

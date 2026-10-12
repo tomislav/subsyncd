@@ -62,7 +62,7 @@ providers:
 | `type` | required | `sonarr`, `radarr` | Which application it is. |
 | `url` | required | `http` or `https` URL, no query | Address reachable from the container. |
 | `api_key` | required | string | The application's API key (Settings → General). |
-| `path_mappings` | none | list of `remote`/`local` | Translates the path Arr reports (`remote`) to the same folder in the container (`local`). Each `local` must sit inside a media root. Media whose path matches no mapping is skipped. |
+| `path_mappings` | none, so no file of the instance is processed | list of `remote`/`local` | Translates the path Arr reports (`remote`) to the same folder in the container (`local`). Each `local` must sit inside a media root. Media whose path matches no mapping is skipped. |
 | `queue_priority` | `0` | 0–1000 | Higher runs first within each queue stage. See [Queue order](running.md#queue-order). |
 | `rescan_after_changes` | `true` | `true`, `false` | Ask Arr to rescan the series or movie after a subtitle change. See [Arr rescans](running.md#sonarr-and-radarr-rescans). |
 
@@ -95,7 +95,7 @@ Provider-specific keys:
 | | `max_pages` | `5` | 100-result pages read per title and language, 1–20. |
 | `gestdown` | none | | No account needed. |
 
-Each provider also accepts endpoint and size overrides, meant for tests and private endpoints; `max_download_bytes` can only lower the built-in limit. Every base URL must use HTTPS. Leave them unset:
+Each provider also accepts endpoint and size overrides, meant for tests and private endpoints. Every base URL must use HTTPS. SubSource and Gestdown accept a `max_download_bytes` only up to their built-in limit; the others accept any positive value. Leave them unset:
 
 | Type | Keys and defaults |
 | --- | --- |
@@ -121,9 +121,9 @@ A provider may appear only once per language, across both tiers. Startup checks 
 | Key | Default | Allowed | Meaning |
 | --- | --- | --- | --- |
 | `allow_hearing_impaired` | `false` | `true`, `false` | Accept hearing-impaired (SDH/HI) subtitles and tracks. |
-| `minimum_release_score` | `35` | 1–100 | Lowest score a non-exact match needs to be considered. |
+| `minimum_release_score` | `35` | 1–100; `0` means the default | Lowest score a non-exact match needs to be considered. |
 | `upgrade_checks` | `4` | 0–100 | Unchanged upgrade checks in a row before subsyncd stops looking for a better subtitle. `0` never stops. Fallback subtitles never stop. |
-| `aged_release_days` | `30` | 0–3650 | Media released longer ago skips the early missing-subtitle retries; younger fallback subtitles get early preferred-provider rechecks. `0` turns the aged shortcut off. |
+| `aged_release_days` | `30` | 0–3650 | Media released longer ago skips the early missing-subtitle retries; younger fallback subtitles get early preferred-provider rechecks. `0` turns off both the aged shortcut and the early fallback rechecks, so fallback subtitles are first rechecked after about a week. |
 
 [When subsyncd searches](providers.md#when-subsyncd-searches) explains the schedules these keys change.
 
@@ -148,7 +148,7 @@ Expired LAPSE profiles are removed at startup and hourly while subsyncd runs, an
 | `sync.min_read_rate` | `4` | 0 or more, MiB per second | For a file too large to read at this rate within `timeout`, the limit becomes size ÷ rate. `0` turns the extension off. |
 | `sync.max_timeout` | `4h`, or `timeout` when longer | at least `timeout` | Upper limit for that extension. A whole search is stopped after twice this. |
 | `sync.policy` | `confidence` | `confidence`, `always`, `never` | When to run LAPSE. See [Synchronization](providers.md#synchronization). |
-| `sync.bypass_score` | `75` | 1–100 | Lowest score for a match to skip LAPSE under `confidence`. |
+| `sync.bypass_score` | `75` | 1–100; `0` means the default | Lowest score for a match to skip LAPSE under `confidence`. |
 | `sync.require_identity_anchor` | `true` | `true`, `false` | Skipping LAPSE needs a matching external ID, or title and year. |
 | `sync.require_episode_evidence` | `true` | `true`, `false` | For TV, skipping LAPSE needs the subtitle to name the right episode. |
 | `sync.require_release_group` | `true` | `true`, `false` | Skipping LAPSE needs a matching release group. |

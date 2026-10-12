@@ -21,13 +21,13 @@ Language routing, the built-in providers, and the checklist for adding one. Oper
 
 ## Common adapter rules
 
-Every adapter is built by a `provider.Factory`, registered by type in `buildProviders` (`internal/app/app.go`), and wrapped by `provider.Observe`, which logs `provider.search_completed` and `provider.download_completed`.
+Every adapter is built by a `provider.Factory`, registered by type in `buildProviders` (`internal/app/app.go`), and wrapped by `provider.Observe`, which logs `provider.download_completed` and, at debug, `provider.download_details`. `provider.search_completed` comes from the search coordinator (`internal/provider/coordinator.go`).
 
 - **Capabilities** (`provider.Capabilities`): `MediaKinds` (empty means all), `ExactFileHash`, `SeasonPacks`, `DirectPackMember`, `SingleEpisodeOnly`.
 - **Credentials** never become a candidate ID, cache value, provenance record, error or log field. Keys go in headers where the API allows it.
 - **Redirects**: API requests that carry credentials never follow redirects. Downloads follow at most five (`MaxDownloadRedirects`) and only to allowed hosts; a refused redirect (`RedirectError`) fails that candidate. Every provider request drops credential headers (`Authorization`, `Cookie`, `Api-Key`, `X-Api-Key`, `X-Auth-Token`) before following a redirect to another scheme, host or port.
 - **Bodies**: downloads are size-bounded, and every response body is consumed or closed; the HTTP concurrency permits last until then (see [Limits](limits.md#pacing-and-concurrency)).
-- **Overrides** such as `base_url`, `api_base_url`, `download_base_url`, `download_hosts` and `max_download_bytes` exist for tests and private endpoints; `max_download_bytes` can only lower the built-in limit.
+- **Overrides** such as `base_url`, `api_base_url`, `download_base_url`, `download_hosts` and `max_download_bytes` exist for tests and private endpoints. Base URLs must use HTTPS outside tests. SubSource and Gestdown cap `max_download_bytes` at their built-in limit; the other adapters accept any positive value.
 - **Cache versions**: an adapter that changes how it interprets responses bumps its `SearchCacheVersion` so only its own cached results are refreshed.
 
 | Type | Capabilities | Phases | Search cache version |

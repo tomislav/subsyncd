@@ -125,22 +125,12 @@ How long LAPSE may run is covered in [Resources](running.md#resources-and-lapse-
 
 ## When subsyncd searches
 
-The [developer scheduling reference](development/providers/scheduling.md) has the exact rules.
+A new or replaced file is searched at once. After that, every schedule is in the [developer scheduling reference](development/providers/scheduling.md#overview); in short:
 
-**Missing subtitles** are searched at once, then about 6 hours, 12 hours, 24 hours, 3 days, 7 days and 14 days after the first search, then every 14 days, indefinitely. Each wait may be up to 20% longer, never shorter, so no search reuses the previous one's six-hour result cache.
-
-- Media released more than `aged_release_days` ago (30) skips the early steps: the next search is a week later, then every 14 days. The release date is the episode's air date, or a movie's digital release, else its physical release, else its cinema release plus 90 days.
-- Media without a known release date gets the full schedule. `aged_release_days: 0` gives every file the full schedule.
-
-**Upgrade checks** for a non-exact subtitle start 7, 30 or 90 days after install, for scores below 60, 60–84 and 85 or more. Each check that keeps the subtitle moves to the next step of 14, 30, 60 and 90 days, varied by ±10%. After `upgrade_checks` (4) such checks in a row, subsyncd stops looking; `0` never stops. A preferred exact match gets no upgrade check.
-
-**Fallback subtitles** are checked for a preferred replacement and never stop:
-
-- For media younger than `aged_release_days`, about 6 hours, 12 hours, 24 hours and 3 days after install, then a week later, then backing off to 14, 30, 60 and 90 days.
-- Otherwise, and for media without a release date, first after about 7 days, then the same backoff.
-- A known preferred-provider cooldown can bring a check forward to its reset.
-
-**Technical failures** (network, LAPSE, storage) retry after 1 minute, 5 and 15 minutes, 1 hour, 6 hours and 24 hours, then every 24 hours. Provider cooldowns use their own reset times instead.
+- **Missing subtitles** are searched again at growing intervals, from hours apart in the first days to every 14 days, indefinitely. Media released at least `aged_release_days` ago skips the early retries: the next search is a week later.
+- **Upgrade checks** look for a better subtitle at growing intervals of weeks to months, starting sooner for a lower score. They stop after `upgrade_checks` checks in a row keep the subtitle (`0`: never). A preferred exact match gets none.
+- **Fallback subtitles** are rechecked for a preferred replacement and never stop. For a recent release the first rechecks come within hours; a known preferred-provider cooldown can bring a check forward to its reset.
+- **Technical failures** (network, LAPSE, storage) retry within minutes, backing off to daily. Provider cooldowns use their own reset times instead.
 
 **What restarts a schedule:** a new or replaced media file, or a manual `search`. A subtitle you delete is searched again on the next check; once upgrade checks have stopped, only a replaced file or a manual `search` brings it back.
 

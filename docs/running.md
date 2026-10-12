@@ -120,7 +120,7 @@ subsyncd generates a random webhook token for each instance on first start and k
 
 With `server.webhook_base_url` set (the example sets `http://subsyncd:8097`), subsyncd creates and maintains one Webhook connection per instance in Arr, named `subsyncd (HOST:PORT)`.
 
-- It checks the connection at start and every six hours, and retries a failure after 15 minutes, then 1 hour.
+- It checks the connection at start and every six hours, and retries a failure after 15 minutes, then 1 hour, then every six hours.
 - It sets only that connection's URL, method and events (import, upgrade, rename, and the file and series or movie delete events). It never changes the connection's name or tags, never touches other connections and never deletes anything.
 - A connection you made by hand at subsyncd's own address is adopted, not duplicated. One that points at another subsyncd deployment is left alone.
 - Sonarr and Radarr test the URL when they save a connection, so they must reach `server.webhook_base_url`, including through their HTTP proxy if they use one.

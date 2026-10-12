@@ -24,7 +24,7 @@ When a search runs again. This page is the single source of truth for the missin
 | Other fallback install | 7 d, then 14, 30, 60, 90 d | Never |
 | Preferred exact hash | None | Immediately (until the media changes) |
 
-Every due search refreshes local sidecars first, so each check also notices a subtitle another tool added. Provider search results are cached for six hours, and no scheduled retry comes sooner than that, so every scheduled check asks the providers afresh.
+Every due search refreshes local sidecars first, so each check also notices a subtitle another tool added. Provider search results are cached for six hours. No missing search or ordinary upgrade check is scheduled sooner than that after the previous search, so each of them asks the providers afresh. Technical-failure retries, throttled searches and cooldown-recovery checks can come sooner.
 
 ## Missing subtitles
 

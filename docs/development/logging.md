@@ -277,7 +277,7 @@ None of these carries a path. A reject's removed search completes with `outcome=
 | `notification.delivered` | info | worker | `outcome=success`, `duration_ms` | `worker/worker.go` |
 | `notification.retry_scheduled` | warn | worker | `outcome=retry_scheduled`, `retry_at`, `duration_ms`, `error_kind=notification_delivery` | `worker/worker.go` |
 | `notification.abandoned` | warn | worker | `outcome=abandoned` (an Arr 4xx such as 404 for a deleted series), `duration_ms`, `error_kind=notification_delivery` | `worker/worker.go` |
-| `notification.failed` | error | worker | `outcome=failed` (any other terminal failure, including Silo 404, 410 and 422, or a completion that could not be stored), `duration_ms`, `error_kind` (`notification_delivery`, `notification_completion`) | `worker/worker.go` |
+| `notification.failed` | error | worker | `outcome=failed` (any other terminal failure, including Silo 404, 410 and 422, an invalid Arr rescan request or media kind mismatch, or a completion that could not be stored), `duration_ms`, `error_kind` (`notification_delivery`, `notification_completion`) | `worker/worker.go` |
 | `notification.skipped` | info | worker; workflow | `outcome=skipped`, `reason` (`rescan_disabled`, `unknown_arr_id`); the workflow variant adds `notifier=arr_rescan`, `instance`, `media_kind` | `worker/worker.go`, `workflow/notification.go` |
 | `notification.pruned` | debug | worker | `removed_count`, `retention_days` | `worker/worker.go` |
 | `notification.prune_failed` | warn | worker | `error_kind=notification_prune` | `worker/worker.go` |

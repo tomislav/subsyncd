@@ -57,6 +57,7 @@ Intents leased in one batch whose notifier reports the same coalesce key (`notif
 | Timeout, transport failure, HTTP 408 or 429 or 5xx (Silo also 409) | `retryable_error` | `notification.retry_scheduled` (warn, `retry_at`) |
 | Arr: any other status (404 for a deleted series, 400, 401) | `refused` | `notification.abandoned` (warn) |
 | Silo: any other status (404, 410, 422, …) | `permanent_error` | `notification.failed` (error) |
+| Arr: an invalid request, or a media kind that does not match the instance | `permanent_error` | `notification.failed` (error) |
 | Not applicable (`notifier.SkippedError`) | `skipped` | `notification.skipped` (info, `reason`) |
 | The completion itself could not be stored | | `notification.failed` (error) |
 

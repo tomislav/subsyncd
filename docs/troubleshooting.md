@@ -84,7 +84,8 @@ Start with the commands, then the logs. Commands are written as `subsyncd COMMAN
 | --- | --- |
 | Container is unhealthy | `/readyz` failed: the database or a media folder is unreadable. Look for `readiness.unhealthy` in the logs, check mounts and [permissions](running.md#permissions). |
 | Permission denied | `PUID`/`PGID` must read the configuration and media, and write `data/` and the subtitle folders. |
-| "Media path is outside configured roots" | Arr's path mapping must lead into a mounted media root. Compare `path_mappings` with the Compose volumes. |
+| Files of one instance are never searched, with no error | Arr's path for them matches no `path_mappings` entry, or maps outside the media roots. Such files are skipped without an error; a webhook carrying only such files logs `webhook.applied` with `outcome` `ignored`. Compare `path_mappings` with Arr's paths and the Compose volumes. |
+| `analyze-sync` says "media path is outside configured roots" | The `--media` path must be a container path inside a media root. |
 | Startup fails on a config key | Unknown keys stop startup. Check spelling against [Configuration](configuration.md). |
 | `busy` from a command | Another process holds the data directory. Stop the daemon only for `rotate-webhook-token` and `forget-instance --yes`. Never delete `data/subsyncd.lock`. |
 | A provider shows `auth_failed` | See [Provider credentials rejected](#provider-credentials-rejected). |

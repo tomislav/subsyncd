@@ -15,9 +15,9 @@ const defaultMissingLimit = 50
 
 // Missing lists the configured languages that active media have no subtitle
 // for, in queue order, each with a reason and a command that addresses it. It
-// only reads the database: it touches no media file, so a hung mount cannot
-// stall it. A search that is running now is listed like the others,
-// with no next attempt.
+// only reads the database and opens no media file; New has already checked
+// that the media roots exist, as for every command. A search that is running
+// now is listed like the others, with no next attempt.
 func (a *App) Missing(ctx context.Context, args control.MissingArgs) (control.MissingResult, error) {
 	if args.Instance != "" && a.Catalogs[args.Instance] == nil {
 		return control.MissingResult{}, unknownInstance(args.Instance)

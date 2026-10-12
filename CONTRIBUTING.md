@@ -121,7 +121,7 @@ docs: split the developer references
 **Publish** (after verify passes):
 
 - Builds `Dockerfile.release` for `linux/amd64` and `linux/arm64` with QEMU and Buildx and pushes to `ghcr.io/tomislav/subsyncd`.
-- Tags: `latest` on the default branch, `sha-<commit>` on every build, and for a `v*` tag the semver tags `X.Y.Z`, `X.Y` and `X`. The version label and `VERSION` build argument come from the tag.
+- Tags: `sha-<commit>` on every build; `latest` on every push to `main`; for a `v*` tag the semver tags `X.Y.Z`, `X.Y` and `X`, and also `latest` (through `flavor: latest=auto`), unless it is a pre-release version. The version label and `VERSION` build argument are `X.Y.Z` for a `v*` tag and `sha-<commit>` on `main`.
 - Requires the repository secret `OPENSUBTITLES_API_KEY`, passed as a BuildKit secret and embedded as the application key; the job fails early when it is empty.
 - Publishes SBOM and provenance attestations (`provenance: mode=max`, `sbom: true`).
 
@@ -153,4 +153,4 @@ When upgrading FFmpeg or LAPSE, change the version, checksums and runtime versio
    git push origin v1.2.3
    ```
 
-3. CI verifies and publishes `ghcr.io/tomislav/subsyncd:1.2.3`, `:1.2`, `:1` and `:sha-<commit>`. Every push to `main` already publishes `latest` and `sha-<commit>`.
+3. CI verifies and publishes `ghcr.io/tomislav/subsyncd:1.2.3`, `:1.2`, `:1`, `:sha-<commit>` and `:latest`. Every push to `main` also publishes `latest` and `sha-<commit>`, so `latest` is whichever of the two came last.
