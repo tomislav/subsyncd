@@ -56,8 +56,9 @@ func (a *App) WebhookURL(ctx context.Context, instance, base string) (string, er
 	return catalog.WebhookURLFor(base, instance, token), nil
 }
 
-// RotateWebhookToken replaces an instance's webhook token. The old token stops
-// authenticating at the next start; the output never contains either token.
+// RotateWebhookToken replaces an instance's webhook token while holding the
+// mutation lock, so no daemon is running; the new token takes effect at the
+// next start. The output never contains either token.
 func (a *App) RotateWebhookToken(ctx context.Context, instance string) (string, error) {
 	if err := a.configuredInstance(instance); err != nil {
 		return "", err
@@ -79,7 +80,7 @@ func (a *App) RotateWebhookToken(ctx context.Context, instance string) (string, 
 	a.Events.For("app").Log(ctx, slog.LevelInfo, "webhook.token_rotated", "rotated webhook token",
 		slog.String("instance", observability.SafeText(instance)))
 	if a.Config.Server.WebhookBaseURL != "" {
-		return fmt.Sprintf("webhook token rotated for instance %s; the Arr connection is updated in Arr at the next start. A running daemon keeps using the old token until it restarts: restart subsyncd now.", instance), nil
+		return fmt.Sprintf("webhook token rotated for instance %s; start subsyncd now: the Arr connection is updated in Arr at that start.", instance), nil
 	}
-	return fmt.Sprintf("webhook token rotated for instance %s; run subsyncd webhook-url --instance %s and update the URL in Arr by hand. A running daemon keeps using the old token until it restarts: restart subsyncd now.", instance, instance), nil
+	return fmt.Sprintf("webhook token rotated for instance %s; start subsyncd, then run subsyncd webhook-url --instance %s --base URL (the address Arr uses to reach subsyncd) and update the URL in Arr by hand.", instance, instance), nil
 }

@@ -117,7 +117,7 @@ func TestRotateWebhookTokenChangesTokenAndPrintsNoSecret(t *testing.T) {
 			t.Fatalf("secret leaked in %q", text)
 		}
 	}
-	if !strings.Contains(output, "subsyncd webhook-url --instance tv") {
+	if !strings.Contains(output, "start subsyncd") || !strings.Contains(output, "subsyncd webhook-url --instance tv --base") || strings.Contains(output, "restart") || strings.Contains(output, "running daemon") {
 		t.Fatalf("output=%q", output)
 	}
 	if !strings.Contains(logs.String(), `"event":"webhook.token_rotated"`) {
@@ -140,7 +140,7 @@ func containsValue(values []string, want string) bool {
 func TestRotateWebhookTokenManagedMessage(t *testing.T) {
 	application, _, _ := openWebhookTokenApp(t, func(c *config.Config) { c.Server.WebhookBaseURL = "http://subsyncd:8097" })
 	output, err := application.RotateWebhookToken(t.Context(), "tv")
-	if err != nil || !strings.Contains(output, "updated in Arr at the next start") {
+	if err != nil || !strings.Contains(output, "start subsyncd") || !strings.Contains(output, "updated in Arr at that start") || strings.Contains(output, "restart") || strings.Contains(output, "running daemon") {
 		t.Fatalf("output=%q err=%v", output, err)
 	}
 }
