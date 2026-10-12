@@ -292,8 +292,10 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	}
 	activeInstallation := installed && managedInstallationPresent(current, existing)
 	// Only a managed subtitle still unedited on disk is replaced or removed;
-	// an edited one is the owner's and stops the search below.
-	replacing := request.ReplaceInstalled && activeInstallation && InstallationMatchesMedia(existing, request.Media)
+	// an edited one is the owner's and stops the search below. It need not
+	// match the current media file: one installed before the media changed
+	// (its provenance invalidated) is still subsyncd's to replace or remove.
+	replacing := request.ReplaceInstalled && activeInstallation
 	inventorySatisfied := inventoryStopsSearch(current, request.Language, s.AllowHearingImpaired, activeInstallation, existing)
 	embeddedCount, sidecarCount := inventoryTrackCounts(current)
 	events.Log(ctx, slog.LevelInfo, "inventory.refresh_completed", "subtitle inventory refreshed",

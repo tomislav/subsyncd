@@ -525,3 +525,63 @@ func TestRecentShowsUserRejectionThenReplacement(t *testing.T) {
 		t.Fatalf("rejection = %+v", rejection)
 	}
 }
+
+// changeMedia replaces the media file's content, as an Arr upgrade in place
+// does, and indexes the new fingerprint. The installation's provenance is
+// invalidated, while the managed sidecar still matches its checksum.
+func (h *rejectHarness) changeMedia(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(h.media.Fingerprint.Path, []byte("replaced media content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(h.media.Fingerprint.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.media.Fingerprint.Size, h.media.Fingerprint.ModTime = info.Size(), info.ModTime()
+	if _, _, err := h.app.Repository.UpsertMedia(t.Context(), h.media); err != nil {
+		t.Fatal(err)
+	}
+	installation, found, err := h.app.Repository.GetInstallation(t.Context(), h.mediaID, "en")
+	if err != nil || !found || installation.MediaPath != "" {
+		t.Fatalf("installation after the media change = %+v/%v/%v", installation, found, err)
+	}
+	_ = h.app.Close()
+	h.open(t)
+}
+
+func TestRejectAfterMediaChangeReplaces(t *testing.T) {
+	h := newRejectHarness(t, nil)
+	ctx := t.Context()
+	h.changeMedia(t)
+	result, err := h.app.Reject(ctx, rejectArgs("en", "out_of_sync"))
+	if err != nil || result.Rejected.Outcome != "installed" || result.Rejected.Candidate != "lower" {
+		t.Fatalf("Reject() = %+v/%v", result, err)
+	}
+	if text := h.sidecarText(t); text != subtitleText("lower") {
+		t.Fatalf("sidecar = %q", text)
+	}
+	rejections, err := h.app.Repository.ListCandidateRejections(ctx, h.mediaID, "en", h.now)
+	if err != nil || len(rejections) != 1 || rejections[0].ResultID != "best" || rejections[0].MediaPath != h.media.Fingerprint.Path || rejections[0].MediaSize != h.media.Fingerprint.Size {
+		t.Fatalf("rejections = %+v/%v, want one bound to the current media file", rejections, err)
+	}
+}
+
+func TestRejectAfterMediaChangeRemoves(t *testing.T) {
+	h := newRejectHarness(t, nil)
+	ctx := t.Context()
+	h.changeMedia(t)
+	h.provider.mu.Lock()
+	h.provider.results = []string{"best"}
+	h.provider.mu.Unlock()
+	result, err := h.app.Reject(ctx, rejectArgs("en", "out_of_sync"))
+	if err != nil || result.Rejected.Outcome != "removed" {
+		t.Fatalf("Reject() = %+v/%v", result, err)
+	}
+	if _, err := os.Lstat(h.sidecar); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected subtitle remains: %v", err)
+	}
+	if _, found, err := h.app.Repository.GetInstallation(ctx, h.mediaID, "en"); err != nil || found {
+		t.Fatalf("installation found/error = %v/%v", found, err)
+	}
+}

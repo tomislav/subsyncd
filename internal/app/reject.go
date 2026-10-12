@@ -225,8 +225,8 @@ func managedSubtitleUnchanged(installation store.Installation, roots []string) e
 	return nil
 }
 
-// recordReject is the durable step: the rejection, bound to the media file
-// the subtitle was installed for, and the follow-up search (due now, import
+// recordReject is the durable step: the rejection, bound to the current
+// media file, and the follow-up search (due now, import
 // priority, replace_installed, leased to the manual run) commit together. A
 // restart before the search finishes leaves both, and whichever run takes
 // the search still replaces or removes the subtitle.
@@ -242,11 +242,15 @@ func (a *App) recordReject(ctx context.Context, target rejectTarget) error {
 	if signature == "" {
 		signature = store.AnyCandidateSignature
 	}
+	// The rejection is bound to the current media file, which may have
+	// changed since the subtitle was installed (its provenance then reads
+	// invalidated).
+	fingerprint := target.media.Fingerprint
 	now := a.Clock.Now()
 	rejection := store.CandidateRejection{
 		MediaID: target.mediaID, Language: target.language.String(), ProviderID: installation.ProviderID, ResultID: installation.CandidateID,
 		CandidateSignature: signature, ArtifactChecksum: installation.ArtifactChecksum, ReasonCode: store.UserRejectionPrefix + target.reason, ToolSignature: service.RejectionToolSignature(),
-		MediaPath: installation.MediaPath, MediaFileID: installation.MediaFileID, MediaSize: installation.MediaSize, MediaModTimeNS: installation.MediaModTimeNS, RejectedAt: now,
+		MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(), RejectedAt: now,
 	}
 	if err := a.Repository.RecordUserRejection(ctx, rejection, now, target.jobID, manualLeaseDuration, store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(target.media), ProviderID: installation.ProviderID}); err != nil {
 		return err
