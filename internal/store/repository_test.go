@@ -71,6 +71,84 @@ func TestOpenRejectsANewerMigrationWithRestoreAdvice(t *testing.T) {
 	}
 }
 
+// Read-only commands such as doctor give the same advice as a read-write open
+// when the database has a migration this build does not know.
+func TestOpenReadOnlyGivesRestoreAdviceForANewerMigration(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`INSERT INTO schema_migrations(version) VALUES ('999_from_a_newer_build.sql')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = database.Close()
+	_, writeErr := Open(ctx, path)
+	reader, err := OpenReadOnly(ctx, path)
+	if err == nil {
+		reader.Close()
+		t.Fatal("OpenReadOnly() accepted a newer database")
+	}
+	if writeErr == nil || err.Error() != writeErr.Error() {
+		t.Fatalf("OpenReadOnly() error = %v, want the read-write error %v", err, writeErr)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "restore the data backup taken before that upgrade") || strings.Contains(msg, "initialize with serve or scan") {
+		t.Fatalf("OpenReadOnly() error advice = %v", err)
+	}
+}
+
+func TestOpenReadOnlyTellsAPreReleaseDatabaseToStartEmpty(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); INSERT INTO schema_migrations(version) VALUES ('001_initial.sql')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	_, writeErr := Open(ctx, path)
+	reader, err := OpenReadOnly(ctx, path)
+	if err == nil {
+		reader.Close()
+		t.Fatal("OpenReadOnly() accepted a pre-release database")
+	}
+	if writeErr == nil || err.Error() != writeErr.Error() {
+		t.Fatalf("OpenReadOnly() error = %v, want the read-write error %v", err, writeErr)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "empty data directory") || strings.Contains(msg, "initialize with serve or scan") {
+		t.Fatalf("OpenReadOnly() error advice = %v", err)
+	}
+}
+
+func TestOpenReadOnlyAsksToInitializeAMissingOrOlderDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	const want = "diagnostic database unavailable or schema not current; initialize with serve or scan before retrying"
+	if reader, err := OpenReadOnly(ctx, path); err == nil || err.Error() != want {
+		if reader != nil {
+			reader.Close()
+		}
+		t.Fatalf("missing database: OpenReadOnly() error = %v", err)
+	}
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`DELETE FROM schema_migrations WHERE version = (SELECT max(version) FROM schema_migrations)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = database.Close()
+	if reader, err := OpenReadOnly(ctx, path); err == nil || err.Error() != want {
+		if reader != nil {
+			reader.Close()
+		}
+		t.Fatalf("older schema: OpenReadOnly() error = %v", err)
+	}
+}
+
 func TestMigrationScrubsCredentialBearingProviderRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "subsyncd.db")
 	database, err := Open(context.Background(), path)

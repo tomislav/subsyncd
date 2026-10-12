@@ -35,7 +35,7 @@ The driver is `modernc.org/sqlite` (pure Go, no cgo). Both open paths use a sing
 | Migrations | Applies pending ones | Never; requires every embedded migration to be applied |
 | Lock | Holds the process lock first | None; reads the running daemon's WAL |
 
-A read-only open that finds no database, an unknown applied version or an incomplete schema fails with `diagnostic database unavailable or schema not current; initialize with serve or scan before retrying`. Read-only commands therefore never create or migrate storage, add configured-language searches, or build persistent caches.
+A read-only open that finds no database or an incomplete schema fails with `diagnostic database unavailable or schema not current; initialize with serve or scan before retrying`. An unknown applied version fails with the same `unsupported database migration "NAME"` error and advice as a mutable open (see [Migrations](#migrations)), because initializing would not help. Read-only commands therefore never create or migrate storage, add configured-language searches, or build persistent caches.
 
 Startup never backfills data and never makes a network request. New columns get defaults; rows gain values through ordinary work (hydration, the next search, discovery).
 

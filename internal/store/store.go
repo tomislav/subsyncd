@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -70,6 +71,12 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	}
 	if err := validateAppliedMigrations(ctx, db, allowed); err != nil {
 		db.Close()
+		// An unknown applied version gets the same advice as a read-write
+		// open; initializing with serve or scan would not help.
+		var unsupported *unsupportedMigrationError
+		if errors.As(err, &unsupported) {
+			return nil, err
+		}
 		return unavailable()
 	}
 	var count int
@@ -151,6 +158,25 @@ func (s *Store) migrate(ctx context.Context) error {
 // starts at 001_baseline.sql.
 const preReleaseBaseline = "001_initial.sql"
 
+// unsupportedMigrationError reports an applied migration this build does not
+// embed, with advice that depends on where the database came from.
+type unsupportedMigrationError struct {
+	version string
+}
+
+func (e *unsupportedMigrationError) Error() string {
+	if e.version == preReleaseBaseline {
+		// The pre-release lineage has no upgrade path.
+		return fmt.Sprintf("unsupported database migration %q: the database comes from a pre-release subsyncd and cannot be upgraded; "+
+			"start from an empty data directory", e.version)
+	}
+	// Migrations only go forward, so an older build cannot open a database a
+	// newer one upgraded. Starting from an empty data directory would throw
+	// away every installation record.
+	return fmt.Sprintf("unsupported database migration %q: the database was upgraded by a newer subsyncd and migrations are forward-only; "+
+		"to run this older version, restore the data backup taken before that upgrade together with this image, or run the newer image", e.version)
+}
+
 func validateAppliedMigrations(ctx context.Context, db *sql.DB, allowed map[string]struct{}) error {
 	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
 	if err != nil {
@@ -163,16 +189,7 @@ func validateAppliedMigrations(ctx context.Context, db *sql.DB, allowed map[stri
 			return fmt.Errorf("scan applied migration: %w", err)
 		}
 		if _, ok := allowed[version]; !ok {
-			if version == preReleaseBaseline {
-				// The pre-release lineage has no upgrade path.
-				return fmt.Errorf("unsupported database migration %q: the database comes from a pre-release subsyncd and cannot be upgraded; "+
-					"start from an empty data directory", version)
-			}
-			// Migrations only go forward, so an older build cannot open a
-			// database a newer one upgraded. Starting from an empty data
-			// directory would throw away every installation record.
-			return fmt.Errorf("unsupported database migration %q: the database was upgraded by a newer subsyncd and migrations are forward-only; "+
-				"to run this older version, restore the data backup taken before that upgrade together with this image, or run the newer image", version)
+			return &unsupportedMigrationError{version: version}
 		}
 	}
 	if err := rows.Err(); err != nil {
