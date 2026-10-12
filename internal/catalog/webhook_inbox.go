@@ -26,9 +26,11 @@ const (
 	// webhookInboxPoll bounds how long a processor sleeps without a wake, so
 	// work committed by an earlier process is never stranded.
 	webhookInboxPoll = time.Minute
-	// maxWebhookAttempts abandons a webhook that keeps failing (about a day
-	// of retries); reconciliation from Arr history then covers its change.
-	maxWebhookAttempts = 6
+	// maxWebhookAttempts abandons a webhook that keeps failing: the first
+	// attempt and six retries, 1m, 5m, 15m, 1h, 6h and 24h apart
+	// (schedule.WorkflowFailureDelay), about 31 hours in all. Reconciliation
+	// from Arr history then covers its change.
+	maxWebhookAttempts = 7
 )
 
 // A processor whose Drain fails (the inbox cannot be read or written) waits
@@ -184,7 +186,7 @@ func (b *WebhookInbox) Drain(ctx context.Context, instance string) error {
 				events.Log(ctx, slog.LevelError, "webhook.failed", "webhook abandoned; reconciliation will pick up its change",
 					append(append(attrs, slog.String("outcome", "abandoned")), events.ErrorAttrs("webhook_processing", err)...)...)
 			default:
-				retryAt := b.Now().Add(schedule.FailureDelay(item.Attempt))
+				retryAt := b.Now().Add(schedule.WorkflowFailureDelay(item.Attempt))
 				if retryErr := b.Store.RetryWebhook(ctx, item.ID, retryAt); retryErr != nil {
 					return retryErr
 				}

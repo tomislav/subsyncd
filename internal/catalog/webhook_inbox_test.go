@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,6 +93,40 @@ func TestWebhookInboxRetriesFailuresInOrder(t *testing.T) {
 	}
 	if _, found, err := repository.NextWebhookAt(t.Context(), "main"); err != nil || found {
 		t.Fatalf("retried webhook still stored: %t/%v", found, err)
+	}
+}
+
+// A webhook that keeps failing is retried 1m, 5m, 15m, 1h, 6h and 24h after
+// each failure, and abandoned on the failure after that.
+func TestWebhookInboxRetriesForAboutADayThenAbandons(t *testing.T) {
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	eventStore := &fakeEventStore{}
+	catalog := &fakeEventCatalog{media: domain.Media{EntityID: 101, Ref: domain.MediaRef{Instance: "main", Kind: domain.MediaEpisode, FileID: 1001}, Title: "Show"}, err: errors.New("sonarr unavailable")}
+	inbox, repository := newTestInbox(t, eventStore, catalog, &now)
+	if _, err := inbox.Handler("main").Handle(t.Context(), []byte(`{"eventType":"Download","episodeFile":{"id":1001}}`)); err != nil {
+		t.Fatal(err)
+	}
+	var delays []time.Duration
+	for range 10 {
+		if err := inbox.Drain(t.Context(), "main"); err != nil {
+			t.Fatal(err)
+		}
+		next, found, err := repository.NextWebhookAt(t.Context(), "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found {
+			break
+		}
+		delays = append(delays, next.Sub(now))
+		now = next
+	}
+	want := []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, 6 * time.Hour, 24 * time.Hour}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("retry delays = %v, want %v then abandoned", delays, want)
+	}
+	if catalog.calls != len(want)+1 {
+		t.Fatalf("attempts = %d, want %d", catalog.calls, len(want)+1)
 	}
 }
 
