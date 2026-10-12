@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/cli"
 	"subsyncd/internal/control"
+	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
@@ -80,13 +82,37 @@ func TestServeListensOnControlSocket(t *testing.T) {
 	if err := application.Repository.PutProviderState(ctx, store.ProviderState{ProviderID: "english", Scope: "search", Reason: "throttled", ResetAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
+	now := application.Clock.Now()
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(application.Config.MediaRoots[0], "Movie.mkv"), FileID: 7, Size: 100, ModTime: now}, Title: "Movie"}
+	mediaID, _, err := application.Repository.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, store.SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := application.Repository.LeaseDueSearches(ctx, now, 1, time.Minute)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("lease = %+v/%v", leases, err)
+	}
+	later := now.Add(time.Hour)
+	if _, err := application.Repository.CompleteSearch(ctx, store.SearchCompletion{JobID: leases[0].JobID, Outcome: "throttled", NextAttemptAt: later}); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := application.Repository.GetSearchStatus(ctx, mediaID, "en"); err != nil || status.LastOutcome != "throttled" || !status.NextAttemptAt.After(now.Add(30*time.Minute)) {
+		t.Fatalf("seeded status = %+v/%v", status, err)
+	}
 	client := dialDaemon(t, application)
 	var result control.RetryResult
 	if err := client.Call(ctx, "retry", control.RetryArgs{Provider: "english"}, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Provider != "english" {
+	if result.Provider != "english" || result.SearchesDue != 1 {
 		t.Fatalf("result = %+v", result)
+	}
+	status, err := application.Repository.GetSearchStatus(ctx, mediaID, "en")
+	if err != nil || status.State != "pending" || status.NextAttemptAt.After(application.Clock.Now()) {
+		t.Fatalf("status after retry = %+v/%v", status, err)
 	}
 	states, err := application.Repository.ListProviderStates(ctx, "english")
 	if err != nil || len(states) != 0 {
