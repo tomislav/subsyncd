@@ -144,6 +144,35 @@ Delete the test file from `data/` afterwards.
 
 Exit status is 0 for success, 1 for an operational failure, and 2 for invalid command usage. `subsyncd --version` prints the build version.
 
+### Machine-readable output
+
+Every command except `serve` accepts `--json`. With it, standard output carries exactly one JSON object and nothing else, whether the command succeeded or failed; log lines still go to standard error. Without it, the output is the plain text described above.
+
+```bash
+docker compose exec subsyncd subsyncd doctor --json
+```
+
+A success looks like this, where `result` holds the command's own fields:
+
+```json
+{"schema":"subsyncd.cli/v1","command":"doctor","ok":true,"result":{"configuration":"ok","sqlite":"ok","media_roots":1,"lapse":"compatible","ffprobe":"available","webhooks":"manual"}}
+```
+
+A failure has `"ok":false` and an `error` with a stable `code` and a human-readable `message` in place of `result`. Usage mistakes are reported the same way, so `search --json` without the required flags prints a `usage` error on standard output and exits 2. Messages never contain credentials or absolute paths. The only exception to path-free output is `webhook-url`, which prints the token by design.
+
+Run `subsyncd COMMAND --help` for a command's flags, result fields, and error codes. Times are RFC 3339 and field names are snake_case.
+
+| Code | Meaning |
+| --- | --- |
+| `usage` | A flag is missing, unknown, or invalid for the command. Exit status 2. |
+| `unknown_instance` | The instance is not configured (or, for `forget-instance`, not in the database). |
+| `unknown_provider` | The provider is not configured. |
+| `unknown_language` | The language tag is invalid or not configured. |
+| `busy` | Another subsyncd process holds the data directory. Stop the daemon and retry. |
+| `internal` | Anything else. The `message` is redacted; the logs on standard error hold the detail. |
+
+The codes `media_not_found`, `ambiguous_media`, `not_managed`, `daemon_required`, `daemon_stopping`, `protocol_mismatch`, and `arr_unreachable` are reserved for commands that talk to a running daemon and are not produced yet. Treat an unrecognized code as a failure.
+
 ### Remove an instance for good
 
 When you remove a Sonarr or Radarr instance from the configuration, subsyncd keeps its records in case you add it back under the same name. If that library is gone for good, delete the records once you have removed the instance from `config.yaml`:

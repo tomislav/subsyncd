@@ -24,6 +24,7 @@ import (
 
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
 	"subsyncd/internal/inventory"
@@ -754,6 +755,10 @@ func (a *App) Redact(err error) error {
 	if err == nil {
 		return nil
 	}
+	var coded *control.Error
+	if errors.As(err, &coded) && err == error(coded) {
+		err = errors.New(coded.Message)
+	}
 	return errors.New(redactedError(err, a.Config, a.redaction.Values()))
 }
 
@@ -771,69 +776,72 @@ func (a *App) ReportFailure(ctx context.Context, command string, err error) {
 	)
 }
 
-func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (string, error) {
+func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (control.ScanResult, error) {
 	release, err := a.acquireMutationLock()
 	if err != nil {
-		return "", err
+		return control.ScanResult{}, err
 	}
 	defer release()
 	reconciler, ok := a.Reconcilers[instance]
 	if !ok {
-		return "", fmt.Errorf("unknown instance %q", instance)
+		return control.ScanResult{}, unknownInstance(instance)
 	}
 	// Deferred discovery and history have already committed every readable
 	// change; report the unreadable media instead of failing the scan. A
 	// deferred forced discovery stays incomplete, so Run enumerates again and
 	// reports its deferrals together with history's.
 	if err := reconciler.DiscoverLibrary(ctx, true); err != nil && !errors.Is(err, catalog.ErrHistoryDeferred) {
-		return "", err
+		return control.ScanResult{}, err
 	}
 	runErr := reconciler.Run(ctx)
 	if runErr != nil && !errors.Is(runErr, catalog.ErrHistoryDeferred) {
-		return "", runErr
+		return control.ScanResult{}, runErr
 	}
 	items, err := a.Repository.ListMediaByInstance(ctx, instance)
 	if err != nil {
-		return "", err
+		return control.ScanResult{}, err
 	}
 	if forceProbe {
 		for _, item := range items {
 			if _, err := a.Inventory.Refresh(ctx, item.ID, item.Media, true); err != nil {
-				return "", err
+				return control.ScanResult{}, err
 			}
 		}
 	}
-	summary := fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", instance, len(items), forceProbe)
+	result := control.ScanResult{Instance: instance, Media: len(items), ForceProbe: forceProbe}
 	if runErr != nil {
 		deferred := &catalog.DeferredHistoryError{}
 		errors.As(runErr, &deferred)
-		summary += fmt.Sprintf(" deferred=%d (%s)", len(deferred.Entities), strings.Join(deferred.DeferredMedia(), "; "))
+		result.HistoryDeferred = true
+		result.Deferred = len(deferred.Entities)
+		result.DeferredMedia = deferred.DeferredMedia()
 	}
-	return summary, nil
+	return result, nil
 }
 
-func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, languageTag string, retryRejected bool) (string, error) {
+func (a *App) Search(ctx context.Context, args control.SearchArgs) (control.SearchResult, error) {
+	instance, kind, fileID, languageTag, retryRejected := args.Instance, args.Kind, args.FileID, args.Language, args.RetryRejected
 	release, err := a.acquireMutationLock()
 	if err != nil {
-		return "", err
+		return control.SearchResult{}, err
 	}
 	defer release()
 	language, service, err := a.workflowFor(languageTag)
 	if err != nil {
-		return "", err
+		return control.SearchResult{}, err
 	}
 	arrCatalog := a.Catalogs[instance]
 	if arrCatalog == nil {
-		return "", fmt.Errorf("unknown instance %q", instance)
+		return control.SearchResult{}, unknownInstance(instance)
 	}
 	ref := domain.MediaRef{Instance: instance, Kind: domain.MediaKind(kind), FileID: fileID}
 	media, err := arrCatalog.GetMedia(ctx, ref)
 	if err != nil {
-		return "", fmt.Errorf("load media: %w", err)
+		return control.SearchResult{}, fmt.Errorf("load media: %w", err)
 	}
 	active, err := a.Repository.MediaActive(ctx, media.Ref)
 	if err != nil {
-		return "", err
+		return control.SearchResult{}, err
 	}
 	if !active {
 		// An unknown file or a deletion tombstone enters the catalog through the
@@ -850,87 +858,84 @@ func (a *App) Search(ctx context.Context, instance, kind string, fileID int64, l
 			At:        now,
 			Priority:  store.SearchPriorityMissing,
 		}); err != nil {
-			return "", err
+			return control.SearchResult{}, err
 		}
 	}
 	mediaID, _, err := a.Repository.UpsertMedia(ctx, media)
 	if err != nil {
-		return "", err
+		return control.SearchResult{}, err
 	}
 	if err := a.Repository.ClearSearchResume(ctx, mediaID, language); err != nil {
-		return "", err
+		return control.SearchResult{}, err
 	}
 	if retryRejected {
 		if err := a.Repository.ClearCandidateRejections(ctx, mediaID, language); err != nil {
-			return "", err
+			return control.SearchResult{}, err
 		}
 	}
 	result, err := service.Run(ctx, workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true})
 	if err != nil {
-		return "", err
+		return control.SearchResult{}, err
 	}
 	if !active && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
 		// The revival queued this language too; this run already answered it.
 		if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome), a.Clock.Now()); err != nil {
-			return "", err
+			return control.SearchResult{}, err
 		}
 	}
 	if !result.NextUpgrade.IsZero() && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
 		if err := a.Repository.EnsureUpgradeSearch(ctx, mediaID, language, result.NextUpgrade); err != nil {
-			return "", err
+			return control.SearchResult{}, err
 		}
 	}
-	return formatWorkflowResult(mediaID, result), nil
+	return a.searchResult(mediaID, language, result), nil
 }
 
-func (a *App) Retry(ctx context.Context, providerID string) (string, error) {
+func (a *App) Retry(ctx context.Context, providerID string) (control.RetryResult, error) {
 	if a.Providers[providerID] == nil {
-		return "", fmt.Errorf("unknown provider %q", providerID)
+		return control.RetryResult{}, &control.Error{Code: control.CodeUnknownProvider, Message: fmt.Sprintf("unknown provider %q", providerID)}
 	}
 	release, err := a.acquireMutationLock()
 	if err != nil {
-		return "", err
+		return control.RetryResult{}, err
 	}
 	defer release()
 	if err := a.Repository.ClearProviderState(ctx, providerID); err != nil {
-		return "", err
+		return control.RetryResult{}, err
 	}
 	// Throttled searches do not record which provider held them back, so all
 	// of them become due; one still blocked elsewhere is throttled again.
 	// Languages no longer configured are never leased, so they stay as they are.
 	retried, err := a.Repository.RetryThrottledSearches(ctx, a.Clock.Now(), sortedLanguages(a.Config))
 	if err != nil {
-		return "", err
+		return control.RetryResult{}, err
 	}
-	return fmt.Sprintf("provider retry state reset: %s; throttled searches due again: %d", providerID, retried), nil
+	return control.RetryResult{Provider: providerID, SearchesDue: retried}, nil
 }
 
-func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, languageTag string) (string, error) {
-	language, err := domain.ParseLanguage(languageTag)
+func (a *App) Explain(ctx context.Context, args control.ExplainArgs) (control.ExplainResult, error) {
+	instance, kind, fileID := args.Instance, args.Kind, args.FileID
+	language, err := domain.ParseLanguage(args.Language)
 	if err != nil {
-		return "", err
+		return control.ExplainResult{}, &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
 	}
 	if _, ok := a.Config.Languages[language]; !ok {
-		return "", fmt.Errorf("language %s is not configured", language)
+		return control.ExplainResult{}, languageNotConfigured(language)
 	}
 	if a.Catalogs[instance] == nil {
-		return "", fmt.Errorf("unknown instance %q", instance)
+		return control.ExplainResult{}, unknownInstance(instance)
 	}
 	mediaID, media, err := a.Repository.FindMedia(ctx, domain.MediaRef{Instance: instance, Kind: domain.MediaKind(kind), FileID: fileID})
 	if err != nil {
-		return "", fmt.Errorf("media is not indexed: %w", err)
+		return control.ExplainResult{}, fmt.Errorf("media is not indexed: %w", err)
 	}
-	var output strings.Builder
-	fmt.Fprintf(&output, "media: id=%d instance=%s kind=%s file_id=%d title=%q\n", mediaID, instance, kind, fileID, media.Title)
+	result := control.ExplainResult{MediaID: mediaID, Instance: instance, Kind: kind, FileID: fileID, Language: language.String(), Title: media.Title, UnsupportedReason: string(media.UnsupportedReason)}
 	if media.IsEpisodeRange() {
-		fmt.Fprintf(&output, "episodes=S%02dE%02d-E%02d\n", media.Season, media.Episode, media.EpisodeEnd)
-	}
-	if media.UnsupportedReason != "" {
-		fmt.Fprintf(&output, "unsupported_reason=%s\n", media.UnsupportedReason)
+		result.Episodes = fmt.Sprintf("S%02dE%02d-E%02d", media.Season, media.Episode, media.EpisodeEnd)
 	}
 	inventoryRecord, err := a.Repository.GetTrackInventory(ctx, mediaID)
 	if err != nil {
-		return "", err
+		return control.ExplainResult{}, err
 	}
 	probeState := "unprobed"
 	if probe := inventoryRecord.ProbeFingerprint; probe != nil {
@@ -942,120 +947,114 @@ func (a *App) Explain(ctx context.Context, instance, kind string, fileID int64, 
 			}
 		}
 	}
-	fmt.Fprintf(&output, "inventory: tracks=%d probe=%s fingerprint_size=%d fingerprint_mtime=%s\n", len(inventoryRecord.Tracks), probeState, inventoryRecord.CatalogFingerprint.Size, inventoryRecord.CatalogFingerprint.ModTime.Format(time.RFC3339Nano))
+	result.Probe = probeState
+	result.FingerprintSize = inventoryRecord.CatalogFingerprint.Size
+	result.FingerprintMTime = inventoryRecord.CatalogFingerprint.ModTime
+	result.Tracks = make([]control.ExplainTrack, 0, len(inventoryRecord.Tracks))
 	for _, track := range inventoryRecord.Tracks {
-		fmt.Fprintf(&output, "  track: language=%s embedded=%t forced=%t sdh=%t protected=%t\n", track.Language, track.Embedded, track.Forced, track.SDH, track.Protected)
+		result.Tracks = append(result.Tracks, control.ExplainTrack{Language: fmt.Sprint(track.Language), Embedded: track.Embedded, Forced: track.Forced, SDH: track.SDH, Protected: track.Protected})
 	}
 	if status, statusErr := a.Repository.GetSearchStatus(ctx, mediaID, language); statusErr == nil {
-		fmt.Fprintf(&output, "search: state=%s outcome=%s priority=%s rerun_pending=%t missing_attempt=%d failure_attempt=%d next_attempt=%s\n", status.State, status.LastOutcome, status.Priority, status.RerunPending, status.Attempt, status.FailureAttempt, status.NextAttemptAt.Format(time.RFC3339Nano))
-	} else if errors.Is(statusErr, sql.ErrNoRows) {
-		fmt.Fprintf(&output, "search: not scheduled\n")
-	} else {
-		return "", statusErr
+		result.Search = &control.ExplainSearch{State: status.State, Outcome: status.LastOutcome, Priority: status.Priority.String(), RerunPending: status.RerunPending, MissingAttempt: status.Attempt, FailureAttempt: status.FailureAttempt, NextAttemptAt: status.NextAttemptAt}
+	} else if !errors.Is(statusErr, sql.ErrNoRows) {
+		return control.ExplainResult{}, statusErr
 	}
 	candidates, err := a.Repository.ListCandidates(ctx, mediaID, language)
 	if err != nil {
-		return "", err
+		return control.ExplainResult{}, err
 	}
-	fmt.Fprintf(&output, "candidates: %d\n", len(candidates))
+	result.Candidates = make([]control.ExplainCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		fmt.Fprintf(&output, "  candidate: provider=%s result=%s score=%s identity=%s\n", candidate.ProviderID, candidate.ResultID, compactJSON(candidate.ScoreJSON), compactJSON(candidate.ValidationJSON))
+		result.Candidates = append(result.Candidates, control.ExplainCandidate{Provider: candidate.ProviderID, ResultID: candidate.ResultID, Score: json.RawMessage(compactJSON(candidate.ScoreJSON)), Identity: json.RawMessage(compactJSON(candidate.ValidationJSON))})
 	}
 	rejections, err := a.Repository.ListCandidateRejections(ctx, mediaID, language, a.Clock.Now())
 	if err != nil {
-		return "", err
+		return control.ExplainResult{}, err
 	}
 	// Rejections made under older selection or subtitle rules, another LAPSE
 	// version or policy, or for a replaced media file no longer count; they
 	// are left out of the list and only counted.
-	var active []store.CandidateRejection
+	result.Rejections = []control.ExplainRejection{}
 	for _, rejection := range rejections {
 		if service := a.Workflows[language]; service != nil && service.RejectionActive(rejection, media.Fingerprint) {
-			active = append(active, rejection)
+			result.Rejections = append(result.Rejections, control.ExplainRejection{Provider: rejection.ProviderID, ResultID: rejection.ResultID, Reason: rejection.ReasonCode, Artifact: rejection.ArtifactChecksum})
 		}
 	}
-	fmt.Fprintf(&output, "candidate_rejections: %d\n", len(active))
-	if superseded := len(rejections) - len(active); superseded > 0 {
-		fmt.Fprintf(&output, "candidate_rejections_superseded: %d\n", superseded)
-	}
-	for _, rejection := range active {
-		fmt.Fprintf(&output, "  rejection: provider=%s result=%s reason=%s artifact=%s expires=never\n", rejection.ProviderID, rejection.ResultID, rejection.ReasonCode, rejection.ArtifactChecksum)
-	}
+	result.RejectionsSuperseded = len(rejections) - len(result.Rejections)
 	installation, installed, err := a.Repository.GetInstallation(ctx, mediaID, language)
 	if err != nil {
-		return "", err
+		return control.ExplainResult{}, err
 	}
 	if installed {
-		fmt.Fprintf(&output, "installation: provider=%s candidate=%s checksum=%s score=%s lapse=%s rollback=%t fallback=%t\n", installation.ProviderID, installation.CandidateID, installation.Checksum, compactJSON(installation.ScoreJSON), compactJSON(installation.SyncResultJSON), installation.RollbackPath != "", installation.Fallback)
-	} else {
-		fmt.Fprintln(&output, "installation: none")
+		result.Installation = &control.ExplainInstallation{Provider: installation.ProviderID, Candidate: installation.CandidateID, Checksum: installation.Checksum, Score: json.RawMessage(compactJSON(installation.ScoreJSON)), Lapse: json.RawMessage(compactJSON(installation.SyncResultJSON)), Rollback: installation.RollbackPath != "", Fallback: installation.Fallback}
 	}
 	packs, err := a.Repository.ListReusablePacks(ctx, store.PackLookup{SeriesIDs: media.ExternalIDs, SeriesTitle: media.Title, SeriesYear: media.Year, Season: media.Season, Episode: media.Episode, AbsoluteEpisode: media.AbsoluteEpisode, Language: language.String()}, a.Clock.Now())
 	if err != nil {
-		return "", err
+		return control.ExplainResult{}, err
 	}
-	fmt.Fprintf(&output, "pack_cache: reusable=%d\n", len(packs))
+	result.PackCacheReusable = len(packs)
+	result.ProviderStates = []control.ExplainProviderState{}
 	for _, providerID := range a.Config.Languages[language].AllProviders() {
 		states, err := a.Repository.ListProviderStates(ctx, providerID)
 		if err != nil {
-			return "", err
+			return control.ExplainResult{}, err
 		}
 		for _, state := range states {
-			fmt.Fprintf(&output, "provider_state: provider=%s scope=%s reason=%s remaining=%d reset=%s disabled=%t\n", providerID, state.Scope, state.Reason, state.Remaining, state.ResetAt.Format(time.RFC3339Nano), state.Disabled)
+			result.ProviderStates = append(result.ProviderStates, control.ExplainProviderState{Provider: providerID, Scope: state.Scope, Reason: state.Reason, Remaining: state.Remaining, ResetAt: state.ResetAt, Disabled: state.Disabled})
 		}
 	}
-	return strings.TrimRight(output.String(), "\n"), nil
+	return result, nil
 }
 
-func (a *App) Doctor(ctx context.Context) (string, error) {
+func (a *App) Doctor(ctx context.Context) (control.DoctorResult, error) {
 	if err := a.Ready(ctx); err != nil {
-		return "", err
+		return control.DoctorResult{}, err
 	}
 	if err := syncer.CheckCapabilities(ctx, a.Config.Sync.LapsePath, a.LapseRunner); err != nil {
-		return "", err
+		return control.DoctorResult{}, err
 	}
 	if _, _, err := a.ProbeRunner.Run(ctx, "ffprobe", "-version"); err != nil {
-		return "", fmt.Errorf("run ffprobe capability check: %w", err)
+		return control.DoctorResult{}, fmt.Errorf("run ffprobe capability check: %w", err)
 	}
 	webhooks := "manual"
 	if a.Config.Server.WebhookBaseURL != "" {
 		webhooks = "managed (" + a.Config.Server.WebhookBaseURL + ")"
 	}
-	return fmt.Sprintf("configuration: ok\nsqlite: ok\nmedia roots: ok (%d)\nLAPSE: compatible\nffprobe: available\nwebhooks: %s", len(a.Config.MediaRoots), webhooks), nil
+	return control.DoctorResult{Configuration: "ok", SQLite: "ok", MediaRoots: len(a.Config.MediaRoots), LAPSE: "compatible", FFprobe: "available", Webhooks: webhooks}, nil
 }
 
-func (a *App) AnalyzeSync(ctx context.Context, mediaPath, subtitlePath string) (string, error) {
+func (a *App) AnalyzeSync(ctx context.Context, mediaPath, subtitlePath string) (control.AnalyzeSyncResult, error) {
 	if !withinRoots(mediaPath, a.Config.MediaRoots) {
-		return "", fmt.Errorf("media path is outside configured roots")
+		return control.AnalyzeSyncResult{}, fmt.Errorf("media path is outside configured roots")
 	}
 	workspace, err := os.MkdirTemp("", "subsyncd-diagnostic-")
 	if err != nil {
-		return "", err
+		return control.AnalyzeSyncResult{}, err
 	}
 	defer os.RemoveAll(workspace)
 	lapse, err := syncer.New(syncer.Options{Path: a.Config.Sync.LapsePath, CacheDir: filepath.Join(workspace, "speech"), AnalyzeTimeout: a.Config.Sync.Timeout, MinReadRate: a.Config.Sync.MinReadRate, MaxTimeout: a.Config.Sync.MaxTimeout, MediaRoots: a.Config.MediaRoots, Runner: a.LapseRunner})
 	if err != nil {
-		return "", err
+		return control.AnalyzeSyncResult{}, err
 	}
 	result, err := lapse.Analyze(ctx, mediaPath, subtitlePath)
 	if err != nil {
-		return "", err
+		return control.AnalyzeSyncResult{}, err
 	}
-	payload, err := json.MarshalIndent(result, "", "  ")
+	payload, err := json.Marshal(result)
 	if err != nil {
-		return "", err
+		return control.AnalyzeSyncResult{}, err
 	}
-	return string(payload), nil
+	return control.AnalyzeSyncResult{Analysis: payload}, nil
 }
 
 func (a *App) workflowFor(tag string) (domain.Language, *workflow.Service, error) {
 	language, err := domain.ParseLanguage(tag)
 	if err != nil {
-		return "", nil, err
+		return "", nil, &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
 	}
 	service := a.Workflows[language]
 	if service == nil {
-		return "", nil, fmt.Errorf("language %s is not configured", language)
+		return "", nil, languageNotConfigured(language)
 	}
 	return language, service, nil
 }
@@ -1090,15 +1089,48 @@ func withinRoots(path string, roots []string) bool {
 	return false
 }
 
-func formatWorkflowResult(mediaID int64, result workflow.Result) string {
-	output := fmt.Sprintf("media_id: %d\noutcome: %s", mediaID, result.Outcome)
+func unknownInstance(instance string) error {
+	return &control.Error{Code: control.CodeUnknownInstance, Message: fmt.Sprintf("unknown instance %q", instance)}
+}
+
+func languageNotConfigured(language domain.Language) error {
+	return &control.Error{Code: control.CodeUnknownLanguage, Message: fmt.Sprintf("language %s is not configured", language)}
+}
+
+// searchResult maps a workflow outcome to the structured search result. The
+// installed subtitle is shown relative to its media root, never absolute.
+func (a *App) searchResult(mediaID int64, language domain.Language, result workflow.Result) control.SearchResult {
+	outcome := control.LanguageOutcome{Language: language.String(), Outcome: string(result.Outcome), NextAttemptAt: result.RetryAt}
 	if result.Candidate.ProviderID != "" {
-		output += fmt.Sprintf("\nprovider: %s\ncandidate: %s\nscore: %d", result.Candidate.ProviderID, result.Candidate.ResultID, result.Score.Total)
+		outcome.Provider = result.Candidate.ProviderID
+		outcome.Candidate = result.Candidate.ResultID
+		outcome.Score = result.Score.Total
+		if len(result.Candidate.ReleaseNames) > 0 {
+			outcome.Release = result.Candidate.ReleaseNames[0]
+		}
 	}
-	if !result.RetryAt.IsZero() {
-		output += "\nretry_at: " + result.RetryAt.Format(time.RFC3339Nano)
+	if result.Outcome == workflow.OutcomeInstalled {
+		outcome.SyncVerdict = result.SyncResult.Verdict
+		outcome.OffsetMS = result.SyncResult.OffsetMS
+		outcome.Subtitle = relativeToRoots(result.Installation.Path, a.Config.MediaRoots)
 	}
-	return output
+	return control.SearchResult{MediaID: mediaID, Languages: []control.LanguageOutcome{outcome}}
+}
+
+// relativeToRoots returns path relative to the media root containing it, or
+// the empty string when it is in none.
+func relativeToRoots(path string, roots []string) string {
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	for _, root := range roots {
+		relative, err := filepath.Rel(filepath.Clean(root), clean)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return filepath.ToSlash(relative)
+		}
+	}
+	return ""
 }
 
 func compactJSON(payload []byte) string {

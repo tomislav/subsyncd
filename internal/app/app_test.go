@@ -26,6 +26,7 @@ import (
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/cli"
 	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
 	"subsyncd/internal/notifier"
@@ -180,7 +181,8 @@ func TestNewQueuesSiloIntentForManualAndDaemonInstallations(t *testing.T) {
 				background.Notifiers = map[string]notifier.Notifier{"silo": &delivered}
 				var mediaID int64
 				if mode == "manual" {
-					output, err := application.Search(ctx, "tv", "movie", 7, language.String(), false)
+					searched, err := application.Search(ctx, searchArgs("tv", "movie", 7, language.String(), false))
+					output := searched.Text()
 					if err != nil || !strings.Contains(output, "installed") {
 						t.Fatalf("manual output/error = %q/%v", output, err)
 					}
@@ -578,7 +580,8 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 		}
 	}
 
-	output, err := application.Explain(context.Background(), "tv", "movie", 7, "en")
+	outputResult, err := application.Explain(context.Background(), explainArgs("tv", "movie", 7, "en"))
+	output := outputResult.Text()
 	if err != nil || !strings.Contains(output, "candidate_rejections: 2\n") || !strings.Contains(output, "candidate_rejections_superseded: 4") || !strings.Contains(output, "expires=never") || !strings.Contains(output, "provider=english result=bad-1 reason=lapse_unsure") || !strings.Contains(output, "result=current-selection") || strings.Contains(output, "result=legacy-") || strings.Contains(output, "result=older-lapse") || strings.Contains(output, "result=replaced-media") {
 		t.Fatalf("Explain() = %q/%v", output, err)
 	}
@@ -603,7 +606,8 @@ func TestExplainShowsSearchPriority(t *testing.T) {
 	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, nil); err != nil {
 		t.Fatal(err)
 	}
-	output, err := application.Explain(context.Background(), "tv", "movie", 8, "en")
+	outputResult, err := application.Explain(context.Background(), explainArgs("tv", "movie", 8, "en"))
+	output := outputResult.Text()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +635,8 @@ func TestExplainShowsUnsupportedReason(t *testing.T) {
 	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, nil); err != nil {
 		t.Fatal(err)
 	}
-	output, err := application.Explain(context.Background(), "tv", "episode", 9, "en")
+	outputResult, err := application.Explain(context.Background(), explainArgs("tv", "episode", 9, "en"))
+	output := outputResult.Text()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -676,7 +681,7 @@ func TestManualSearchRetryRejectedClearsCandidateQuarantine(t *testing.T) {
 		t.Fatalf("initial strike = %v/%v", confirmed, err)
 	}
 
-	if _, err := application.Search(context.Background(), "tv", "movie", 7, "en", true); err != nil {
+	if _, err := application.Search(context.Background(), searchArgs("tv", "movie", 7, "en", true)); err != nil {
 		t.Fatal(err)
 	}
 	rejections, err := application.Repository.ListCandidateRejections(context.Background(), mediaID, "en", now)
@@ -720,7 +725,7 @@ func TestManualSearchOfDeletedMediaReschedulesConfiguredLanguages(t *testing.T) 
 		t.Fatalf("seeded tombstone status = %#v, %v", status, err)
 	}
 
-	if _, err := application.Search(ctx, "tv", "movie", 7, "en", false); err != nil {
+	if _, err := application.Search(ctx, searchArgs("tv", "movie", 7, "en", false)); err != nil {
 		t.Fatal(err)
 	}
 	status, err := application.Repository.GetSearchStatus(ctx, mediaID, "en")
@@ -751,7 +756,7 @@ func TestManualSearchRevivalSettlesTheSatisfiedLanguage(t *testing.T) {
 	}
 	defer application.Close()
 
-	if _, err := application.Search(ctx, "tv", "movie", 7, "en", false); err != nil {
+	if _, err := application.Search(ctx, searchArgs("tv", "movie", 7, "en", false)); err != nil {
 		t.Fatal(err)
 	}
 	mediaID, _, err := application.Repository.FindMedia(ctx, media.Ref)
@@ -810,7 +815,7 @@ func TestManualSearchClearsProviderResumeBeforeWorkflowFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := application.Search(t.Context(), "tv", "movie", 7, "en", false); err == nil {
+	if _, err := application.Search(t.Context(), searchArgs("tv", "movie", 7, "en", false)); err == nil {
 		t.Fatal("Search() error = nil, want missing-media workflow failure")
 	}
 	resumed, err := application.Repository.LeaseDueSearches(t.Context(), now.Add(2*time.Hour), 1, time.Minute)
@@ -1135,7 +1140,8 @@ func TestExplainReportsCompletedEmptyProbeWithoutRefresh(t *testing.T) {
 			}
 		}
 
-		output, err := app.Explain(ctx, "tv", "movie", 7, "en")
+		outputResult, err := app.Explain(ctx, explainArgs("tv", "movie", 7, "en"))
+		output := outputResult.Text()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1294,8 +1300,8 @@ func TestScanSkipsDeletedMedia(t *testing.T) {
 					active = media
 				}
 			}
-			if result, err := application.Scan(ctx, "tv", false); err != nil || result != "scan complete: instance=tv media=1 force_probe=false" {
-				t.Fatalf("ordinary scan=%q error=%v", result, err)
+			if result, err := application.Scan(ctx, "tv", false); err != nil || result.Text() != "scan complete: instance=tv media=1 force_probe=false" {
+				t.Fatalf("ordinary scan=%q error=%v", result.Text(), err)
 			}
 			calls := 0
 			application.Inventory.Probe.Runner = scanProbeFunc(func(path string) error {
@@ -1314,8 +1320,8 @@ func TestScanSkipsDeletedMedia(t *testing.T) {
 				if !errors.Is(err, store.ErrStaleInventory) {
 					t.Fatalf("concurrent delete error=%v", err)
 				}
-			} else if err != nil || result != "scan complete: instance=tv media=1 force_probe=true" {
-				t.Fatalf("scan=%q error=%v", result, err)
+			} else if err != nil || result.Text() != "scan complete: instance=tv media=1 force_probe=true" {
+				t.Fatalf("scan=%q error=%v", result.Text(), err)
 			}
 			if calls != 1 {
 				t.Fatalf("probe calls=%d, want active media only", calls)
@@ -1346,8 +1352,8 @@ func TestScanReportsDeferredLibraryFileWithoutFailing(t *testing.T) {
 	}
 	defer application.Close()
 	result, err := application.Scan(ctx, "tv", false)
-	if err != nil || result != "scan complete: instance=tv media=0 force_probe=false deferred=2 (Sonarr file 1001 (Example Show - season 7); Radarr movie 7 (Example Movie (2001)))" {
-		t.Fatalf("scan=%q error=%v", result, err)
+	if err != nil || result.Text() != "scan complete: instance=tv media=0 force_probe=false deferred=2 (Sonarr file 1001 (Example Show - season 7); Radarr movie 7 (Example Movie (2001)))" {
+		t.Fatalf("scan=%q error=%v", result.Text(), err)
 	}
 }
 
@@ -1361,8 +1367,8 @@ func TestScanReportsDeferredHistoryWithoutFailing(t *testing.T) {
 	}
 	defer application.Close()
 	result, err := application.Scan(ctx, "tv", false)
-	if err != nil || result != "scan complete: instance=tv media=0 force_probe=false deferred=1 (Radarr movie 7 (Example Movie (2001)))" {
-		t.Fatalf("scan=%q error=%v", result, err)
+	if err != nil || result.Text() != "scan complete: instance=tv media=0 force_probe=false deferred=1 (Radarr movie 7 (Example Movie (2001)))" {
+		t.Fatalf("scan=%q error=%v", result.Text(), err)
 	}
 }
 
@@ -1460,7 +1466,8 @@ func TestExplainShowsEpisodeRange(t *testing.T) {
 	if _, _, err := application.Repository.UpsertMedia(context.Background(), media); err != nil {
 		t.Fatal(err)
 	}
-	output, err := application.Explain(context.Background(), "tv", "episode", 8, "en")
+	outputResult, err := application.Explain(context.Background(), explainArgs("tv", "episode", 8, "en"))
+	output := outputResult.Text()
 	if err != nil || !strings.Contains(output, "episodes=S06E01-E02") {
 		t.Fatalf("Explain() = %q/%v", output, err)
 	}
@@ -1730,7 +1737,8 @@ func TestDoctorReportsWebhookManagement(t *testing.T) {
 		cfg := testConfig(t)
 		cfg.Server.WebhookBaseURL = base
 		application := newTokenApp(t, cfg)
-		output, err := application.Doctor(context.Background())
+		outputResult, err := application.Doctor(context.Background())
+		output := outputResult.Text()
 		application.Close()
 		if err != nil {
 			t.Fatal(err)
@@ -1741,6 +1749,84 @@ func TestDoctorReportsWebhookManagement(t *testing.T) {
 		}
 		if !strings.Contains(output, want) {
 			t.Fatalf("doctor output = %q, want %q", output, want)
+		}
+	}
+}
+
+func explainArgs(instance, kind string, fileID int64, language string) control.ExplainArgs {
+	return control.ExplainArgs{Selection: control.Selection{Instance: instance, Kind: kind, FileID: fileID}, Language: language}
+}
+
+func searchArgs(instance, kind string, fileID int64, language string, retryRejected bool) control.SearchArgs {
+	return control.SearchArgs{Selection: control.Selection{Instance: instance, Kind: kind, FileID: fileID}, Language: language, RetryRejected: retryRejected}
+}
+
+func TestExplainResultHasNoAbsolutePaths(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	now := application.Clock.Now()
+	media := domain.Media{EntityID: 8, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 8}, Fingerprint: domain.MediaFingerprint{Path: filepath.Join(cfg.MediaRoots[0], "Priority.mkv"), FileID: 8, Size: 100, ModTime: now}, Title: "Priority"}
+	mediaID, _, err := application.Repository.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.UpsertSearchStateWithPriority(context.Background(), mediaID, "en", now, store.SearchPriorityImport); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.ReplaceTrackInventory(context.Background(), mediaID, media.Fingerprint, media.Fingerprint, nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := application.Explain(context.Background(), explainArgs("tv", "movie", 8, "en"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range append([]string{cfg.DataDir}, cfg.MediaRoots...) {
+		if strings.Contains(string(payload), forbidden) || strings.Contains(result.Text(), forbidden) {
+			t.Fatalf("explain result leaks %q: %s", forbidden, payload)
+		}
+	}
+	if !strings.Contains(string(payload), `"title":"Priority"`) {
+		t.Fatalf("payload = %s", payload)
+	}
+}
+
+func TestUnknownReferencesReturnCodedErrors(t *testing.T) {
+	cfg := testConfig(t)
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+	ctx := context.Background()
+	for name, test := range map[string]struct {
+		err  error
+		code string
+		text string
+	}{
+		"scan": {func() error { _, err := application.Scan(ctx, "nope", false); return err }(), control.CodeUnknownInstance, `unknown instance "nope"`},
+		"search": {func() error {
+			_, err := application.Search(ctx, searchArgs("nope", "movie", 1, "en", false))
+			return err
+		}(), control.CodeUnknownInstance, `unknown instance "nope"`},
+		"explain":  {func() error { _, err := application.Explain(ctx, explainArgs("nope", "movie", 1, "en")); return err }(), control.CodeUnknownInstance, `unknown instance "nope"`},
+		"retry":    {func() error { _, err := application.Retry(ctx, "nope"); return err }(), control.CodeUnknownProvider, `unknown provider "nope"`},
+		"language": {func() error { _, err := application.Explain(ctx, explainArgs("tv", "movie", 1, "fr")); return err }(), control.CodeUnknownLanguage, "language fr is not configured"},
+		"bad tag":  {func() error { _, err := application.Search(ctx, searchArgs("tv", "movie", 1, "!!", false)); return err }(), control.CodeUnknownLanguage, ""},
+	} {
+		var coded *control.Error
+		if !errors.As(test.err, &coded) || coded.Code != test.code || !strings.Contains(coded.Message, test.text) {
+			t.Fatalf("%s: err = %#v, want code %s containing %q", name, test.err, test.code, test.text)
+		}
+		if redacted := application.Redact(test.err).Error(); test.text != "" && !strings.Contains(redacted, test.text) || strings.HasPrefix(redacted, test.code+":") {
+			t.Fatalf("%s: redacted = %q", name, redacted)
 		}
 	}
 }

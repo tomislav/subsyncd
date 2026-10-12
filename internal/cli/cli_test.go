@@ -3,9 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"subsyncd/internal/control"
 )
 
 type fakeBackend struct {
@@ -30,42 +34,42 @@ func (b *reportingBackend) ReportFailure(_ context.Context, command string, err 
 
 func (f *fakeBackend) Close() error                { return nil }
 func (f *fakeBackend) Serve(context.Context) error { f.call = "serve"; return f.err }
-func (f *fakeBackend) Scan(_ context.Context, instance string, force bool) (string, error) {
+func (f *fakeBackend) Scan(_ context.Context, instance string, force bool) (control.ScanResult, error) {
 	f.call = "scan:" + instance
 	if force {
 		f.call += ":force"
 	}
-	return "scan complete", f.err
+	return control.ScanResult{Instance: instance, Media: 3, ForceProbe: force}, f.err
 }
-func (f *fakeBackend) Search(_ context.Context, instance, kind string, fileID int64, language string, retryRejected bool) (string, error) {
-	f.call = "search:" + instance + ":" + kind + ":" + language
-	if retryRejected {
+func (f *fakeBackend) Search(_ context.Context, args control.SearchArgs) (control.SearchResult, error) {
+	f.call = "search:" + args.Instance + ":" + args.Kind + ":" + args.Language
+	if args.RetryRejected {
 		f.call += ":retry-rejected"
 	}
-	return "outcome: installed", f.err
+	return control.SearchResult{MediaID: 9, Languages: []control.LanguageOutcome{{Language: args.Language, Outcome: "installed"}}}, f.err
 }
-func (f *fakeBackend) Retry(_ context.Context, provider string) (string, error) {
+func (f *fakeBackend) Retry(_ context.Context, provider string) (control.RetryResult, error) {
 	f.call = "retry:" + provider
-	return "provider retry state reset", f.err
+	return control.RetryResult{Provider: provider, SearchesDue: 2}, f.err
 }
-func (f *fakeBackend) Explain(_ context.Context, instance, kind string, fileID int64, language string) (string, error) {
-	f.call = "explain:" + instance + ":" + kind + ":" + language
-	return "inventory: 2 tracks\nnext attempt: tomorrow", f.err
+func (f *fakeBackend) Explain(_ context.Context, args control.ExplainArgs) (control.ExplainResult, error) {
+	f.call = "explain:" + args.Instance + ":" + args.Kind + ":" + args.Language
+	return control.ExplainResult{MediaID: 1, Instance: args.Instance, Kind: args.Kind, FileID: args.FileID, Title: "T", Probe: "unprobed"}, f.err
 }
-func (f *fakeBackend) Doctor(context.Context) (string, error) {
+func (f *fakeBackend) Doctor(context.Context) (control.DoctorResult, error) {
 	f.call = "doctor"
-	return "configuration: ok\nsqlite: ok\nLAPSE: ok", f.err
+	return control.DoctorResult{Configuration: "ok", SQLite: "ok", MediaRoots: 1, LAPSE: "compatible", FFprobe: "available", Webhooks: "manual"}, f.err
 }
-func (f *fakeBackend) ForgetInstance(_ context.Context, instance string, apply bool) (string, error) {
+func (f *fakeBackend) ForgetInstance(_ context.Context, instance string, apply bool) (control.ForgetInstanceResult, error) {
 	f.call = "forget:" + instance
 	if apply {
 		f.call += ":yes"
 	}
-	return "forget-instance preview", f.err
+	return control.ForgetInstanceResult{Instance: instance, Applied: apply}, f.err
 }
-func (f *fakeBackend) AnalyzeSync(_ context.Context, media, subtitle string) (string, error) {
+func (f *fakeBackend) AnalyzeSync(_ context.Context, media, subtitle string) (control.AnalyzeSyncResult, error) {
 	f.call = "analyze:" + media + ":" + subtitle
-	return "verdict: solid", f.err
+	return control.AnalyzeSyncResult{Analysis: json.RawMessage(`{"verdict":"solid"}`)}, f.err
 }
 
 func TestCommandSurface(t *testing.T) {
@@ -76,16 +80,16 @@ func TestCommandSurface(t *testing.T) {
 		out  string
 	}{
 		{"serve", []string{"serve", "--config", "/data/config.yaml"}, "serve", ""},
-		{"scan", []string{"scan", "--instance", "tv", "--force-probe"}, "scan:tv:force", "scan complete\n"},
-		{"search", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr"}, "search:tv:episode:hr", "outcome: installed\n"},
-		{"search rejected", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr", "--retry-rejected"}, "search:tv:episode:hr:retry-rejected", "outcome: installed\n"},
-		{"retry", []string{"retry", "--provider", "titlovi"}, "retry:titlovi", "provider retry state reset\n"},
-		{"explain", []string{"explain", "--instance", "movies", "--kind", "movie", "--file-id", "7", "--language", "en"}, "explain:movies:movie:en", "inventory: 2 tracks\nnext attempt: tomorrow\n"},
-		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nLAPSE: ok\n"},
-		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance preview\n"},
+		{"scan", []string{"scan", "--instance", "tv", "--force-probe"}, "scan:tv:force", "scan complete: instance=tv media=3 force_probe=true\n"},
+		{"search", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr"}, "search:tv:episode:hr", "media_id: 9\noutcome: installed\n"},
+		{"search rejected", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr", "--retry-rejected"}, "search:tv:episode:hr:retry-rejected", "media_id: 9\noutcome: installed\n"},
+		{"retry", []string{"retry", "--provider", "titlovi"}, "retry:titlovi", "provider retry state reset: titlovi; throttled searches due again: 2\n"},
+		{"explain", []string{"explain", "--instance", "movies", "--kind", "movie", "--file-id", "7", "--language", "en"}, "explain:movies:movie:en", "media: id=1 instance=movies kind=movie file_id=7 title=\"T\"\ninventory: tracks=0 probe=unprobed fingerprint_size=0 fingerprint_mtime=0001-01-01T00:00:00Z\nsearch: not scheduled\ncandidates: 0\ncandidate_rejections: 0\ninstallation: none\npack_cache: reusable=0\n"},
+		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nmedia roots: ok (1)\nLAPSE: compatible\nffprobe: available\nwebhooks: manual\n"},
+		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance complete: instance=old media=0 searches=0 installations=0 rollback_copies=0 candidates=0 rejections=0 notifications=0 events=0 replays=0\nsubtitle files installed for this instance stay on disk and will no longer be managed\n"},
 		{"webhook-url", []string{"webhook-url", "--instance", "tv", "--base", "http://x"}, "webhook-url:tv:http://x", "http://h/webhooks/tv?token=t\n"},
-		{"rotate-webhook-token", []string{"rotate-webhook-token", "--instance", "tv"}, "rotate:tv", "rotated\n"},
-		{"analyze", []string{"analyze-sync", "--media", "/media/a.mkv", "--subtitle", "/tmp/a.srt"}, "analyze:/media/a.mkv:/tmp/a.srt", "verdict: solid\n"},
+		{"rotate-webhook-token", []string{"rotate-webhook-token", "--instance", "tv"}, "rotate:tv", "webhook token rotated for instance tv; start subsyncd now: the Arr connection is updated in Arr at that start.\n"},
+		{"analyze", []string{"analyze-sync", "--media", "/media/a.mkv", "--subtitle", "/tmp/a.srt"}, "analyze:/media/a.mkv:/tmp/a.srt", "{\n  \"verdict\": \"solid\"\n}\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -203,13 +207,13 @@ func TestWrappedAlreadyReportedStartupFailureIsSilent(t *testing.T) {
 	}
 }
 
-func (f *fakeBackend) WebhookURL(_ context.Context, instance, base string) (string, error) {
+func (f *fakeBackend) WebhookURL(_ context.Context, instance, base string) (control.WebhookURLResult, error) {
 	f.call = "webhook-url:" + instance + ":" + base
-	return "http://h/webhooks/" + instance + "?token=t", f.err
+	return control.WebhookURLResult{Instance: instance, URL: "http://h/webhooks/" + instance + "?token=t"}, f.err
 }
-func (f *fakeBackend) RotateWebhookToken(_ context.Context, instance string) (string, error) {
+func (f *fakeBackend) RotateWebhookToken(_ context.Context, instance string) (control.RotateTokenResult, error) {
 	f.call = "rotate:" + instance
-	return "rotated", f.err
+	return control.RotateTokenResult{Instance: instance, Managed: true}, f.err
 }
 
 func TestWebhookCommands(t *testing.T) {
@@ -220,7 +224,7 @@ func TestWebhookCommands(t *testing.T) {
 	}{
 		{"url", "webhook-url", "webhook-url:tv:", "http://h/webhooks/tv?token=t\n", []string{"webhook-url", "--instance", "tv"}, ExitOK},
 		{"url base", "webhook-url", "webhook-url:tv:http://x/p", "http://h/webhooks/tv?token=t\n", []string{"webhook-url", "--instance", "tv", "--base", "http://x/p"}, ExitOK},
-		{"rotate", "rotate-webhook-token", "rotate:tv", "rotated\n", []string{"rotate-webhook-token", "--instance", "tv"}, ExitOK},
+		{"rotate", "rotate-webhook-token", "rotate:tv", "webhook token rotated for instance tv; start subsyncd now: the Arr connection is updated in Arr at that start.\n", []string{"rotate-webhook-token", "--instance", "tv"}, ExitOK},
 		{"url without instance", "", "", "", []string{"webhook-url"}, ExitUsage},
 		{"rotate without instance", "", "", "", []string{"rotate-webhook-token"}, ExitUsage},
 		{"rotate rejects base", "", "", "", []string{"rotate-webhook-token", "--instance", "tv", "--base", "http://x"}, ExitUsage},
@@ -242,5 +246,150 @@ func TestWebhookCommands(t *testing.T) {
 				t.Fatalf("opened/call/out = %q/%q/%q", opened, backend.call, stdout.String())
 			}
 		})
+	}
+}
+
+func runJSON(t *testing.T, open OpenFunc, args ...string) (int, map[string]any, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := (Command{Open: open, Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), args)
+	var envelope map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	if err := decoder.Decode(&envelope); err != nil {
+		t.Fatalf("stdout %q is not JSON: %v", stdout.String(), err)
+	}
+	if decoder.More() {
+		t.Fatalf("stdout %q holds more than one JSON value", stdout.String())
+	}
+	return code, envelope, stderr.String()
+}
+
+func openFake(backend Backend) OpenFunc {
+	return func(context.Context, string, string) (Backend, error) { return backend, nil }
+}
+
+func TestJSONEnvelopeOnSuccess(t *testing.T) {
+	code, envelope, stderr := runJSON(t, openFake(&fakeBackend{}), "doctor", "--json")
+	if code != ExitOK || stderr != "" {
+		t.Fatalf("exit/stderr = %d/%q", code, stderr)
+	}
+	result, _ := envelope["result"].(map[string]any)
+	if envelope["schema"] != "subsyncd.cli/v1" || envelope["command"] != "doctor" || envelope["ok"] != true || result["lapse"] != "compatible" {
+		t.Fatalf("envelope = %v", envelope)
+	}
+	if _, present := envelope["error"]; present {
+		t.Fatalf("success envelope has an error: %v", envelope)
+	}
+}
+
+func TestJSONEnvelopeOnUsageError(t *testing.T) {
+	for _, args := range [][]string{
+		{"search", "--json"},
+		{"search", "--json", "--nope"},
+		{"serve", "--json"},
+		{"wat", "--json"},
+	} {
+		code, envelope, stderr := runJSON(t, nil, args...)
+		failure, _ := envelope["error"].(map[string]any)
+		if code != ExitUsage || stderr != "" || envelope["ok"] != false || failure["code"] != "usage" || failure["message"] == "" {
+			t.Fatalf("%v: exit/stderr/envelope = %d/%q/%v", args, code, stderr, envelope)
+		}
+		if _, present := envelope["result"]; present {
+			t.Fatalf("%v: failure envelope has a result", args)
+		}
+	}
+}
+
+func TestJSONErrorCodes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"unknown instance", &control.Error{Code: control.CodeUnknownInstance, Message: `unknown instance "x"`}, "unknown_instance"},
+		{"wrapped coded", fmt.Errorf("outer: %w", &control.Error{Code: control.CodeUnknownProvider, Message: "p"}), "unknown_provider"},
+		{"busy", errors.New("another subsyncd mutation process is active"), "busy"},
+		{"other", errors.New("boom"), "internal"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			code, envelope, _ := runJSON(t, openFake(&fakeBackend{err: test.err}), "retry", "--provider", "p", "--json")
+			failure, _ := envelope["error"].(map[string]any)
+			if code != ExitFailure || envelope["ok"] != false || failure["code"] != test.code {
+				t.Fatalf("exit/envelope = %d/%v, want code %s", code, envelope, test.code)
+			}
+		})
+	}
+}
+
+func TestJSONUnknownInstanceCode(t *testing.T) {
+	err := &control.Error{Code: control.CodeUnknownInstance, Message: `unknown instance "x"`}
+	_, envelope, _ := runJSON(t, openFake(&fakeBackend{err: err}), "scan", "--instance", "x", "--json")
+	failure, _ := envelope["error"].(map[string]any)
+	if failure["code"] != "unknown_instance" || failure["message"] != `unknown instance "x"` {
+		t.Fatalf("error = %v", failure)
+	}
+}
+
+func TestBusyCode(t *testing.T) {
+	open := func(context.Context, string, string) (Backend, error) {
+		return nil, errors.New("another subsyncd mutation process is active")
+	}
+	code, envelope, _ := runJSON(t, open, "scan", "--instance", "tv", "--json")
+	failure, _ := envelope["error"].(map[string]any)
+	if code != ExitFailure || failure["code"] != "busy" {
+		t.Fatalf("exit/error = %d/%v", code, failure)
+	}
+	if got := ErrorCode(errors.New("another subsyncd mutation process is active")); got != control.CodeBusy {
+		t.Fatalf("ErrorCode = %q", got)
+	}
+}
+
+func TestJSONFailureUsesRedactionAndReporter(t *testing.T) {
+	backend := &reportingBackend{fakeBackend: &fakeBackend{err: errors.New("secret path")}}
+	code, envelope, stderr := runJSON(t, openFake(redactingReporter{backend}), "retry", "--provider", "p", "--json")
+	failure, _ := envelope["error"].(map[string]any)
+	if code != ExitFailure || stderr != "" || failure["message"] != "[redacted]" || failure["code"] != "internal" {
+		t.Fatalf("exit/stderr/error = %d/%q/%v", code, stderr, failure)
+	}
+	if backend.reportedError == nil {
+		t.Fatal("failure was not reported")
+	}
+}
+
+type redactingReporter struct{ *reportingBackend }
+
+func (redactingReporter) Redact(error) error { return errors.New("[redacted]") }
+
+func TestJSONAlreadyReportedStartupFailureStillEmitsEnvelope(t *testing.T) {
+	open := func(context.Context, string, string) (Backend, error) { return nil, alreadyReportedFailure{} }
+	code, envelope, stderr := runJSON(t, open, "doctor", "--json")
+	failure, _ := envelope["error"].(map[string]any)
+	if code != ExitFailure || stderr != "" || failure["message"] != "sanitized startup failure" {
+		t.Fatalf("exit/stderr/error = %d/%q/%v", code, stderr, failure)
+	}
+}
+
+func TestJSONIsNotValidForServe(t *testing.T) {
+	var stderr bytes.Buffer
+	code := (Command{Open: openFake(&fakeBackend{}), Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"serve", "--json"})
+	if code != ExitUsage {
+		t.Fatalf("exit = %d", code)
+	}
+}
+
+func TestCodedErrorsPrintTheirMessageInTextMode(t *testing.T) {
+	var stderr bytes.Buffer
+	err := &control.Error{Code: control.CodeUnknownProvider, Message: `unknown provider "x"`}
+	code := (Command{Open: openFake(&fakeBackend{err: err}), Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"retry", "--provider", "x"})
+	if code != ExitFailure || stderr.String() != "subsyncd: unknown provider \"x\"\n" {
+		t.Fatalf("exit/stderr = %d/%q", code, stderr.String())
+	}
+}
+
+func TestHelpDescribesResultAndCodes(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := (Command{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"search", "--help"})
+	if code != ExitUsage || !strings.Contains(stderr.String(), "--json") || !strings.Contains(stderr.String(), "unknown_instance") || strings.Contains(stderr.String(), "-force-probe") {
+		t.Fatalf("exit/help = %d/%q", code, stderr.String())
 	}
 }

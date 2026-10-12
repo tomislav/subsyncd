@@ -8,6 +8,7 @@ import (
 
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
@@ -18,7 +19,7 @@ func (a *App) configuredInstance(instance string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("unknown instance %q", instance)
+	return unknownInstance(instance)
 }
 
 func (a *App) storedWebhookToken(ctx context.Context, instance string) (string, error) {
@@ -37,50 +38,47 @@ func (a *App) storedWebhookToken(ctx context.Context, instance string) (string, 
 // WebhookURL returns the URL to enter in Arr for an instance's webhook, using
 // base, then server.webhook_base_url, then no base (path and query only). It
 // is the one place the token is shown, and it never logs it.
-func (a *App) WebhookURL(ctx context.Context, instance, base string) (string, error) {
+func (a *App) WebhookURL(ctx context.Context, instance, base string) (control.WebhookURLResult, error) {
 	if err := a.configuredInstance(instance); err != nil {
-		return "", err
+		return control.WebhookURLResult{}, err
 	}
 	if base != "" {
 		base = config.TrimWebhookBaseURL(base)
 		if !config.ValidWebhookBaseURL(base) {
-			return "", errors.New("--base must be an absolute http or https URL without credentials, query or fragment")
+			return control.WebhookURLResult{}, errors.New("--base must be an absolute http or https URL without credentials, query or fragment")
 		}
 	} else {
 		base = a.Config.Server.WebhookBaseURL
 	}
 	token, err := a.storedWebhookToken(ctx, instance)
 	if err != nil {
-		return "", err
+		return control.WebhookURLResult{}, err
 	}
-	return catalog.WebhookURLFor(base, instance, token), nil
+	return control.WebhookURLResult{Instance: instance, URL: catalog.WebhookURLFor(base, instance, token)}, nil
 }
 
 // RotateWebhookToken replaces an instance's webhook token while holding the
 // mutation lock, so no daemon is running; the new token takes effect at the
 // next start. The output never contains either token.
-func (a *App) RotateWebhookToken(ctx context.Context, instance string) (string, error) {
+func (a *App) RotateWebhookToken(ctx context.Context, instance string) (control.RotateTokenResult, error) {
 	if err := a.configuredInstance(instance); err != nil {
-		return "", err
+		return control.RotateTokenResult{}, err
 	}
 	release, err := a.acquireMutationLock()
 	if err != nil {
-		return "", err
+		return control.RotateTokenResult{}, err
 	}
 	defer release()
 	if err := a.Repository.RotateWebhookToken(ctx, instance, nil); err != nil {
 		if errors.Is(err, store.ErrUnknownInstance) {
-			return "", fmt.Errorf("instance %s has no webhook token yet; start subsyncd once to create it", instance)
+			return control.RotateTokenResult{}, fmt.Errorf("instance %s has no webhook token yet; start subsyncd once to create it", instance)
 		}
-		return "", err
+		return control.RotateTokenResult{}, err
 	}
 	if token, err := a.Repository.WebhookToken(ctx, instance); err == nil && a.redaction != nil {
 		a.redaction.Add(token)
 	}
 	a.Events.For("app").Log(ctx, slog.LevelInfo, "webhook.token_rotated", "rotated webhook token",
 		slog.String("instance", observability.SafeText(instance)))
-	if a.Config.Server.WebhookBaseURL != "" {
-		return fmt.Sprintf("webhook token rotated for instance %s; start subsyncd now: the Arr connection is updated in Arr at that start.", instance), nil
-	}
-	return fmt.Sprintf("webhook token rotated for instance %s; start subsyncd, then run subsyncd webhook-url --instance %s --base URL (the address Arr uses to reach subsyncd) and update the URL in Arr by hand.", instance, instance), nil
+	return control.RotateTokenResult{Instance: instance, Managed: a.Config.Server.WebhookBaseURL != ""}, nil
 }

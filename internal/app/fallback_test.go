@@ -143,7 +143,8 @@ func TestExplainIncludesFallbackProvenanceAndProviderStates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	output, err := a.Explain(ctx, "tv", "movie", 7, "en")
+	outputResult, err := a.Explain(ctx, explainArgs("tv", "movie", 7, "en"))
+	output := outputResult.Text()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func TestManualFallbackSearchPersistsPromotionCheck(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := a.Search(t.Context(), "tv", "movie", 7, "en", false); err != nil {
+			if _, err := a.Search(t.Context(), searchArgs("tv", "movie", 7, "en", false)); err != nil {
 				t.Fatal(err)
 			}
 			status, err := a.Repository.GetSearchStatus(t.Context(), id, "en")

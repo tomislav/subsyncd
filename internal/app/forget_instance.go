@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"subsyncd/internal/control"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
@@ -14,34 +15,29 @@ import (
 // removed from the configuration. Without apply it only reports what it would
 // delete, and works on a read-only application. Subtitle files and their hidden
 // rollback copies are left on disk and become unmanaged.
-func (a *App) ForgetInstance(ctx context.Context, instance string, apply bool) (string, error) {
+func (a *App) ForgetInstance(ctx context.Context, instance string, apply bool) (control.ForgetInstanceResult, error) {
 	for _, configured := range a.Config.Instances {
 		if configured.Name == instance {
-			return "", fmt.Errorf("instance %q is still configured; remove it from the configuration first", instance)
+			return control.ForgetInstanceResult{}, fmt.Errorf("instance %q is still configured; remove it from the configuration first", instance)
 		}
 	}
 	if apply {
 		release, err := a.acquireMutationLock()
 		if err != nil {
-			return "", err
+			return control.ForgetInstanceResult{}, err
 		}
 		defer release()
 	}
 	result, err := a.Repository.ForgetInstance(ctx, instance, apply)
 	if errors.Is(err, store.ErrUnknownInstance) {
-		return "", fmt.Errorf("unknown instance %q: the database has no records for it", instance)
+		return control.ForgetInstanceResult{}, &control.Error{Code: control.CodeUnknownInstance, Message: fmt.Sprintf("unknown instance %q: the database has no records for it", instance)}
 	}
 	if err != nil {
-		return "", err
+		return control.ForgetInstanceResult{}, err
 	}
-	counts := fmt.Sprintf("media=%d searches=%d installations=%d rollback_copies=%d candidates=%d rejections=%d notifications=%d events=%d replays=%d",
-		result.Media, result.Searches, result.Installations, result.RollbackCopies, result.Candidates, result.Rejections, result.Notifications, result.Events, result.Replays)
-	leftOnDisk := "subtitle files installed for this instance stay on disk and will no longer be managed"
-	if result.RollbackCopies > 0 {
-		leftOnDisk += fmt.Sprintf(", as do %d hidden .subsyncd-rollback-* copies beside them, which you can delete by hand", result.RollbackCopies)
-	}
+	forgotten := control.ForgetInstanceResult{Instance: instance, Applied: apply, Media: result.Media, Searches: result.Searches, Installations: result.Installations, RollbackCopies: result.RollbackCopies, Candidates: result.Candidates, Rejections: result.Rejections, Notifications: result.Notifications, Events: result.Events, Replays: result.Replays}
 	if !apply {
-		return fmt.Sprintf("forget-instance preview: instance=%s %s\n%s\nnothing was deleted; rerun with --yes to delete these records", instance, counts, leftOnDisk), nil
+		return forgotten, nil
 	}
 	a.Events.For("app").Log(ctx, slog.LevelInfo, "instance.forgotten", "removed instance records",
 		slog.String("instance", observability.SafeText(instance)),
@@ -55,5 +51,5 @@ func (a *App) ForgetInstance(ctx context.Context, instance string, apply bool) (
 		slog.Int64("event_count", result.Events),
 		slog.Int64("replay_count", result.Replays),
 	)
-	return fmt.Sprintf("forget-instance complete: instance=%s %s\n%s", instance, counts, leftOnDisk), nil
+	return forgotten, nil
 }

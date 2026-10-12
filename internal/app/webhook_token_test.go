@@ -52,11 +52,13 @@ func TestWebhookURLPrintsStoredToken(t *testing.T) {
 	token := mutable.WebhookTokens()["tv"]
 	reader := openReadOnlyWebhookApp(t, cfg)
 
-	got, err := reader.WebhookURL(t.Context(), "tv", "")
+	gotResult, err := reader.WebhookURL(t.Context(), "tv", "")
+	got := gotResult.Text()
 	if err != nil || got != "http://subsyncd:8097/p/webhooks/tv?token="+token {
 		t.Fatalf("url=%q err=%v", got, err)
 	}
-	got, err = reader.WebhookURL(t.Context(), "tv", "https://other.example/")
+	gotResult, err = reader.WebhookURL(t.Context(), "tv", "https://other.example/")
+	got = gotResult.Text()
 	if err != nil || got != "https://other.example/webhooks/tv?token="+token {
 		t.Fatalf("override url=%q err=%v", got, err)
 	}
@@ -68,7 +70,8 @@ func TestWebhookURLPrintsStoredToken(t *testing.T) {
 func TestWebhookURLWithoutBaseIsPathOnly(t *testing.T) {
 	mutable, cfg, _ := openWebhookTokenApp(t, nil)
 	token := mutable.WebhookTokens()["tv"]
-	got, err := openReadOnlyWebhookApp(t, cfg).WebhookURL(t.Context(), "tv", "")
+	gotResult, err := openReadOnlyWebhookApp(t, cfg).WebhookURL(t.Context(), "tv", "")
+	got := gotResult.Text()
 	if err != nil || got != "/webhooks/tv?token="+token {
 		t.Fatalf("url=%q err=%v", got, err)
 	}
@@ -104,7 +107,8 @@ func TestWebhookURLUnknownInstance(t *testing.T) {
 func TestRotateWebhookTokenChangesTokenAndPrintsNoSecret(t *testing.T) {
 	application, _, logs := openWebhookTokenApp(t, nil)
 	old := application.WebhookTokens()["tv"]
-	output, err := application.RotateWebhookToken(t.Context(), "tv")
+	outputResult, err := application.RotateWebhookToken(t.Context(), "tv")
+	output := outputResult.Text()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +143,8 @@ func containsValue(values []string, want string) bool {
 
 func TestRotateWebhookTokenManagedMessage(t *testing.T) {
 	application, _, _ := openWebhookTokenApp(t, func(c *config.Config) { c.Server.WebhookBaseURL = "http://subsyncd:8097" })
-	output, err := application.RotateWebhookToken(t.Context(), "tv")
+	outputResult, err := application.RotateWebhookToken(t.Context(), "tv")
+	output := outputResult.Text()
 	if err != nil || !strings.Contains(output, "start subsyncd") || !strings.Contains(output, "updated in Arr at that start") || strings.Contains(output, "restart") || strings.Contains(output, "running daemon") {
 		t.Fatalf("output=%q err=%v", output, err)
 	}

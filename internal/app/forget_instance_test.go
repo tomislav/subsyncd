@@ -59,7 +59,8 @@ func TestForgetInstancePreviewKeepsRows(t *testing.T) {
 	var logs bytes.Buffer
 	application := openForgetInstanceApp(t, &logs)
 
-	output, err := application.ForgetInstance(t.Context(), "old", false)
+	outputResult, err := application.ForgetInstance(t.Context(), "old", false)
+	output := outputResult.Text()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +76,8 @@ func TestForgetInstanceDeletesAndLogsCounts(t *testing.T) {
 	var logs bytes.Buffer
 	application := openForgetInstanceApp(t, &logs)
 
-	output, err := application.ForgetInstance(t.Context(), "old", true)
+	outputResult, err := application.ForgetInstance(t.Context(), "old", true)
+	output := outputResult.Text()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +107,8 @@ func TestForgetInstancePreviewRunsWhileDaemonHoldsLock(t *testing.T) {
 	}
 	defer diagnostic.Close()
 
-	output, err := diagnostic.ForgetInstance(t.Context(), "old", false)
+	outputResult, err := diagnostic.ForgetInstance(t.Context(), "old", false)
+	output := outputResult.Text()
 	if err != nil || !strings.Contains(output, "media=1") {
 		t.Fatalf("preview output=%q err=%v", output, err)
 	}
