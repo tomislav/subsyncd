@@ -88,8 +88,13 @@ func SocketPath(dataDir string) string {
 
 // pathFree describes a failed operation without the file path that
 // *net.OpError and *fs.PathError embed in their messages. It keeps the errno
-// so errors.Is still works.
+// or context cause so errors.Is still works.
 func pathFree(op string, err error) error {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, cause) {
+			return fmt.Errorf("%s: %w", op, cause)
+		}
+	}
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
 		return fmt.Errorf("%s: %w", op, errno)

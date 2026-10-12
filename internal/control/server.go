@@ -84,7 +84,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			wg.Wait()
 			_ = listener.Close()
 			_ = os.Remove(s.Path)
-			return fmt.Errorf("accept control connection: %w", err)
+			return pathFree("accept control connection", err)
 		}
 		mu.Lock()
 		conns[conn] = struct{}{}

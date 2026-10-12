@@ -342,3 +342,20 @@ func TestServeStartupErrorOmitsSocketPath(t *testing.T) {
 		}
 	}
 }
+
+func TestDialKeepsContextCancellation(t *testing.T) {
+	dir := shortDir(t)
+	start(t, dir, handlerFunc(echo), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := control.Dial(ctx, dir)
+	if err == nil {
+		t.Fatal("Dial succeeded with a canceled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, control.ErrNoDaemon) || strings.Contains(err.Error(), dir) {
+		t.Fatalf("err = %v", err)
+	}
+}
