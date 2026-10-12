@@ -69,6 +69,9 @@ type Config struct {
 
 type ServerConfig struct {
 	Listen string `yaml:"listen"`
+	// WebhookBaseURL is subsyncd's address as Sonarr and Radarr reach it. It
+	// applies to every instance.
+	WebhookBaseURL string `yaml:"webhook_base_url"`
 }
 
 type LoggingConfig struct {
@@ -89,7 +92,6 @@ type InstanceConfig struct {
 	Type         string        `yaml:"type"`
 	URL          string        `yaml:"url"`
 	APIKey       string        `yaml:"api_key"`
-	WebhookToken string        `yaml:"webhook_token"`
 	PathMappings []PathMapping `yaml:"path_mappings"`
 	// QueuePriority ranks this instance's searches within each queue class.
 	// Higher runs first; the default 0 keeps queue order unchanged.
@@ -255,6 +257,9 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if err := rejectRemovedKeys(&document); err != nil {
+		return Config{}, err
+	}
 	if err := expandEnv(&document, lookupEnv); err != nil {
 		return Config{}, err
 	}
@@ -285,6 +290,44 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// rejectRemovedKeys refuses configuration keys that no longer exist, naming
+// the instance but never the value.
+func rejectRemovedKeys(document *yaml.Node) error {
+	root := document
+	if root.Kind == yaml.DocumentNode && len(root.Content) == 1 {
+		root = root.Content[0]
+	}
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "instances" || root.Content[i+1].Kind != yaml.SequenceNode {
+			continue
+		}
+		for index, instance := range root.Content[i+1].Content {
+			if instance.Kind != yaml.MappingNode {
+				continue
+			}
+			name := fmt.Sprintf("#%d", index)
+			removed := false
+			for j := 0; j+1 < len(instance.Content); j += 2 {
+				switch instance.Content[j].Value {
+				case "name":
+					if value := instance.Content[j+1]; value.Kind == yaml.ScalarNode && value.Value != "" {
+						name = value.Value
+					}
+				case "webhook_token":
+					removed = true
+				}
+			}
+			if removed {
+				return fmt.Errorf("instance %s webhook_token is no longer used: subsyncd generates webhook tokens itself; remove the key", name)
+			}
+		}
+	}
+	return nil
 }
 
 func decodeSingleDocument(data []byte) (yaml.Node, error) {
@@ -361,6 +404,7 @@ func normalize(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	cfg.Logging = LoggingConfig{Level: logLevel}
+	cfg.Server.WebhookBaseURL = strings.TrimRight(strings.TrimSpace(cfg.Server.WebhookBaseURL), "/")
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = defaultListen
 	}
@@ -515,6 +559,12 @@ func (c Config) Validate() error {
 	if err != nil || portNumber < 0 || portNumber > 65535 {
 		return fmt.Errorf("server listen port %q is invalid", port)
 	}
+	if c.Server.WebhookBaseURL != "" {
+		parsed, err := url.ParseRequestURI(c.Server.WebhookBaseURL)
+		if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("server webhook_base_url is invalid")
+		}
+	}
 	for _, root := range c.MediaRoots {
 		if !filepath.IsAbs(root) {
 			return fmt.Errorf("media root %q must be absolute", root)
@@ -601,7 +651,7 @@ func (c Config) Validate() error {
 		if err != nil || parsedURL.Scheme != "http" && parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
 			return fmt.Errorf("instance %s url is invalid", instance.Name)
 		}
-		if instance.APIKey == "" || instance.WebhookToken == "" {
+		if instance.APIKey == "" {
 			return fmt.Errorf("instance %s credentials are required", instance.Name)
 		}
 		if instance.QueuePriority < 0 || instance.QueuePriority > maxQueuePriority {

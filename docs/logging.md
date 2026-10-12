@@ -70,7 +70,6 @@ At debug level, `archive.classified` reports archive type, subtitle-member count
 | `reconcile.snapshot_deletions_withheld` | Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied. |
 | `webhook.inbox_orphaned` | Logged at startup when webhooks are stored for an instance that is no longer in the configuration; `webhook_count` says how many. They are never processed. Run `forget-instance` for that instance to delete them. |
 | `install.recovery_timed_out` | At startup, finishing subtitle installs interrupted by a crash took longer than 30 seconds, usually because a media mount hangs. subsyncd starts anyway and tries again at the next start. |
-| `config.weak_webhook_token` | Logged at daemon startup for an instance whose `webhook_token` is shorter than 16 characters. |
 | `instance.forgotten` | `forget-instance --yes` deleted a removed instance's records; carries the instance name and how many of each kind of record were removed. |
 
 `reconcile.failed` (error) is reserved for real reconciliation failures. The [troubleshooting table](operations.md#troubleshooting) says what to do about each warning.

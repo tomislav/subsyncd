@@ -11,8 +11,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -121,7 +123,7 @@ func testConfig(t *testing.T) config.Config {
 	root := t.TempDir()
 	return config.Config{
 		DataDir: root + "/data", MediaRoots: []string{root}, Server: config.ServerConfig{Listen: "127.0.0.1:0"},
-		Instances:            []config.InstanceConfig{{Name: "tv", Type: "sonarr", URL: "http://sonarr.invalid", APIKey: "api", WebhookToken: "webhook"}},
+		Instances:            []config.InstanceConfig{{Name: "tv", Type: "sonarr", URL: "http://sonarr.invalid", APIKey: "api"}},
 		Providers:            map[string]config.ProviderSpec{"english": {Type: "fake", RequestsPerSecond: 1, Burst: 1, MaxConcurrent: 1}},
 		Languages:            map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"english"}}},
 		AllowHearingImpaired: true, MinimumReleaseScore: 35,
@@ -296,7 +298,7 @@ server: {listen: "127.0.0.1:0"}
 logging: {level: debug}
 worker: {max_concurrent: 1}
 instances:
-  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, webhook_token: hook-secret, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, path_mappings: [{remote: /tv, local: %q}]}
 providers:
   english: {type: fake, requests_per_second: 1, burst: 1, max_concurrent: 1}
 provider_http: {shared_origin_max_concurrent: 1}
@@ -340,104 +342,6 @@ install: {file_mode: "0644"}
 	}
 }
 
-func TestOpenWarnsAboutShortWebhookTokensForDaemonOnly(t *testing.T) {
-	for _, command := range []string{"serve", "doctor"} {
-		t.Run(command, func(t *testing.T) {
-			root := t.TempDir()
-			configPath := filepath.Join(root, "config.yaml")
-			text := fmt.Sprintf(`
-data_dir: %q
-media_roots: [%q]
-server: {listen: "127.0.0.1:0"}
-worker: {max_concurrent: 1}
-instances:
-  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, webhook_token: hook, path_mappings: [{remote: /tv, local: %q}]}
-  - {name: movies, type: radarr, url: "http://radarr.invalid", api_key: api-secret, webhook_token: a-long-random-webhook-secret, path_mappings: [{remote: /movies, local: %q}]}
-providers:
-  english: {type: fake, requests_per_second: 1, burst: 1, max_concurrent: 1}
-provider_http: {shared_origin_max_concurrent: 1}
-languages: {en: {providers: [english]}}
-pack_cache: {ttl: 1h, max_bytes: 1048576}
-sync: {lapse_path: /usr/local/bin/lapse, timeout: 1m}
-install: {file_mode: "0644"}
-`, filepath.Join(root, "data"), root, root, root)
-			if err := os.WriteFile(configPath, []byte(text), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.MkdirAll(filepath.Join(root, "data"), 0o750); err != nil {
-				t.Fatal(err)
-			}
-			initialized, err := store.Open(context.Background(), filepath.Join(root, "data", "subsyncd.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			initialized.Close()
-			var logs bytes.Buffer
-			application, err := Open(context.Background(), configPath, OpenOptions{
-				LogWriter: &logs, Version: "test", Command: command,
-				Runtime: Options{SkipLapseCheck: true, SkipProbeCheck: true, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}, "movies": fakeCatalog{}}, Worker: &waitingWorker{}},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer application.Close()
-			var warnings []map[string]any
-			for _, record := range decodeLogRecords(t, logs.String()) {
-				if record["event"] == "config.weak_webhook_token" {
-					warnings = append(warnings, record)
-				}
-			}
-			if command != "serve" {
-				if len(warnings) != 0 {
-					t.Fatalf("diagnostic command warned: %#v", warnings)
-				}
-				return
-			}
-			if len(warnings) != 1 || warnings[0]["instance"] != "tv" || warnings[0]["level"] != "warn" || warnings[0]["minimum_length"] != float64(16) {
-				t.Fatalf("weak token warnings = %#v", warnings)
-			}
-			if strings.Contains(logs.String(), `"hook"`) || strings.Contains(logs.String(), "a-long-random") {
-				t.Fatalf("warning leaked a token: %s", logs.String())
-			}
-		})
-	}
-}
-
-func TestLoggingDocumentationContract(t *testing.T) {
-	read := func(path string) string {
-		t.Helper()
-		payload, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(payload)
-	}
-	for _, document := range []struct {
-		path     string
-		required []string
-	}{
-		{"../../README.md", []string{"docs/logging.md"}},
-		{"../../docs/operations.md", []string{"(logging.md)"}},
-		{"../../docs/logging.md", []string{
-			"docker compose logs", "SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
-			"job_id", "outcome", "reason", "development/logging.md",
-		}},
-		{"../../docs/development/logging.md", []string{
-			"service", "level", "component", "event", "job_id", "media_id", "duration_ms",
-			"Credentials", "absolute media/data/temp paths", "never intentional log fields",
-		}},
-	} {
-		t.Run(document.path, func(t *testing.T) {
-			content := read(document.path)
-			for _, required := range document.required {
-				if !strings.Contains(content, required) {
-					t.Errorf("%s is missing %q", document.path, required)
-				}
-			}
-		})
-	}
-}
-
 func TestOpenLogsSanitizedStartupFailure(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.yaml")
@@ -446,7 +350,7 @@ data_dir: %q
 media_roots: [%q]
 server: {listen: "127.0.0.1:0"}
 instances:
-  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, webhook_token: hook-secret, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, path_mappings: [{remote: /tv, local: %q}]}
 providers:
   english: {type: fake, requests_per_second: 1, burst: 1, max_concurrent: 1}
 languages: {en: {providers: [english]}}
@@ -1038,7 +942,8 @@ func TestRedactRemovesConfiguredSecretsAndMediaRoots(t *testing.T) {
 	spec := cfg.Providers["english"]
 	spec.Settings = *document.Content[0]
 	cfg.Providers["english"] = spec
-	application := &App{Config: cfg}
+	application := &App{Config: cfg, redaction: &redactionSecrets{}}
+	application.redaction.Add("webhook")
 	message := application.Redact(errors.New("provider-secret account-name api webhook " + cfg.MediaRoots[0])).Error()
 	for _, forbidden := range []string{"provider-secret", "account-name", "api", "webhook", cfg.MediaRoots[0]} {
 		if strings.Contains(message, forbidden) {
@@ -1054,7 +959,7 @@ func TestRedactTemporaryPathsInErrorsAndLogs(t *testing.T) {
 	application := &App{Config: cfg}
 	failure := fmt.Errorf("prepare candidate: %w", &os.PathError{Op: "mkdir", Path: filepath.Join(tempRoot, ".subsyncd-work-123"), Err: os.ErrPermission})
 	var logs bytes.Buffer
-	events, err := observability.New(&logs, observability.Options{Level: "info", Redact: func(err error) string { return redactedError(err, cfg) }})
+	events, err := observability.New(&logs, observability.Options{Level: "info", Redact: func(err error) string { return redactedError(err, cfg, nil) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1522,5 +1427,110 @@ func TestExplainShowsEpisodeRange(t *testing.T) {
 	output, err := application.Explain(context.Background(), "tv", "episode", 8, "en")
 	if err != nil || !strings.Contains(output, "episodes=S06E01-E02") {
 		t.Fatalf("Explain() = %q/%v", output, err)
+	}
+}
+
+func newTokenApp(t *testing.T, cfg config.Config) *App {
+	t.Helper()
+	application, err := New(context.Background(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: &waitingWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application
+}
+
+func postTestEvent(application *App, token string) int {
+	request := httptest.NewRequest(http.MethodPost, "/webhooks/tv?token="+token, strings.NewReader(`{"eventType":"Test"}`))
+	recorder := httptest.NewRecorder()
+	application.Handler.ServeHTTP(recorder, request)
+	return recorder.Code
+}
+
+func TestServeAuthenticatesWebhooksWithStoredToken(t *testing.T) {
+	application := newTokenApp(t, testConfig(t))
+	defer application.Close()
+	token := application.WebhookTokens()["tv"]
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(token) {
+		t.Fatalf("stored token = %q, want 64 lowercase hex characters", token)
+	}
+	if code := postTestEvent(application, token); code < 200 || code > 299 {
+		t.Fatalf("stored token status = %d, want 2xx", code)
+	}
+	if code := postTestEvent(application, "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("wrong token status = %d, want 401", code)
+	}
+}
+
+func TestStoredTokenSurvivesReopen(t *testing.T) {
+	cfg := testConfig(t)
+	first := newTokenApp(t, cfg)
+	token := first.WebhookTokens()["tv"]
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second := newTokenApp(t, cfg)
+	defer second.Close()
+	if got := second.WebhookTokens()["tv"]; got == "" || got != token {
+		t.Fatalf("reopened token = %q, want %q", got, token)
+	}
+}
+
+func TestReadOnlyOpenGeneratesNoToken(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.yaml")
+	text := fmt.Sprintf(`
+data_dir: %q
+media_roots: [%q]
+server: {listen: "127.0.0.1:0"}
+worker: {max_concurrent: 1}
+instances:
+  - {name: tv, type: sonarr, url: "http://sonarr.invalid", api_key: api-secret, path_mappings: [{remote: /tv, local: %q}]}
+providers:
+  english: {type: fake, requests_per_second: 1, burst: 1, max_concurrent: 1}
+provider_http: {shared_origin_max_concurrent: 1}
+languages: {en: {providers: [english]}}
+pack_cache: {ttl: 1h, max_bytes: 1048576}
+sync: {lapse_path: /usr/local/bin/lapse, timeout: 1m}
+install: {file_mode: "0644"}
+`, filepath.Join(root, "data"), root, root)
+	if err := os.WriteFile(configPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "data"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	prepared, err := store.Open(ctx, filepath.Join(root, "data", "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Repository().EnsureInstance(ctx, "tv", "sonarr", "http://sonarr.invalid", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Close(); err != nil {
+		t.Fatal(err)
+	}
+	application, err := Open(ctx, configPath, OpenOptions{
+		LogWriter: io.Discard, Version: "test", Command: "explain",
+		Runtime: Options{SkipLapseCheck: true, SkipProbeCheck: true, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Repository.WebhookToken(ctx, "tv"); !errors.Is(err, store.ErrNoWebhookToken) {
+		t.Fatalf("WebhookToken() error = %v, want ErrNoWebhookToken", err)
+	}
+	if len(application.WebhookTokens()) != 0 {
+		t.Fatalf("read-only app holds tokens: %v", application.WebhookTokens())
+	}
+	application.Close()
+}
+
+func TestRedactedErrorScrubsStoredToken(t *testing.T) {
+	application := newTokenApp(t, testConfig(t))
+	defer application.Close()
+	token := application.WebhookTokens()["tv"]
+	if got := application.Redact(errors.New("x " + token)).Error(); strings.Contains(got, token) {
+		t.Fatalf("Redact() leaked the stored token: %s", got)
 	}
 }

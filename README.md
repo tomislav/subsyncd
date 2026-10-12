@@ -82,7 +82,7 @@ MOVIES_PATH=/srv/media/movies
 TV_PATH=/srv/media/tv
 ```
 
-Find the Sonarr and Radarr API keys in each application's settings. Choose a separate random webhook secret for each instance; you will use it again in step 4. Enter the API keys and webhook secrets in the quoted placeholders under `instances` in `config/config.yaml`.
+Find the Sonarr and Radarr API keys in each application's settings. Enter the API keys in the quoted placeholders under `instances` in `config/config.yaml`.
 
 Edit `config/config.yaml` to:
 
@@ -135,14 +135,14 @@ docker compose logs -f subsyncd
 
 ### 4. Add Sonarr and Radarr webhooks
 
-In each application's **Settings → Connect**, add a webhook using the instance name from `config/config.yaml` and the webhook secret you entered in that file:
+In each application's **Settings → Connect**, add a webhook using the instance name from `config/config.yaml` and the webhook token subsyncd generates for it:
 
 ```text
-http://subsyncd:8097/webhooks/sonarr-main?token=YOUR_SONARR_SECRET
-http://subsyncd:8097/webhooks/radarr-main?token=YOUR_RADARR_SECRET
+http://subsyncd:8097/webhooks/sonarr-main?token=SONARR_WEBHOOK_TOKEN
+http://subsyncd:8097/webhooks/radarr-main?token=RADARR_WEBHOOK_TOKEN
 ```
 
-Generate each webhook secret with `openssl rand -hex 32`; secrets shorter than 16 characters work but log a startup warning.
+subsyncd generates a random token per instance and stores it in its database; `webhook_token` in the configuration is no longer accepted.
 
 For an instance outside Docker, replace `subsyncd` with your Docker host's address and use the published port.
 

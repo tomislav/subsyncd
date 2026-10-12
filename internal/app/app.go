@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -18,7 +19,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -61,6 +61,10 @@ type Options struct {
 	Listener       net.Listener
 	SkipLapseCheck bool
 	SkipProbeCheck bool
+
+	// redaction is shared with the emitter Open builds, so secrets generated
+	// during New are scrubbed from the log too.
+	redaction *redactionSecrets
 }
 
 type App struct {
@@ -84,10 +88,54 @@ type App struct {
 	Command  string
 	Clock    provider.Clock
 
+	// redaction holds secrets generated at runtime, which no configuration
+	// value names, so error text and logs can scrub them.
+	redaction       *redactionSecrets
+	webhookTokens   map[string]string
 	mutationRelease func()
 	readOnly        bool
 	closeOnce       sync.Once
 	closeErr        error
+}
+
+// redactionSecrets is a mutex-guarded set of runtime secrets to scrub.
+type redactionSecrets struct {
+	mu     sync.Mutex
+	values []string
+}
+
+// Add records secrets; empty values are ignored.
+func (r *redactionSecrets) Add(values ...string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, value := range values {
+		if value != "" {
+			r.values = append(r.values, value)
+		}
+	}
+}
+
+// Values returns a copy of the recorded secrets.
+func (r *redactionSecrets) Values() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.values...)
+}
+
+// WebhookTokens returns a copy of the stored webhook token of each instance.
+// It is empty for read-only assemblies, which never generate tokens.
+func (a *App) WebhookTokens() map[string]string {
+	tokens := make(map[string]string, len(a.webhookTokens))
+	for name, token := range a.webhookTokens {
+		tokens[name] = token
+	}
+	return tokens
 }
 
 type OpenOptions struct {
@@ -107,12 +155,13 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 	if err != nil {
 		return nil, err
 	}
+	redaction := &redactionSecrets{}
 	events, err := observability.New(options.LogWriter, observability.Options{
 		Level:      cfg.Logging.Level,
 		Version:    options.Version,
 		MediaRoots: cfg.MediaRoots,
 		Redact: func(err error) string {
-			return redactedError(err, cfg)
+			return redactedError(err, cfg, redaction.Values())
 		},
 	})
 	if err != nil {
@@ -127,16 +176,14 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 		slog.Int("max_concurrent", cfg.Worker.MaxConcurrent),
 		slog.Bool("silo_enabled", cfg.Silo.Enabled),
 	)
-	if options.Command == "serve" {
-		warnWeakWebhookTokens(ctx, appEvents, cfg)
-	}
 	runtimeOptions := options.Runtime
 	runtimeOptions.Events = events
+	runtimeOptions.redaction = redaction
 	runtimeOptions.ReadOnly = readOnlyCommand(options.Command)
 	application, err := New(ctx, cfg, runtimeOptions)
 	if err != nil {
 		appEvents.Log(ctx, slog.LevelError, "service.start_failed", "subsyncd failed to start", appEvents.ErrorAttrs("startup", err)...)
-		return nil, &reportedStartupError{message: redactedError(err, cfg)}
+		return nil, &reportedStartupError{message: redactedError(err, cfg, redaction.Values())}
 	}
 	application.Command = options.Command
 	appEvents.Log(ctx, slog.LevelInfo, "service.ready", "subsyncd ready", slog.String("command", options.Command))
@@ -151,22 +198,6 @@ func readOnlyCommand(command string) bool {
 		return true
 	}
 	return false
-}
-
-// minimumWebhookTokenLength is the length below which a webhook token is
-// reported as easy to guess. Shorter tokens still work.
-const minimumWebhookTokenLength = 16
-
-// warnWeakWebhookTokens names, without the token, each instance whose webhook
-// token is shorter than minimumWebhookTokenLength.
-func warnWeakWebhookTokens(ctx context.Context, events *observability.Emitter, cfg config.Config) {
-	for _, instance := range cfg.Instances {
-		if utf8.RuneCountInString(instance.WebhookToken) >= minimumWebhookTokenLength {
-			continue
-		}
-		events.Log(ctx, slog.LevelWarn, "config.weak_webhook_token", "webhook token is shorter than recommended",
-			slog.String("instance", observability.SafeText(instance.Name)), slog.Int("minimum_length", minimumWebhookTokenLength))
-	}
 }
 
 func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err error) {
@@ -250,6 +281,21 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	}
 	if err := repository.SetInstanceQueuePriorities(ctx, queuePriorities); err != nil {
 		return nil, err
+	}
+	names := make([]string, 0, len(cfg.Instances))
+	for _, instance := range cfg.Instances {
+		names = append(names, instance.Name)
+	}
+	webhookTokens, err := repository.EnsureWebhookTokens(ctx, names, rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	redaction := options.redaction
+	if redaction == nil {
+		redaction = &redactionSecrets{}
+	}
+	for _, token := range webhookTokens {
+		redaction.Add(token)
 	}
 	warnOrphanedWebhooks(ctx, repository, events, cfg)
 
@@ -354,7 +400,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	webhooks := &catalog.WebhookInbox{Store: repository, Handlers: webhookHandlers, Now: clock.Now, Events: events}
 	webhookInstances := make(map[string]httpapi.Instance, len(cfg.Instances))
 	for _, instance := range cfg.Instances {
-		webhookInstances[instance.Name] = httpapi.Instance{Token: instance.WebhookToken, Handler: webhooks.Handler(instance.Name)}
+		webhookInstances[instance.Name] = httpapi.Instance{Token: webhookTokens[instance.Name], Handler: webhooks.Handler(instance.Name)}
 	}
 
 	reconcilerInterfaces := make(map[string]worker.Reconciler, len(reconcilers))
@@ -375,7 +421,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events, MediaRoots: cfg.MediaRoots}
 	}
 
-	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, Listener: options.Listener, Events: events, Clock: clock}
+	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
@@ -688,7 +734,7 @@ func (a *App) Redact(err error) error {
 	if err == nil {
 		return nil
 	}
-	return errors.New(redactedError(err, a.Config))
+	return errors.New(redactedError(err, a.Config, a.redaction.Values()))
 }
 
 func (a *App) ReportFailure(ctx context.Context, command string, err error) {
@@ -1042,13 +1088,16 @@ func compactJSON(payload []byte) string {
 	return buffer.String()
 }
 
-func redactedError(err error, cfg config.Config) string {
+func redactedError(err error, cfg config.Config, extra []string) string {
 	value := err.Error()
 	for _, instance := range cfg.Instances {
-		for _, secret := range []string{instance.APIKey, instance.WebhookToken} {
-			if secret != "" {
-				value = strings.ReplaceAll(value, secret, "[redacted]")
-			}
+		if instance.APIKey != "" {
+			value = strings.ReplaceAll(value, instance.APIKey, "[redacted]")
+		}
+	}
+	for _, secret := range extra {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[redacted]")
 		}
 	}
 	if cfg.Silo.APIKey != "" {

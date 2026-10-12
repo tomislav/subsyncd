@@ -399,8 +399,8 @@ func TestValidateRejectsDuplicateInstanceName(t *testing.T) {
 languages:
   en: {providers: [subdl-main]}
 instances:
-  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: token, path_mappings: [{remote: /tv, local: %q}]}
-  - {name: sonarr-main, type: sonarr, url: "http://sonarr-2:8989", api_key: key, webhook_token: token, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr-2:8989", api_key: key, path_mappings: [{remote: /tv, local: %q}]}
 `, root, root)
 	_, err := loadText(t, validConfigWithoutInstances(root, extra))
 	assertErrorContains(t, err, "duplicate", "sonarr-main")
@@ -413,7 +413,7 @@ func TestValidateRejectsPathMappingOutsideMediaRoots(t *testing.T) {
 languages:
   en: {providers: [subdl-main]}
 instances:
-  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: token, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, path_mappings: [{remote: /tv, local: %q}]}
 `, outside)
 	_, err := loadText(t, validConfigWithoutInstances(root, extra))
 	assertErrorContains(t, err, "path mapping", "media root")
@@ -486,7 +486,7 @@ func loadTextWithLookup(t *testing.T, text string, lookup func(string) (string, 
 func validConfig(root, languageBlock string) string {
 	return validConfigWithoutInstances(root, fmt.Sprintf(`%s
 instances:
-  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: token, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, path_mappings: [{remote: /tv, local: %q}]}
 `, languageBlock, root))
 }
 
@@ -530,8 +530,8 @@ func TestInstanceQueuePriorityDefaultsToZeroAndLoads(t *testing.T) {
 languages:
   en: {providers: [subdl-main]}
 instances:
-  - {name: radarr-main, type: radarr, url: "http://radarr:7878", api_key: key, webhook_token: token, queue_priority: 30, path_mappings: [{remote: /movies, local: %q}]}
-  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: token, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: radarr-main, type: radarr, url: "http://radarr:7878", api_key: key, queue_priority: 30, path_mappings: [{remote: /movies, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, path_mappings: [{remote: /tv, local: %q}]}
 `, root, root)
 	cfg, err := loadText(t, validConfigWithoutInstances(root, extra))
 	if err != nil {
@@ -552,7 +552,7 @@ func TestValidateRejectsOutOfRangeQueuePriority(t *testing.T) {
 languages:
   en: {providers: [subdl-main]}
 instances:
-  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: token, queue_priority: %s, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, queue_priority: %s, path_mappings: [{remote: /tv, local: %q}]}
 `, value, root)
 		_, err := loadText(t, validConfigWithoutInstances(root, extra))
 		assertErrorContains(t, err, "sonarr-main", "queue_priority")
@@ -707,5 +707,54 @@ func TestInstallStripWatermarksDefaultsOffAndHonorsTrue(t *testing.T) {
 	}
 	if !cfg.Install.StripWatermarks {
 		t.Fatal("explicit install.strip_watermarks: true was ignored")
+	}
+}
+
+func TestRemovedWebhookTokenIsRejected(t *testing.T) {
+	root := t.TempDir()
+	text := validConfigWithoutInstances(root, fmt.Sprintf(`
+languages:
+  en: {providers: [subdl-main]}
+instances:
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: 'sentinel-old-token', path_mappings: [{remote: /tv, local: %q}]}
+`, root))
+	_, err := loadText(t, text)
+	assertErrorContains(t, err, "instance sonarr-main webhook_token is no longer used: subsyncd generates webhook tokens itself; remove the key")
+	if strings.Contains(err.Error(), "sentinel-old-token") {
+		t.Fatalf("error echoes the removed token: %v", err)
+	}
+
+	unnamed := validConfigWithoutInstances(root, fmt.Sprintf(`
+languages:
+  en: {providers: [subdl-main]}
+instances:
+  - {type: sonarr, url: "http://sonarr:8989", api_key: key, webhook_token: 'sentinel-old-token', path_mappings: [{remote: /tv, local: %q}]}
+`, root))
+	_, err = loadText(t, unnamed)
+	assertErrorContains(t, err, "instance #0 webhook_token is no longer used")
+}
+
+func TestWebhookBaseURLValidation(t *testing.T) {
+	root := t.TempDir()
+	build := func(value string) string {
+		return strings.Replace(validConfig(root, "languages:\n  en: {providers: [subdl-main]}"),
+			`server: {listen: "127.0.0.1:8097"}`, fmt.Sprintf(`server: {listen: "127.0.0.1:8097", webhook_base_url: %q}`, value), 1)
+	}
+	for input, want := range map[string]string{
+		"http://subsyncd:8097":   "http://subsyncd:8097",
+		"https://host/subsyncd/": "https://host/subsyncd",
+		"":                       "",
+	} {
+		cfg, err := loadText(t, build(input))
+		if err != nil {
+			t.Fatalf("%q: %v", input, err)
+		}
+		if cfg.Server.WebhookBaseURL != want {
+			t.Fatalf("%q normalized to %q, want %q", input, cfg.Server.WebhookBaseURL, want)
+		}
+	}
+	for _, input := range []string{"ftp://x", "http://u:p@x", "http://x?a=1", "http://x#f", "subsyncd:8097"} {
+		_, err := loadText(t, build(input))
+		assertErrorContains(t, err, "server webhook_base_url is invalid")
 	}
 }

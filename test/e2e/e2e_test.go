@@ -843,7 +843,7 @@ func e2eConfig(t *testing.T, root, arrURL, providerURL, siloURL string) config.C
 	return config.Config{
 		DataDir: filepath.Join(root, "data"), MediaRoots: []string{root}, Server: config.ServerConfig{Listen: "127.0.0.1:0"},
 		Worker:    config.WorkerConfig{MaxConcurrent: 1},
-		Instances: []config.InstanceConfig{{Name: "radarr-main", Type: "radarr", URL: arrURL, APIKey: "arr-key", WebhookToken: "webhook-key", PathMappings: []config.PathMapping{{Remote: "/remote/movies", Local: root}}}},
+		Instances: []config.InstanceConfig{{Name: "radarr-main", Type: "radarr", URL: arrURL, APIKey: "arr-key", PathMappings: []config.PathMapping{{Remote: "/remote/movies", Local: root}}}},
 		Providers: map[string]config.ProviderSpec{"opensubtitles-main": {Type: "opensubtitles", RequestsPerSecond: 100, Burst: 10, MaxConcurrent: 1, Settings: *providerNode.Content[0]}},
 		Languages: map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"opensubtitles-main"}}}, AllowHearingImpaired: true, MinimumReleaseScore: 35,
 		ProviderHTTP: config.ProviderHTTPConfig{SharedOriginMaxConcurrent: 1}, LapseCache: config.LapseCacheConfig{TTL: 720 * time.Hour}, PackCache: config.PackCacheConfig{TTL: 24 * time.Hour, MaxBytes: 16 << 20},
@@ -872,7 +872,7 @@ func deliverInstanceWebhook(t *testing.T, a *app.App, instance, body string) {
 		cancel()
 		<-done
 	}()
-	postInstanceWebhook(t, a.Handler, instance, body, http.StatusAccepted)
+	postInstanceWebhook(t, a.Handler, instance, a.WebhookTokens()[instance], body, http.StatusAccepted)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		waiting, err := a.Repository.WebhookInboxCounts(t.Context())
@@ -891,14 +891,14 @@ func deliverInstanceWebhook(t *testing.T, a *app.App, instance, body string) {
 
 func postWebhook(t *testing.T, handler http.Handler, body string, wantStatus int) {
 	t.Helper()
-	postInstanceWebhook(t, handler, "radarr-main", body, wantStatus)
+	postInstanceWebhook(t, handler, "radarr-main", "webhook-key", body, wantStatus)
 }
 
-func postInstanceWebhook(t *testing.T, handler http.Handler, instance, body string, wantStatus int) {
+func postInstanceWebhook(t *testing.T, handler http.Handler, instance, token, body string, wantStatus int) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/webhooks/"+instance+"?token=webhook-key", strings.NewReader(body))
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/webhooks/"+instance+"?token="+token, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -80,12 +80,12 @@ See [logging internals](logging.md) for the event and privacy contract.
 
 ## Sonarr and Radarr setup
 
-Each instance needs a unique `name`, API key, webhook secret, and one or more remote-to-local path mappings. Longest boundary-aware mapping wins. Mapping destinations must sit inside a configured media root, and existing parent symlinks are resolved before acceptance.
+Each instance needs a unique `name`, API key, and one or more remote-to-local path mappings. Longest boundary-aware mapping wins. Mapping destinations must sit inside a configured media root, and existing parent symlinks are resolved before acceptance.
 
 Create an Arr webhook/connection pointing to:
 
 ```text
-http://subsyncd:8097/webhooks/INSTANCE_NAME?token=INSTANCE_WEBHOOK_TOKEN
+http://subsyncd:8097/webhooks/INSTANCE_NAME?token=STORED_WEBHOOK_TOKEN
 ```
 
 Enable download/import (including upgrades), rename, file-delete, and whole-movie/series-delete events. Any other event type (grab, health, series or movie added, application update, and the other app's whole-delete events) is answered HTTP 204 as ignored, so a connection with extra events enabled is not reported as failing; a payload that is malformed or lacks the identity its event needs is HTTP 400.

@@ -72,7 +72,7 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 			defer provider.Close()
 			cfg := e2eConfig(t, root, arr.URL, provider.URL, "")
 			cfg.Silo.Enabled = false
-			cfg.Instances = []config.InstanceConfig{{Name: "library", Type: kind, URL: arr.URL, APIKey: "arr-key", WebhookToken: "webhook-key", PathMappings: []config.PathMapping{{Remote: "/remote/library", Local: root}}}}
+			cfg.Instances = []config.InstanceConfig{{Name: "library", Type: kind, URL: arr.URL, APIKey: "arr-key", PathMappings: []config.PathMapping{{Remote: "/remote/library", Local: root}}}}
 			now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 			build := func() *app.App {
 				a, err := app.New(context.Background(), cfg, app.Options{Clock: fixedE2EClock{now: now}, LapseRunner: &countingLapseRunner{}, ProbeRunner: probeRunner{}, HTTPClient: provider.Client()})

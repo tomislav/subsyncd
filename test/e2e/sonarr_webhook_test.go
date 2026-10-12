@@ -85,7 +85,7 @@ func TestSonarrSingleFileWebhookInstallsAndDeduplicatesAfterRestart(t *testing.T
 	}))
 	defer provider.Close()
 	cfg := e2eConfig(t, root, arr.URL, provider.URL, "")
-	cfg.Instances = []config.InstanceConfig{{Name: "sonarr-main", Type: "sonarr", URL: arr.URL, APIKey: "arr-key", WebhookToken: "webhook-key", PathMappings: []config.PathMapping{{Remote: "/remote/tv", Local: root}}}}
+	cfg.Instances = []config.InstanceConfig{{Name: "sonarr-main", Type: "sonarr", URL: arr.URL, APIKey: "arr-key", PathMappings: []config.PathMapping{{Remote: "/remote/tv", Local: root}}}}
 	cfg.Silo.Enabled = false
 	cfg.Sync.Policy = "always"
 	runner := &countingLapseRunner{}
