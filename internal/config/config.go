@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -728,8 +729,12 @@ func TrimWebhookBaseURL(raw string) string {
 }
 
 // ValidWebhookBaseURL reports whether base is an absolute http or https URL
-// with a host and no userinfo, query or fragment. A path is allowed.
+// with a host name and no userinfo, query, fragment or whitespace. A path is
+// allowed.
 func ValidWebhookBaseURL(base string) bool {
-	parsed, err := url.ParseRequestURI(base)
-	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
+	if strings.ContainsAny(base, "#?") || strings.IndexFunc(base, unicode.IsSpace) >= 0 {
+		return false
+	}
+	parsed, err := url.Parse(base)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" && parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == ""
 }

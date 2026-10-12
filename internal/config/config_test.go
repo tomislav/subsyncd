@@ -754,8 +754,28 @@ func TestWebhookBaseURLValidation(t *testing.T) {
 			t.Fatalf("%q normalized to %q, want %q", input, cfg.Server.WebhookBaseURL, want)
 		}
 	}
-	for _, input := range []string{"ftp://x", "http://u:p@x", "http://x?a=1", "http://x#f", "subsyncd:8097"} {
+	for _, input := range []string{"ftp://x", "http://u:p@x", "http://x?a=1", "http://x#f", "subsyncd:8097", "http://h/#x", "http://:8097", "http://h/a b", "http://h?", "http://h/a\tb"} {
 		_, err := loadText(t, build(input))
 		assertErrorContains(t, err, "server webhook_base_url is invalid")
+	}
+}
+
+func TestValidWebhookBaseURL(t *testing.T) {
+	for input, want := range map[string]bool{
+		"http://subsyncd:8097": true,
+		"https://host/sub":     true,
+		"HTTP://host":          true,
+		"http://h/#x":          false,
+		"http://h#":            false,
+		"http://:8097":         false,
+		"http://h/a b":         false,
+		"http://h/a\nb":        false,
+		"http://h?":            false,
+		"http://u@h":           false,
+		"/relative":            false,
+	} {
+		if got := ValidWebhookBaseURL(input); got != want {
+			t.Errorf("ValidWebhookBaseURL(%q) = %t, want %t", input, got, want)
+		}
 	}
 }
