@@ -65,7 +65,9 @@ type Command struct {
 	Open OpenFunc
 	// Dial, when set, lets commands the daemon can execute go to it. Without
 	// a running daemon the command opens the backend itself.
-	Dial              DialFunc
+	Dial DialFunc
+	// DaemonTimeout bounds status's wait for the daemon; zero means 2s.
+	DaemonTimeout     time.Duration
 	Stdout            io.Writer
 	Stderr            io.Writer
 	DefaultConfigPath string
@@ -296,6 +298,12 @@ func (c Command) addDaemonState(ctx context.Context, configPath string, status *
 	if c.Dial == nil {
 		return
 	}
+	timeout := c.DaemonTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	remote, err := c.Dial(ctx, configPath)
 	if err == nil {
 		defer remote.Close()
@@ -309,7 +317,7 @@ func (c Command) addDaemonState(ctx context.Context, configPath string, status *
 		return
 	}
 	var coded *control.Error
-	if errors.As(err, &coded) && coded.Code != "" {
+	if errors.As(err, &coded) && coded.Code != "" && ctx.Err() == nil {
 		status.Daemon.Error = coded.Code
 		return
 	}

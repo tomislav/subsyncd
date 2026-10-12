@@ -842,3 +842,28 @@ func TestStatusAndProvidersHelp(t *testing.T) {
 		}
 	}
 }
+
+type blockingRemote struct{ closed bool }
+
+func (r *blockingRemote) Call(ctx context.Context, _ string, _, _ any) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (r *blockingRemote) Close() error { r.closed = true; return nil }
+
+func TestStatusDoesNotHangOnAWedgedDaemon(t *testing.T) {
+	remote := &blockingRemote{}
+	dials := map[string]DialFunc{
+		"wedged call": func(context.Context, string) (Remote, error) { return remote, nil },
+		"wedged dial": func(ctx context.Context, _ string) (Remote, error) { <-ctx.Done(); return nil, ctx.Err() },
+	}
+	for name, dial := range dials {
+		t.Run(name, func(t *testing.T) {
+			started := time.Now()
+			result := statusJSON(t, Command{Stderr: &bytes.Buffer{}, Open: openFake(&fakeBackend{}), Dial: dial, DaemonTimeout: 50 * time.Millisecond}).Result
+			if time.Since(started) > 5*time.Second || result.Daemon.Running || result.Daemon.Error != "daemon unreachable" || result.Queue.Missing.Total != 3 {
+				t.Fatalf("result = %+v after %v", result, time.Since(started))
+			}
+		})
+	}
+}

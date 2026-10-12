@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"sort"
-	"strings"
 	"time"
 
 	"subsyncd/internal/control"
@@ -165,9 +164,11 @@ type providerHealthState struct {
 // A disabled state is auth_failed: only a credential rejection disables a
 // provider, and it lasts until retry --provider or new credentials, so Until
 // is zero. Otherwise only states whose reset lies in the future count:
-// quota_exhausted when the reason names a quota, or a known limit has no
-// requests left; cooling_down for any other reset (rate limit, service busy,
-// a blocked client, a transient failure). The worst state wins in that order,
+// quota_exhausted for the download_quota reason, the only quota the provider
+// layer records (a 429 keeps the header limit with nothing remaining, so
+// limit and remaining cannot tell a quota from a rate limit); cooling_down for
+// any other reset (rate limit headers, service busy, a blocked client, a
+// transient failure). The worst state wins in that order,
 // and Until is the latest reset among the states of that kind.
 func (a *App) providerHealth(ctx context.Context, providerID string, now time.Time) (providerHealthState, error) {
 	states, err := a.Repository.ListProviderStates(ctx, providerID)
@@ -183,7 +184,7 @@ func (a *App) providerHealth(ctx context.Context, providerID string, now time.Ti
 			candidate.State = providerAuthFailed
 		case !state.ResetAt.After(now):
 			continue
-		case strings.Contains(state.Reason, "quota") || (state.Limit > 0 && state.Remaining <= 0):
+		case state.Reason == "download_quota":
 			candidate.State, candidate.Until = providerQuotaExhausted, state.ResetAt.UTC()
 		default:
 			candidate.State, candidate.Until = providerCoolingDown, state.ResetAt.UTC()

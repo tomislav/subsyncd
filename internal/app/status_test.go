@@ -243,6 +243,29 @@ func TestProvidersAuthFailedState(t *testing.T) {
 	}
 }
 
+func TestRateLimitWithHeaderLimitIsCoolingDownNotQuota(t *testing.T) {
+	application := newStatusApp(t, providersConfig)
+	ctx := t.Context()
+	now := application.Clock.Now()
+	// What a 429 with X-RateLimit-Limit: 100 stores: the header's limit, nothing remaining.
+	if err := application.Repository.PutProviderState(ctx, store.ProviderState{ProviderID: "english", Scope: "search", Reason: "x-ratelimit", Limit: 100, Remaining: 0, ResetAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.PutProviderState(ctx, store.ProviderState{ProviderID: "backup", Scope: "download", Reason: "download_quota", Remaining: 0, ResetAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := application.ListProviders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := providerRow(t, result.Providers, "english"); got.State != "cooling_down" || got.LastFailure != "x-ratelimit" {
+		t.Fatalf("english = %+v", got)
+	}
+	if got := providerRow(t, result.Providers, "backup"); got.State != "quota_exhausted" {
+		t.Fatalf("backup = %+v", got)
+	}
+}
+
 func TestStatusHasNoAbsolutePaths(t *testing.T) {
 	application := newStatusApp(t, providersConfig)
 	ctx := t.Context()
