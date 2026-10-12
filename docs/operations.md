@@ -236,7 +236,7 @@ When the daemon is not running, `search` runs in its own process to completion i
 docker compose run --rm --no-deps subsyncd search --instance radarr-main --kind movie --file-id 42 --language en
 ```
 
-A manual search asks every provider for the language afresh, preferred ones first, then fallbacks. It keeps the file's existing schedule, including later upgrade checks. Searching a file subsyncd does not know yet, or one it recorded as deleted, first adds it the way an Arr import would, so every configured language is scheduled. Add `--retry-rejected` to reconsider the candidates subsyncd itself rejected for that file and language; subtitles you rejected with `reject` stay rejected (use `reject --undo` for those).
+A manual search asks every provider for the language afresh, preferred ones first, then fallbacks. When it installs a subtitle, the file's next search becomes that subtitle's first upgrade check, as after an automatic install; otherwise it keeps the file's existing schedule, including later upgrade checks. Searching a file subsyncd does not know yet, or one it recorded as deleted, first adds it the way an Arr import would, so every configured language is scheduled. Add `--retry-rejected` to reconsider the candidates subsyncd itself rejected for that file and language; subtitles you rejected with `reject` stay rejected (use `reject --undo` for those).
 
 ### Scanning a library
 

@@ -442,23 +442,34 @@ func (a *App) runClaimedSearch(ctx context.Context, jobID string, mediaID int64,
 		// owner-guarded, with its history row and the next schedule.
 		return result, a.completeReplacement(ctx, jobID, media, result)
 	}
-	if opts.revived && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
-		// The revival (or this run's claim) queued this language too; this run
-		// already answered it, unless a change arrived meanwhile and asked for
-		// another run. Earlier queued work keeps its schedule and progress.
-		if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome), a.Clock.Now(), jobID); err != nil {
+	if result.Outcome == workflow.OutcomeInstalled {
+		// The queued search's due time and counters were for the subtitle this
+		// run replaced (or for a missing one), so it completes like a worker
+		// install: the new subtitle's upgrade schedule, counters reset. A
+		// change that asked for another run meanwhile keeps it pending.
+		if err := a.completeManualInstall(ctx, jobID, result); err != nil {
 			return workflow.Result{}, err
 		}
-	}
-	// The upgrade schedule is kept only for an unleased search, so the lease
-	// goes back first. A worker that leases the search in between schedules
-	// its own upgrade.
-	if err := a.Repository.ReleaseSearchLease(ctx, jobID); err != nil {
-		return workflow.Result{}, err
-	}
-	if !result.NextUpgrade.IsZero() && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
-		if err := a.Repository.EnsureUpgradeSearch(ctx, mediaID, language, result.NextUpgrade); err != nil {
+	} else {
+		if opts.revived && result.Outcome == workflow.OutcomeSatisfied {
+			// The revival (or this run's claim) queued this language too; this
+			// run already answered it, unless a change arrived meanwhile and
+			// asked for another run. Earlier queued work keeps its schedule and
+			// progress.
+			if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome), a.Clock.Now(), jobID); err != nil {
+				return workflow.Result{}, err
+			}
+		}
+		// The upgrade schedule is kept only for an unleased search, so the
+		// lease goes back first. A worker that leases the search in between
+		// schedules its own upgrade.
+		if err := a.Repository.ReleaseSearchLease(ctx, jobID); err != nil {
 			return workflow.Result{}, err
+		}
+		if !result.NextUpgrade.IsZero() && result.Outcome == workflow.OutcomeSatisfied {
+			if err := a.Repository.EnsureUpgradeSearch(ctx, mediaID, language, result.NextUpgrade); err != nil {
+				return workflow.Result{}, err
+			}
 		}
 	}
 	// The history row is not in the installer's transaction, and it comes last:
@@ -536,6 +547,19 @@ func (a *App) runManualWorkflow(ctx context.Context, mediaID int64, media domain
 			return workflow.Result{}, ctx.Err()
 		}
 	}
+}
+
+// completeManualInstall completes the search jobID owns after a manual run
+// installed a subtitle, as the worker completes an install. The history row
+// is written afterwards like any manual search's, so a failed write never
+// fails the search.
+func (a *App) completeManualInstall(ctx context.Context, jobID string, result workflow.Result) error {
+	completion := store.SearchCompletion{JobID: jobID, Outcome: string(result.Outcome), NextAttemptAt: result.NextUpgrade, ResetMissingAttempt: true, ResetFailureAttempt: true}
+	if !result.NextUpgrade.IsZero() {
+		completion.Priority = store.SearchPriorityUpgrade
+	}
+	_, err := a.Repository.CompleteSearch(ctx, completion)
+	return err
 }
 
 // completeReplacement completes the search a reject queued, while jobID owns

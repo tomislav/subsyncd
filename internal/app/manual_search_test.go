@@ -574,6 +574,77 @@ func TestManualSearchPreservesQueuedUpgradeProgress(t *testing.T) {
 	}
 }
 
+// A manual install replaces the subtitle the queued search was scheduled for,
+// so the search restarts as the new subtitle's upgrade schedule.
+func TestManualInstallRestartsQueuedSearchSchedule(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		priority  store.SearchPriority
+		attempt   int
+		next      time.Duration
+		wantState string
+	}{
+		{"promotion over a queued upgrade", store.SearchPriorityUpgrade, 3, 7 * 24 * time.Hour, "pending"},
+		{"install over a queued missing search", store.SearchPriorityMissing, 2, 7 * 24 * time.Hour, "pending"},
+		{"terminal exact install", store.SearchPriorityUpgrade, 3, 0, "complete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newManualHarness(t, 1, false, "en")
+			h.queue(t, 1, "en")
+			h.exec(t, `UPDATE search_states SET priority=?, attempt=?, failure_attempt=1, last_outcome='satisfied' WHERE media_id=?`, tc.priority, tc.attempt, h.ids[1])
+			var next time.Time
+			if tc.next > 0 {
+				next = h.app.Clock.Now().Add(tc.next).Truncate(time.Second)
+			}
+			h.workflow.result = workflow.Result{Outcome: workflow.OutcomeInstalled, NextUpgrade: next, Candidate: domain.Candidate{ProviderID: "english", ResultID: "r1"}}
+			go func() { h.workflow.release <- struct{}{} }()
+			if _, err := h.app.runManualSearch(t.Context(), h.ids[1], h.media[1], "en", manualOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			status, err := h.app.Repository.GetSearchStatus(t.Context(), h.ids[1], "en")
+			if err != nil || status.State != tc.wantState || status.Attempt != 0 || status.FailureAttempt != 0 || status.LastOutcome != "installed" || !status.NextAttemptAt.Equal(next) {
+				t.Fatalf("search after a manual install = %+v/%v, want %s next %v", status, err, tc.wantState, next)
+			}
+			if !next.IsZero() && status.Priority != store.SearchPriorityUpgrade {
+				t.Fatalf("priority = %v, want upgrade", status.Priority)
+			}
+			if owner := h.leaseOwner(t, 1, "en"); owner != "" {
+				t.Fatalf("lease kept: %q", owner)
+			}
+			entries, err := h.app.Repository.ListHistory(t.Context(), store.HistoryQuery{})
+			if err != nil || len(entries) != 1 || !entries[0].Manual || entries[0].Outcome != "installed" {
+				t.Fatalf("history = %+v/%v", entries, err)
+			}
+		})
+	}
+}
+
+func TestManualInstallKeepsARerunRequestedMeanwhile(t *testing.T) {
+	h := newManualHarness(t, 1, false, "en")
+	h.queue(t, 1, "en")
+	h.exec(t, `UPDATE search_states SET priority=?, attempt=3 WHERE media_id=?`, store.SearchPriorityUpgrade, h.ids[1])
+	h.workflow.result = workflow.Result{Outcome: workflow.OutcomeInstalled, NextUpgrade: h.app.Clock.Now().Add(7 * 24 * time.Hour)}
+	results := make(chan error, 1)
+	go func() {
+		_, err := h.app.runManualSearch(t.Context(), h.ids[1], h.media[1], "en", manualOptions{})
+		results <- err
+	}()
+	h.workflow.awaitStart(t)
+	// A media change arrives while the manual run holds the lease.
+	h.exec(t, `UPDATE search_states SET rerun_requested=1 WHERE media_id=?`, h.ids[1])
+	h.workflow.finishOne(t)
+	if err := <-results; err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.app.Repository.GetSearchStatus(t.Context(), h.ids[1], "en")
+	if err != nil || status.State != "pending" || status.Attempt != 0 || status.LastOutcome != "" || status.Priority != store.SearchPriorityUpgrade {
+		t.Fatalf("search after a manual install with a rerun requested = %+v/%v", status, err)
+	}
+	if owner := h.leaseOwner(t, 1, "en"); owner != "" {
+		t.Fatalf("lease kept: %q", owner)
+	}
+}
+
 func TestManualSearchAbandonsWorkflowIgnoringCancellation(t *testing.T) {
 	h := newManualHarness(t, 1, false)
 	h.workflow.deaf = true
