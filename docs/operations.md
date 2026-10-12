@@ -120,7 +120,7 @@ Expired profiles rebuild automatically when needed. This may require another med
 
 ## Commands
 
-The container runs `serve` by default. The other commands are run through Compose. Only one process may write saved state at a time. Read-only commands work while the daemon runs, and `retry` hands its request to the running daemon over a local socket (`subsyncd.sock` in the data folder, readable only by the daemon's user), so it needs no stop. The other commands that change saved state still need the daemon stopped.
+The container runs `serve` by default. The other commands are run through Compose. Only one process may write saved state at a time. Read-only commands work while the daemon runs, and `search` and `retry` hand their request to the running daemon over a local socket (`subsyncd.sock` in the data folder, readable only by the daemon's user), so they need no stop. Without a running daemon they run in their own process instead. The other commands that change saved state still need the daemon stopped.
 
 | Command | What it does | Daemon |
 | --- | --- | --- |
@@ -128,14 +128,14 @@ The container runs `serve` by default. The other commands are run through Compos
 | `find` | Lists the files that match a title or path, with the state of each configured language (`installed`, `satisfied`, `running`, `missing`). | May run |
 | `explain` | Shows what subsyncd knows about one file, for one language or for every configured language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules, another LAPSE version or synchronization policy, or for the file before it was replaced no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
 | `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
-| `search` | Searches one file and language now. | Stop first |
+| `search` | Searches one file now, for one language or for every configured language it is missing, and waits for the outcome. | May run; the daemon carries it out |
 | `scan` | Discovers unindexed files in one instance's library and reconciles its history. Add `--force-probe` to reread embedded subtitle tracks. | Stop first |
 | `retry` | Clears one provider's saved cooldown and authentication state, and wakes the worker so waiting searches run. | May run; the daemon carries it out |
 | `webhook-url` | Prints an instance's webhook URL, including its token, for manual Arr setup. Pass `--base URL` (or set `server.webhook_base_url`) for a complete URL; otherwise only the path and query are printed. | May run |
 | `rotate-webhook-token` | Replaces an instance's webhook token. Start subsyncd afterwards; the URL in Arr is updated at that start with `server.webhook_base_url`, otherwise update it by hand from `webhook-url --base URL`. | Stop first |
 | `forget-instance` | Shows what subsyncd has saved for a Sonarr or Radarr instance you removed from the configuration. Add `--yes` to delete those records. | May run to preview; stop first with `--yes` |
 
-Run read-only commands with `docker compose exec subsyncd subsyncd COMMAND ...`, and the others with the stop/run/start sequence shown below. File paths given to `analyze-sync` are paths inside the container. Put the subtitle you want to test in the host `data/` folder rather than beside the media, where subsyncd would treat it as your own subtitle and protect it:
+Run read-only commands, `search` and `retry` with `docker compose exec subsyncd subsyncd COMMAND ...`, and the stop-first commands with the stop/run/start sequence shown below. File paths given to `analyze-sync` are paths inside the container. Put the subtitle you want to test in the host `data/` folder rather than beside the media, where subsyncd would treat it as your own subtitle and protect it:
 
 ```bash
 docker compose exec subsyncd subsyncd analyze-sync --media /media/movies/Movie/Movie.mkv --subtitle /data/candidate.srt
@@ -171,10 +171,14 @@ Run `subsyncd COMMAND --help` for a command's flags, result fields, and error co
 | `unknown_language` | The language tag is invalid or not configured. |
 | `media_not_found` | `--title` or `--path` matched no indexed file, or `--file-id` is not indexed. Check the spelling with `find`. |
 | `ambiguous_media` | `--title` or `--path` matched several files. The text output lists them one per line; with `--json` they are in `error.candidates` (`instance`, `kind`, `file_id`, `title`, and year, season or episode). Narrow the selection or use `--file-id`. |
-| `busy` | Another subsyncd process holds the data directory and the command cannot go through it. Stop the daemon and retry. |
+| `busy` | Another subsyncd process holds the data directory and the command cannot go through it: a stop-first command while the daemon runs, or any changing command while another one-shot command runs or the daemon is still starting. Wait, or stop the daemon for a stop-first command, and retry. |
+| `daemon_required` | `--timeout` or `--no-wait` was given but no daemon is running. Without one, `search` runs to completion in its own process; drop the flag or start subsyncd. |
+| `daemon_stopping` | The daemon is shutting down, or closed the connection without answering. A search it was running is canceled and stays queued; retry once subsyncd is back. |
+| `protocol_mismatch` | The CLI and the running daemon are different builds that speak different socket protocols. Run the CLI from the same image as the daemon. |
+| `arr_unreachable` | Sonarr or Radarr did not answer when `search --file-id` looked up the file. Check the instance `url`. |
 | `internal` | Anything else. The `message` is redacted; the logs on standard error hold the detail. |
 
-The codes `not_managed`, `daemon_required`, `daemon_stopping`, `protocol_mismatch`, and `arr_unreachable` are reserved for commands that talk to a running daemon and are not produced yet. Treat an unrecognized code as a failure.
+The code `not_managed` is reserved and not produced yet. Treat an unrecognized code as a failure.
 
 ### Remove an instance for good
 
@@ -211,19 +215,47 @@ You can still select by Arr **media-file ID**, which is the ID of the file, not 
 docker compose exec subsyncd subsyncd explain --instance radarr-main --kind movie --file-id 42 --language en
 ```
 
-`explain` can run while the daemon is active. Manual searches need it stopped so two processes cannot write at once:
+To search one file now, run `search` beside the daemon. The daemon runs it next to its own queue and the command waits for the outcome:
+
+```bash
+docker compose exec subsyncd subsyncd search --title "Shameless S01E01" --language en
+docker compose exec subsyncd subsyncd search --instance radarr-main --kind movie --file-id 42
+```
+
+Without `--language`, `search` covers every configured language that `find` reports `missing`; if none is, it searches nothing and reports each language `satisfied`. `search` takes `--title` or `--path` only for files subsyncd already knows. A file it has not indexed yet can be searched only by `--file-id`, which asks Sonarr or Radarr for it.
+
+The command waits at most `--timeout` (default `5m`). A language still searching then reports outcome `running` (exit status 0) and the search carries on in the daemon; check on it later with `find` or `explain`. `--no-wait` returns at once with `running`. Losing the connection, for example when an SSH session drops, never cancels the search; only stopping the daemon does, and the search then stays queued. At most two manual searches run at once; more wait their turn in the order they arrived. If the daemon is already searching that file and language, the manual search waits for it to finish and then runs, and that wait counts against `--timeout`.
+
+When the daemon is not running, `search` runs in its own process to completion instead, and `--timeout` and `--no-wait` fail with `daemon_required`:
+
+```bash
+docker compose run --rm --no-deps subsyncd search --instance radarr-main --kind movie --file-id 42 --language en
+```
+
+A manual search clears any saved provider-resume progress for that media and language, then runs the complete current preferred/fallback route; it does not reuse a stale partial-cooldown route after a configuration change. Successful manual searches save any future upgrade check, including fallback promotion, while preserving earlier queued work and retained leases. Searching a file subsyncd does not know yet, or one it recorded as deleted, first adds it to the catalog the way an Arr import would, so every configured language is scheduled. The language you searched is marked complete when that run installs or finds a subtitle, so it is not searched again. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
+
+To discover any unindexed files in the full library and reconcile retained history, stop the daemon first:
 
 ```bash
 docker compose stop subsyncd
-docker compose run --rm --no-deps subsyncd search --instance radarr-main --kind movie --file-id 42 --language en
+docker compose run --rm --no-deps subsyncd scan --instance sonarr-main
 docker compose up -d subsyncd
 ```
 
-`search` also takes `--title` or `--path` in place of `--file-id`, but only for files subsyncd already knows. A file it has not indexed yet can be searched only by `--file-id`.
+Review the command's result before restarting. The command queues new work; the daemon processes it after restarting. Rescanning does not reset existing search schedules, reconsider retained deletions, or overwrite installation provenance.
 
-Review the command's result before restarting. A manual search clears any saved provider-resume progress for that media and language, then runs the complete current preferred/fallback route; it does not reuse a stale partial-cooldown route after a configuration change. Successful manual searches save any future upgrade check, including fallback promotion, while preserving earlier queued work and retained leases. Searching a file subsyncd does not know yet, or one it recorded as deleted, first adds it to the catalog the way an Arr import would, so every configured language is scheduled. The language you searched is marked complete when that run installs or finds a subtitle, so it is not searched again. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
+## Driving subsyncd from an AI agent
 
-To discover any unindexed files in the full library and reconcile retained history, use `scan --instance sonarr-main` or `scan --instance radarr-main` in place of `search ...` in the same stop/run/start sequence. The command queues new work; the daemon processes it after restarting. Rescanning does not reset existing search schedules, reconsider retained deletions, or overwrite installation provenance.
+The CLI is the whole interface, so an agent such as Claude Code on another machine drives subsyncd by reaching the host over SSH and running commands in the container with `--json`:
+
+```bash
+ssh media-host 'cd /srv/subsyncd && docker compose exec -T subsyncd subsyncd find --title "Show S02E05" --json'
+ssh media-host 'cd /srv/subsyncd && docker compose exec -T subsyncd subsyncd search --title "Show S02E05" --timeout 4m --json'
+```
+
+(`media-host` and `/srv/subsyncd` stand for your host and Compose folder; `-T` keeps Compose from allocating a terminal.) Each command prints exactly one JSON object on standard output (see [Machine-readable output](#machine-readable-output)), never prompts, and never picks a file on its own: when a title matches several files, it fails with `ambiguous_media` and lists them in `error.candidates`, and the agent narrows the title or uses a `file_id` from the list. Name files by `--title` (as Silo shows them, for example `Show S02E05` or `Movie (2019)`) or by `--path`; `find` confirms the match and each language's state before acting.
+
+`search` waits for the outcome. Give `--timeout` a value inside the agent's own command time limit; when it ends first, the language reports `running`, the exit status is still 0, and the search carries on in the daemon even if the SSH session drops. Follow up with `find` (the language turns from `running` to `installed`, `satisfied` or `missing`) or `explain` for the reasons and next attempt. Branch on `error.code`, not on the message; the [error-code table](#machine-readable-output) lists them. `busy` and `daemon_stopping` are worth retrying later; `daemon_required` means no daemon is running.
 
 ## Optional Silo refresh
 
@@ -269,7 +301,7 @@ Allow the container to stop fully before starting another process against the sa
 | Media path is outside configured roots | Match the Arr path mapping to the actual container mounts. |
 | No subtitle download | Use `explain` to check existing subtitles, the next search time, provider limits, or rejected matches. |
 | Provider authentication rejected | Correct the credentials in `config/config.yaml`, restart the service, then clear the affected provider's state as shown below. |
-| Another mutation process is active | Stop the daemon before a manual search, scan, `rotate-webhook-token` or `forget-instance --yes`; `retry` does not need a stop. Do not delete the lock file. |
+| Another mutation process is active | Stop the daemon before a scan, `rotate-webhook-token` or `forget-instance --yes`; `search` and `retry` do not need a stop. Do not delete the lock file. |
 | LAPSE takes a long time | Its first run may read much of the media file, especially noticeable on network storage. Results are cached for later use. |
 | Media file is missing | The file disappeared after inventory refresh. The search stops before further candidate work and retries with technical-failure backoff, keeping its place in the queue; check Arr renames/deletions and filesystem availability. When three searches in a row cannot find or read their media and the storage itself does not read either (for example while a mount is remounting), searches pause for a minute (`queue.media_paused`); if the next searches fail the same way, the pause doubles each time, up to 30 minutes, until one reads its media. A single missing file on otherwise readable storage never pauses the queue. |
 | `webhook.failed` warning | A saved Sonarr or Radarr webhook could not be applied, usually because Arr was unreachable. It is retried automatically; if it is given up (`outcome` `abandoned`), the next reconciliation applies the change from Arr's history. |

@@ -810,11 +810,13 @@ func (r *Repository) UpsertSearchStateWithPriority(ctx context.Context, mediaID 
 	return nil
 }
 
-// SettlePendingSearch completes an unleased pending search with a manual
-// outcome, so a search that a manual run just satisfied is not repeated.
-// A lease that expired at now (its owner stopped) counts as unleased.
-func (r *Repository) SettlePendingSearch(ctx context.Context, mediaID int64, language domain.Language, outcome string, now time.Time) error {
-	_, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='complete', attempt=0, failure_attempt=0, next_attempt_at_ns=0, queue_order_ns=0, last_outcome=?, resume_providers_json='[]', resume_route_signature='', rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL WHERE media_id=? AND language=? AND state='pending' AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`, outcome, mediaID, language.String(), now.UnixNano())
+// SettlePendingSearch completes a pending search with a manual outcome, so a
+// search that a manual run just satisfied is not repeated. It settles an
+// unleased search, or one whose lease expired at now (its owner stopped), or
+// one claimed by owner, the manual run itself, unless a change arrived during
+// that claim and requested a rerun; it ends owner's claim.
+func (r *Repository) SettlePendingSearch(ctx context.Context, mediaID int64, language domain.Language, outcome string, now time.Time, owner string) error {
+	_, err := r.store.db.ExecContext(ctx, `UPDATE search_states SET state='complete', attempt=0, failure_attempt=0, next_attempt_at_ns=0, queue_order_ns=0, last_outcome=?, resume_providers_json='[]', resume_route_signature='', rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL WHERE media_id=? AND language=? AND state='pending' AND (lease_until_ns IS NULL OR lease_until_ns <= ? OR (lease_owner=? AND ?<>'' AND rerun_requested=0))`, outcome, mediaID, language.String(), now.UnixNano(), owner, owner)
 	if err != nil {
 		return fmt.Errorf("settle manual search: %w", err)
 	}

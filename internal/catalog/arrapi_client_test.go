@@ -2,7 +2,10 @@ package catalog
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -87,6 +90,23 @@ func TestSafeArrAPIErrorAndRetryHandlerOmitUpstreamDetails(t *testing.T) {
 	for _, forbidden := range []string{"secret", "/media/private", "radarr.example", "apikey"} {
 		if strings.Contains(output.String(), forbidden) {
 			t.Errorf("retry log contains sensitive value %q: %s", forbidden, output.String())
+		}
+	}
+}
+
+func TestArrUnreachableMatchesTransportFailuresOnly(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want bool
+	}{
+		{safeArrAPIError("tv", "get", errors.New("dial tcp: connection refused")), true},
+		{fmt.Errorf("load: %w", safeArrAPIError("tv", "get", context.DeadlineExceeded)), true},
+		{safeArrAPIError("tv", "get", &arrapi.StatusError{Code: 404}), false},
+		{safeArrAPIError("tv", "get", context.Canceled), false},
+		{errors.New("other"), false},
+	} {
+		if got := ArrUnreachable(test.err); got != test.want {
+			t.Errorf("ArrUnreachable(%v) = %v, want %v", test.err, got, test.want)
 		}
 	}
 }

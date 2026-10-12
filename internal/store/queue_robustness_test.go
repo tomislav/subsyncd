@@ -124,7 +124,7 @@ func TestExpiredLeaseCountsAsUnleased(t *testing.T) {
 	if count, err := repo.RetryThrottledSearches(ctx, expired.Add(time.Minute), []domain.Language{"en"}); err != nil || count != 1 {
 		t.Fatalf("retry skipped an expired lease: %d/%v", count, err)
 	}
-	if err := repo.SettlePendingSearch(ctx, mediaID, "en", "installed", expired.Add(time.Minute)); err != nil {
+	if err := repo.SettlePendingSearch(ctx, mediaID, "en", "installed", expired.Add(time.Minute), ""); err != nil {
 		t.Fatal(err)
 	}
 	var state string

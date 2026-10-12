@@ -101,10 +101,18 @@ type App struct {
 	// it re-read the queue.
 	wake chan struct{}
 	// serveCtx is Serve's run context, which outlives any one control request.
-	serveCtx  context.Context
-	readOnly  bool
-	closeOnce sync.Once
-	closeErr  error
+	serveCtx context.Context
+	// manualSlots limits concurrent manual searches; manualRuns counts the
+	// daemon's, which shutdown waits for.
+	manualSlots *manualSlots
+	manualRuns  sync.WaitGroup
+	// manualClaimPoll overrides defaultManualClaimPoll in tests.
+	manualClaimPoll time.Duration
+	// runWorkflow replaces the language workflows for manual searches in tests.
+	runWorkflow func(context.Context, workflow.Request) (workflow.Result, error)
+	readOnly    bool
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // redactionSecrets is a mutex-guarded set of runtime secrets to scrub.
@@ -439,7 +447,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events, MediaRoots: cfg.MediaRoots}
 	}
 
-	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens, wake: wake}
+	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens, wake: wake, manualSlots: newManualSlots(manualSearchSlots)}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
@@ -737,6 +745,7 @@ func (a *App) Serve(ctx context.Context) error {
 		shutdownErr = errors.Join(shutdownErr, server.Close())
 	}
 	cancel()
+	manualDeadline := time.Now().Add(manualDrainTimeout)
 	if serverDone != nil {
 		if err := <-serverDone; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			shutdownErr = errors.Join(shutdownErr, err)
@@ -752,6 +761,9 @@ func (a *App) Serve(ctx context.Context) error {
 			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("control socket: %w", err))
 		}
 	}
+	// The control server has drained its requests, so no manual search starts
+	// any more; the canceled ones give their leases back.
+	a.waitManualSearches(manualDeadline)
 	result := errors.Join(cause, shutdownErr)
 	outcome := "success"
 	if result != nil {
@@ -842,86 +854,6 @@ func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (contr
 		result.DeferredMedia = deferred.DeferredMedia()
 	}
 	return result, nil
-}
-
-func (a *App) Search(ctx context.Context, args control.SearchArgs) (control.SearchResult, error) {
-	instance, kind, fileID, languageTag, retryRejected := args.Instance, args.Kind, args.FileID, args.Language, args.RetryRejected
-	release, err := a.acquireMutationLock()
-	if err != nil {
-		return control.SearchResult{}, err
-	}
-	defer release()
-	language, service, err := a.workflowFor(languageTag)
-	if err != nil {
-		return control.SearchResult{}, err
-	}
-	if args.Title != "" || args.Path != "" {
-		// A title or path names only media subsyncd already indexes.
-		_, known, err := a.Resolve(ctx, args.Selection)
-		if err != nil {
-			return control.SearchResult{}, err
-		}
-		instance, kind, fileID = known.Ref.Instance, string(known.Ref.Kind), known.Ref.FileID
-	}
-	arrCatalog := a.Catalogs[instance]
-	if arrCatalog == nil {
-		return control.SearchResult{}, unknownInstance(instance)
-	}
-	ref := domain.MediaRef{Instance: instance, Kind: domain.MediaKind(kind), FileID: fileID}
-	media, err := arrCatalog.GetMedia(ctx, ref)
-	if err != nil {
-		return control.SearchResult{}, fmt.Errorf("load media: %w", err)
-	}
-	active, err := a.Repository.MediaActive(ctx, media.Ref)
-	if err != nil {
-		return control.SearchResult{}, err
-	}
-	if !active {
-		// An unknown file or a deletion tombstone enters the catalog through the
-		// transactional media mutation, which schedules every configured
-		// language and advances the reconciliation fence like an Arr import.
-		now := a.Clock.Now().UTC()
-		if _, err := a.Repository.ApplyMediaEvent(ctx, store.MediaEventMutation{
-			EventID:   fmt.Sprintf("manual-search:%s:%s:%d:%d", media.Ref.Instance, media.Ref.Kind, media.Ref.FileID, now.UnixNano()),
-			Type:      string(catalog.EventImport),
-			EntityID:  media.EntityID,
-			Ref:       media.Ref,
-			Media:     media,
-			Languages: sortedLanguages(a.Config),
-			At:        now,
-			Priority:  store.SearchPriorityMissing,
-		}); err != nil {
-			return control.SearchResult{}, err
-		}
-	}
-	mediaID, _, err := a.Repository.UpsertMedia(ctx, media)
-	if err != nil {
-		return control.SearchResult{}, err
-	}
-	if err := a.Repository.ClearSearchResume(ctx, mediaID, language); err != nil {
-		return control.SearchResult{}, err
-	}
-	if retryRejected {
-		if err := a.Repository.ClearCandidateRejections(ctx, mediaID, language); err != nil {
-			return control.SearchResult{}, err
-		}
-	}
-	result, err := service.Run(ctx, workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true})
-	if err != nil {
-		return control.SearchResult{}, err
-	}
-	if !active && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
-		// The revival queued this language too; this run already answered it.
-		if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome), a.Clock.Now()); err != nil {
-			return control.SearchResult{}, err
-		}
-	}
-	if !result.NextUpgrade.IsZero() && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
-		if err := a.Repository.EnsureUpgradeSearch(ctx, mediaID, language, result.NextUpgrade); err != nil {
-			return control.SearchResult{}, err
-		}
-	}
-	return a.searchResult(mediaID, language, result), nil
 }
 
 func (a *App) Retry(ctx context.Context, providerID string) (control.RetryResult, error) {
@@ -1151,26 +1083,6 @@ func unknownInstance(instance string) error {
 
 func languageNotConfigured(language domain.Language) error {
 	return &control.Error{Code: control.CodeUnknownLanguage, Message: fmt.Sprintf("language %s is not configured", language)}
-}
-
-// searchResult maps a workflow outcome to the structured search result. The
-// installed subtitle is shown relative to its media root, never absolute.
-func (a *App) searchResult(mediaID int64, language domain.Language, result workflow.Result) control.SearchResult {
-	outcome := control.LanguageOutcome{Language: language.String(), Outcome: string(result.Outcome), NextAttemptAt: result.RetryAt}
-	if result.Candidate.ProviderID != "" {
-		outcome.Provider = result.Candidate.ProviderID
-		outcome.Candidate = result.Candidate.ResultID
-		outcome.Score = result.Score.Total
-		if len(result.Candidate.ReleaseNames) > 0 {
-			outcome.Release = result.Candidate.ReleaseNames[0]
-		}
-	}
-	if result.Outcome == workflow.OutcomeInstalled {
-		outcome.SyncVerdict = result.SyncResult.Verdict
-		outcome.OffsetMS = result.SyncResult.OffsetMS
-		outcome.Subtitle = relativeToRoots(result.Installation.Path, a.Config.MediaRoots)
-	}
-	return control.SearchResult{MediaID: mediaID, Languages: []control.LanguageOutcome{outcome}}
 }
 
 // relativeToRoots returns path relative to the media root containing it, or

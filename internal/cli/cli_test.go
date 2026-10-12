@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"subsyncd/internal/control"
 )
@@ -45,6 +46,12 @@ func (f *fakeBackend) Search(_ context.Context, args control.SearchArgs) (contro
 	f.call = "search:" + args.Instance + ":" + args.Kind + ":" + args.Language + ":" + args.Title + ":" + args.Path
 	if args.RetryRejected {
 		f.call += ":retry-rejected"
+	}
+	if args.Wait != 0 {
+		f.call += ":wait=" + args.Wait.String()
+	}
+	if args.NoWait {
+		f.call += ":no-wait"
 	}
 	return control.SearchResult{MediaID: 9, Languages: []control.LanguageOutcome{{Language: args.Language, Outcome: "installed"}}}, f.err
 }
@@ -414,8 +421,11 @@ func (r *fakeRemote) Call(_ context.Context, command string, args, result any) e
 	if r.err != nil {
 		return r.err
 	}
-	if out, ok := result.(*control.RetryResult); ok {
+	switch out := result.(type) {
+	case *control.RetryResult:
 		*out = control.RetryResult{Provider: "titlovi", SearchesDue: 4}
+	case *control.SearchResult:
+		*out = control.SearchResult{MediaID: 9, Languages: []control.LanguageOutcome{{Language: "hr", Outcome: "running"}}}
 	}
 	return nil
 }
@@ -537,7 +547,9 @@ func TestSelectionFlagsAreExclusive(t *testing.T) {
 		{"file id without instance", []string{"explain", "--kind", "movie", "--file-id", "42"}},
 		{"file id without kind", []string{"find", "--instance", "radarr-main", "--file-id", "42"}},
 		{"bad kind with title", []string{"find", "--title", "Dune", "--kind", "show"}},
-		{"search needs a language", []string{"search", "--title", "Dune"}},
+		{"timeout with no-wait", []string{"search", "--title", "Dune", "--timeout", "1m", "--no-wait"}},
+		{"non-positive timeout", []string{"search", "--title", "Dune", "--timeout", "0s"}},
+		{"timeout on explain", []string{"explain", "--title", "Dune", "--timeout", "1m"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout bytes.Buffer
@@ -582,5 +594,49 @@ func TestAmbiguousMediaCandidatesPrintAfterStructuredReport(t *testing.T) {
 	want := "radarr-main movie 1 \"Dune\" (1984)\nradarr-main movie 2 \"Dune\" (2021)\n"
 	if code != ExitFailure || stderr.String() != want || backend.reportedCommand != "find" {
 		t.Fatalf("exit/stderr = %d/%q", code, stderr.String())
+	}
+}
+
+func TestSearchGoesToTheDaemonWithItsWait(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want control.SearchArgs
+	}{
+		{"default wait", []string{"search", "--title", "Show S02E05"}, control.SearchArgs{Selection: control.Selection{Title: "Show S02E05"}}},
+		{"timeout", []string{"search", "--title", "Show S02E05", "--language", "hr", "--timeout", "90s"}, control.SearchArgs{Selection: control.Selection{Title: "Show S02E05"}, Language: "hr", Wait: 90 * time.Second}},
+		{"no wait", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "7", "--language", "hr", "--no-wait", "--retry-rejected"}, control.SearchArgs{Selection: control.Selection{Instance: "tv", Kind: "episode", FileID: 7}, Language: "hr", NoWait: true, RetryRejected: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			remote := &fakeRemote{}
+			var stdout bytes.Buffer
+			command := Command{Stdout: &stdout, Stderr: &bytes.Buffer{},
+				Open: func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil },
+				Dial: func(context.Context, string) (Remote, error) { return remote, nil },
+			}
+			if code := command.Run(context.Background(), test.args); code != ExitOK {
+				t.Fatalf("exit = %d", code)
+			}
+			if args, ok := remote.args.(control.SearchArgs); remote.command != "search" || !ok || args != test.want {
+				t.Fatalf("call = %q %#v", remote.command, remote.args)
+			}
+			if want := "media_id: 9\noutcome: running\n"; stdout.String() != want {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestSearchWithoutDaemonPassesWaitToTheBackend(t *testing.T) {
+	backend := &fakeBackend{}
+	command := Command{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+		Open: openFake(backend),
+		Dial: func(context.Context, string) (Remote, error) { return nil, control.ErrNoDaemon },
+	}
+	if code := command.Run(context.Background(), []string{"search", "--title", "Dune", "--timeout", "2m"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if backend.call != "search::::Dune::wait=2m0s" {
+		t.Fatalf("call = %q", backend.call)
 	}
 }

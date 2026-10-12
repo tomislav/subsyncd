@@ -119,6 +119,20 @@ func (e *arrAPIError) Is(target error) bool {
 func (e *arrAPIError) Temporary() bool { return e.Retryable }
 func (e *arrAPIError) Timeout() bool   { return e.Kind == "deadline" || e.Kind == "timeout" }
 
+// ArrUnreachable reports whether err is an Arr request that never got an
+// answer: a connection failure or a timeout.
+func ArrUnreachable(err error) bool {
+	var api *arrAPIError
+	if !errors.As(err, &api) {
+		return false
+	}
+	switch api.Kind {
+	case "transport", "timeout", "deadline":
+		return true
+	}
+	return false
+}
+
 func safeArrAPIError(instance, operation string, err error) error {
 	safe := &arrAPIError{
 		Instance:  instance,

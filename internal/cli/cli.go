@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"subsyncd/internal/control"
 )
@@ -115,6 +116,8 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	subtitle := flags.String("subtitle", "", "subtitle file path")
 	base := flags.String("base", "", "webhook base URL overriding server.webhook_base_url")
 	yes := flags.Bool("yes", false, "delete the records instead of previewing them")
+	timeout := flags.Duration("timeout", 0, "how long to wait for the outcome (default 5m); needs a running daemon")
+	noWait := flags.Bool("no-wait", false, "return once the daemon has accepted the search; needs a running daemon")
 	flags.Bool("json", false, "write one JSON object to stdout instead of text")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -147,7 +150,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "search", "explain", "find":
 		sel := control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}
 		if validateErr = validateMediaSelection(sel); validateErr == nil && command == "search" {
-			validateErr = require("--language", *language)
+			validateErr = validateSearchWait(flags, *timeout, *noWait)
 		}
 	case "retry":
 		validateErr = require("--provider", *provider)
@@ -165,6 +168,15 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		return c.failure(ctx, command, jsonMode, nil, errorsText("backend is unavailable"))
 	}
 
+	// The CLI sends a wait only when --timeout was given; the daemon applies
+	// its default otherwise.
+	searchArgs := control.SearchArgs{
+		Selection:     control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path},
+		Language:      *language,
+		RetryRejected: *retryRejected,
+		Wait:          *timeout,
+		NoWait:        *noWait,
+	}
 	if c.Dial != nil && routed(command) {
 		remote, err := c.Dial(ctx, *configPath)
 		switch {
@@ -175,6 +187,10 @@ func (c Command) Run(ctx context.Context, args []string) int {
 			case "retry":
 				var typed control.RetryResult
 				err = remote.Call(ctx, command, control.RetryArgs{Provider: *provider}, &typed)
+				result = typed
+			case "search":
+				var typed control.SearchResult
+				err = remote.Call(ctx, command, searchArgs, &typed)
 				result = typed
 			}
 			if err != nil {
@@ -205,11 +221,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "scan":
 		result, err = wrap(backend.Scan(ctx, *instance, *forceProbe))
 	case "search":
-		result, err = wrap(backend.Search(ctx, control.SearchArgs{
-			Selection:     control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path},
-			Language:      *language,
-			RetryRejected: *retryRejected,
-		}))
+		result, err = wrap(backend.Search(ctx, searchArgs))
 	case "retry":
 		result, err = wrap(backend.Retry(ctx, *provider))
 	case "explain":
@@ -238,7 +250,20 @@ func (c Command) Run(ctx context.Context, args []string) int {
 
 // routed reports whether the daemon can execute command when it is running.
 func routed(command string) bool {
-	return command == "retry"
+	return command == "retry" || command == "search"
+}
+
+// validateSearchWait checks search's --timeout and --no-wait.
+func validateSearchWait(flags *flag.FlagSet, timeout time.Duration, noWait bool) error {
+	given := false
+	flags.Visit(func(item *flag.Flag) { given = given || item.Name == "timeout" })
+	switch {
+	case given && noWait:
+		return fmt.Errorf("use only one of --timeout and --no-wait")
+	case given && timeout <= 0:
+		return fmt.Errorf("--timeout must be positive")
+	}
+	return nil
 }
 
 func (c Command) succeed(command string, jsonMode bool, result control.Result) int {
@@ -270,7 +295,7 @@ func commandFlags(command string) map[string]bool {
 	case "scan":
 		names = []string{"instance", "force-probe"}
 	case "search":
-		names = []string{"instance", "kind", "file-id", "title", "path", "language", "retry-rejected"}
+		names = []string{"instance", "kind", "file-id", "title", "path", "language", "retry-rejected", "timeout", "no-wait"}
 	case "explain":
 		names = []string{"instance", "kind", "file-id", "title", "path", "language"}
 	case "find":
@@ -440,11 +465,12 @@ var commandHelp = map[string]string{
 	"scan": `Reconcile one Arr instance with its library.
 Result fields: instance, media, force_probe, history_deferred, deferred, deferred_media.
 Error codes: unknown_instance, busy, internal.`,
-	"search": `Search subtitles for one media file and language now.
+	"search": `Search subtitles for one media file now: for --language, or else for every configured language the file is missing (when none is, nothing runs and each language reports satisfied).
 Select the file with --instance, --kind and --file-id, or with --title or --path. A title or path finds only files subsyncd already knows; only --file-id adds a file it has not indexed yet.
-Result fields: media_id, languages[] (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at).
-Outcomes: installed, satisfied, no_result, rejected, throttled.
-Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, busy, internal.`,
+With the daemon running, the daemon runs the search beside its worker and the command waits for the outcome, at most --timeout (default 5m). A language still searching then reports outcome running (exit 0) and the search carries on; follow up with explain or find. --no-wait returns at once with running. A dropped connection never cancels the search. Without a daemon, search runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
+Result fields: media_id, languages[] (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at). subtitle is relative to its media root.
+Outcomes: installed, satisfied, no_result, rejected, throttled, running.
+Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, arr_unreachable, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
 	"retry": `Clear a provider's throttle and failure state and make throttled searches due.
 Result fields: provider, searches_due.
 Error codes: unknown_provider, busy, internal.`,

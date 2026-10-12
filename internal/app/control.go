@@ -18,7 +18,7 @@ import (
 // the no-op lock path.
 func (a *App) HandleControl(ctx context.Context, command string, args json.RawMessage) (any, error) {
 	started := time.Now()
-	result, err := a.dispatchControl(ctx, command, args)
+	result, attrs, err := a.dispatchControl(ctx, command, args)
 	events := a.Events
 	if events == nil {
 		events = observability.Discard()
@@ -39,9 +39,11 @@ func (a *App) HandleControl(ctx context.Context, command string, args json.RawMe
 		return nil, err
 	}
 	events.Log(ctx, slog.LevelInfo, "control.request_completed", "control request completed",
-		slog.String("command", command),
-		slog.String("outcome", "success"),
-		slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+		append([]slog.Attr{
+			slog.String("command", command),
+			slog.String("outcome", "success"),
+			slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+		}, attrs...)...,
 	)
 	return result, nil
 }
@@ -49,30 +51,42 @@ func (a *App) HandleControl(ctx context.Context, command string, args json.RawMe
 // controlCommandLabel keeps an arbitrary client-supplied name out of the log.
 func controlCommandLabel(command string) string {
 	switch command {
-	case "retry":
+	case "retry", "search":
 		return command
 	}
 	return "unknown"
 }
 
-func (a *App) dispatchControl(ctx context.Context, command string, raw json.RawMessage) (any, error) {
+// dispatchControl runs one command; attrs are extra fields for its
+// completion record.
+func (a *App) dispatchControl(ctx context.Context, command string, raw json.RawMessage) (result any, attrs []slog.Attr, err error) {
 	switch command {
 	case "retry":
 		var args control.RetryArgs
 		if err := decodeControlArgs(raw, &args); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if args.Provider == "" {
-			return nil, &control.Error{Code: control.CodeUsage, Message: "provider is required"}
+			return nil, nil, &control.Error{Code: control.CodeUsage, Message: "provider is required"}
 		}
 		result, err := a.Retry(ctx, args.Provider)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		a.wakeWorker()
-		return result, nil
+		return result, nil, nil
+	case "search":
+		var args control.SearchArgs
+		if err := decodeControlArgs(raw, &args); err != nil {
+			return nil, nil, err
+		}
+		result, attrs, err := a.searchInDaemon(ctx, args)
+		if err != nil {
+			return nil, nil, err
+		}
+		return result, attrs, nil
 	default:
-		return nil, &control.Error{Code: control.CodeUsage, Message: "unknown command"}
+		return nil, nil, &control.Error{Code: control.CodeUsage, Message: "unknown command"}
 	}
 }
 
