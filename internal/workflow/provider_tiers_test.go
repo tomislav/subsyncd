@@ -146,7 +146,7 @@ func TestProviderTierRecentReleaseGetsQuickPromotionChecks(t *testing.T) {
 		s.Repository = &workflowRepository{installation: existing, found: true}
 		s.Inventory = &fakeInventory{current: managedSidecarInventory(existing)}
 		result, err := s.Run(t.Context(), request)
-		if want := now.Add(13*time.Hour + 12*time.Minute); err != nil || result.Outcome != OutcomeSatisfied || !result.NextUpgrade.Equal(want) {
+		if want := now.Add(6*time.Hour + 36*time.Minute); err != nil || result.Outcome != OutcomeSatisfied || !result.NextUpgrade.Equal(want) {
 			t.Fatalf("result=%+v err=%v want next=%v", result, err, want)
 		}
 	})

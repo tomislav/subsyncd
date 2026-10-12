@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -191,9 +192,9 @@ func TestFallbackPromotionChecksForRecentReleases(t *testing.T) {
 		{"install checks after six hours", "fallback", OutcomeInstalled, 0, 0, recent, time.Time{}, 0, 6 * time.Hour},
 		{"install jitter only delays", "fallback", OutcomeInstalled, 0, 1, recent, time.Time{}, 0, 7*time.Hour + 12*time.Minute},
 		{"jitter below zero clamps to the step", "fallback", OutcomeInstalled, 0, -1, recent, time.Time{}, 0, 6 * time.Hour},
-		{"second check", "fallback", OutcomeSatisfied, 1, 0, recent, recent, 0, 12 * time.Hour},
-		{"third check", "fallback", OutcomeSatisfied, 2, 0, recent, recent, 0, 24 * time.Hour},
-		{"fourth check", "fallback", OutcomeSatisfied, 3, 0, recent, recent, 0, 3 * day},
+		{"second check", "fallback", OutcomeSatisfied, 1, 0, recent, recent, 0, 6 * time.Hour},
+		{"third check", "fallback", OutcomeSatisfied, 2, 0, recent, recent, 0, 12 * time.Hour},
+		{"fourth check", "fallback", OutcomeSatisfied, 3, 0, recent, recent, 0, 2 * day},
 		{"weekly after the early steps", "fallback", OutcomeSatisfied, 4, 0.5, recent, recent, 0, 7 * day},
 		{"then the usual stretch", "fallback", OutcomeSatisfied, 5, 0.5, recent, recent, 0, 14 * day},
 		{"aged out mid-way starts weekly", "fallback", OutcomeSatisfied, 2, 0.5, now.Add(-31 * day), now.Add(-30*day + time.Hour), 0, 7 * day},
@@ -222,6 +223,32 @@ func TestFallbackPromotionChecksForRecentReleases(t *testing.T) {
 				t.Fatalf("next=%v want=%v", result.NextUpgrade.Sub(now), tc.want)
 			}
 		})
+	}
+}
+
+// The early checks of a recent fallback installation fall at the
+// missing-search milestones, counted from the install: 6h, 12h, 24h and 3d.
+func TestFallbackPromotionChecksFollowTheMissingMilestones(t *testing.T) {
+	installed := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	released := installed.Add(-24 * time.Hour)
+	now := installed
+	var got []time.Duration
+	for attempt := range len(recentFallbackChecks) {
+		s := &Service{Clock: fixedWorkflowClock{at: now}, RandomUnit: func() float64 { return 0 }, FallbackProviderOrder: []string{"fallback"}, AgedAfter: 30 * 24 * time.Hour, MaxUpgradeChecks: 4}
+		outcome := OutcomeSatisfied
+		if attempt == 0 {
+			outcome = OutcomeInstalled
+		}
+		c := domain.Candidate{ProviderID: "fallback"}
+		result := Result{Outcome: outcome, Score: domain.Score{Total: 35}, Candidate: c}
+		result.NextUpgrade = s.nextUpgradeAt(now, result.Score, c)
+		s.scheduleUpgrade(&result, attempt, released, installed)
+		now = result.NextUpgrade
+		got = append(got, now.Sub(installed))
+	}
+	want := []time.Duration{6 * time.Hour, 12 * time.Hour, 24 * time.Hour, 72 * time.Hour}
+	if !slices.Equal(got, want) {
+		t.Fatalf("checks after install = %v, want %v", got, want)
 	}
 }
 

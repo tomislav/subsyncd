@@ -75,10 +75,15 @@ func installedScore(installation store.Installation) (domain.Score, bool, error)
 	return score, false, nil
 }
 
-// recentFallbackChecks are the unchanged promotion checks, by upgrade attempt,
-// for a fallback installation of a recent release: the missing-search early
-// steps, because a preferred provider often publishes days after release.
-var recentFallbackChecks = [...]time.Duration{6 * time.Hour, 12 * time.Hour, 24 * time.Hour, 72 * time.Hour}
+// recentFallbackChecks are the gaps, by upgrade attempt, between the unchanged
+// promotion checks of a fallback installation of a recent release. Like the
+// missing-search intervals they add up to the same early milestones: about 6h,
+// 12h, 24h and 3 days after install, because a preferred provider often
+// publishes days after release. They are gaps from each check rather than
+// offsets from the install time, so a check that ran late (a throttled
+// provider, a stopped daemon) still leaves a full step, and at least the
+// six-hour search cache, before the next one.
+var recentFallbackChecks = [...]time.Duration{6 * time.Hour, 6 * time.Hour, 12 * time.Hour, 48 * time.Hour}
 
 // scheduleUpgrade spreads ordinary checks and lengthens repeated unchanged
 // assessments, and ends them after MaxUpgradeChecks unchanged checks. A preferred-provider reset earlier than the base interval remains
