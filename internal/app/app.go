@@ -108,6 +108,10 @@ type App struct {
 	manualRuns  sync.WaitGroup
 	// manualClaimPoll overrides defaultManualClaimPoll in tests.
 	manualClaimPoll time.Duration
+	// manualJobLimit and manualJobGrace override the manual workflow's time
+	// limit and abandonment grace in tests.
+	manualJobLimit time.Duration
+	manualJobGrace time.Duration
 	// runWorkflow replaces the language workflows for manual searches in tests.
 	runWorkflow func(context.Context, workflow.Request) (workflow.Result, error)
 	readOnly    bool

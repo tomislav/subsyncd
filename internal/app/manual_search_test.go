@@ -32,6 +32,10 @@ type gatedWorkflow struct {
 	started chan workflow.Request
 	release chan struct{}
 	outcome workflow.Outcome
+	// result, when set, is what a finished run returns.
+	result workflow.Result
+	// deaf makes runs ignore cancellation, like a read on a hung mount.
+	deaf bool
 
 	mu      sync.Mutex
 	running int
@@ -53,10 +57,17 @@ func (w *gatedWorkflow) Run(ctx context.Context, request workflow.Request) (work
 		w.mu.Unlock()
 	}()
 	w.started <- request
+	done := ctx.Done()
+	if w.deaf {
+		done = nil
+	}
 	select {
 	case <-w.release:
+		if w.result.Outcome != "" {
+			return w.result, nil
+		}
 		return workflow.Result{Outcome: w.outcome}, nil
-	case <-ctx.Done():
+	case <-done:
 		return workflow.Result{}, ctx.Err()
 	}
 }
@@ -117,8 +128,8 @@ type manualHarness struct {
 	stop     func() error
 }
 
-// newManualHarness builds an application with episodes 1..count indexed and
-// every configured language pending, its workflow replaced by a gated fake.
+// newManualHarness builds an application with episodes 1..count indexed but
+// no searches queued, its workflow replaced by a gated fake.
 // With serve it also runs the daemon.
 func newManualHarness(t *testing.T, count int64, serve bool, languages ...domain.Language) *manualHarness {
 	t.Helper()
@@ -155,11 +166,6 @@ func newManualHarness(t *testing.T, count int64, serve bool, languages ...domain
 		mediaID, _, err := application.Repository.UpsertMedia(t.Context(), item)
 		if err != nil {
 			t.Fatal(err)
-		}
-		for language := range cfg.Languages {
-			if err := application.Repository.UpsertSearchStateWithPriority(t.Context(), mediaID, language, application.Clock.Now().Add(time.Hour), store.SearchPriorityMissing); err != nil {
-				t.Fatal(err)
-			}
 		}
 		h.ids[id] = mediaID
 	}
@@ -219,6 +225,27 @@ func awaitCall(t *testing.T, calls <-chan searchCall) searchCall {
 	}
 }
 
+// queue schedules a missing search for the file and language, due in an hour.
+func (h *manualHarness) queue(t *testing.T, fileID int64, language domain.Language) {
+	t.Helper()
+	if err := h.app.Repository.UpsertSearchStateWithPriority(t.Context(), h.ids[fileID], language, h.app.Clock.Now().Add(time.Hour), store.SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// exec runs one statement against the database beside the application.
+func (h *manualHarness) exec(t *testing.T, statement string, args ...any) {
+	t.Helper()
+	inspection, err := sql.Open("sqlite", filepath.Join(h.app.Config.DataDir, "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inspection.Close()
+	if _, err := inspection.Exec(statement, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // leaseOwner reads the search's lease owner; "" when unleased.
 func (h *manualHarness) leaseOwner(t *testing.T, fileID int64, language string) string {
 	t.Helper()
@@ -261,6 +288,7 @@ func (h *manualHarness) settled(t *testing.T, fileID int64, language string) boo
 func TestDaemonSearchWaitsForWorkerLease(t *testing.T) {
 	h := newManualHarness(t, 1, true)
 	ctx := t.Context()
+	h.queue(t, 1, "en")
 	leases, err := h.app.Repository.LeaseDueSearches(ctx, h.app.Clock.Now().Add(2*time.Hour), 1, time.Minute)
 	if err != nil || len(leases) != 1 {
 		t.Fatalf("worker lease = %+v/%v", leases, err)
@@ -291,8 +319,12 @@ func TestDaemonSearchWaitsForWorkerLease(t *testing.T) {
 	if call.err != nil || len(call.result.Languages) != 1 || call.result.Languages[0].Outcome != "satisfied" {
 		t.Fatalf("search = %+v/%v", call.result, call.err)
 	}
-	if !h.settled(t, 1, "en") {
-		t.Fatal("manual search left its outcome unsettled or its lease held")
+	if owner := h.leaseOwner(t, 1, "en"); owner != "" {
+		t.Fatalf("manual search kept its lease: %q", owner)
+	}
+	// The search the worker had queued keeps its place and progress.
+	if status, err := h.app.Repository.GetSearchStatus(ctx, h.ids[1], "en"); err != nil || status.State != "pending" {
+		t.Fatalf("queued search after the manual run = %+v/%v", status, err)
 	}
 }
 
@@ -516,5 +548,107 @@ func TestSearchByTitleThroughDaemon(t *testing.T) {
 	}
 	if _, err := os.Stat(control.SocketPath(h.app.Config.DataDir)); err != nil {
 		t.Fatalf("socket: %v", err)
+	}
+}
+
+func TestManualSearchPreservesQueuedUpgradeProgress(t *testing.T) {
+	h := newManualHarness(t, 1, false)
+	h.queue(t, 1, "en")
+	h.exec(t, `UPDATE search_states SET priority=?, attempt=3, failure_attempt=1 WHERE media_id=?`, store.SearchPriorityUpgrade, h.ids[1])
+	results := make(chan searchCall, 1)
+	go func() {
+		result, err := h.app.Search(t.Context(), episodeArgs(1, "en"))
+		results <- searchCall{result, err}
+	}()
+	h.workflow.awaitStart(t)
+	h.workflow.finishOne(t)
+	if call := awaitCall(t, results); call.err != nil || call.result.Languages[0].Outcome != "satisfied" {
+		t.Fatalf("search = %+v/%v", call.result, call.err)
+	}
+	status, err := h.app.Repository.GetSearchStatus(t.Context(), h.ids[1], "en")
+	if err != nil || status.State != "pending" || status.Priority != store.SearchPriorityUpgrade || status.Attempt != 3 || status.FailureAttempt != 1 {
+		t.Fatalf("queued upgrade after a manual search = %+v/%v", status, err)
+	}
+	if owner := h.leaseOwner(t, 1, "en"); owner != "" {
+		t.Fatalf("lease kept: %q", owner)
+	}
+}
+
+func TestManualSearchAbandonsWorkflowIgnoringCancellation(t *testing.T) {
+	h := newManualHarness(t, 1, false)
+	h.workflow.deaf = true
+	t.Cleanup(func() { close(h.workflow.release) })
+	h.app.manualJobLimit = 30 * time.Millisecond
+	h.app.manualJobGrace = 60 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.app.runManualSearch(t.Context(), h.ids[1], h.media[1], "en", manualOptions{})
+		done <- err
+	}()
+	h.workflow.awaitStart(t)
+	select {
+	case err := <-done:
+		if !errors.Is(err, errManualTimedOut) {
+			t.Fatalf("error = %v, want the job time limit", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the manual search kept waiting for a workflow that ignores cancellation")
+	}
+	// The timeout is recorded as a technical failure by the lease owner, so
+	// the worker does not lease the search at once beside the stuck workflow.
+	status, err := h.app.Repository.GetSearchStatus(t.Context(), h.ids[1], "en")
+	if err != nil || status.State != "pending" || status.LastOutcome != "workflow_error" || status.FailureAttempt != 1 || !status.NextAttemptAt.After(h.app.Clock.Now()) {
+		t.Fatalf("status after abandonment = %+v/%v", status, err)
+	}
+	if owner := h.leaseOwner(t, 1, "en"); owner != "" {
+		t.Fatalf("lease kept: %q", owner)
+	}
+	// Both slots are free again.
+	for range manualSearchSlots {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		err := h.app.manualSlots.acquire(ctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("slot still held: %v", err)
+		}
+	}
+	if !strings.Contains(h.logs.String(), `"event":"job.timed_out"`) {
+		t.Fatalf("logs = %s", h.logs.String())
+	}
+}
+
+func TestManualSearchReportsSubtitleRelativeToItsRoot(t *testing.T) {
+	for _, daemon := range []bool{false, true} {
+		h := newManualHarness(t, 1, daemon)
+		root := h.app.Config.MediaRoots[0]
+		h.workflow.result = workflow.Result{Outcome: workflow.OutcomeInstalled, Installation: store.Installation{Path: filepath.Join(root, "Show", "S01E01.en.srt")}, SyncResult: domain.SyncResult{Verdict: "solid", OffsetMS: 120}}
+		var results <-chan searchCall
+		if daemon {
+			results = h.callSearch(t, episodeArgs(1, "en"))
+		} else {
+			local := make(chan searchCall, 1)
+			go func() {
+				result, err := h.app.Search(t.Context(), episodeArgs(1, "en"))
+				local <- searchCall{result, err}
+			}()
+			results = local
+		}
+		h.workflow.awaitStart(t)
+		h.workflow.finishOne(t)
+		call := awaitCall(t, results)
+		if call.err != nil || len(call.result.Languages) != 1 {
+			t.Fatalf("daemon=%t search = %+v/%v", daemon, call.result, call.err)
+		}
+		got := call.result.Languages[0]
+		if got.Outcome != "installed" || got.Subtitle != "Show/S01E01.en.srt" || got.SyncVerdict != "solid" || got.OffsetMS != 120 {
+			t.Fatalf("daemon=%t outcome = %+v", daemon, got)
+		}
+		if text := call.result.Text(); strings.Contains(text, root) {
+			t.Fatalf("daemon=%t output leaks the media root: %s", daemon, text)
+		}
+		payload, _ := json.Marshal(call.result)
+		if strings.Contains(string(payload), root) {
+			t.Fatalf("daemon=%t JSON leaks the media root: %s", daemon, payload)
+		}
 	}
 }

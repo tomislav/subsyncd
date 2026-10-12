@@ -47,6 +47,10 @@ var errJobTimedOut = errors.New("subtitle job exceeded its time limit")
 // slot forever.
 const defaultJobGrace = 2 * time.Minute
 
+// JobGrace is defaultJobGrace for other runners of search jobs, such as manual
+// searches, which abandon a workflow the same way.
+const JobGrace = defaultJobGrace
+
 type Clock interface{ Now() time.Time }
 
 type Workflow interface {

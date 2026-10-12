@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,7 +15,9 @@ import (
 	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
+	"subsyncd/internal/schedule"
 	"subsyncd/internal/store"
+	"subsyncd/internal/worker"
 	"subsyncd/internal/workflow"
 )
 
@@ -40,6 +43,9 @@ const (
 
 var errManualLeaseLost = errors.New("manual search lost its search lease")
 
+// errManualTimedOut ends a manual search that ran past its time limit.
+var errManualTimedOut = errors.New("manual search exceeded its time limit")
+
 // manualOptions adjusts one manual search.
 type manualOptions struct {
 	// RetryRejected clears subsyncd's own candidate rejections first.
@@ -47,6 +53,9 @@ type manualOptions struct {
 	// ReplaceInstalled lets a lower-scoring candidate replace the installed
 	// subtitle; reject sets it.
 	ReplaceInstalled bool
+	// revived reports that the search just added or revived the media, which
+	// queued every configured language afresh.
+	revived bool
 }
 
 // manualSlots is a counting semaphore that grants waiters strictly in
@@ -114,6 +123,7 @@ func (s *manualSlots) waiting() int {
 type searchTarget struct {
 	mediaID   int64
 	media     domain.Media
+	revived   bool
 	languages []domain.Language
 	// idle holds the outcome of every configured language when no language
 	// was named and none is missing, so nothing runs.
@@ -138,7 +148,7 @@ func (a *App) Search(ctx context.Context, args control.SearchArgs) (control.Sear
 	}
 	result := control.SearchResult{MediaID: target.mediaID, Languages: target.idle}
 	for _, language := range target.languages {
-		outcome, err := a.runManualSearch(ctx, target.mediaID, target.media, language, manualOptions{RetryRejected: args.RetryRejected})
+		outcome, err := a.runManualSearch(ctx, target.mediaID, target.media, language, manualOptions{RetryRejected: args.RetryRejected, revived: target.revived})
 		if err != nil {
 			return control.SearchResult{}, err
 		}
@@ -185,7 +195,7 @@ func (a *App) searchInDaemon(ctx context.Context, args control.SearchArgs) (cont
 		a.manualRuns.Add(1)
 		go func() {
 			defer a.manualRuns.Done()
-			result, err := a.runManualSearch(runCtx, target.mediaID, target.media, language, manualOptions{RetryRejected: args.RetryRejected})
+			result, err := a.runManualSearch(runCtx, target.mediaID, target.media, language, manualOptions{RetryRejected: args.RetryRejected, revived: target.revived})
 			done <- finished{index, result, err}
 		}()
 	}
@@ -279,7 +289,7 @@ func (a *App) prepareSearch(ctx context.Context, args control.SearchArgs) (searc
 	if err != nil {
 		return searchTarget{}, err
 	}
-	target := searchTarget{mediaID: mediaID, media: media}
+	target := searchTarget{mediaID: mediaID, media: media, revived: !active}
 	if named != "" {
 		target.languages = []domain.Language{named}
 		return target, nil
@@ -323,6 +333,13 @@ func (a *App) runManualSearch(ctx context.Context, mediaID int64, media domain.M
 		return workflow.Result{}, err
 	}
 	defer a.releaseManualLease(ctx, jobID)
+	// Only a search this run queued itself, or one the revival just queued,
+	// may be settled by it; earlier queued work keeps its progress.
+	_, statusErr := a.Repository.GetSearchStatus(ctx, mediaID, language)
+	if statusErr != nil && !errors.Is(statusErr, sql.ErrNoRows) {
+		return workflow.Result{}, statusErr
+	}
+	opts.revived = opts.revived || errors.Is(statusErr, sql.ErrNoRows)
 	if err := a.claimManualSearch(ctx, mediaID, language, jobID); err != nil {
 		return workflow.Result{}, err
 	}
@@ -388,12 +405,16 @@ func (a *App) runClaimedSearch(ctx context.Context, jobID string, mediaID int64,
 	if renewErr := stopRenewal(); renewErr != nil {
 		return workflow.Result{}, fmt.Errorf("%w: %w", errManualLeaseLost, renewErr)
 	}
+	if errors.Is(err, errManualTimedOut) {
+		return workflow.Result{}, a.recordManualTimeout(ctx, jobID, mediaID, language, err)
+	}
 	if err != nil {
 		return workflow.Result{}, err
 	}
-	if result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied {
-		// This run answered the queued search too, unless a change arrived
-		// meanwhile and asked for another run.
+	if opts.revived && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
+		// The revival (or this run's claim) queued this language too; this run
+		// already answered it, unless a change arrived meanwhile and asked for
+		// another run. Earlier queued work keeps its schedule and progress.
 		if err := a.Repository.SettlePendingSearch(ctx, mediaID, language, string(result.Outcome), a.Clock.Now(), jobID); err != nil {
 			return workflow.Result{}, err
 		}
@@ -421,16 +442,74 @@ func (a *App) runManualWorkflow(ctx context.Context, mediaID int64, media domain
 			return workflow.Result{}, err
 		}
 	}
-	if limit := jobTimeout(a.Config.Sync); limit > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, limit)
-		defer cancel()
-	}
 	run := a.runWorkflow
 	if run == nil {
 		run = workflowRouter(a.Workflows).Run
 	}
-	return run(ctx, workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true})
+	request := workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true}
+	limit, grace := a.manualJobLimit, a.manualJobGrace
+	if limit <= 0 {
+		limit = jobTimeout(a.Config.Sync)
+	}
+	if grace <= 0 {
+		grace = worker.JobGrace
+	}
+	if limit <= 0 {
+		return run(ctx, request)
+	}
+	// Like a worker job: past the limit the workflow's context is canceled,
+	// and one that still has not returned a grace period later is abandoned
+	// with its canceled context, which stops it before it publishes.
+	timeoutCtx, cancel := context.WithTimeoutCause(ctx, limit, errManualTimedOut)
+	defer cancel()
+	type outcome struct {
+		result workflow.Result
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := run(timeoutCtx, request)
+		done <- outcome{result, err}
+	}()
+	timer := time.NewTimer(limit + grace)
+	defer timer.Stop()
+	select {
+	case finished := <-done:
+		if finished.err != nil && context.Cause(timeoutCtx) == errManualTimedOut && ctx.Err() == nil {
+			// A workflow that returned a result in time keeps it.
+			return workflow.Result{}, fmt.Errorf("%w (%s)", errManualTimedOut, limit)
+		}
+		return finished.result, finished.err
+	case <-timer.C:
+		return workflow.Result{}, fmt.Errorf("%w (%s, abandoned after a further %s)", errManualTimedOut, limit, grace)
+	case <-ctx.Done():
+		// Shutdown or a lost lease canceled the workflow too: give it the
+		// grace to return, then abandon it.
+		graceTimer := time.NewTimer(grace)
+		defer graceTimer.Stop()
+		select {
+		case finished := <-done:
+			return finished.result, finished.err
+		case <-graceTimer.C:
+			return workflow.Result{}, ctx.Err()
+		}
+	}
+}
+
+// recordManualTimeout completes a timed-out manual search as a technical
+// failure on the failure schedule while jobID still owns it, so the worker
+// does not lease it again at once beside a stuck workflow.
+func (a *App) recordManualTimeout(ctx context.Context, jobID string, mediaID int64, language domain.Language, cause error) error {
+	events := a.events().For("app")
+	events.Log(ctx, slog.LevelWarn, "job.timed_out", "subtitle job exceeded its time limit", slog.String("priority", "manual"))
+	status, err := a.Repository.GetSearchStatus(ctx, mediaID, language)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if _, err := a.Repository.CompleteSearch(ctx, schedule.Scheduler{Clock: a.Clock}.Failure(jobID, status.FailureAttempt, "workflow_error")); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 // renewManualLease renews jobID's lease every third of its duration until the
