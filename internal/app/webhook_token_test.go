@@ -2,12 +2,14 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
 )
@@ -62,8 +64,9 @@ func TestWebhookURLPrintsStoredToken(t *testing.T) {
 	if err != nil || got != "https://other.example/webhooks/tv?token="+token {
 		t.Fatalf("override url=%q err=%v", got, err)
 	}
-	if _, err := reader.WebhookURL(t.Context(), "tv", "ftp://x"); err == nil || strings.Contains(err.Error(), token) {
-		t.Fatalf("bad base err=%v", err)
+	_, err = reader.WebhookURL(t.Context(), "tv", "ftp://x")
+	if err == nil || strings.Contains(err.Error(), token) || errorCode(err) != control.CodeUsage {
+		t.Fatalf("bad base err=%#v, want usage", err)
 	}
 }
 
@@ -91,9 +94,19 @@ func TestWebhookURLBeforeFirstStart(t *testing.T) {
 	}
 	defer reader.Close()
 	_, err = reader.WebhookURL(t.Context(), "late", "")
-	if err == nil || !strings.Contains(err.Error(), "start subsyncd once") {
-		t.Fatalf("err=%v", err)
+	if err == nil || !strings.Contains(err.Error(), "start subsyncd once") || errorCode(err) != control.CodeUnknownInstance {
+		t.Fatalf("err=%#v, want unknown_instance", err)
 	}
+}
+
+// errorCode is the code a coded error carries, or "" for an uncoded one
+// (reported as internal).
+func errorCode(err error) string {
+	var coded *control.Error
+	if errors.As(err, &coded) {
+		return coded.Code
+	}
+	return ""
 }
 
 func TestWebhookURLUnknownInstance(t *testing.T) {

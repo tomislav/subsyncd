@@ -534,6 +534,8 @@ func TestHelpWording(t *testing.T) {
 		{"reject", "holds across LAPSE and rule changes", "LAPSE upgrades"},
 		{"recent", "-since duration how far back to look, such as 90m or 72h", "Go duration"},
 		{"retry", "Without a daemon, this process clears the stored state", ""},
+		{"webhook-url", "usage (also for an invalid --base), unknown_instance (also for a configured instance without a token", ""},
+		{"forget-instance", "usage (also for an instance still in the configuration)", ""},
 	} {
 		text := commandHelpText(t, tc.command, "--help")
 		if !strings.Contains(text, tc.want) || (tc.not != "" && strings.Contains(text, tc.not)) {
@@ -542,7 +544,7 @@ func TestHelpWording(t *testing.T) {
 	}
 	// Every command that takes --json can fail with usage (an unknown flag).
 	for command, text := range commandHelp {
-		if command != "serve" && !strings.Contains(text, "Error codes: usage,") {
+		if command != "serve" && !strings.Contains(text, "Error codes: usage") {
 			t.Errorf("%s error codes lack usage: %s", command, text)
 		}
 	}

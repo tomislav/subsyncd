@@ -2,12 +2,14 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
@@ -50,8 +52,12 @@ func TestForgetInstanceRefusesConfiguredInstance(t *testing.T) {
 	var logs bytes.Buffer
 	application := openForgetInstanceApp(t, &logs)
 
-	if _, err := application.ForgetInstance(t.Context(), "tv", true); err == nil || !strings.Contains(err.Error(), "still configured") {
-		t.Fatalf("err=%v", err)
+	for _, apply := range []bool{false, true} {
+		_, err := application.ForgetInstance(t.Context(), "tv", apply)
+		var coded *control.Error
+		if !errors.As(err, &coded) || coded.Code != control.CodeUsage || !strings.Contains(coded.Message, "still configured; remove it from the configuration first") {
+			t.Fatalf("apply=%t: err=%#v, want usage", apply, err)
+		}
 	}
 }
 

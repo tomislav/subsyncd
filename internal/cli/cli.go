@@ -687,15 +687,15 @@ Error codes: usage, internal.`,
 	"forget-instance": `Preview or delete the records of a removed instance.
 Remove the instance from the configuration first. Without --yes it only previews what would be deleted; --yes deletes it.
 Result fields: instance, applied, media, searches, installations, rollback_copies, candidates, rejections, notifications, events, replays, history.
-Error codes: usage, unknown_instance, busy, internal.`,
+Error codes: usage (also for an instance still in the configuration), unknown_instance (the database has no records for it), busy, internal.`,
 	"webhook-url": `Print the webhook URL to enter in Arr.
 The result includes the token.
 Result fields: instance, url.
-Error codes: usage, unknown_instance, internal.`,
+Error codes: usage (also for an invalid --base), unknown_instance (also for a configured instance without a token, because subsyncd has not started since it was added), internal.`,
 	"rotate-webhook-token": `Replace an instance's webhook token.
 Stop the daemon first.
 Result fields: instance, managed.
-Error codes: usage, unknown_instance, busy, internal.`,
+Error codes: usage, unknown_instance (also for a configured instance without a token, because subsyncd has not started since it was added), busy, internal.`,
 }
 
 // commandGroups orders the commands of the top-level help. Every command in

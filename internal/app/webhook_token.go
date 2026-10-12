@@ -22,13 +22,18 @@ func (a *App) configuredInstance(instance string) error {
 	return unknownInstance(instance)
 }
 
+// noWebhookToken reports a configured instance the database does not know
+// yet: the daemon creates its row and token at its first start. Like
+// forget-instance for an instance without records, it is unknown_instance.
+func noWebhookToken(instance string) error {
+	return &control.Error{Code: control.CodeUnknownInstance, Message: fmt.Sprintf("instance %s has no webhook token yet; start subsyncd once to create it", instance)}
+}
+
 func (a *App) storedWebhookToken(ctx context.Context, instance string) (string, error) {
 	token, err := a.Repository.WebhookToken(ctx, instance)
 	switch {
-	case errors.Is(err, store.ErrNoWebhookToken):
-		return "", fmt.Errorf("instance %s has no webhook token yet; start subsyncd once to create it", instance)
-	case errors.Is(err, store.ErrUnknownInstance):
-		return "", fmt.Errorf("instance %s has no webhook token yet; start subsyncd once to create it", instance)
+	case errors.Is(err, store.ErrNoWebhookToken), errors.Is(err, store.ErrUnknownInstance):
+		return "", noWebhookToken(instance)
 	case err != nil:
 		return "", err
 	}
@@ -45,7 +50,7 @@ func (a *App) WebhookURL(ctx context.Context, instance, base string) (control.We
 	if base != "" {
 		base = config.TrimWebhookBaseURL(base)
 		if !config.ValidWebhookBaseURL(base) {
-			return control.WebhookURLResult{}, errors.New("--base must be an absolute http or https URL without credentials, query or fragment")
+			return control.WebhookURLResult{}, &control.Error{Code: control.CodeUsage, Message: "--base must be an absolute http or https URL without credentials, query or fragment"}
 		}
 	} else {
 		base = a.Config.Server.WebhookBaseURL
@@ -71,7 +76,7 @@ func (a *App) RotateWebhookToken(ctx context.Context, instance string) (control.
 	defer release()
 	if err := a.Repository.RotateWebhookToken(ctx, instance, nil); err != nil {
 		if errors.Is(err, store.ErrUnknownInstance) {
-			return control.RotateTokenResult{}, fmt.Errorf("instance %s has no webhook token yet; start subsyncd once to create it", instance)
+			return control.RotateTokenResult{}, noWebhookToken(instance)
 		}
 		return control.RotateTokenResult{}, err
 	}

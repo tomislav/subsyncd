@@ -18,7 +18,7 @@ import (
 func (a *App) ForgetInstance(ctx context.Context, instance string, apply bool) (control.ForgetInstanceResult, error) {
 	for _, configured := range a.Config.Instances {
 		if configured.Name == instance {
-			return control.ForgetInstanceResult{}, fmt.Errorf("instance %q is still configured; remove it from the configuration first", instance)
+			return control.ForgetInstanceResult{}, &control.Error{Code: control.CodeUsage, Message: fmt.Sprintf("instance %q is still configured; remove it from the configuration first", instance)}
 		}
 	}
 	if apply {
