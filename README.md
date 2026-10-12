@@ -4,7 +4,7 @@
 
 subsyncd finds, downloads, and synchronizes subtitles for your movies and TV shows. Choose your languages and subtitle providers, connect your Sonarr or Radarr instances, and let it run in the background.
 
-Subtitles are saved alongside your media files. Configuration lives in a YAML file, with command-line tools for diagnostics and manual searches. There is no web interface.
+Subtitles are saved alongside your media files. Configuration lives in a YAML file, and a command line lets you look up, search, or reject subtitles for any file while it runs. There is no web interface.
 
 ## Features
 
@@ -15,16 +15,17 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 - **Season-pack support:** extracts the matching episode from ZIP and RAR downloads, skipping ambiguous matches.
 - **Ongoing searches:** keeps checking for missing subtitles when no suitable match is available.
 - **Safe subtitle upgrades:** can replace subtitles it installed with better matches, while protecting manually added subtitles and any files you’ve edited.
+- **Command line that works while it runs:** see what is missing and why, search one file now, or check recent activity, by title or path instead of IDs; `--json` output for scripts ([commands](docs/operations.md#commands)).
 - **Tell it a subtitle is wrong:** `reject` drops a subtitle it installed, never picks it again, and installs the next best one, or removes it when nothing else fits ([how](docs/operations.md#a-subtitle-is-wrong)).
 - **Remembers its progress:** saves search history and provider limits across restarts, and avoids repeatedly downloading rejected results.
-- **Optional Silo refresh:** asks Silo to rescan a media file after installing subtitles.
+- **Optional Silo refresh:** asks Silo to rescan the folder after installing subtitles.
 
 ## Supported services
 
 | Service | Integration |
 | --- | --- |
-| [Sonarr](https://github.com/sonarr/sonarr) | TV library, imports, upgrades, renames, and file deletions |
-| [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file deletions |
+| [Sonarr](https://github.com/sonarr/sonarr) | TV library, imports, upgrades, renames, and file and series deletions |
+| [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file and movie deletions |
 | [Silo](https://github.com/Silo-Server/silo-server) | Refreshes subtitle inventory through its native scan API |
 
 TV files containing several consecutive episodes of one season (for example `S06E01-E02`) receive one subtitle that covers the whole file; only subtitles explicitly covering every episode are used. Files whose episodes span seasons or have gaps are skipped.
@@ -156,11 +157,26 @@ Use the address Sonarr or Radarr reach subsyncd at as `--base`; for an instance 
 
 For a manual webhook, enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches, and other event types are accepted and ignored. subsyncd answers a webhook as soon as it has saved it and applies it right after, so Arr never waits on subsyncd's own lookups.
 
-After the daemon starts, subsyncd discovers existing movie and episode files in each configured Sonarr/Radarr library once, including files absent from retained history, and queues subtitle checks. It remembers completion across restarts and then follows changes through webhooks and periodic history reconciliation. Run `scan --instance NAME` to discover unindexed files again. Manual searches, scans and retries run while the daemon is running; see the [operations guide](docs/operations.md#commands).
+After the daemon starts, subsyncd discovers existing movie and episode files in each configured Sonarr/Radarr library once, including files absent from retained history, and queues subtitle checks. It remembers completion across restarts and then follows changes through webhooks and periodic history reconciliation.
+
+## Everyday use
+
+subsyncd works on its own once connected. When you want to look or step in, run commands beside the running service:
+
+```bash
+docker compose exec subsyncd subsyncd missing                      # what still has no subtitle, and why
+docker compose exec subsyncd subsyncd find --title "Show S01E02"   # one file's state per language
+docker compose exec subsyncd subsyncd search --title "Movie (2019)"
+docker compose exec subsyncd subsyncd reject --title "Movie (2019)" --language en --reason out_of_sync
+docker compose exec subsyncd subsyncd recent                       # what happened in the last day
+docker compose exec subsyncd subsyncd status
+```
+
+Name files as you see them in your media player: `Movie (2019)`, `Show S01E02`. See the [operations guide](docs/operations.md#commands) for every command.
 
 ## Updates
 
-The Compose file pulls `ghcr.io/tomislav/subsyncd:latest` by default. To update:
+The Compose file pulls `ghcr.io/tomislav/subsyncd:latest` by default. Back up `data/` with the service stopped before upgrading: it holds search history, caches, and records of installed subtitles, and a newer build may upgrade the database in a way an older one cannot read. Then update:
 
 ```bash
 docker compose pull
@@ -168,7 +184,7 @@ docker compose up -d
 docker compose exec subsyncd subsyncd doctor
 ```
 
-To stay on a particular build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. Back up `data/` with the service stopped before upgrading; it holds search history, caches, and records of installed subtitles.
+To stay on a particular build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. See [Back up and update](docs/operations.md#back-up-and-update) for rolling back.
 
 Upgrading from a build that read `webhook_token` from the configuration: remove `webhook_token` from every instance first, because startup refuses the old key. The first start generates a new token for each instance. With `server.webhook_base_url` set, subsyncd updates the connection in Sonarr or Radarr itself. Otherwise run `subsyncd webhook-url --instance NAME --base URL` for each instance and put the new URL in its webhook.
 
@@ -179,7 +195,7 @@ Logs are available through `docker compose logs`. Set `logging.level: debug` in 
 ## Documentation
 
 - [Configuration example](config.example.yaml) — all settings in one place.
-- [Operations guide](docs/operations.md) — commands, manual searches (which run beside the daemon), [scripting and automation](docs/operations.md#scripting-and-automation), diagnostics, Silo setup, backups, and troubleshooting.
+- [Operations guide](docs/operations.md) — commands, manual searches, rejecting subtitles, [scripting and automation](docs/operations.md#scripting-and-automation), Silo setup, backups, and troubleshooting.
 - [Provider guide](docs/providers.md) — language support, matching, synchronization, and retry schedules.
 - [Logging guide](docs/logging.md) — log levels, workflow tracing, warnings, and safe diagnostic sharing.
 - [Architecture](docs/architecture.md) — system boundaries and durable processing flow.
@@ -209,7 +225,10 @@ Read [AGENTS.md](AGENTS.md) and the [developer references](docs/development/) fi
 ```bash
 go test -race ./...
 go vet ./...
+go test ./test/e2e -tags=e2e -race
 ```
+
+Commit subjects follow Conventional Commits (`fix(control): bound socket drain on shutdown`); enable the checking hook once with `git config core.hooksPath .githooks`.
 
 ## License
 
