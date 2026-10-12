@@ -127,6 +127,7 @@ The container runs `serve` by default. The other commands are run through Compos
 | `doctor` | Checks configuration, database, media folders, and bundled tools. | May run |
 | `find` | Lists the files that match a title or path, with the state of each configured language (`installed`, `satisfied`, `running`, `missing`). | May run |
 | `missing` | Lists the files and languages that have no subtitle yet, each with a reason and a command to fix it. See [What is missing](#what-is-missing). | May run |
+| `recent` | Lists what happened in a time window, newest first: subtitles installed or replaced, searches that found nothing or only rejected candidates, your rejections, and removed subtitles. See [What happened recently](#what-happened-recently). | May run |
 | `status` | One overview of the daemon and queue: whether the daemon runs (version, start time), the queue by class with how many searches are due, running searches, providers that cannot be used, the media-unavailable pause, each Arr instance, and the webhook and notification backlogs. See [Status and providers](#status-and-providers). | May run; asks the daemon when it can, and works without it |
 | `providers` | Shows every configured provider: the languages it serves and at which tier, its state (`available`, `cooling_down`, `auth_failed`, `quota_exhausted`), its last failure and last success, and what its searches did in the last 24 hours. | May run |
 | `explain` | Shows what subsyncd knows about one file, for one language or for every configured language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules, another LAPSE version or synchronization policy, or for the file before it was replaced no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
@@ -270,6 +271,15 @@ Each row has a `reason` and an `action`:
 | `unsupported` | subsyncd does not search this file, for example a multi-episode file. | A short instruction: replace the file in Sonarr or Radarr. |
 
 Actions are complete commands with the real instance, kind, file ID and language; run them through `docker compose exec subsyncd` like the others. `unsupported` gives an instruction instead of a command. `missing` never reads media files, so it works even while storage is down.
+
+## What happened recently
+
+```sh
+docker compose exec subsyncd subsyncd recent
+docker compose exec subsyncd subsyncd recent --since 72h --language hr --limit 20
+```
+
+`recent` lists finished searches and rejections from the last 24 hours, newest first. `--since` takes a Go duration such as `90m` or `72h`, `--instance` and `--language` narrow the list, and `--limit` (default 50) cuts it. Each row gives the title, language, outcome (`installed`, `no_result`, `rejected`, `removed`, and so on), the provider and candidate release when there was one, a `reason` (a code starting with `user_` marks a rejection you made with `reject`), whether the search was `manual`, and when it finished. The history is kept for 30 days, so a longer `--since` shows no more than that, and a file subsyncd has since forgotten still appears under its stored title. The command only reads saved state, so it runs beside the daemon.
 
 ## Status and providers
 

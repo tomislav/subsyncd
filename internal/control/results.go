@@ -689,3 +689,57 @@ func (r ProvidersResult) Text() string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// RecentArgs are the arguments of the recent command. Since zero means the
+// last 24 hours; Limit zero means 50.
+type RecentArgs struct {
+	Since    time.Duration `json:"since,omitempty"`
+	Instance string        `json:"instance,omitempty"`
+	Language string        `json:"language,omitempty"`
+	Limit    int           `json:"limit,omitempty"`
+}
+
+// RecentItem is one finished search or user rejection. Title is the stored
+// display title; the media may no longer exist. Reason is a stored reason
+// code, user_* for a rejection made with reject.
+type RecentItem struct {
+	MediaMatch
+	Language   string    `json:"language"`
+	Outcome    string    `json:"outcome"`
+	Provider   string    `json:"provider,omitempty"`
+	Release    string    `json:"release,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	Manual     bool      `json:"manual"`
+	FinishedAt time.Time `json:"finished_at"`
+}
+
+// RecentResult lists what happened since Since, newest first.
+type RecentResult struct {
+	Since time.Time    `json:"since"`
+	Items []RecentItem `json:"items"`
+}
+
+func (r RecentResult) Text() string {
+	if len(r.Items) == 0 {
+		return "nothing happened since " + r.Since.UTC().Format(time.RFC3339)
+	}
+	lines := make([]string, 0, len(r.Items))
+	for _, item := range r.Items {
+		line := fmt.Sprintf("%s %s %s %s: %s", item.FinishedAt.UTC().Format(time.RFC3339), item.Instance, item.Kind, item.Title, item.Outcome)
+		line += " " + item.Language
+		if item.Provider != "" {
+			line += " via " + item.Provider
+		}
+		if item.Release != "" {
+			line += " " + fmt.Sprintf("%q", item.Release)
+		}
+		if item.Reason != "" {
+			line += " (" + item.Reason + ")"
+		}
+		if item.Manual {
+			line += " [manual]"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}

@@ -32,6 +32,7 @@ type Backend interface {
 	Explain(context.Context, control.ExplainArgs) (control.ExplainResult, error)
 	Find(context.Context, control.Selection) (control.FindResult, error)
 	Missing(context.Context, control.MissingArgs) (control.MissingResult, error)
+	Recent(context.Context, control.RecentArgs) (control.RecentResult, error)
 	Status(context.Context) (control.StatusResult, error)
 	ListProviders(context.Context) (control.ProvidersResult, error)
 	Doctor(context.Context) (control.DoctorResult, error)
@@ -116,6 +117,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	path := flags.String("path", "", "media file path, in this container or as Sonarr or Radarr reports it")
 	language := flags.String("language", "", "subtitle language tag")
 	limit := flags.Int("limit", 0, "most rows to list (default 50)")
+	since := flags.Duration("since", 0, "how far back to look, as a Go duration (default 24h)")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
 	retryRejected := flags.Bool("retry-rejected", false, "clear and retry the candidates subsyncd rejected (not those you rejected)")
@@ -168,6 +170,15 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		}
 	case "missing":
 		if *limit < 0 {
+			validateErr = fmt.Errorf("--limit must not be negative")
+		}
+	case "recent":
+		sinceGiven := false
+		flags.Visit(func(item *flag.Flag) { sinceGiven = sinceGiven || item.Name == "since" })
+		switch {
+		case sinceGiven && *since <= 0:
+			validateErr = fmt.Errorf("--since must be positive")
+		case *limit < 0:
 			validateErr = fmt.Errorf("--limit must not be negative")
 		}
 	case "retry":
@@ -265,6 +276,8 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		result, err = wrap(backend.Find(ctx, control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}))
 	case "missing":
 		result, err = wrap(backend.Missing(ctx, control.MissingArgs{Instance: *instance, Language: *language, Title: *title, Limit: *limit}))
+	case "recent":
+		result, err = wrap(backend.Recent(ctx, control.RecentArgs{Since: *since, Instance: *instance, Language: *language, Limit: *limit}))
 	case "status":
 		var status control.StatusResult
 		if status, err = backend.Status(ctx); err == nil {
@@ -399,6 +412,8 @@ func commandFlags(command string) map[string]bool {
 		names = []string{"instance", "kind", "file-id", "title", "path"}
 	case "missing":
 		names = []string{"instance", "language", "title", "limit"}
+	case "recent":
+		names = []string{"since", "instance", "language", "limit"}
 	case "retry":
 		names = []string{"provider"}
 	case "analyze-sync":
@@ -596,6 +611,11 @@ Filters: --instance, --language, --title ("Dune", "Show S01E02"; an exact title 
 Reasons: not_searched (no search has run yet), no_candidates (providers returned nothing usable), all_rejected (every candidate was rejected), providers_cooling_down (the last search was throttled, or every provider of the language's route is cooling down; providers names them), search_failing (the last search failed technically, for example a network, LAPSE or media-storage problem; it retries by itself at next_attempt_at, and explain or the logs show the cause), unsupported (for example a multi-episode file subsyncd does not search).
 action is a complete command to run (search ..., search ... --retry-rejected, retry --provider ...); for search_failing it is the explain command to see the cause, and for unsupported a short instruction instead.
 Result fields: total (all rows before --limit), items[] (instance, kind, file_id, title, year, season, episode, episode_end, language, reason, providers, next_attempt_at, action).
+Error codes: usage, unknown_instance, unknown_language, internal.`,
+	"recent": `List what happened in a time window, newest first: subtitles installed (and replaced), searches that ended with no result or only rejected candidates, subtitles you rejected, subtitles removed, and searches that gave up on upgrade checks. Reads the search history beside the daemon; the history is kept for 30 days.
+Filters: --since (a Go duration such as 90m or 72h; default 24h), --instance, --language, --limit (default 50).
+Outcomes: installed (a subtitle was installed or replaced), satisfied (nothing needed doing), no_result (providers returned nothing usable), rejected (every candidate was rejected; a reason starting with user_ is a rejection you made with reject, such as user_out_of_sync), throttled (providers were rate limited), removed (a rejected subtitle was taken out and nothing acceptable replaced it). manual is true for searches you started.
+Result fields: since, items[] (instance, kind, file_id, title, language, outcome, provider, release, reason, manual, finished_at). The title is the name the log shows (episodes include season and episode); a file subsyncd has since forgotten still appears.
 Error codes: usage, unknown_instance, unknown_language, internal.`,
 	"status": `Overview to read before acting: the daemon, the queue, running searches, providers that cannot be used, the media pause, each Arr instance and the backlogs. Runs beside the daemon, and still answers without one.
 Result fields: daemon (running, version, started_at, error), queue (new, missing, upgrade; each total and due), running[] (the media fields, language, lease_until), providers[] (id, state, until, last_failure), media_pause (until), instances[] (name, last_reconcile_at, reconcile_failures, discovery_complete, webhook, webhook_checked_at), backlog (webhook_inbox, notification_outbox).

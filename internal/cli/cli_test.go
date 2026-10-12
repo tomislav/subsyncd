@@ -75,6 +75,10 @@ func (f *fakeBackend) Missing(_ context.Context, args control.MissingArgs) (cont
 	f.call = fmt.Sprintf("missing:%s:%s:%s:%d", args.Instance, args.Language, args.Title, args.Limit)
 	return control.MissingResult{Total: 1, Items: []control.MissingItem{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}, Language: "en", Reason: "no_candidates", Action: "subsyncd search --instance radarr-main --kind movie --file-id 42 --language en"}}}, f.err
 }
+func (f *fakeBackend) Recent(_ context.Context, args control.RecentArgs) (control.RecentResult, error) {
+	f.call = fmt.Sprintf("recent:%s:%s:%s:%d", args.Instance, args.Language, args.Since, args.Limit)
+	return control.RecentResult{Items: []control.RecentItem{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune (2021)"}, Language: "en", Outcome: "installed", Provider: "opensubtitles", FinishedAt: time.Unix(1700000000, 0).UTC()}}}, f.err
+}
 func (f *fakeBackend) Status(context.Context) (control.StatusResult, error) {
 	f.call = "status"
 	return control.StatusResult{Queue: control.QueueCounts{Missing: control.QueueClass{Total: 3, Due: 1}}}, f.err
@@ -865,5 +869,41 @@ func TestStatusDoesNotHangOnAWedgedDaemon(t *testing.T) {
 				t.Fatalf("result = %+v after %v", result, time.Since(started))
 			}
 		})
+	}
+}
+
+func TestRecentPassesFlags(t *testing.T) {
+	var stdout bytes.Buffer
+	backend := &fakeBackend{}
+	code := (Command{Open: openFake(backend), Stdout: &stdout, Stderr: &bytes.Buffer{}}).Run(context.Background(), []string{"recent", "--since", "6h", "--instance", "radarr-main", "--language", "en", "--limit", "5"})
+	if code != ExitOK || backend.call != "recent:radarr-main:en:6h0m0s:5" || !strings.Contains(stdout.String(), "installed") {
+		t.Fatalf("exit = %d call = %q stdout = %q", code, backend.call, stdout.String())
+	}
+}
+
+func TestRecentRejectsBadFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"recent", "--since", "yesterday"},
+		{"recent", "--since", "-1h"},
+		{"recent", "--since", "0s"},
+		{"recent", "--limit", "-1"},
+		{"recent", "--title", "Dune"},
+	} {
+		var stderr bytes.Buffer
+		backend := &fakeBackend{}
+		code := (Command{Open: openFake(backend), Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), args)
+		if code != ExitUsage || backend.call != "" {
+			t.Fatalf("%v: exit = %d call = %q stderr = %q", args, code, backend.call, stderr.String())
+		}
+	}
+}
+
+func TestRecentHelp(t *testing.T) {
+	var stderr bytes.Buffer
+	(Command{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"recent", "--help"})
+	for _, want := range []string{"installed", "no_result", "rejected", "removed", "user_", "--since", "items[]", "finished_at", "unknown_instance", "unknown_language", "--limit"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("help lacks %q: %s", want, stderr.String())
+		}
 	}
 }
