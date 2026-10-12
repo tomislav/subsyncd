@@ -260,14 +260,14 @@ Each row has a `reason` and an `action`:
 
 | Reason | Meaning | Action |
 | --- | --- | --- |
-| `not_searched` | No search has finished for it yet, or the last one failed for a technical reason and will retry (`next_attempt_at`). | `subsyncd search --instance … --kind … --file-id … --language …` |
+| `not_searched` | No search has run for it yet. | `subsyncd search --instance … --kind … --file-id … --language …` |
 | `no_candidates` | The last search found no usable candidate. | The same `search` command. |
 | `all_rejected` | Every candidate was rejected. | The `search` command with `--retry-rejected`, which reconsiders the ones subsyncd rejected (not those you rejected with `reject`). |
 | `providers_cooling_down` | The last search was throttled, or every provider of the language's route is cooling down. `providers` names the ones cooling. | `subsyncd retry --provider NAME` clears the cooldown. |
-| `media_unavailable` | The last search failed and the media file cannot be read. | A short instruction: fix the storage; the search retries by itself. |
+| `search_failing` | The last search failed technically (network, LAPSE, or a media outage: the saved state cannot tell which). It retries by itself at `next_attempt_at`. | `subsyncd explain --instance … --kind … --file-id … --language …` shows the cause; the logs have the details. |
 | `unsupported` | subsyncd does not search this file, for example a multi-episode file. | A short instruction: replace the file in Sonarr or Radarr. |
 
-Actions are complete commands with the real instance, kind, file ID and language; run them through `docker compose exec subsyncd` like the others. `media_unavailable` and `unsupported` give an instruction instead of a command.
+Actions are complete commands with the real instance, kind, file ID and language; run them through `docker compose exec subsyncd` like the others. `unsupported` gives an instruction instead of a command. `missing` never reads media files, so it works even while storage is down.
 
 ## A subtitle is wrong
 

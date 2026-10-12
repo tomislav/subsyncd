@@ -61,7 +61,6 @@ func TestMissingReasonsAndActions(t *testing.T) {
 		{"never searched", "", "not_searched", base},
 		{"no candidates", "no_result", "no_candidates", base},
 		{"all rejected", "rejected", "all_rejected", base + " --retry-rejected"},
-		{"technical failure", "workflow_error", "not_searched", base},
 	} {
 		if tc.outcome != "" {
 			settle(t, application, id, tc.outcome)
@@ -99,12 +98,15 @@ func TestMissingProvidersCoolingDown(t *testing.T) {
 	}
 }
 
-func TestMissingMediaUnavailable(t *testing.T) {
+func TestMissingSearchFailing(t *testing.T) {
 	application, root := newMissingApp(t)
+	// The media file does not exist; missing must not look at the filesystem,
+	// so the reason comes from the stored failure alone.
 	id := storeEpisode(t, application, 7, "Show", 2020, filepath.Join(root, "gone.mkv"))
 	settle(t, application, id, "workflow_error")
 	item := onlyMissing(t, application, control.MissingArgs{})
-	if item.Reason != "media_unavailable" || item.Action == "" || strings.Contains(item.Action, root) {
+	want := "subsyncd explain --instance tv --kind episode --file-id 7 --language en"
+	if item.Reason != "search_failing" || item.Action != want {
 		t.Fatalf("item = %+v", item)
 	}
 }

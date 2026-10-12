@@ -31,9 +31,7 @@ type MissingQuery struct {
 // satisfying track, with what the search schedule recorded about it.
 type MissingRow struct {
 	control.MediaMatch
-	MediaID int64
-	// Path is the stored media path, for the caller to check; it is not output.
-	Path              string
+	MediaID           int64
 	Language          string
 	UnsupportedReason string
 	// NoSearch is set when no search state exists for the language yet.
@@ -85,7 +83,7 @@ func (r *Repository) ListMissing(ctx context.Context, q MissingQuery) ([]Missing
 		args = append(args, q.Instance)
 	}
 	rows, err := r.store.db.QueryContext(ctx, `WITH wanted(language) AS (VALUES `+strings.TrimSuffix(strings.Repeat("(?),", len(languages)), ",")+`)
-SELECT m.id, m.path, m.instance, m.kind, m.file_id, m.title, m.year, m.season, m.episode, m.episode_end, m.unsupported_reason,
+SELECT m.id, m.instance, m.kind, m.file_id, m.title, m.year, m.season, m.episode, m.episode_end, m.unsupported_reason,
   w.language, s.id IS NULL, COALESCE(s.state, ''), COALESCE(s.attempt, 0), COALESCE(s.failure_attempt, 0), COALESCE(s.last_outcome, ''), COALESCE(s.next_attempt_at_ns, 0), COALESCE(s.lease_until_ns, 0)
 FROM media m CROSS JOIN wanted w
 LEFT JOIN search_states s ON s.media_id=m.id AND s.language=w.language
@@ -102,7 +100,7 @@ ORDER BY s.id IS NULL, COALESCE(s.state, '')<>'pending', s.priority DESC, s.inst
 	for rows.Next() {
 		var row MissingRow
 		var next, lease int64
-		if err := rows.Scan(&row.MediaID, &row.Path, &row.Instance, &row.Kind, &row.FileID, &row.Title, &row.Year, &row.Season, &row.Episode, &row.EpisodeEnd, &row.UnsupportedReason,
+		if err := rows.Scan(&row.MediaID, &row.Instance, &row.Kind, &row.FileID, &row.Title, &row.Year, &row.Season, &row.Episode, &row.EpisodeEnd, &row.UnsupportedReason,
 			&row.Language, &row.NoSearch, &row.State, &row.Attempt, &row.FailureAttempt, &row.LastOutcome, &next, &lease); err != nil {
 			return nil, 0, fmt.Errorf("scan missing: %w", err)
 		}

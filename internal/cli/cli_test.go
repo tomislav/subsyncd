@@ -734,7 +734,7 @@ func TestMissingRejectsBadFlags(t *testing.T) {
 func TestMissingHelpListsReasons(t *testing.T) {
 	var stderr bytes.Buffer
 	(Command{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"missing", "--help"})
-	for _, want := range []string{"not_searched", "no_candidates", "all_rejected", "providers_cooling_down", "media_unavailable", "unsupported", "total", "items[]", "unknown_instance", "unknown_language", "--limit"} {
+	for _, want := range []string{"not_searched", "no_candidates", "all_rejected", "providers_cooling_down", "search_failing", "unsupported", "total", "items[]", "unknown_instance", "unknown_language", "--limit"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("help lacks %q: %s", want, stderr.String())
 		}

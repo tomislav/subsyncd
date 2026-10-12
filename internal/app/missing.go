@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"subsyncd/internal/control"
@@ -17,8 +16,8 @@ const defaultMissingLimit = 50
 
 // Missing lists the configured languages that active media have no subtitle
 // for, in queue order, each with a reason and a command that addresses it. It
-// only reads the database, plus a stat of the media file for a search that
-// failed technically. A search that is running now is listed like the others,
+// only reads the database: it touches no media file, so a hung mount cannot
+// stall it. A search that is running now is listed like the others,
 // with no next attempt.
 func (a *App) Missing(ctx context.Context, args control.MissingArgs) (control.MissingResult, error) {
 	if args.Instance != "" && a.Catalogs[args.Instance] == nil {
@@ -93,19 +92,17 @@ func (a *App) providerCoolingDown(ctx context.Context, providerID string, now ti
 	return false, nil
 }
 
-// missingReason classifies a row. Unsupported media wins; then media the
-// worker could not read; then a throttled last search or a route whose
-// providers are all cooling down; then the last search's outcome. A search
-// that failed for another technical reason has no result yet, so it reads as
-// not_searched until it succeeds.
+// missingReason classifies a row. Unsupported media wins; then a search whose
+// last run failed technically (the stored state cannot say why, so a media
+// outage is search_failing too); then a throttled last search or a route whose
+// providers are all cooling down; then the last search's outcome. Only a
+// search that never ran is not_searched.
 func missingReason(row store.MissingRow, route []string, cooling map[string]bool) (string, []string) {
 	if row.UnsupportedReason != "" {
 		return "unsupported", nil
 	}
-	if row.LastOutcome == "workflow_error" {
-		if _, err := os.Stat(row.Path); err != nil {
-			return "media_unavailable", nil
-		}
+	if row.LastOutcome == "workflow_error" || (row.LastOutcome == "" && row.FailureAttempt > 0) {
+		return "search_failing", nil
 	}
 	var coolingRoute []string
 	for _, providerID := range route {
@@ -136,8 +133,8 @@ func missingAction(item control.MissingItem) string {
 			return "subsyncd retry --provider " + item.Providers[0]
 		}
 		return search
-	case "media_unavailable":
-		return "make the media file readable by subsyncd again; the search retries by itself"
+	case "search_failing":
+		return fmt.Sprintf("subsyncd explain --instance %s --kind %s --file-id %d --language %s", item.Instance, item.Kind, item.FileID, item.Language)
 	case "unsupported":
 		return "replace the file in Sonarr or Radarr with one subsyncd supports (for example one episode per file); subsyncd does not search it"
 	}
