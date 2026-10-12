@@ -25,6 +25,12 @@ import (
 // is short enough for a Unix socket path.
 func serveWithControl(t *testing.T) (*App, *bytes.Buffer, func() error) {
 	t.Helper()
+	return serveWithControlWorker(t, &waitingWorker{})
+}
+
+// serveWithControlWorker is serveWithControl with a chosen worker.
+func serveWithControlWorker(t *testing.T, worker Runner) (*App, *bytes.Buffer, func() error) {
+	t.Helper()
 	cfg := testConfig(t)
 	var logs bytes.Buffer
 	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
@@ -36,7 +42,7 @@ func serveWithControl(t *testing.T) (*App, *bytes.Buffer, func() error) {
 		t.Fatal(err)
 	}
 	application, err := New(t.Context(), cfg, Options{
-		LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Worker: &waitingWorker{}, Listener: listener, Events: events,
+		LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Worker: worker, Version: "9.9.9", Listener: listener, Events: events,
 		Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}},
 	})
 	if err != nil {

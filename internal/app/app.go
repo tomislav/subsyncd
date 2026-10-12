@@ -50,15 +50,17 @@ type Runner interface {
 type Options struct {
 	// ReadOnly skips all durable initialization and rejects mutating commands.
 	// The default mutable lifecycle owns the process lock until App.Close.
-	ReadOnly       bool
-	Events         *observability.Emitter
-	Clock          provider.Clock
-	HTTPClient     *http.Client
-	LapseRunner    syncer.Runner
-	ProbeRunner    inventory.CommandRunner
-	Providers      map[string]provider.Provider
-	Catalogs       map[string]catalog.Catalog
-	Worker         Runner
+	ReadOnly    bool
+	Events      *observability.Emitter
+	Clock       provider.Clock
+	HTTPClient  *http.Client
+	LapseRunner syncer.Runner
+	ProbeRunner inventory.CommandRunner
+	Providers   map[string]provider.Provider
+	Catalogs    map[string]catalog.Catalog
+	Worker      Runner
+	// Version is the release the daemon reports to status.
+	Version        string
 	Listener       net.Listener
 	SkipLapseCheck bool
 	SkipProbeCheck bool
@@ -90,6 +92,7 @@ type App struct {
 	Listener           net.Listener
 	Events             *observability.Emitter
 	Command            string
+	Version            string
 	Clock              provider.Clock
 
 	// redaction holds secrets generated at runtime, which no configuration
@@ -102,6 +105,8 @@ type App struct {
 	wake chan struct{}
 	// serveCtx is Serve's run context, which outlives any one control request.
 	serveCtx context.Context
+	// startedAt is when Serve began, for status.
+	startedAt time.Time
 	// manualSlots limits concurrent manual searches; manualRuns counts the
 	// daemon's, which shutdown waits for.
 	manualSlots *manualSlots
@@ -198,6 +203,9 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 		slog.Bool("silo_enabled", cfg.Silo.Enabled),
 	)
 	runtimeOptions := options.Runtime
+	if runtimeOptions.Version == "" {
+		runtimeOptions.Version = options.Version
+	}
 	runtimeOptions.Events = events
 	runtimeOptions.redaction = redaction
 	runtimeOptions.ReadOnly = readOnlyCommand(options.Command)
@@ -215,7 +223,7 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 // without the process lock, migrations or startup writes.
 func readOnlyCommand(command string) bool {
 	switch command {
-	case "explain", "find", "missing", "doctor", "analyze-sync", "forget-instance-preview", "webhook-url":
+	case "explain", "find", "missing", "status", "providers", "doctor", "analyze-sync", "forget-instance-preview", "webhook-url":
 		return true
 	}
 	return false
@@ -451,7 +459,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events, MediaRoots: cfg.MediaRoots}
 	}
 
-	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens, wake: wake, manualSlots: newManualSlots(manualSearchSlots)}
+	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Version: options.Version, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens, wake: wake, manualSlots: newManualSlots(manualSearchSlots)}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
@@ -659,6 +667,7 @@ func validateMediaRoots(roots []string) error {
 
 func (a *App) Serve(ctx context.Context) error {
 	started := time.Now()
+	a.startedAt = started.UTC()
 	release, err := a.acquireMutationLock()
 	if err != nil {
 		return err

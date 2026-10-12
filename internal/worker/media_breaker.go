@@ -61,6 +61,23 @@ func (w *Worker) recordSearchResult(ctx context.Context, err error, mediaPath st
 		slog.Time("resume_at", w.mediaPausedUntil.UTC()))
 }
 
+// Snapshot is the worker's live state that the database does not hold.
+type Snapshot struct {
+	// MediaPausedUntil is when leasing resumes after a run of searches that
+	// could not read their media; zero when leasing is not paused.
+	MediaPausedUntil time.Time
+}
+
+// Snapshot returns the worker's live state.
+func (w *Worker) Snapshot() Snapshot {
+	w.breakerMu.Lock()
+	defer w.breakerMu.Unlock()
+	if w.Clock.Now().Before(w.mediaPausedUntil) {
+		return Snapshot{MediaPausedUntil: w.mediaPausedUntil.UTC()}
+	}
+	return Snapshot{}
+}
+
 // mediaPaused reports whether leasing waits after a run of media failures.
 func (w *Worker) mediaPaused() bool {
 	w.breakerMu.Lock()

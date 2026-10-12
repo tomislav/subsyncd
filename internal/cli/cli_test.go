@@ -75,6 +75,14 @@ func (f *fakeBackend) Missing(_ context.Context, args control.MissingArgs) (cont
 	f.call = fmt.Sprintf("missing:%s:%s:%s:%d", args.Instance, args.Language, args.Title, args.Limit)
 	return control.MissingResult{Total: 1, Items: []control.MissingItem{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}, Language: "en", Reason: "no_candidates", Action: "subsyncd search --instance radarr-main --kind movie --file-id 42 --language en"}}}, f.err
 }
+func (f *fakeBackend) Status(context.Context) (control.StatusResult, error) {
+	f.call = "status"
+	return control.StatusResult{Queue: control.QueueCounts{Missing: control.QueueClass{Total: 3, Due: 1}}}, f.err
+}
+func (f *fakeBackend) ListProviders(context.Context) (control.ProvidersResult, error) {
+	f.call = "providers"
+	return control.ProvidersResult{Providers: []control.ProviderRow{{ID: "titlovi", Type: "titlovi", State: "available"}}}, f.err
+}
 func (f *fakeBackend) Explain(_ context.Context, args control.ExplainArgs) (control.ExplainResult, error) {
 	f.call = "explain:" + args.Instance + ":" + args.Kind + ":" + args.Language + ":" + args.Title + ":" + args.Path
 	return control.ExplainResult{MediaID: 1, Instance: args.Instance, Kind: args.Kind, FileID: args.FileID, Title: "T", Probe: "unprobed"}, f.err
@@ -440,6 +448,8 @@ func (r *fakeRemote) Call(_ context.Context, command string, args, result any) e
 		*out = control.RetryResult{Provider: "titlovi", SearchesDue: 4}
 	case *control.SearchResult:
 		*out = control.SearchResult{MediaID: 9, Languages: []control.LanguageOutcome{{Language: "hr", Outcome: "running"}}}
+	case *control.StatusResult:
+		*out = control.StatusResult{Daemon: control.DaemonState{Running: true, Version: "1.2.3"}, MediaPause: &control.MediaPause{Until: time.Unix(1700000000, 0).UTC()}}
 	case *control.RejectResult:
 		*out = control.RejectResult{MediaID: 9, Rejected: control.LanguageOutcome{Language: "en", Outcome: "installed", Provider: "titlovi", Candidate: "c2", Score: 40, Subtitle: "Movie (2019)/Movie.en.srt"}}
 	}
@@ -737,6 +747,98 @@ func TestMissingHelpListsReasons(t *testing.T) {
 	for _, want := range []string{"not_searched", "no_candidates", "all_rejected", "providers_cooling_down", "search_failing", "unsupported", "total", "items[]", "unknown_instance", "unknown_language", "--limit"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("help lacks %q: %s", want, stderr.String())
+		}
+	}
+}
+
+func statusJSON(t *testing.T, command Command) struct {
+	OK     bool
+	Result control.StatusResult
+} {
+	t.Helper()
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	if code := command.Run(context.Background(), []string{"status", "--json"}); code != ExitOK {
+		t.Fatalf("exit = %d, stdout %q", code, stdout.String())
+	}
+	var envelope struct {
+		OK     bool
+		Result control.StatusResult
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope
+}
+
+func TestStatusAddsDaemonState(t *testing.T) {
+	remote := &fakeRemote{}
+	backend := &fakeBackend{}
+	envelope := statusJSON(t, Command{Stderr: &bytes.Buffer{}, Open: openFake(backend), Dial: func(context.Context, string) (Remote, error) { return remote, nil }})
+	result := envelope.Result
+	if backend.call != "status" || remote.command != "status" || !remote.closed {
+		t.Fatalf("calls = %q %q closed=%v", backend.call, remote.command, remote.closed)
+	}
+	if !result.Daemon.Running || result.Daemon.Version != "1.2.3" || result.MediaPause == nil || result.Queue.Missing.Total != 3 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestStatusWithoutDaemonStillSucceeds(t *testing.T) {
+	for name, dial := range map[string]DialFunc{
+		"no daemon": func(context.Context, string) (Remote, error) { return nil, control.ErrNoDaemon },
+		"no dialer": nil,
+		"dial error": func(context.Context, string) (Remote, error) {
+			return nil, errors.New("connect /data/subsyncd.sock failed")
+		},
+		"call error": func(context.Context, string) (Remote, error) {
+			return &fakeRemote{err: &control.Error{Code: control.CodeProtocolMismatch, Message: "x"}}, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := statusJSON(t, Command{Stderr: &bytes.Buffer{}, Open: openFake(&fakeBackend{}), Dial: dial}).Result
+			if result.Daemon.Running || result.MediaPause != nil || result.Queue.Missing.Total != 3 {
+				t.Fatalf("result = %+v", result)
+			}
+			if strings.Contains(result.Daemon.Error, "/data") {
+				t.Fatalf("error leaks a path: %q", result.Daemon.Error)
+			}
+			if (name == "dial error" || name == "call error") && result.Daemon.Error == "" {
+				t.Fatalf("no error reported")
+			}
+			if (name == "no daemon" || name == "no dialer") && result.Daemon.Error != "" {
+				t.Fatalf("error = %q", result.Daemon.Error)
+			}
+		})
+	}
+}
+
+func TestProvidersRunsReadOnlyWithoutDialing(t *testing.T) {
+	backend := &fakeBackend{}
+	var opened string
+	var stdout bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &bytes.Buffer{},
+		Open: func(_ context.Context, _ string, name string) (Backend, error) { opened = name; return backend, nil },
+		Dial: func(context.Context, string) (Remote, error) { t.Fatal("Dial called"); return nil, nil }}
+	if code := command.Run(context.Background(), []string{"providers"}); code != ExitOK || backend.call != "providers" || opened != "providers" {
+		t.Fatalf("exit/call/opened = %d/%q/%q", code, backend.call, opened)
+	}
+	if !strings.Contains(stdout.String(), "titlovi") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestStatusAndProvidersHelp(t *testing.T) {
+	for command, wants := range map[string][]string{
+		"status":    {"cooling_down", "auth_failed", "quota_exhausted", "daemon", "queue", "running", "media_pause", "instances", "backlog", "lease_until"},
+		"providers": {"available", "cooling_down", "auth_failed", "quota_exhausted", "routes", "preferred", "fallback", "last_success_at", "last_24h", "retry --provider"},
+	} {
+		var stderr bytes.Buffer
+		(Command{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{command, "--help"})
+		for _, want := range wants {
+			if !strings.Contains(stderr.String(), want) {
+				t.Errorf("%s help lacks %q: %s", command, want, stderr.String())
+			}
 		}
 	}
 }

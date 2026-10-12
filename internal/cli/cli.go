@@ -32,6 +32,8 @@ type Backend interface {
 	Explain(context.Context, control.ExplainArgs) (control.ExplainResult, error)
 	Find(context.Context, control.Selection) (control.FindResult, error)
 	Missing(context.Context, control.MissingArgs) (control.MissingResult, error)
+	Status(context.Context) (control.StatusResult, error)
+	ListProviders(context.Context) (control.ProvidersResult, error)
 	Doctor(context.Context) (control.DoctorResult, error)
 	AnalyzeSync(context.Context, string, string) (control.AnalyzeSyncResult, error)
 	ForgetInstance(context.Context, string, bool) (control.ForgetInstanceResult, error)
@@ -149,7 +151,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 
 	var validateErr error
 	switch command {
-	case "serve", "doctor":
+	case "serve", "doctor", "status", "providers":
 	case "scan", "forget-instance", "webhook-url", "rotate-webhook-token":
 		validateErr = require("--instance", *instance)
 	case "search", "explain", "find":
@@ -261,6 +263,14 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		result, err = wrap(backend.Find(ctx, control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}))
 	case "missing":
 		result, err = wrap(backend.Missing(ctx, control.MissingArgs{Instance: *instance, Language: *language, Title: *title, Limit: *limit}))
+	case "status":
+		var status control.StatusResult
+		if status, err = backend.Status(ctx); err == nil {
+			c.addDaemonState(ctx, *configPath, &status)
+		}
+		result = status
+	case "providers":
+		result, err = wrap(backend.ListProviders(ctx))
 	case "doctor":
 		result, err = wrap(backend.Doctor(ctx))
 	case "analyze-sync":
@@ -276,6 +286,34 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		return c.failure(ctx, command, jsonMode, backend, err)
 	}
 	return c.succeed(command, jsonMode, result)
+}
+
+// addDaemonState fills the parts of status only the running daemon knows. A
+// missing, unreachable or confused daemon never fails the command: it reads
+// as not running, with a short reason that holds no path.
+func (c Command) addDaemonState(ctx context.Context, configPath string, status *control.StatusResult) {
+	status.Daemon = control.DaemonState{}
+	if c.Dial == nil {
+		return
+	}
+	remote, err := c.Dial(ctx, configPath)
+	if err == nil {
+		defer remote.Close()
+		var live control.StatusResult
+		if err = remote.Call(ctx, "status", nil, &live); err == nil {
+			status.Daemon, status.MediaPause = live.Daemon, live.MediaPause
+			return
+		}
+	}
+	if errors.Is(err, control.ErrNoDaemon) {
+		return
+	}
+	var coded *control.Error
+	if errors.As(err, &coded) && coded.Code != "" {
+		status.Daemon.Error = coded.Code
+		return
+	}
+	status.Daemon.Error = "daemon unreachable"
 }
 
 // routed reports whether the daemon can execute command when it is running.
@@ -551,6 +589,19 @@ Reasons: not_searched (no search has run yet), no_candidates (providers returned
 action is a complete command to run (search ..., search ... --retry-rejected, retry --provider ...); for search_failing it is the explain command to see the cause, and for unsupported a short instruction instead.
 Result fields: total (all rows before --limit), items[] (instance, kind, file_id, title, year, season, episode, episode_end, language, reason, providers, next_attempt_at, action).
 Error codes: usage, unknown_instance, unknown_language, internal.`,
+	"status": `Overview to read before acting: the daemon, the queue, running searches, providers that cannot be used, the media pause, each Arr instance and the backlogs. Runs beside the daemon, and still answers without one.
+Result fields: daemon (running, version, started_at, error), queue (new, missing, upgrade; each total and due), running[] (the media fields, language, lease_until), providers[] (id, state, until, last_failure), media_pause (until), instances[] (name, last_reconcile_at, reconcile_failures, discovery_complete, webhook, webhook_checked_at), backlog (webhook_inbox, notification_outbox).
+daemon.running is false when no daemon answers, with daemon.error set (a code, or "daemon unreachable") when something did but failed. version, started_at and media_pause come from the daemon only. A pause is reported only while it lasts.
+queue counts pending searches: new (just imported or renamed, or queued by reject), missing, and upgrade checks. due counts those scheduled now and not running. running[] are searches holding a live lease (the worker's, or a manual search); the database records when the lease ends (lease_until), not when the search began.
+providers[] lists only providers that cannot be used now; providers shows them all. State is cooling_down (a rate limit, busy service, blocked client or transient failure until the reset time in until), quota_exhausted (a quota is used up until until), or auth_failed (credentials were rejected; until is empty and the provider stays off until you fix them and run retry --provider ID).
+instances[]: last_reconcile_at is the last attempt and succeeded when reconcile_failures is 0; discovery_complete is whether the first library discovery finished; webhook is connected (subsyncd manages the Arr connection and checked it at webhook_checked_at), pending (managed, not yet connected) or unmanaged (no server.webhook_base_url).
+Error codes: internal.`,
+	"providers": `Show every configured provider: its routes, its state, and what it did in the last 24 hours. Runs beside the daemon.
+Result fields: providers[] (id, type, routes[] (language, tier), state, until, last_failure, last_success_at, last_24h (installed, no_result, rejected)).
+routes[] lists the languages the provider serves; tier is preferred (tried first) or fallback (tried when the preferred providers find nothing).
+state is available, cooling_down (until is when it can be used again; last_failure is the reason, such as rate_limit or service_busy), quota_exhausted (until is the quota reset) or auth_failed (credentials rejected; until is empty). retry --provider ID clears a provider's state, which helps for a cooldown or after fixing credentials, not while the quota is truly exhausted.
+last_success_at is the last installed subtitle from the provider that the search history (kept 30 days) still holds; last_24h counts its search outcomes over the last 24 hours.
+Error codes: internal.`,
 	"doctor": `Check configuration, storage, LAPSE and ffprobe without contacting Arr or providers.
 Result fields: configuration, sqlite, media_roots, lapse, ffprobe, webhooks.
 Error codes: internal.`,

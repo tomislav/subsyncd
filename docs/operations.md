@@ -127,6 +127,8 @@ The container runs `serve` by default. The other commands are run through Compos
 | `doctor` | Checks configuration, database, media folders, and bundled tools. | May run |
 | `find` | Lists the files that match a title or path, with the state of each configured language (`installed`, `satisfied`, `running`, `missing`). | May run |
 | `missing` | Lists the files and languages that have no subtitle yet, each with a reason and a command to fix it. See [What is missing](#what-is-missing). | May run |
+| `status` | One overview to read before acting: whether the daemon runs (version, start time), the queue by class with how many searches are due, running searches, providers that cannot be used, the media-unavailable pause, each Arr instance, and the webhook and notification backlogs. See [Status and providers](#status-and-providers). | May run; asks the daemon when it can, and works without it |
+| `providers` | Shows every configured provider: the languages it serves and at which tier, its state (`available`, `cooling_down`, `auth_failed`, `quota_exhausted`), its last failure and last success, and what its searches did in the last 24 hours. | May run |
 | `explain` | Shows what subsyncd knows about one file, for one language or for every configured language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules, another LAPSE version or synchronization policy, or for the file before it was replaced no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
 | `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
 | `search` | Searches one file now, for one language or for every configured language it is missing, and waits for the outcome. | May run; the daemon carries it out |
@@ -268,6 +270,12 @@ Each row has a `reason` and an `action`:
 | `unsupported` | subsyncd does not search this file, for example a multi-episode file. | A short instruction: replace the file in Sonarr or Radarr. |
 
 Actions are complete commands with the real instance, kind, file ID and language; run them through `docker compose exec subsyncd` like the others. `unsupported` gives an instruction instead of a command. `missing` never reads media files, so it works even while storage is down.
+
+## Status and providers
+
+`status` reads saved state, so it runs beside the daemon or without one, and never fails because the daemon is unreachable: `daemon.running` is then `false` (with `daemon.error` set when something answered wrongly). Only the daemon supplies its `version`, `started_at` and `media_pause`. The queue counts pending searches as `new` (just imported or renamed, or queued by `reject`), `missing` and `upgrade`, each with a `total` and how many are `due` now (scheduled and not running). `running` lists searches holding a live lease, with the title, language and `lease_until`; the database keeps when the lease ends, not when the search began. `providers` in `status` lists only those that cannot be used now, `instances` gives each Arr instance's last reconciliation (succeeded when `reconcile_failures` is 0), whether library discovery is complete, and its webhook state (`connected`, `pending`, or `unmanaged` without `server.webhook_base_url`), and `backlog` counts waiting webhooks and Silo notifications.
+
+`providers` lists every configured provider. A provider is `cooling_down` after a rate limit, a busy service, a blocked client or a transient failure, until the time in `until`; `quota_exhausted` while its quota is used up, until the reset; and `auth_failed` when it rejected the credentials, with no `until`: fix the credentials, then `retry --provider ID`. `last_failure` is the stored reason. `last_success_at` and `last_24h` come from the 30-day search history. Run `retry --provider ID` to clear a provider's state when a cooldown looks wrong or after fixing credentials.
 
 ## A subtitle is wrong
 

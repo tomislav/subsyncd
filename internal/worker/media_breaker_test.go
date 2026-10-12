@@ -124,3 +124,24 @@ func (w *workerWorkflow) callCount() int {
 	defer w.mu.Unlock()
 	return w.calls
 }
+
+func TestSnapshotReportsTheMediaPauseWhileItLasts(t *testing.T) {
+	now := time.Date(2026, 10, 10, 1, 48, 46, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	repository := newWorkerRepository(5, now)
+	worker := testWorker(repository, &workerWorkflow{err: missingMedia()}, clock)
+	worker.SearchBatch = 1
+	if snapshot := worker.Snapshot(); !snapshot.MediaPausedUntil.IsZero() {
+		t.Fatalf("snapshot before any failure = %+v", snapshot)
+	}
+	for range mediaBreakerThreshold {
+		_ = worker.RunOnce(t.Context())
+	}
+	if snapshot := worker.Snapshot(); !snapshot.MediaPausedUntil.Equal(now.Add(mediaBreakerPause)) {
+		t.Fatalf("snapshot = %+v, want pause until %v", snapshot, now.Add(mediaBreakerPause))
+	}
+	clock.Advance(mediaBreakerPause)
+	if snapshot := worker.Snapshot(); !snapshot.MediaPausedUntil.IsZero() {
+		t.Fatalf("snapshot after the pause = %+v", snapshot)
+	}
+}

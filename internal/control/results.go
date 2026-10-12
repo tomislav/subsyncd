@@ -497,3 +497,195 @@ func (r MissingResult) Text() string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// DaemonState is whether the daemon answers on its socket. Error is a short
+// reason, without paths, when something answered badly or not at all.
+type DaemonState struct {
+	Running   bool      `json:"running"`
+	Version   string    `json:"version,omitempty"`
+	StartedAt time.Time `json:"started_at,omitzero"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// QueueClass counts the pending searches of one class: all of them, and those
+// due now (scheduled, and not running).
+type QueueClass struct {
+	Total int `json:"total"`
+	Due   int `json:"due"`
+}
+
+// QueueCounts counts pending searches by class: new (just imported or
+// renamed, or queued by a user rejection), missing, and upgrade checks.
+type QueueCounts struct {
+	New     QueueClass `json:"new"`
+	Missing QueueClass `json:"missing"`
+	Upgrade QueueClass `json:"upgrade"`
+}
+
+// RunningSearch is a search holding a live lease. The database records when
+// the lease runs out, not when the search began.
+type RunningSearch struct {
+	MediaMatch
+	Language   string    `json:"language"`
+	LeaseUntil time.Time `json:"lease_until"`
+}
+
+// ProviderState is a provider that cannot be used right now. State is
+// cooling_down, auth_failed or quota_exhausted; Until is when it is usable
+// again, zero when only fixing the credentials or retry --provider helps.
+type ProviderState struct {
+	ID          string    `json:"id"`
+	State       string    `json:"state"`
+	Until       time.Time `json:"until,omitzero"`
+	LastFailure string    `json:"last_failure,omitempty"`
+}
+
+// MediaPause is the pause after a run of searches that could not read their
+// media.
+type MediaPause struct {
+	Until time.Time `json:"until"`
+}
+
+// InstanceState is one Arr instance's reconciliation, discovery and webhook
+// state. LastReconcileAt is the last attempt; it succeeded when
+// ReconcileFailures is 0. Webhook is connected (subsyncd keeps the Arr
+// connection and checked it at WebhookCheckedAt), pending (it manages the
+// connection but has not recorded one), or unmanaged (no
+// server.webhook_base_url).
+type InstanceState struct {
+	Name              string    `json:"name"`
+	LastReconcileAt   time.Time `json:"last_reconcile_at,omitzero"`
+	ReconcileFailures int       `json:"reconcile_failures"`
+	DiscoveryComplete bool      `json:"discovery_complete"`
+	Webhook           string    `json:"webhook"`
+	WebhookCheckedAt  time.Time `json:"webhook_checked_at,omitzero"`
+}
+
+// Backlog counts work waiting outside the search queue.
+type Backlog struct {
+	WebhookInbox       int `json:"webhook_inbox"`
+	NotificationOutbox int `json:"notification_outbox"`
+}
+
+// StatusResult is the overview an agent reads before acting. Daemon and
+// MediaPause come from the running daemon; everything else from the database.
+type StatusResult struct {
+	Daemon     DaemonState     `json:"daemon"`
+	Queue      QueueCounts     `json:"queue"`
+	Running    []RunningSearch `json:"running"`
+	Providers  []ProviderState `json:"providers"`
+	MediaPause *MediaPause     `json:"media_pause,omitempty"`
+	Instances  []InstanceState `json:"instances"`
+	Backlog    Backlog         `json:"backlog"`
+}
+
+func (r StatusResult) Text() string {
+	var lines []string
+	switch {
+	case r.Daemon.Running:
+		line := "daemon: running"
+		if r.Daemon.Version != "" {
+			line += " version=" + r.Daemon.Version
+		}
+		if !r.Daemon.StartedAt.IsZero() {
+			line += " started=" + r.Daemon.StartedAt.UTC().Format(time.RFC3339)
+		}
+		lines = append(lines, line)
+	case r.Daemon.Error != "":
+		lines = append(lines, "daemon: not running ("+r.Daemon.Error+")")
+	default:
+		lines = append(lines, "daemon: not running")
+	}
+	for _, class := range []struct {
+		name  string
+		count QueueClass
+	}{{"new", r.Queue.New}, {"missing", r.Queue.Missing}, {"upgrade", r.Queue.Upgrade}} {
+		lines = append(lines, fmt.Sprintf("queue %s: %d pending, %d due", class.name, class.count.Total, class.count.Due))
+	}
+	if r.MediaPause != nil {
+		lines = append(lines, "media unavailable: searches paused until "+r.MediaPause.Until.UTC().Format(time.RFC3339))
+	}
+	for _, run := range r.Running {
+		lines = append(lines, fmt.Sprintf("running: %s %s (lease until %s)", run.MediaMatch.Text(), run.Language, run.LeaseUntil.UTC().Format(time.RFC3339)))
+	}
+	for _, provider := range r.Providers {
+		lines = append(lines, "provider "+provider.ID+": "+providerStateText(provider.State, provider.Until, provider.LastFailure))
+	}
+	for _, instance := range r.Instances {
+		line := fmt.Sprintf("instance %s: discovery=%s webhook=%s", instance.Name, map[bool]string{true: "complete", false: "incomplete"}[instance.DiscoveryComplete], instance.Webhook)
+		if !instance.LastReconcileAt.IsZero() {
+			line += " reconciled=" + instance.LastReconcileAt.UTC().Format(time.RFC3339)
+			if instance.ReconcileFailures > 0 {
+				line += fmt.Sprintf(" (failing, %d in a row)", instance.ReconcileFailures)
+			}
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, fmt.Sprintf("backlog: %d webhooks waiting, %d notifications waiting", r.Backlog.WebhookInbox, r.Backlog.NotificationOutbox))
+	return strings.Join(lines, "\n")
+}
+
+func providerStateText(state string, until time.Time, failure string) string {
+	text := state
+	if !until.IsZero() {
+		text += " until " + until.UTC().Format(time.RFC3339)
+	}
+	if failure != "" {
+		text += " (" + failure + ")"
+	}
+	return text
+}
+
+// ProviderRoute is a language a provider serves and at which tier: preferred
+// providers are tried first, fallback providers when those find nothing.
+type ProviderRoute struct {
+	Language string `json:"language"`
+	Tier     string `json:"tier"`
+}
+
+// ProviderCounts tallies a provider's finished searches over a window.
+type ProviderCounts struct {
+	Installed int `json:"installed"`
+	NoResult  int `json:"no_result"`
+	Rejected  int `json:"rejected"`
+}
+
+// ProviderRow is one configured provider.
+type ProviderRow struct {
+	ID            string          `json:"id"`
+	Type          string          `json:"type"`
+	Routes        []ProviderRoute `json:"routes"`
+	State         string          `json:"state"`
+	Until         time.Time       `json:"until,omitzero"`
+	LastFailure   string          `json:"last_failure,omitempty"`
+	LastSuccessAt time.Time       `json:"last_success_at,omitzero"`
+	Last24h       ProviderCounts  `json:"last_24h"`
+}
+
+// ProvidersResult lists every configured provider.
+type ProvidersResult struct {
+	Providers []ProviderRow `json:"providers"`
+}
+
+func (r ProvidersResult) Text() string {
+	if len(r.Providers) == 0 {
+		return "no providers"
+	}
+	var lines []string
+	for _, row := range r.Providers {
+		routes := make([]string, len(row.Routes))
+		for i, route := range row.Routes {
+			routes[i] = route.Language + ":" + route.Tier
+		}
+		line := fmt.Sprintf("%s (%s): %s", row.ID, row.Type, providerStateText(row.State, row.Until, row.LastFailure))
+		if len(routes) > 0 {
+			line += " routes=" + strings.Join(routes, ",")
+		}
+		line += fmt.Sprintf(" last24h installed=%d no_result=%d rejected=%d", row.Last24h.Installed, row.Last24h.NoResult, row.Last24h.Rejected)
+		if !row.LastSuccessAt.IsZero() {
+			line += " last_success=" + row.LastSuccessAt.UTC().Format(time.RFC3339)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
