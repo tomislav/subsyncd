@@ -25,6 +25,8 @@ type Backend interface {
 	Doctor(context.Context) (string, error)
 	AnalyzeSync(context.Context, string, string) (string, error)
 	ForgetInstance(context.Context, string, bool) (string, error)
+	WebhookURL(ctx context.Context, instance, base string) (string, error)
+	RotateWebhookToken(ctx context.Context, instance string) (string, error)
 }
 
 type OpenFunc func(context.Context, string, string) (Backend, error)
@@ -79,6 +81,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	retryRejected := flags.Bool("retry-rejected", false, "clear and retry rejected subtitle candidates")
 	media := flags.String("media", "", "media file path")
 	subtitle := flags.String("subtitle", "", "subtitle file path")
+	base := flags.String("base", "", "webhook base URL overriding server.webhook_base_url")
 	yes := flags.Bool("yes", false, "delete the records instead of previewing them")
 	if err := flags.Parse(args[1:]); err != nil {
 		return ExitUsage
@@ -100,7 +103,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	var validateErr error
 	switch command {
 	case "serve", "doctor":
-	case "scan", "forget-instance":
+	case "scan", "forget-instance", "webhook-url", "rotate-webhook-token":
 		validateErr = require("--instance", *instance)
 	case "search", "explain":
 		validateErr = validateMediaSelection(*instance, *kind, *fileID, *language)
@@ -150,6 +153,10 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		output, err = backend.AnalyzeSync(ctx, *media, *subtitle)
 	case "forget-instance":
 		output, err = backend.ForgetInstance(ctx, *instance, *yes)
+	case "webhook-url":
+		output, err = backend.WebhookURL(ctx, *instance, *base)
+	case "rotate-webhook-token":
+		output, err = backend.RotateWebhookToken(ctx, *instance)
 	}
 	if err != nil {
 		if reporter, ok := backend.(FailureReporter); ok {
@@ -183,6 +190,10 @@ func commandFlags(command string) map[string]bool {
 		names = []string{"media", "subtitle"}
 	case "forget-instance":
 		names = []string{"instance", "yes"}
+	case "webhook-url":
+		names = []string{"instance", "base"}
+	case "rotate-webhook-token":
+		names = []string{"instance"}
 	}
 	for _, name := range names {
 		allowed[name] = true

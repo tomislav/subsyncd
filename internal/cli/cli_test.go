@@ -83,6 +83,8 @@ func TestCommandSurface(t *testing.T) {
 		{"explain", []string{"explain", "--instance", "movies", "--kind", "movie", "--file-id", "7", "--language", "en"}, "explain:movies:movie:en", "inventory: 2 tracks\nnext attempt: tomorrow\n"},
 		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nLAPSE: ok\n"},
 		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance preview\n"},
+		{"webhook-url", []string{"webhook-url", "--instance", "tv", "--base", "http://x"}, "webhook-url:tv:http://x", "http://h/webhooks/tv?token=t\n"},
+		{"rotate-webhook-token", []string{"rotate-webhook-token", "--instance", "tv"}, "rotate:tv", "rotated\n"},
 		{"analyze", []string{"analyze-sync", "--media", "/media/a.mkv", "--subtitle", "/tmp/a.srt"}, "analyze:/media/a.mkv:/tmp/a.srt", "verdict: solid\n"},
 	}
 	for _, test := range tests {
@@ -198,5 +200,47 @@ func TestWrappedAlreadyReportedStartupFailureIsSilent(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("duplicate output: %s", stderr.String())
+	}
+}
+
+func (f *fakeBackend) WebhookURL(_ context.Context, instance, base string) (string, error) {
+	f.call = "webhook-url:" + instance + ":" + base
+	return "http://h/webhooks/" + instance + "?token=t", f.err
+}
+func (f *fakeBackend) RotateWebhookToken(_ context.Context, instance string) (string, error) {
+	f.call = "rotate:" + instance
+	return "rotated", f.err
+}
+
+func TestWebhookCommands(t *testing.T) {
+	for _, test := range []struct {
+		name, opened, call, out string
+		args                    []string
+		code                    int
+	}{
+		{"url", "webhook-url", "webhook-url:tv:", "http://h/webhooks/tv?token=t\n", []string{"webhook-url", "--instance", "tv"}, ExitOK},
+		{"url base", "webhook-url", "webhook-url:tv:http://x/p", "http://h/webhooks/tv?token=t\n", []string{"webhook-url", "--instance", "tv", "--base", "http://x/p"}, ExitOK},
+		{"rotate", "rotate-webhook-token", "rotate:tv", "rotated\n", []string{"rotate-webhook-token", "--instance", "tv"}, ExitOK},
+		{"url without instance", "", "", "", []string{"webhook-url"}, ExitUsage},
+		{"rotate without instance", "", "", "", []string{"rotate-webhook-token"}, ExitUsage},
+		{"rotate rejects base", "", "", "", []string{"rotate-webhook-token", "--instance", "tv", "--base", "http://x"}, ExitUsage},
+		{"url rejects yes", "", "", "", []string{"webhook-url", "--instance", "tv", "--yes"}, ExitUsage},
+		{"url rejects unknown flag", "", "", "", []string{"webhook-url", "--instance", "tv", "--nope"}, ExitUsage},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &fakeBackend{}
+			var stdout, stderr bytes.Buffer
+			var opened string
+			command := Command{Open: func(_ context.Context, _ string, name string) (Backend, error) {
+				opened = name
+				return backend, nil
+			}, Stdout: &stdout, Stderr: &stderr}
+			if code := command.Run(context.Background(), test.args); code != test.code {
+				t.Fatalf("exit = %d, stderr=%q", code, stderr.String())
+			}
+			if opened != test.opened || backend.call != test.call || stdout.String() != test.out {
+				t.Fatalf("opened/call/out = %q/%q/%q", opened, backend.call, stdout.String())
+			}
+		})
 	}
 }

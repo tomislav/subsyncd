@@ -404,7 +404,7 @@ func normalize(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	cfg.Logging = LoggingConfig{Level: logLevel}
-	cfg.Server.WebhookBaseURL = strings.TrimRight(strings.TrimSpace(cfg.Server.WebhookBaseURL), "/")
+	cfg.Server.WebhookBaseURL = TrimWebhookBaseURL(cfg.Server.WebhookBaseURL)
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = defaultListen
 	}
@@ -559,11 +559,8 @@ func (c Config) Validate() error {
 	if err != nil || portNumber < 0 || portNumber > 65535 {
 		return fmt.Errorf("server listen port %q is invalid", port)
 	}
-	if c.Server.WebhookBaseURL != "" {
-		parsed, err := url.ParseRequestURI(c.Server.WebhookBaseURL)
-		if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return fmt.Errorf("server webhook_base_url is invalid")
-		}
+	if c.Server.WebhookBaseURL != "" && !ValidWebhookBaseURL(c.Server.WebhookBaseURL) {
+		return fmt.Errorf("server webhook_base_url is invalid")
 	}
 	for _, root := range c.MediaRoots {
 		if !filepath.IsAbs(root) {
@@ -722,4 +719,17 @@ func withinAnyRoot(path string, roots []string) bool {
 		}
 	}
 	return false
+}
+
+// TrimWebhookBaseURL removes surrounding whitespace and trailing slashes from
+// a webhook base URL.
+func TrimWebhookBaseURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+// ValidWebhookBaseURL reports whether base is an absolute http or https URL
+// with a host and no userinfo, query or fragment. A path is allowed.
+func ValidWebhookBaseURL(base string) bool {
+	parsed, err := url.ParseRequestURI(base)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
