@@ -77,7 +77,7 @@ MOVIES_PATH=/srv/media/movies
 TV_PATH=/srv/media/tv
 ```
 
-Set `PUID` and `PGID` to a host user and group that can read your media and write into its folders, read `config/config.yaml`, and write to `data/`. `id -u` and `id -g` print your own IDs. The container does not change folder ownership; see [permissions](docs/operations.md#filesystem-and-container-permissions) for help.
+Set `PUID` and `PGID` to a host user and group that can read your media and write into its folders, read `config/config.yaml`, and write to `data/`. `id -u` and `id -g` print your own IDs. The container does not change folder ownership; see [permissions](docs/running.md#permissions) for help.
 
 Then edit `config/config.yaml`. Every setting is explained in the file.
 
@@ -85,7 +85,7 @@ Then edit `config/config.yaml`. Every setting is explained in the file.
 - **`path_mappings`:** set `remote` to the path Sonarr or Radarr reports, and `local` to where the same folder appears inside the container.
 - **`providers`:** keep the providers you use and enter their credentials.
 - **`languages`:** list the languages you want as tags such as `en`, `hr`, or `pt-BR`, and remove provider names you deleted.
-- **`silo`:** optional; see [Optional Silo refresh](docs/operations.md#optional-silo-refresh).
+- **`silo`:** optional; see [Silo refresh](docs/running.md#silo-refresh).
 
 For example, if Sonarr reports `/data/tv/Show/episode.mkv` and your TV folder is mounted at `/media/tv`:
 
@@ -129,7 +129,7 @@ On first start, subsyncd reads each Sonarr and Radarr library once and queues a 
 
 ### 4. Sonarr and Radarr webhooks
 
-subsyncd creates and maintains its own webhook connection in each instance under **Settings → Connect**. It points the connection at `server.webhook_base_url`, which the example configuration sets to `http://subsyncd:8097`, and names it after that address: `subsyncd (subsyncd:8097)`. Sonarr and Radarr must be able to reach that address, including through an HTTP proxy if they use one. To add webhooks by hand instead, see [Webhook connections](docs/operations.md#webhook-connections).
+subsyncd creates and maintains its own webhook connection in each instance under **Settings → Connect**. It points the connection at `server.webhook_base_url`, which the example configuration sets to `http://subsyncd:8097`, and names it after that address: `subsyncd (subsyncd:8097)`. Sonarr and Radarr must be able to reach that address, including through an HTTP proxy if they use one. To add webhooks by hand instead, see [Webhook connections](docs/running.md#webhook-connections).
 
 ## Everyday use
 
@@ -144,7 +144,7 @@ docker compose exec subsyncd subsyncd recent                       # what happen
 docker compose exec subsyncd subsyncd status
 ```
 
-Name files as your media player shows them: `Movie (2019)`, `Show S01E02`. After changing `config/config.yaml`, restart with `docker compose restart subsyncd`. A newly added language is then checked for media already in the library. The [operations guide](docs/operations.md#commands) lists every command, including [what to do when a subtitle is wrong](docs/operations.md#a-subtitle-is-wrong) and [scripting](docs/operations.md#scripting-and-automation).
+Name files as your media player shows them: `Movie (2019)`, `Show S01E02`. After changing `config/config.yaml`, restart with `docker compose restart subsyncd`. A newly added language is then checked for media already in the library. The [command guide](docs/commands.md) lists every command, including [what to do when a subtitle is wrong](docs/commands.md#a-subtitle-is-wrong) and [scripting](docs/commands.md#scripting-and-automation).
 
 ## Updates
 
@@ -158,49 +158,28 @@ docker compose up -d
 docker compose exec subsyncd subsyncd doctor
 ```
 
-To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. [Back up and update](docs/operations.md#back-up-and-update) covers rollback and upgrading from builds that used `webhook_token`.
+To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. [Upgrade, back up and uninstall](docs/upgrade-and-backup.md) covers rollback and upgrading from builds that used `webhook_token`.
 
 ## Logs and troubleshooting
 
-Read the logs with `docker compose logs subsyncd`. For more detail, set `logging.level: debug` and restart. The [logging guide](docs/logging.md) explains levels and how to follow one search; the [troubleshooting table](docs/operations.md#troubleshooting) covers common problems.
+Read the logs with `docker compose logs subsyncd`. For more detail, set `logging.level: debug` and restart. The [logging guide](docs/logging.md) explains levels and how to follow one search; the [troubleshooting guide](docs/troubleshooting.md) covers common problems.
 
 ## Documentation
 
-- [Configuration example](config.example.yaml): every setting, with defaults.
-- [Operations guide](docs/operations.md): commands, manual searches, rejecting subtitles, webhooks, Silo, backups, and troubleshooting.
+- [Documentation index](docs/README.md): every guide below, and how they write commands and paths.
+- [Configuration example](config.example.yaml): every setting, with defaults; the [configuration reference](docs/configuration.md) lists allowed values.
+- [Running subsyncd](docs/running.md): permissions, resources, security, webhooks, Arr rescans, and Silo.
+- [Command guide](docs/commands.md): commands, manual searches, rejecting subtitles, and scripting.
+- [Troubleshooting](docs/troubleshooting.md): why a file has no subtitle, and what a warning means.
+- [Upgrade, back up and uninstall](docs/upgrade-and-backup.md): backups, upgrades, rollback, and removal.
 - [Provider guide](docs/providers.md): provider setup, languages, matching, synchronization, and retry schedules.
 - [Logging guide](docs/logging.md): log levels, following a search, warnings, and sharing diagnostics safely.
 - [Architecture](docs/architecture.md): system boundaries and the processing flow.
-- [Developer references](docs/development/): implementation contracts for operations, providers, and logging.
-
-## Build from source
-
-Install Go 1.27.1, FFprobe, and LAPSE v2.2.4. Use absolute paths in your configuration, including `sync.lapse_path`. Native builds and locally built images also need an OpenSubtitles application key in that provider's `api_key`; published images include it.
-
-```bash
-go build -trimpath -o subsyncd ./cmd/subsyncd
-./subsyncd serve --config ./config/config.yaml
-```
-
-Once the service has started and created its database, run `./subsyncd doctor --config ./config/config.yaml` from another terminal. `doctor` opens the database read-only and never creates or migrates it.
-
-To build a local Docker image:
-
-```bash
-docker build --build-arg VERSION=dev -t subsyncd:local .
-```
+- [Developer references](docs/development/README.md): implementation contracts for persistence, providers, notifications, and logging.
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) and the [developer references](docs/development/) first. Tests use local fixtures and fake services; they never contact your library or subtitle providers.
-
-```bash
-go test -race ./...
-go vet ./...
-go test ./test/e2e -tags=e2e -race
-```
-
-Commit subjects follow Conventional Commits (`fix(control): bound socket drain on shutdown`). Enable the checking hook once with `git config core.hooksPath .githooks`.
+Tests use local fixtures and fake services; they never contact your library or subtitle providers. See [CONTRIBUTING.md](CONTRIBUTING.md) for building from source, running the tests, and commit conventions.
 
 ## License
 

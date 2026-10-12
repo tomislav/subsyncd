@@ -1,22 +1,46 @@
 # Subtitle providers
 
-Choose the providers you want to use, add credentials where required, and assign them to your languages. You do not need every supported provider.
+Choose the providers you want, add their credentials, and assign them to your languages. You don't need every provider. Every key is listed in [Configuration](configuration.md#providers).
+
+- [Terms used here](#terms-used-here)
+- [Supported providers](#supported-providers)
+- [Add your providers](#add-your-providers)
+- [Choose languages](#choose-languages)
+- [Strip site adverts](#strip-site-adverts)
+- [Matching](#matching)
+- [Synchronization](#synchronization)
+- [When subsyncd searches](#when-subsyncd-searches)
+- [Provider limits](#provider-limits)
+- [Rejected subtitles](#rejected-subtitles)
+
+## Terms used here
+
+| Term | Meaning |
+| --- | --- |
+| Tier | A language's preferred providers are tried first; its fallback providers only when those have nothing installable. |
+| Exact match | A result found by the media file's hash, made for exactly this file. |
+| Score | 0–100 points for how well a candidate's title, episode and release details match the file. |
+| LAPSE | The bundled [timing checker](https://github.com/Schwponaco-org/lapse): it compares a subtitle with the audio and corrects or refuses it. |
+| Cooldown | A pause on a provider after a rate limit, quota or outage. |
+| Rejection | A candidate that failed a check, or that you rejected; it is not used again for that file and language. |
 
 ## Supported providers
 
 | Provider | What you need | Searches |
 | --- | --- | --- |
-| OpenSubtitles.com | Account username and password for published images | Exact file matches, movies, and episodes |
-| SubDL | API key | Movies, episodes, and season packs |
-| Titlovi | API-enabled account username and password | Movies, episodes, and season packs |
-| SubSource | API key | Movies, episodes, and season packs |
-| Gestdown | No account or API key | TV episodes |
+| OpenSubtitles.com | Account username and password, and a `user_agent`. Published images include the application key. | Exact file matches, movies and episodes, many languages |
+| SubDL | API key from your SubDL account | Movies, episodes and season packs, many languages |
+| Titlovi | Username and password of an API-enabled account | Movies, episodes and season packs in Bosnian, Croatian, English, Macedonian, Serbian (`sr`, `sr-Cyrl`) and Slovenian |
+| SubSource | API key, created on your SubSource profile page | Movies, episodes and season packs, more than 100 languages |
+| Gestdown | Nothing | TV episodes only, many languages |
 
-Provider account quotas still apply. OpenSubtitles and SubSource results marked as AI or machine translated are excluded automatically.
+- Account quotas apply. A SubSource key allows 7,200 requests a day; a search costs about two, shared by a season's episodes for six hours.
+- OpenSubtitles and SubSource results marked as machine translated are skipped.
+- Gestdown serves Addic7ed subtitles through its [public API](https://gestdown.readme.io/reference/getting-started-1). Movie searches skip it without a request, so keep a movie-capable provider in every language Radarr uses.
 
 ## Add your providers
 
-The following sections belong under `providers:` in `config/config.yaml`. Keep only the entries you use and replace the quoted placeholders with your credentials directly in this file. Keep your configured copy private.
+These entries go under `providers:` in `config/config.yaml`. Keep the ones you use and replace the placeholders. To keep credentials out of the file, use [`'${NAME}'`](configuration.md#credentials-and-environment-variables).
 
 ```yaml
 providers:
@@ -43,17 +67,11 @@ providers:
     password: 'your-titlovi-password'
 ```
 
-Published containers include the OpenSubtitles application key. Native builds and locally built images need an explicit `api_key` in that provider's configuration as well as the account credentials.
-
-Gestdown is a keyless TV-only provider using its [public API](https://gestdown.readme.io/reference/getting-started-1). Add `gestdown-main` to a language’s `providers` or `fallback_providers` list to enable it. Movie searches skip it without an API request; keep a movie-capable provider in routes used by Radarr. It supports multiple languages, including `en`, `hr`, `pt`, and `pt-BR`; unsupported language tags fail startup validation.
-
-SubSource searches by IMDb ID, or by exact title when the media has none, and supports more than 100 languages, including `en`, `hr`, `pt-BR`, and `es-419`; unsupported language tags fail startup validation. Create an API key on your SubSource profile page. A key allows 7,200 requests per day. One search costs about two requests, and episodes of the same season share them for six hours. Because SubSource's hearing-impaired flag is unreliable, subtitles count as hearing-impaired only when their release name or description says so. It works well as the last preferred provider for English, where it often has subtitles for specific releases, or as a fallback for other languages.
-
-The [complete configuration example](../config.example.yaml) includes optional request-rate and concurrency settings. Start with its defaults.
+Native builds and locally built images also need the OpenSubtitles application key as `api_key`. The request-rate settings in the [example configuration](../config.example.yaml) have safe defaults.
 
 ## Choose languages
 
-Use language tags such as `en`, `hr`, or `pt-BR`, and refer to the provider names you configured above:
+Use language tags such as `en`, `hr` or `pt-BR`, and the provider names you configured:
 
 ```yaml
 languages:
@@ -61,98 +79,94 @@ languages:
     providers: [opensubtitles-main, subdl-main]
   hr:
     providers: [titlovi-main]
-```
-
-Order sets preference within a provider tier; release compatibility can let a later provider win. To use OpenSubtitles only after Titlovi has no installable subtitle, configure a separate fallback tier:
-
-```yaml
-languages:
-  hr:
-    providers: [titlovi-main]
     fallback_providers: [opensubtitles-main]
 ```
 
-The preferred tier is tried first, including cached packs, exact matches and broad results. Only after it is exhausted does subsyncd try the fallback tier, with the same matching and timing checks. Preferred-provider outages also allow fallback. Each tier has its own three-result broad shortlist. A fallback exact match cannot preempt an eligible preferred broad match.
+- **Order** sets preference within a tier, but a better-matching release from a later provider can still win.
+- **The preferred tier comes first**, including its cached packs, exact matches and title searches. The fallback tier is tried only after it is exhausted or unavailable, with the same checks. A fallback exact match never beats an acceptable preferred match.
+- **Fallback subtitles** keep their real score. `explain` shows `fallback=true`. subsyncd keeps checking for a preferred subtitle to replace it ([schedule](#when-subsyncd-searches)); the replacement may score lower but must pass every check.
+- **Hearing-impaired** (SDH/HI) subtitles are skipped unless you set `allow_hearing_impaired: true` at the top level.
+- **Changing languages** needs a restart; see [Changing the configuration](running.md#changing-the-configuration).
 
-Fallback installations retain their real score and normal filename. `explain` shows `fallback=true`, and installation logs include a boolean `fallback` field. Their first preferred-replacement check is after approximately seven days, including exact-hash fallback installations; repeated unchanged checks gradually slow to approximately 90 days. For media released less than `aged_release_days` ago (default 30), when the preferred provider often publishes a few days later, the checks come sooner, like a missing subtitle's: after about 6 hours, then 12 hours, 24 hours and 3 days, never earlier, so each one can see new results rather than the six-hour cache. After those four, or once the release is `aged_release_days` old, they continue weekly and slow down as usual. Media without a known release date keeps the weekly schedule. A preferred replacement may have a lower score, but must satisfy the minimum score, identity and timing requirements; nonexact promotions use LAPSE by default. Same-tier upgrades retain the normal score-delta rules, and a preferred installation is never downgraded to fallback. Edited and manually supplied subtitles stay protected.
+## Strip site adverts
 
-If an eligible upgrade supplies exactly the same subtitle bytes, subsyncd refreshes its provider, score and timing provenance without rewriting the file. Same-media provenance refreshes do not queue another Silo scan; a changed media fingerprint still does.
+Many subtitles carry advert cues such as `www.titlovi.com`, "Preuzeto sa www.titlovi.com", OpenSubtitles' "Advertise your product or brand here", or an Addic7ed signature. With `install.strip_watermarks: true` (off by default), subsyncd drops these cues from SRT subtitles when it installs them, and renumbers the rest.
 
-After installing fallback during a preferred-provider cooldown, the next check uses the earlier future cooldown reset or scheduled check. Failed searches keep ordinary technical-error/cooldown handling; successful searches without a replacement retain the fallback and its next scheduled check.
+A cue that also holds other text, such as a translator credit, keeps that text. Dialogue that mentions a website is kept, and subtitles already installed are not changed.
 
-Provider tier membership is evaluated from current configuration. The stored flag records the tier at installation time. Moving a provider into fallback does not automatically wake previously terminal exact installations; use a manual search to reconsider one and persist any resulting promotion check. Restart after configuration changes. The preferred list must remain nonempty, and provider names cannot repeat within or across tiers.
+## Matching
 
-OpenSubtitles and SubDL support multiple languages. Titlovi supports Bosnian (`bs`), Croatian (`hr`), English (`en`), Macedonian (`mk`), Serbian (`sr` and `sr-Cyrl`), and Slovenian (`sl`). subsyncd validates each language/provider combination at startup.
+subsyncd first checks whether an embedded track or sidecar already covers the language. Otherwise it looks for exact matches where the provider supports them, then searches by movie or episode details.
 
-Many subtitles carry advert cues: Titlovi adds `www.titlovi.com` and `Preuzeto sa www.titlovi.com`, OpenSubtitles inserts lines such as "Advertise your product or brand here" or "become VIP member" naming its site, and re-uploads carry other sites' addresses (`www.addic7ed.com` or a bare `.addic7ed.`, `@SUBSCENE`, `podnapisi.net`). With `install.strip_watermarks: true` (off by default), subsyncd drops such cues from SRT subtitles when it installs them and renumbers the rest; subtitles already installed are not changed. Addic7ed subtitles, which Gestdown serves, carry a signature cue ("Synced and corrected by …" over "www.addic7ed.com"), and that goes too. A cue is removed only when it is nothing but a site address or "downloaded from" line, a credit paired with a site address ("Synced and corrected by …", "provided by …", "WEB-DL resync by …", the Croatian "Transkript …"), or names OpenSubtitles. When a cue has other text as well, such as a translator credit ("Preveo: …" over "www.titlovi.com"), only the address line (and a "Preuzeto sa" line just above it) is dropped and the rest of the cue is kept. A credit on its own and dialogue that mentions a website are kept.
+- **Identity first.** A known wrong language, episode or movie is rejected whatever its score. Croatian or Bosnian subtitles whose text is really Serbian or another language are rejected as `language_mismatch`.
+- **Then the score.** A non-exact candidate needs at least `minimum_release_score` (35). At most three title-search results per tier are downloaded and checked.
+- **Downloads are cleaned up.** Cues are sorted and repaired, empty ones dropped, and MicroDVD `.sub` files with a frame rate converted to SRT. Files that cannot be repaired safely are rejected.
+- **Season packs** must clearly identify the requested episode. If two or three versions do, each is checked with LAPSE and the best one wins.
+- **Multi-episode files** need a subtitle covering every episode, at least 75% of the file's runtime.
+- **Upgrades.** subsyncd replaces only subtitles it installed and that are unedited. Within a tier, a replacement must be an exact match or score at least 10 points more. Subtitles you added or edited are never touched.
 
-Restart after changing languages or provider settings. Adding a language schedules checks for media subsyncd already indexes. Removing a language stops its future searches without deleting installed subtitles. Restart with `docker compose restart subsyncd` after changing credentials in the configuration file.
+The scoring model, pack handling and cleanup rules are in the [developer matching reference](development/providers/matching.md).
 
-Hearing-impaired subtitles (SDH/HI) are excluded by default. To include them, add this at the configuration root:
+## Synchronization
 
-```yaml
-allow_hearing_impaired: true
-```
+`sync.policy` sets when LAPSE runs:
 
-## Matching and upgrades
+| Policy | LAPSE runs for |
+| --- | --- |
+| `confidence` (default) | Every non-exact candidate, except strong first-time matches that pass the checks below. Exact matches skip it. |
+| `always` | Every non-exact candidate. |
+| `never` | Nothing. Subtitles install with their downloaded timing. |
 
-subsyncd first checks whether a suitable subtitle already exists. It then looks for exact file matches where supported, followed by searches using movie or episode details. It skips unusable results and tries other candidates.
+Under `confidence`, a match skips LAPSE only when it scores at least `sync.bypass_score` (75) and every enabled requirement holds: `sync.require_identity_anchor`, `sync.require_episode_evidence` and `sync.require_release_group`. With `sync.lapse_for_packs` and `sync.lapse_for_upgrades`, season packs and upgrades always use LAPSE. All five default to `true`.
 
-Candidates are scored against the media's identity and release details: title, episode, release group, source, edition, and resolution. Subtitles for one disc of an old multi-CD rip (CD1, CD2, 2cd) are skipped, since they cover only part of the film. A Croatian or Bosnian subtitle whose text is clearly Serbian (ekavian: gde, uvek, vreme, lepo… with hardly any ijekavian gdje, uvijek, vrijeme, lijepo) is rejected as `language_mismatch` before its timing is checked, and so is one that is not South Slavic at all (such as a Portuguese subtitle tagged Croatian); uploads tagged Croatian on OpenSubtitles and SubDL are sometimes neither. Ratings contribute only a small part of the score. A known wrong language, episode, or movie identity is rejected even if other details look promising.
+With `never`, the score is the only protection against an out-of-sync subtitle: raise `minimum_release_score` (60 is a reasonable start; 75 effectively requires a release-group match). Packs with several versions of the episode are skipped. Switching policy lets candidates that failed timing checks be reconsidered.
 
-When timing needs verification, [LAPSE](https://github.com/Schwponaco-org/lapse) checks and adjusts the subtitle before installation. By default:
+How long LAPSE may run is covered in [Resources](running.md#resources-and-lapse-run-time); the [developer LAPSE reference](development/providers/lapse.md) has the details.
 
-- Exact file-hash matches skip LAPSE.
-- Strong first-time matches may skip it when the required identity and release evidence agree.
-- Uncertain matches, season packs, and upgrades use LAPSE and must pass its strict check.
+## When subsyncd searches
 
-Downloaded subtitles are tidied before use: cues stored out of order are sorted, a mistyped cue start or end time is repaired, empty and repeated cues are dropped (in ASS/SSA, where layers repeat lines, only empty ones), unclosed italics are closed, and MicroDVD `.sub` files that state their frame rate are converted to SRT (as `name.sub.srt`); a MicroDVD file without a frame rate is ignored like any other extra file. Cues are read the way players read them, so a missing blank line between cues or a timing written without spaces around `-->` is fine, and the line just before a timing line is always that cue's number, never text, so a last line of text that is only a number is lost when there is no blank line after it. When the cues cannot be rewritten safely (for example a line of text directly before the next timing line with no blank line between them), a file whose cues already play in order and need no new times is kept as it is; one that needs sorting or a cue retimed is rejected. UTF-16 files with a byte order mark are read too. A file that is really two subtitles stitched together is rejected. Season packs must contain clearly identifiable subtitles for the requested episode. Both `S04E13` and `S04.E13` identify episode 13. If two or three distinct versions explicitly identify the same episode, subsyncd downloads the pack once, runs LAPSE once per version, and chooses the solid output with the highest confidence within its release-score tier. Identical content is evaluated once. More than three distinct versions, ambiguous episode identity, and wrong-episode members are skipped; exact-hash results still require a unique member. Explicit season/episode and absolute-number evidence must agree with the target when those coordinates are known; a matching token or provider member reference cannot override conflicting filename evidence. Other valid members in the same pack remain eligible. Miniseries and documentary packs that number episodes without `SxxEyy` are understood when at least three files follow the same scheme and carry no other episode token: a `1-03 Title` prefix (the season must match), and for season 1 only `Part 3` or a leading `3 - Title`. An episode title starting with a lone E after a spaced dash (`S01E05 - E and E`) is a title, not an episode range. A movie archive containing identical copies of one subtitle counts as one choice. Commentary tracks, shorts, trailers and other extras, are set aside when something else remains; files tagged with the requested language win over untagged ones, which win over files tagged with another language (`EN`, `HR`, `english`, `srpski`, …; two-letter codes count only in capitals or just before the extension). Two or three remaining versions are each run through LAPSE and the best-timed one is chosen; such versions never skip LAPSE on score. A movie split across discs (CD1/CD2) or with more versions is skipped, and an exact-hash result still needs a single file. An archive file that cannot be read (macOS `__MACOSX`/`._` metadata, a broken or non-subtitle file) is ignored rather than costing the whole archive; subtitles up to three folders deep are read, and only subtitle files count toward the 100-file limit. Different subtitles with the same name keep both, each prefixed with the folders that tell them apart (`Season 1 - Croatian - 01.srt`), named the same way whatever their order in the archive.
+The [developer scheduling reference](development/providers/scheduling.md) has the exact rules.
 
-For a file containing several consecutive episodes, providers are searched by its first episode, and a result is used only when it covers every episode in the file: a release name range such as `S06E01-E02`, `06x01.02` or (for absolute numbering) `66-67`, a range pack spanning it, or an exact file-hash match. Results for a single episode, and whole-season packs, are skipped before downloading. A downloaded subtitle must also run to at least 75% of the file's runtime; a shorter one is rejected as `partial_coverage`. Gestdown, which only has per-episode subtitles, is not searched for these files, and while only Gestdown can download for a language, these files wait (`queue.route_paused` with `episode_ranges_only`) instead of running searches that cannot succeed. Separate subtitles for each episode are never joined.
+**Missing subtitles** are searched at once, then about 6 hours, 12 hours, 24 hours, 3 days, 7 days and 14 days after the first search, then every 14 days, indefinitely. Each wait may be up to 20% longer, never shorter, so no search reuses the previous one's six-hour result cache.
 
-An episode result also receives pack handling when its downloaded payload contains multiple subtitle members or a valid multi-episode range, even if the provider labels it as one episode. Nonexact runtime packs always use LAPSE. When provider series identity and a consistent season are available, the original subtitles are cached for later episodes; each episode still undergoes strict selection and its own timing check. Missing or conflicting cache identity disables caching without relaxing selection or timing checks. A rejected version does not reject other versions or episodes. An entire provider result is remembered as exhausted only when every selected version failed deterministically. The broad shortlist still contains at most three provider results; each may supply up to three episode versions. When a pack holds more versions of the episode than that, the three whose release (group, source, edition, streaming service, resolution) best matches the media file are tried. A file numbered in the compact form, such as `607` for season 6 episode 7, is recognized when it carries no other episode number, unless it looks like an anime absolute number (a name like `[Group] Show - 607`, `Show - 607.srt` for a series Sonarr marks as anime, or a series whose seasons run to hundreds of episodes); a number between spaced dashes followed by an episode title (`Show - 607 - Title`) is the usual TV naming and counts; several such files for one episode are versions. Versions already rejected for the media are not counted among the three, and a pack counts as exhausted only once no untried version is left.
+- Media released more than `aged_release_days` ago (30) skips the early steps: the next search is a week later, then every 14 days. The release date is the episode's air date, or a movie's digital release, else its physical release, else its cinema release plus 90 days.
+- Media without a known release date gets the full schedule. `aged_release_days: 0` gives every file the full schedule.
 
-subsyncd upgrades only subtitles it installed and that remain unedited. Within a tier, a replacement must be an exact match or improve the score by at least 10 points. Promotion from fallback to preferred providers uses the separate rules above. Manually added and edited subtitles are protected.
+**Upgrade checks** for a non-exact subtitle start 7, 30 or 90 days after install, for scores below 60, 60–84 and 85 or more. Each check that keeps the subtitle moves to the next step of 14, 30, 60 and 90 days, varied by ±10%. After `upgrade_checks` (4) such checks in a row, subsyncd stops looking; `0` never stops. A preferred exact match gets no upgrade check.
 
-## Adjusting matching settings
+**Fallback subtitles** are checked for a preferred replacement and never stop:
 
-The defaults are intended for normal use:
+- For media younger than `aged_release_days`, about 6 hours, 12 hours, 24 hours and 3 days after install, then a week later, then backing off to 14, 30, 60 and 90 days.
+- Otherwise, and for media without a release date, first after about 7 days, then the same backoff.
+- A known preferred-provider cooldown can bring a check forward to its reset.
 
-```yaml
-minimum_release_score: 35
-sync:
-  policy: confidence
-  bypass_score: 75
-```
+**Technical failures** (network, LAPSE, storage) retry after 1 minute, 5 and 15 minutes, 1 hour, 6 hours and 24 hours, then every 24 hours. Provider cooldowns use their own reset times instead.
 
-`minimum_release_score` is the minimum score for considering a nonexact candidate. Raising it narrows the choices; lowering it admits weaker matches.
+**What restarts a schedule:** a new or replaced media file, or a manual `search`. A subtitle you delete is searched again on the next check; once upgrade checks have stopped, only a replaced file or a manual `search` brings it back.
 
-`bypass_score` is a separate threshold for skipping LAPSE. A high score alone is not enough: the required identity and release evidence must also agree.
+## Provider limits
 
-Set `sync.policy: always` to run LAPSE for every nonexact candidate. Exact file matches still skip it. LAPSE can read much of the media file on its first run, so this may increase processing time and network-storage traffic.
+subsyncd remembers provider limits across restarts. How they show in `subsyncd providers`:
 
-LAPSE decodes the media file's whole audio track on its first run for that file, and saves the result so later checks of the same file take about a second. Each run is limited to `sync.timeout` (30 minutes by default), extended for large files to the time needed to read the whole file at `sync.min_read_rate` MiB per second (default 4; `0` turns the extension off), up to `sync.max_timeout` (default 4 hours). On network storage such as a FUSE mount, set `min_read_rate` below the read speed you actually get. A run that times out saves nothing, so for the rest of that search subsyncd doesn't run LAPSE again for the file: other candidates that need LAPSE are skipped, while exact file-hash matches and candidates that skip LAPSE are still tried, including from fallback providers. If nothing installs, the search fails and is retried with the normal failure delays.
+| State | Cause | Ends |
+| --- | --- | --- |
+| `cooling_down` | A rate limit (even a daily request limit), a busy service, a blocked client, or repeated failures. | At `until`, by itself. |
+| `quota_exhausted` | The provider's download quota is used up. | At `until`, by itself. |
+| `auth_failed` | The provider rejected the credentials. | Only after you fix them, restart and run `subsyncd retry --provider NAME`. |
 
-Set `sync.policy: never` to download subtitles without synchronization. Every candidate that reaches `minimum_release_score` is installed with the timing it was downloaded with, including season packs and upgrades; `bypass_score` and the other `sync` switches are ignored. Timing is not verified, so the release score is the only protection against an out-of-sync subtitle: raise `minimum_release_score` (60 is a reasonable start; 75 effectively requires a release-group match). A pack containing several versions of the requested episode is skipped, because without LAPSE there is no safe way to choose between them. Switching policy lets candidates previously rejected for failed timing be reconsidered.
+- **Other providers keep working**, including fallbacks and cached season packs.
+- **Interrupted searches resume.** A first search that could not ask every provider is retried after the cooldown resets, asking only the providers it missed.
+- **Whole languages pause.** When no provider for a language can download, subsyncd stops starting searches for that language and media kind until the earliest reset (`queue.route_paused`), and resumes within about 30 seconds of it. If the only usable providers have rejected credentials, there is no reset: searches stay paused until you fix the credentials and run `retry`.
+- **Refusal pages.** A "download" that is really a limit or login page pauses that provider's downloads instead of rejecting a subtitle.
 
-## Retries and provider limits
+Cooldown lengths per provider are in the [developer limits reference](development/providers/limits.md).
 
-Missing subtitles are checked again automatically after about 6 hours, 12 hours, 24 hours, 3 days, 7 days and 14 days, then every two weeks. No check comes sooner than six hours, so each one can find a newly published subtitle instead of reusing the cached answer. Media released more than `aged_release_days` ago (default 30; the episode air date, or a movie's digital release, else its physical release, else its cinema release plus 90 days) skips the quick early checks: after a search finds nothing, the next one is a week later, then every two weeks. Media without a known release date keeps the full schedule. Reusable search results are cached for six hours, so every scheduled check does not necessarily make another provider request. Results whose download links cannot be safely stored, including Titlovi links with query parameters, need a fresh provider search before downloading.
+## Rejected subtitles
 
-Provider rate limits and outages are handled automatically. subsyncd waits before retrying and remembers those delays across restarts. Restarting does not reset a provider's quota. When a provider's downloads are unavailable, subsyncd skips its candidate searches and further download attempts until the cooldown resets. Usable local pack-cache subtitles and other providers, including fallbacks, remain available. A search-only cooldown skips fresh provider searches while still allowing usable cached search results to supply downloads. Locally suppressed requests are debug-only; the workflow retains its retry outcome.
+A candidate that fails a check (invalid content, ambiguous pack, failed timing) is rejected for that file and language, and never downloaded again while the file and the rules stay the same. Searches keep looking for new candidates. A rejection is reconsidered when Sonarr corrects the episode, when the media file changes, or when subsyncd's rules for that check change.
 
-When every provider for a language can no longer download (an exhausted download quota, a cooldown, or disabled credentials), subsyncd stops starting searches for that language and media kind until the earliest reset; other languages and media kinds continue. While a language is paused, waiting files are not checked at all, even when an embedded subtitle, a sidecar, or a cached season pack could satisfy them. Searches resume within about 30 seconds of the reset, in the same order as before. A search-only cooldown does not pause a language. A search that is throttled while running keeps its place in the queue: the retry delay only decides when it may run again. When no provider reports a reset (for example the only one left has rejected credentials), the search is tried again after about 6 hours; it is never given up. The log records `queue.route_paused` and `queue.route_resumed` when this changes.
+- `subsyncd search --retry-rejected` reconsiders subsyncd's own rejections now.
+- Network, provider and filesystem errors never reject a subtitle; they are retried.
+- Subtitles you reject with [`reject`](commands.md#a-subtitle-is-wrong) stay rejected through LAPSE upgrades, rule changes and `--retry-rejected`, until the media file is replaced or you run `reject --undo`.
 
-Candidates rejected for invalid content, ambiguous archive selection, or failed timing checks are skipped without a time limit while their media, candidate evidence, and synchronization policy/version remain unchanged. Searches continue looking for new candidates; subsyncd does not periodically redownload rejected subtitles. This applies to one movie or episode and language, not an entire season pack or provider. Corrected Sonarr episode titles or numbering allow reconsideration, and so does an update that changes the rules for invalid subtitles or archive selection: those rejections are tied to the rules version that made them. Use `search --retry-rejected` for an explicit override. Subtitles you reject yourself with `reject` are different: they stay rejected across LAPSE and policy changes and through `search --retry-rejected`, until the media file is replaced or you run `reject --undo` (see [A subtitle is wrong](operations.md#a-subtitle-is-wrong)). Invalid subtitle content generated by LAPSE is remembered as `lapse_invalid_output`, using the original candidate identity. Network, process, protocol, and filesystem failures remain retryable and do not mark a subtitle as unsuitable. So does a download that turns out to be the provider's own message instead of a subtitle, such as an HTML or JSON error. When that message is a download limit or login page and a second subtitle from the same provider confirms it within 30 minutes, in the same search or another one, or when it is an explicit limit in a provider's JSON answer (this needs no confirmation), the provider's downloads pause until its known daily reset (SubDL), its usual quota window (OpenSubtitles 6 hours, SubSource 1 hour) or for 1 hour (Titlovi, Gestdown). A message that only says there were too many requests is a short rate limit instead: downloads pause for the provider's usual rate-limit wait (Titlovi 5 minutes, OpenSubtitles and SubSource 1 minute, SubDL 15 minutes) or 15 minutes. The placeholder subtitle Titlovi serves when it refuses a download says the client is an unsupported plugin; once a second Titlovi subtitle confirms it within 30 minutes, Titlovi downloads pause for 1 hour, logged as `client_blocked`. Searches that needed the provider wait as throttled and keep their place in the queue. These messages are recognized only in English: a Croatian limit or login page from Titlovi fails just that subtitle, which is retried later like any other provider error.
-
-Technical workflow failures retry after 1 minute, 5 minutes, 15 minutes, 1 hour, 6 hours, then 24 hours; subsequent failures retry daily. A new media import or replacement resets this failure schedule and runs immediately. Provider cooldowns use their separately persisted reset times instead.
-
-If a first search could not try every provider because one was in a cooldown, the work stays unfinished instead of counting as "nothing found". It is retried after that provider's cooldown resets (with a little random delay), and only the providers that had not yet finished cleanly are asked again; preferred and fallback tiers still run in order. This progress survives restarts. Changing the language's provider route, replacing the media file, or running a manual `search` discards it, so the complete current route runs.
-
-Nonexact installed subtitles receive their first upgrade check after 7, 30, or 90 days depending on their score; fallback matches start at 7 days. When a check retains the installed subtitle, the interval advances to the next larger value in 14, 30, 60, and 90 days, then stays at 90 days. After `upgrade_checks` such checks in a row (default 4, roughly 4 to 12 months depending on the first interval) subsyncd stops looking and marks the search complete; `0` keeps checking forever. Fallback installations are exempt and keep checking for a preferred provider. A replaced media file or a manual `search` starts the checks again; after the checks end, a deleted subtitle is only fetched again that way. Ordinary intervals vary by ±10% to spread the work. An automatic replacement restarts this progression. Preferred exact matches need no scheduled upgrade check while the media stays unchanged.
-
-Finding no better candidate keeps the existing subtitle on the upgrade schedule. It does not start the faster missing-subtitle retries. If the managed sidecar has actually disappeared, normal missing-subtitle retries resume. Provider errors and cooldowns retain their technical retry handling; the prompt preferred-provider recovery check after a fallback install is preserved.
-
-If credentials are rejected, correct them and clear the affected provider's saved state using the [provider recovery instructions](operations.md#troubleshooting). Use [manual searches and explain](operations.md#inspect-or-search-one-file) to investigate a particular file.
-
-The exact point values, schedules, API handling, and cache rules are in the [developer provider reference](development/providers.md).
+`explain` shows a file's rejections with their reasons. The [developer rejections reference](development/providers/rejections.md) lists every reason code; see [Troubleshooting](troubleshooting.md#why-is-there-no-subtitle-for-this-file) for what to do when nothing installs.

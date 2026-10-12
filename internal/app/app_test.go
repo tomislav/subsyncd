@@ -366,7 +366,9 @@ func TestLoggingDocumentationContract(t *testing.T) {
 		required []string
 	}{
 		{"../../README.md", []string{"docs/logging.md"}},
-		{"../../docs/operations.md", []string{"(logging.md)"}},
+		{"../../docs/README.md", []string{"(logging.md)"}},
+		{"../../docs/running.md", []string{"(logging.md)"}},
+		{"../../docs/troubleshooting.md", []string{"(logging.md)"}},
 		{"../../docs/logging.md", []string{
 			"docker compose logs", "SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
 			"job_id", "outcome", "reason", "development/logging.md",

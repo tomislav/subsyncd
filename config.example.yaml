@@ -9,12 +9,15 @@
 # Credentials: replace each quoted placeholder. Keep the single quotes; to
 # write an apostrophe inside a quoted value, type it twice ('it''s').
 # A value written exactly as '${NAME}' is read from the environment variable
-# NAME instead, and startup fails if NAME is not set.
+# NAME instead, and startup fails if NAME is not set. Pass NAME to the
+# container under "environment:" in compose.yaml.
 #
 # Paths below are paths inside the container, as mounted by compose.yaml.
-# Restart subsyncd after any change to this file.
+# Restart subsyncd after any change to this file; unknown keys stop startup.
+# docs/configuration.md lists every key with its allowed values.
 
-# Required. Where subsyncd keeps its database and caches. Must be absolute.
+# Required. Where subsyncd keeps its database, caches and control socket.
+# Must be absolute.
 data_dir: /data
 
 # Required. Folders subsyncd may write subtitles into. Every subtitle is
@@ -72,7 +75,7 @@ instances:
 #
 # Every provider also accepts these request limits (defaults shown below).
 # Lower them if a provider complains; raising them rarely helps.
-#   requests_per_second: 1   # Average request rate.
+#   requests_per_second: 1   # Average request rate (SubSource default: 0.5).
 #   burst: 1                 # Requests allowed back to back before the rate applies.
 #   max_concurrent: 1        # Requests in flight at the same time.
 providers:
@@ -139,17 +142,18 @@ minimum_release_score: 35
 # How many upgrade checks in a row may find nothing better before subsyncd
 # stops looking for a better subtitle. Checks back off from 7-90 days to 90
 # days, so 4 covers roughly 4 to 12 months. Subtitles from fallback providers
-# keep checking for a preferred one. 0 checks forever. Default: 4.
+# keep checking for a preferred one. 0 to 100; 0 checks forever. Default: 4.
 upgrade_checks: 4
 
 # Days after release (episode air date, or a movie's digital release from
 # Radarr) after which a missing subtitle skips the early retries (6h, 12h, 24h,
 # 3d): once a search finds nothing, the next one is a week later, then every
-# two weeks. Subtitles for older media rarely appear within days. Media with an unknown
-# release date keeps the full schedule. 0 keeps the full schedule for
-# everything. A fallback subtitle for media younger than this is rechecked
-# for a preferred one on the same early steps before going weekly; with 0,
-# fallback subtitles are always rechecked weekly. Default: 30.
+# two weeks. Subtitles for older media rarely appear within days. Media with
+# an unknown release date keeps the full schedule. 0 keeps the full schedule
+# for everything. A fallback subtitle for media younger than this is rechecked
+# for a preferred one about 6h, 12h, 24h and 3d after install, then a week
+# later, then less often; with 0, fallback subtitles start at a week.
+# 0 to 3650. Default: 30.
 aged_release_days: 30
 
 pack_cache:
@@ -212,7 +216,8 @@ install:
   # are installed. Credits and dialogue are kept. Default: false.
   strip_watermarks: false
 
-# Optional. Asks Silo to rescan a folder after a subtitle is installed.
+# Optional. Asks Silo to rescan a folder after subsyncd installs, replaces or
+# removes a subtitle in it.
 silo:
   enabled: false   # Default: false. The settings below are needed only when true.
   # Silo API v2 server base URL, without /api/v2. Silo API v1 is not supported.

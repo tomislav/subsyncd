@@ -12,6 +12,11 @@
 #
 # Create config/ and data/ before the first start, and set the media paths:
 # Docker creates missing host folders as root, which the container cannot use.
+#
+# Run commands beside the running service, for example:
+#   docker compose exec subsyncd subsyncd status
+# They reach the daemon through its control socket, data/subsyncd.sock.
+# See docs/commands.md.
 services:
   subsyncd:
     image: ghcr.io/tomislav/subsyncd:${SUBSYNCD_IMAGE_TAG:-latest}
@@ -27,10 +32,14 @@ services:
       - no-new-privileges:true
     environment:
       TZ: ${TZ:-Etc/UTC}
+      # To keep a credential out of config.yaml, write it there as
+      # '${NAME}' and pass NAME here from .env, for example:
+      # SUBDL_API_KEY: ${SUBDL_API_KEY}
     volumes:
       # config/config.yaml, read-only. Start from config.example.yaml.
       - ./config:/config:ro
-      # Database and caches. Back this folder up with the service stopped.
+      # Database, caches and the control socket. Back this folder up with the
+      # service stopped; it holds the webhook tokens, so keep backups private.
       - ./data:/data:rw
       # Media folders. Subtitles are written next to the media files, so these
       # must be writable. Keep the container paths in sync with media_roots
