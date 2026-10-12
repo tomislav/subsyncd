@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"time"
 
 	"subsyncd/internal/control"
@@ -32,17 +34,9 @@ func (a *App) scanInDaemon(args control.ScanArgs) (control.ScanResult, error) {
 	a.manualRuns.Add(1)
 	go func() {
 		defer a.manualRuns.Done()
-		var result control.ScanResult
-		run := func(ctx context.Context) (err error) {
-			result, err = a.runScan(ctx, args)
-			return err
-		}
-		var err error
-		if a.reconcileFence != nil {
-			err = a.reconcileFence.WithReconcileLock(runCtx, run)
-		} else {
-			err = run(runCtx)
-		}
+		started := time.Now()
+		result, err := a.scanWith(runCtx, args, a.reconcileFence)
+		a.logScan(runCtx, args, result, err, time.Since(started))
 		done <- finished{result, err}
 	}()
 	running := control.ScanResult{Instance: args.Instance, ForceProbe: args.ForceProbe, Outcome: "running"}
@@ -65,5 +59,22 @@ func (a *App) scanInDaemon(args control.ScanArgs) (control.ScanResult, error) {
 		return running, nil
 	case <-runCtx.Done():
 		return control.ScanResult{}, stopping
+	}
+}
+
+// logScan records how a daemon scan ended, so one that outlived its request's
+// wait is not lost. A scan canceled by shutdown is not a failure.
+func (a *App) logScan(ctx context.Context, args control.ScanArgs, result control.ScanResult, err error, elapsed time.Duration) {
+	events := a.events().For("app")
+	attrs := []slog.Attr{slog.String("instance", args.Instance), slog.Bool("force_probe", args.ForceProbe), slog.Int64("duration_ms", elapsed.Milliseconds())}
+	ctx = context.WithoutCancel(ctx)
+	switch {
+	case err == nil:
+		events.Log(ctx, slog.LevelInfo, "scan.completed", "scan completed",
+			append(attrs, slog.Int("media", result.Media), slog.Int("deferred", result.Deferred), slog.Int("probe_skipped", result.ProbeSkipped))...)
+	case errors.Is(err, context.Canceled) && a.serveCtx != nil && a.serveCtx.Err() != nil:
+		events.Log(ctx, slog.LevelInfo, "scan.failed", "scan canceled by shutdown", append(attrs, slog.String("outcome", "canceled"))...)
+	default:
+		events.Log(ctx, slog.LevelWarn, "scan.failed", "scan failed", append(append(attrs, slog.String("outcome", "failed")), events.ErrorAttrs("scan", err)...)...)
 	}
 }

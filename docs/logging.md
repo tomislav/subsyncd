@@ -68,6 +68,8 @@ At debug level, `archive.classified` reports archive type, subtitle-member count
 | `provider.response_unrecognized` | SubDL answered a search with a message subsyncd doesn't recognise. The search counts as no result (a message about the API key or authorisation fails it instead), and `excerpt` shows a short, cleaned-up part of SubDL's message. A new not-found wording repeating here means subsyncd should learn it. |
 | `reconcile.deferred` | Sonarr or Radarr reported a file subsyncd cannot read; `deferred_media` names the movies or episodes. It repeats hourly until the file is readable or replaced in Arr. |
 | `reconcile.snapshot_deletions_withheld` | Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied. |
+| `scan.completed` | A scan run by the daemon finished, with the instance, the number of media, how many were deferred or skipped by `--force-probe`, and how long it took. It is logged even when the command stopped waiting earlier. |
+| `scan.failed` | A scan run by the daemon failed (warn) or was canceled by shutdown (info, `outcome=canceled`). Run `scan` again once the cause is fixed. |
 | `history.record_failed` | A manual search finished but its entry could not be added to the search history; the search itself is unaffected. |
 | `history.prune_failed` | The hourly cleanup of search history older than 30 days failed; it is retried the next hour. |
 | `webhook.inbox_orphaned` | Logged at startup when webhooks are stored for an instance that is no longer in the configuration; `webhook_count` says how many. They are never processed. Run `forget-instance` for that instance to delete them. |

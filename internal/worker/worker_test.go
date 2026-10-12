@@ -838,24 +838,27 @@ func TestWithReconcileLockExcludesDueReconcile(t *testing.T) {
 		})
 	}()
 	<-held
-	runDone := make(chan error, 1)
-	go func() { runDone <- worker.RunOnce(context.Background()) }()
+	// A due reconcile skips its tick while the fence is held, without waiting.
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-reconciler.started:
 		t.Fatal("a due reconcile ran while the fence was held")
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 	close(release)
 	if err := <-fenceDone; err != nil {
 		t.Fatal(err)
 	}
+	// The skipped reconcile is still due and runs at the next tick.
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-reconciler.started:
-	case <-time.After(5 * time.Second):
+	default:
 		t.Fatal("the due reconcile did not run after the fence was released")
-	}
-	if err := <-runDone; err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -894,6 +897,50 @@ func TestWithReconcileLockGivesUpWhenContextEndsWhileWaiting(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("fence stayed locked after an abandoned wait")
+	}
+}
+
+func TestHeldReconcileFenceDoesNotStopRunOnceLeasingSearches(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeNoResult}}
+	reconciler := &gatedReconciler{started: make(chan struct{}, 4)}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.Reconcilers = map[string]Reconciler{"sonarr": reconciler}
+	held, release := make(chan struct{}), make(chan struct{})
+	fenceDone := make(chan error, 1)
+	go func() {
+		fenceDone <- worker.WithReconcileLock(context.Background(), func(context.Context) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	runDone := make(chan error, 1)
+	go func() { runDone <- worker.RunOnce(context.Background()) }()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunOnce blocked behind the held reconcile fence")
+	}
+	service.mu.Lock()
+	calls := service.calls
+	service.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("workflow calls = %d, want the due search leased and run", calls)
+	}
+	select {
+	case <-reconciler.started:
+		t.Fatal("a due reconcile ran while the fence was held")
+	default:
+	}
+	close(release)
+	if err := <-fenceDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

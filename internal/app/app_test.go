@@ -371,11 +371,13 @@ func TestLoggingDocumentationContract(t *testing.T) {
 			"docker compose logs", "SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
 			"job_id", "outcome", "reason", "development/logging.md",
 			"control.request_completed", "control.request_failed", "install.removed",
+			"scan.completed", "scan.failed",
 		}},
 		{"../../docs/development/logging.md", []string{
 			"service", "level", "component", "event", "job_id", "media_id", "duration_ms",
 			"Credentials", "absolute media/data/temp paths", "never intentional log fields",
 			"control.request_completed", "control.request_failed", "install.removed",
+			"scan.completed", "scan.failed",
 		}},
 	} {
 		t.Run(document.path, func(t *testing.T) {
@@ -1326,8 +1328,8 @@ func TestScanSkipsDeletedMedia(t *testing.T) {
 			})
 			result, err := application.Scan(ctx, control.ScanArgs{Instance: "tv", ForceProbe: true})
 			if concurrentDelete {
-				if !errors.Is(err, store.ErrStaleInventory) {
-					t.Fatalf("concurrent delete error=%v", err)
+				if err != nil || result.ProbeSkipped != 1 || result.Text() != "scan complete: instance=tv media=1 force_probe=true probe_skipped=1" {
+					t.Fatalf("concurrent delete scan=%q skipped=%d error=%v", result.Text(), result.ProbeSkipped, err)
 				}
 			} else if err != nil || result.Text() != "scan complete: instance=tv media=1 force_probe=true" {
 				t.Fatalf("scan=%q error=%v", result.Text(), err)

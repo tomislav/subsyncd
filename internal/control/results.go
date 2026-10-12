@@ -115,6 +115,9 @@ type ScanResult struct {
 	// Outcome is "running" when the daemon's scan outlived the wait and
 	// carries on; empty for a finished scan.
 	Outcome string `json:"outcome,omitempty"`
+	// ProbeSkipped counts media --force-probe skipped because they changed
+	// or were deleted while the scan ran.
+	ProbeSkipped int `json:"probe_skipped,omitempty"`
 	// HistoryDeferred is set when Arr could not supply some entities; the
 	// scan still completed for everything else.
 	HistoryDeferred bool     `json:"history_deferred,omitempty"`
@@ -129,6 +132,9 @@ func (r ScanResult) Text() string {
 	summary := fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", r.Instance, r.Media, r.ForceProbe)
 	if r.HistoryDeferred {
 		summary += fmt.Sprintf(" deferred=%d (%s)", r.Deferred, strings.Join(r.DeferredMedia, "; "))
+	}
+	if r.ProbeSkipped > 0 {
+		summary += fmt.Sprintf(" probe_skipped=%d", r.ProbeSkipped)
 	}
 	return summary
 }

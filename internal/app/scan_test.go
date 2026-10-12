@@ -12,6 +12,7 @@ import (
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
+	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
 )
 
@@ -21,12 +22,17 @@ type gatedLibrary struct {
 	fakeCatalog
 	started chan struct{}
 	release chan struct{}
+	// fail makes the listing fail once released.
+	fail *atomic.Bool
 }
 
 func (g gatedLibrary) ListLibrary(ctx context.Context) ([]domain.Media, error) {
 	g.started <- struct{}{}
 	select {
 	case <-g.release:
+		if g.fail.Load() {
+			return nil, errors.New("arr exploded")
+		}
 		return nil, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -50,18 +56,24 @@ type scanHarness struct {
 	fence *recordingFence
 	gate  gatedLibrary
 	stop  func() error
+	logs  *syncBuffer
 }
 
 func newScanHarness(t *testing.T) *scanHarness {
 	t.Helper()
 	cfg := testConfig(t)
-	gate := gatedLibrary{started: make(chan struct{}, 4), release: make(chan struct{})}
+	gate := gatedLibrary{started: make(chan struct{}, 4), release: make(chan struct{}), fail: &atomic.Bool{}}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	logs := &syncBuffer{}
+	events, err := observability.New(logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	application, err := New(t.Context(), cfg, Options{
-		LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Worker: &waitingWorker{}, Listener: listener,
+		LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Worker: &waitingWorker{}, Listener: listener, Events: events,
 		Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": gate},
 	})
 	if err != nil {
@@ -73,7 +85,7 @@ func newScanHarness(t *testing.T) *scanHarness {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- application.Serve(ctx) }()
-	h := &scanHarness{app: application, fence: fence, gate: gate}
+	h := &scanHarness{app: application, fence: fence, gate: gate, logs: logs}
 	var once sync.Once
 	var stopErr error
 	h.stop = func() error {
@@ -190,4 +202,39 @@ func TestScanWithoutDaemonRefusesWaitingFlags(t *testing.T) {
 			t.Fatalf("Scan(%+v) error = %v, want daemon_required", args, err)
 		}
 	}
+}
+
+func TestDaemonScanLogsCompletionAfterTheWaitEnded(t *testing.T) {
+	h := newScanHarness(t)
+	call := awaitScan(t, h.callScan(t, control.ScanArgs{Instance: "tv", NoWait: true}))
+	if call.err != nil || call.result.Outcome != "running" {
+		t.Fatalf("scan = %+v/%v", call.result, call.err)
+	}
+	close(h.gate.release)
+	eventually(t, "scan.completed was not logged", func() bool {
+		for _, record := range decodeLogRecords(t, h.logs.String()) {
+			if record["event"] == "scan.completed" && record["instance"] == "tv" && record["force_probe"] == false && record["duration_ms"] != nil && record["media"] != nil {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestDaemonScanLogsFailure(t *testing.T) {
+	h := newScanHarness(t)
+	h.gate.fail.Store(true)
+	close(h.gate.release)
+	call := awaitScan(t, h.callScan(t, control.ScanArgs{Instance: "tv", NoWait: true}))
+	if call.err != nil {
+		t.Fatal(call.err)
+	}
+	eventually(t, "scan.failed was not logged", func() bool {
+		for _, record := range decodeLogRecords(t, h.logs.String()) {
+			if record["event"] == "scan.failed" && record["level"] == "warn" && record["instance"] == "tv" {
+				return true
+			}
+		}
+		return false
+	})
 }

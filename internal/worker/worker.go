@@ -868,7 +868,11 @@ func (w *Worker) reconcileDue(ctx context.Context) error {
 }
 
 func (w *Worker) reconcileDueContexts(dispatchCtx, ctx context.Context) error {
-	w.reconcileMu.Lock()
+	// A scan holding the fence must not stall searches and notifications:
+	// skip this tick; the reconciliation is retried at the next one.
+	if !w.reconcileMu.TryLock() {
+		return nil
+	}
 	defer w.reconcileMu.Unlock()
 	if w.reconcileAttempts == nil {
 		attempts := make(map[string]reconcileAttempt)

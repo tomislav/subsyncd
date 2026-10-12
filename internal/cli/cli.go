@@ -586,7 +586,7 @@ var commandHelp = map[string]string{
 	"serve": "Run the daemon. It has no result and does not accept --json.",
 	"scan": `Reconcile one Arr instance with its library.
 With the daemon running, the daemon runs the scan between its scheduled reconciliations and the command waits for it, at most --timeout (default 5m). A scan still running then reports outcome running (exit 0) and finishes in the daemon; --no-wait returns at once with running. Without a daemon, scan runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
-Result fields: instance, media, force_probe, outcome (running), history_deferred, deferred, deferred_media.
+Result fields: instance, media, force_probe, probe_skipped, outcome (running), history_deferred, deferred, deferred_media.
 Error codes: unknown_instance, daemon_required, daemon_stopping, busy, internal.`,
 	"search": `Search subtitles for one media file now: for --language, or else for every configured language the file is missing (when none is, nothing runs and each language reports satisfied).
 Select the file with --instance, --kind and --file-id, or with --title or --path. A title or path finds only files subsyncd already knows; only --file-id adds a file it has not indexed yet.

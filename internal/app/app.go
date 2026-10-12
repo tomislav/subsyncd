@@ -849,37 +849,62 @@ func (a *App) Scan(ctx context.Context, args control.ScanArgs) (control.ScanResu
 }
 
 // runScan reconciles one instance and, with ForceProbe, rereads the embedded
-// tracks of all its media. The caller holds the data-directory lock; in the
-// daemon it also holds the reconcile fence.
+// tracks of all its media. The caller holds the data-directory lock.
 func (a *App) runScan(ctx context.Context, args control.ScanArgs) (control.ScanResult, error) {
+	return a.scanWith(ctx, args, nil)
+}
+
+// scanWith is runScan with the reconciliation (discovery and history) run
+// inside fence when it is not nil. Probing runs outside it, so a long
+// --force-probe never holds up scheduled reconciliations.
+func (a *App) scanWith(ctx context.Context, args control.ScanArgs, fence reconcileFence) (control.ScanResult, error) {
 	instance, forceProbe := args.Instance, args.ForceProbe
 	reconciler, ok := a.Reconcilers[instance]
 	if !ok {
 		return control.ScanResult{}, unknownInstance(instance)
 	}
-	// Deferred discovery and history have already committed every readable
-	// change; report the unreadable media instead of failing the scan. A
-	// deferred forced discovery stays incomplete, so Run enumerates again and
-	// reports its deferrals together with history's.
-	if err := reconciler.DiscoverLibrary(ctx, true); err != nil && !errors.Is(err, catalog.ErrHistoryDeferred) {
-		return control.ScanResult{}, err
+	var runErr error
+	reconcile := func(ctx context.Context) error {
+		// Deferred discovery and history have already committed every readable
+		// change; report the unreadable media instead of failing the scan. A
+		// deferred forced discovery stays incomplete, so Run enumerates again and
+		// reports its deferrals together with history's.
+		if err := reconciler.DiscoverLibrary(ctx, true); err != nil && !errors.Is(err, catalog.ErrHistoryDeferred) {
+			return err
+		}
+		runErr = reconciler.Run(ctx)
+		if runErr != nil && !errors.Is(runErr, catalog.ErrHistoryDeferred) {
+			return runErr
+		}
+		return nil
 	}
-	runErr := reconciler.Run(ctx)
-	if runErr != nil && !errors.Is(runErr, catalog.ErrHistoryDeferred) {
-		return control.ScanResult{}, runErr
+	var err error
+	if fence != nil {
+		err = fence.WithReconcileLock(ctx, reconcile)
+	} else {
+		err = reconcile(ctx)
+	}
+	if err != nil {
+		return control.ScanResult{}, err
 	}
 	items, err := a.Repository.ListMediaByInstance(ctx, instance)
 	if err != nil {
 		return control.ScanResult{}, err
 	}
+	result := control.ScanResult{Instance: instance, Media: len(items), ForceProbe: forceProbe}
 	if forceProbe {
+		// A file replaced or deleted since the listing is skipped and
+		// counted; any other failure ends the scan.
 		for _, item := range items {
 			if _, err := a.Inventory.Refresh(ctx, item.ID, item.Media, true); err != nil {
+				if errors.Is(err, store.ErrStaleInventory) {
+					result.ProbeSkipped++
+					continue
+				}
 				return control.ScanResult{}, err
 			}
 		}
 	}
-	result := control.ScanResult{Instance: instance, Media: len(items), ForceProbe: forceProbe}
 	if runErr != nil {
 		deferred := &catalog.DeferredHistoryError{}
 		errors.As(runErr, &deferred)
