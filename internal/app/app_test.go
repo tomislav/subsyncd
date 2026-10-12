@@ -123,8 +123,15 @@ func (w *waitingWorker) Run(ctx context.Context) error {
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	root := t.TempDir()
+	// The control socket lives in the data directory, and a Unix socket path
+	// is limited to about 100 bytes, so it cannot sit under t.TempDir().
+	dataDir, err := os.MkdirTemp("/tmp", "ssd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
 	return config.Config{
-		DataDir: root + "/data", MediaRoots: []string{root}, Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		DataDir: dataDir + "/data", MediaRoots: []string{root}, Server: config.ServerConfig{Listen: "127.0.0.1:0"},
 		Instances:            []config.InstanceConfig{{Name: "tv", Type: "sonarr", URL: "http://sonarr.invalid", APIKey: "api"}},
 		Providers:            map[string]config.ProviderSpec{"english": {Type: "fake", RequestsPerSecond: 1, Burst: 1, MaxConcurrent: 1}},
 		Languages:            map[domain.Language]config.LanguageConfig{"en": {Providers: []string{"english"}}},
@@ -363,10 +370,12 @@ func TestLoggingDocumentationContract(t *testing.T) {
 		{"../../docs/logging.md", []string{
 			"docker compose logs", "SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
 			"job_id", "outcome", "reason", "development/logging.md",
+			"control.request_completed", "control.request_failed",
 		}},
 		{"../../docs/development/logging.md", []string{
 			"service", "level", "component", "event", "job_id", "media_id", "duration_ms",
 			"Credentials", "absolute media/data/temp paths", "never intentional log fields",
+			"control.request_completed", "control.request_failed",
 		}},
 	} {
 		t.Run(document.path, func(t *testing.T) {

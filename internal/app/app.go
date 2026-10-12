@@ -97,9 +97,14 @@ type App struct {
 	redaction       *redactionSecrets
 	webhookTokens   map[string]string
 	mutationRelease func()
-	readOnly        bool
-	closeOnce       sync.Once
-	closeErr        error
+	// wake is the worker's advisory wake channel; a nonblocking send makes
+	// it re-read the queue.
+	wake chan struct{}
+	// serveCtx is Serve's run context, which outlives any one control request.
+	serveCtx  context.Context
+	readOnly  bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // redactionSecrets is a mutex-guarded set of runtime secrets to scrub.
@@ -434,7 +439,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events, MediaRoots: cfg.MediaRoots}
 	}
 
-	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens}
+	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens, wake: wake}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
@@ -661,6 +666,13 @@ func (a *App) Serve(ctx context.Context) error {
 	server := &http.Server{Handler: a.Handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, ErrorLog: serverEvents.For("http").ServerErrorLog()}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	a.serveCtx = runCtx
+	controlServer := &control.Server{
+		Path:    control.SocketPath(a.Config.DataDir),
+		Handler: a,
+		Redact:  func(err error) string { return redactedError(err, a.Config, a.redaction.Values()) },
+		Events:  serverEvents,
+	}
 	cacheTicker := time.NewTicker(time.Hour)
 	cacheCtx, stopCache := context.WithCancel(runCtx)
 	cacheDone := make(chan struct{})
@@ -684,7 +696,9 @@ func (a *App) Serve(ctx context.Context) error {
 		}
 	}()
 	defer func() { <-webhookConnectionsDone }()
+	controlDone := make(chan error, 1)
 	go func() { serverDone <- server.Serve(listener) }()
+	go func() { controlDone <- controlServer.Serve(runCtx) }()
 	go func() { workerDone <- a.Worker.Run(runCtx) }()
 
 	var cause error
@@ -703,6 +717,12 @@ func (a *App) Serve(ctx context.Context) error {
 			cause = fmt.Errorf("worker: %w", err)
 		}
 		workerDone = nil
+	case err := <-controlDone:
+		trigger = "component_failure"
+		if err != nil {
+			cause = fmt.Errorf("control socket: %w", err)
+		}
+		controlDone = nil
 	}
 	appEvents := a.Events
 	if appEvents == nil {
@@ -725,6 +745,11 @@ func (a *App) Serve(ctx context.Context) error {
 	if workerDone != nil {
 		if err := <-workerDone; err != nil && !errors.Is(err, context.Canceled) {
 			shutdownErr = errors.Join(shutdownErr, err)
+		}
+	}
+	if controlDone != nil {
+		if err := <-controlDone; err != nil {
+			shutdownErr = errors.Join(shutdownErr, fmt.Errorf("control socket: %w", err))
 		}
 	}
 	result := errors.Join(cause, shutdownErr)
@@ -1073,7 +1098,7 @@ func (a *App) acquireMutationLock() (func(), error) {
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("another subsyncd mutation process is active")
+		return nil, fmt.Errorf("another subsyncd mutation process is active; stop the daemon first")
 	}
 	return func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
 }

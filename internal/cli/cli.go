@@ -35,6 +35,16 @@ type Backend interface {
 	RotateWebhookToken(ctx context.Context, instance string) (control.RotateTokenResult, error)
 }
 
+// Remote is a connection to a running daemon that carries one call.
+type Remote interface {
+	Call(ctx context.Context, command string, args, result any) error
+	Close() error
+}
+
+// DialFunc connects to the running daemon of the configuration at the given
+// path. It returns control.ErrNoDaemon when none is running.
+type DialFunc func(ctx context.Context, configPath string) (Remote, error)
+
 type OpenFunc func(context.Context, string, string) (Backend, error)
 
 type ErrorRedactor interface {
@@ -46,7 +56,10 @@ type FailureReporter interface {
 }
 
 type Command struct {
-	Open              OpenFunc
+	Open OpenFunc
+	// Dial, when set, lets commands the daemon can execute go to it. Without
+	// a running daemon the command opens the backend itself.
+	Dial              DialFunc
 	Stdout            io.Writer
 	Stderr            io.Writer
 	DefaultConfigPath string
@@ -146,6 +159,27 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		return c.failure(ctx, command, jsonMode, nil, errorsText("backend is unavailable"))
 	}
 
+	if c.Dial != nil && routed(command) {
+		remote, err := c.Dial(ctx, *configPath)
+		switch {
+		case err == nil:
+			defer remote.Close()
+			var result control.Result
+			switch command {
+			case "retry":
+				var typed control.RetryResult
+				err = remote.Call(ctx, command, control.RetryArgs{Provider: *provider}, &typed)
+				result = typed
+			}
+			if err != nil {
+				return c.failure(ctx, command, jsonMode, nil, err)
+			}
+			return c.succeed(command, jsonMode, result)
+		case !errors.Is(err, control.ErrNoDaemon):
+			return c.failure(ctx, command, jsonMode, nil, err)
+		}
+	}
+
 	// A preview only reads, so it opens like the diagnostic commands: no
 	// migrations or startup writes, and it can run beside the daemon.
 	openCommand := command
@@ -191,6 +225,15 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	if err != nil {
 		return c.failure(ctx, command, jsonMode, backend, err)
 	}
+	return c.succeed(command, jsonMode, result)
+}
+
+// routed reports whether the daemon can execute command when it is running.
+func routed(command string) bool {
+	return command == "retry"
+}
+
+func (c Command) succeed(command string, jsonMode bool, result control.Result) int {
 	if result == nil {
 		return ExitOK
 	}

@@ -9,6 +9,8 @@ import (
 
 	"subsyncd/internal/app"
 	"subsyncd/internal/cli"
+	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/version"
 )
 
@@ -24,6 +26,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Stdout: stdout, Stderr: stderr, DefaultConfigPath: defaultConfig, Version: version.Value,
 		Open: func(ctx context.Context, path, command string) (cli.Backend, error) {
 			return app.Open(ctx, path, app.OpenOptions{LogWriter: stderr, Version: version.Value, Command: command})
+		},
+		Dial: func(ctx context.Context, path string) (cli.Remote, error) {
+			cfg, err := config.Load(path, os.LookupEnv)
+			if err != nil {
+				// Open reports the same configuration error the usual way.
+				return nil, control.ErrNoDaemon
+			}
+			return control.Dial(ctx, cfg.DataDir)
 		},
 	}).Run(ctx, args)
 }

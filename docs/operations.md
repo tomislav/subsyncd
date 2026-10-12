@@ -120,7 +120,7 @@ Expired profiles rebuild automatically when needed. This may require another med
 
 ## Commands
 
-The container runs `serve` by default. The other commands are run through Compose. Commands that change saved state need the daemon stopped, because only one process may write at a time; read-only commands work while it runs.
+The container runs `serve` by default. The other commands are run through Compose. Only one process may write saved state at a time. Read-only commands work while the daemon runs, and `retry` hands its request to the running daemon over a local socket (`subsyncd.sock` in the data folder, readable only by the daemon's user), so it needs no stop. The other commands that change saved state still need the daemon stopped.
 
 | Command | What it does | Daemon |
 | --- | --- | --- |
@@ -129,7 +129,7 @@ The container runs `serve` by default. The other commands are run through Compos
 | `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
 | `search` | Searches one file and language now. | Stop first |
 | `scan` | Discovers unindexed files in one instance's library and reconciles its history. Add `--force-probe` to reread embedded subtitle tracks. | Stop first |
-| `retry` | Clears one provider's saved cooldown and authentication state. | Stop first |
+| `retry` | Clears one provider's saved cooldown and authentication state, and wakes the worker so waiting searches run. | May run; the daemon carries it out |
 | `webhook-url` | Prints an instance's webhook URL, including its token, for manual Arr setup. Pass `--base URL` (or set `server.webhook_base_url`) for a complete URL; otherwise only the path and query are printed. | May run |
 | `rotate-webhook-token` | Replaces an instance's webhook token. Start subsyncd afterwards; the URL in Arr is updated at that start with `server.webhook_base_url`, otherwise update it by hand from `webhook-url --base URL`. | Stop first |
 | `forget-instance` | Shows what subsyncd has saved for a Sonarr or Radarr instance you removed from the configuration. Add `--yes` to delete those records. | May run to preview; stop first with `--yes` |
@@ -168,7 +168,7 @@ Run `subsyncd COMMAND --help` for a command's flags, result fields, and error co
 | `unknown_instance` | The instance is not configured (or, for `forget-instance`, not in the database). |
 | `unknown_provider` | The provider is not configured. |
 | `unknown_language` | The language tag is invalid or not configured. |
-| `busy` | Another subsyncd process holds the data directory. Stop the daemon and retry. |
+| `busy` | Another subsyncd process holds the data directory and the command cannot go through it. Stop the daemon and retry. |
 | `internal` | Anything else. The `message` is redacted; the logs on standard error hold the detail. |
 
 The codes `media_not_found`, `ambiguous_media`, `not_managed`, `daemon_required`, `daemon_stopping`, `protocol_mismatch`, and `arr_unreachable` are reserved for commands that talk to a running daemon and are not produced yet. Treat an unrecognized code as a failure.
@@ -262,7 +262,7 @@ Allow the container to stop fully before starting another process against the sa
 | Media path is outside configured roots | Match the Arr path mapping to the actual container mounts. |
 | No subtitle download | Use `explain` to check existing subtitles, the next search time, provider limits, or rejected matches. |
 | Provider authentication rejected | Correct the credentials in `config/config.yaml`, restart the service, then clear the affected provider's state as shown below. |
-| Another mutation process is active | Stop the daemon before a manual search, scan, or retry. Do not delete the lock file. |
+| Another mutation process is active | Stop the daemon before a manual search, scan, `rotate-webhook-token` or `forget-instance --yes`; `retry` does not need a stop. Do not delete the lock file. |
 | LAPSE takes a long time | Its first run may read much of the media file, especially noticeable on network storage. Results are cached for later use. |
 | Media file is missing | The file disappeared after inventory refresh. The search stops before further candidate work and retries with technical-failure backoff, keeping its place in the queue; check Arr renames/deletions and filesystem availability. When three searches in a row cannot find or read their media and the storage itself does not read either (for example while a mount is remounting), searches pause for a minute (`queue.media_paused`); if the next searches fail the same way, the pause doubles each time, up to 30 minutes, until one reads its media. A single missing file on otherwise readable storage never pauses the queue. |
 | `webhook.failed` warning | A saved Sonarr or Radarr webhook could not be applied, usually because Arr was unreachable. It is retried automatically; if it is given up (`outcome` `abandoned`), the next reconciliation applies the change from Arr's history. |
@@ -275,12 +275,10 @@ Allow the container to stop fully before starting another process against the sa
 | `webhook.connection_foreign` info | Arr has webhook connections for the same instance name that point at another subsyncd deployment. They are left alone and a connection of your own is created; no action needed. |
 | `reconcile.snapshot_deletions_withheld` warning | Arr reported a library missing most of what subsyncd tracks, so the deletions were not applied. Check the instance URL and the Arr database. |
 
-After fixing credentials, clear the named provider's saved authentication and cooldown state; this also makes searches that were waiting on a provider run again right away:
+After fixing credentials and restarting the service, clear the named provider's saved authentication and cooldown state; this also makes searches that were waiting on a provider run again right away. The running daemon carries it out, so nothing needs stopping:
 
 ```bash
-docker compose stop subsyncd
-docker compose run --rm --no-deps subsyncd retry --provider opensubtitles-main
-docker compose up -d subsyncd
+docker compose exec subsyncd subsyncd retry --provider opensubtitles-main
 ```
 
 For filesystem recovery errors, inspect the logs and `explain` before changing files. Do not delete `.subsyncd-*` staging or rollback files while the service is running.

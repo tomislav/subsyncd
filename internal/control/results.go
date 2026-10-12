@@ -98,6 +98,11 @@ func (r SearchResult) Text() string {
 	return strings.Join(lines, "\n")
 }
 
+// RetryArgs is the request of the retry command.
+type RetryArgs struct {
+	Provider string `json:"provider"`
+}
+
 // RetryResult reports a provider retry-state reset.
 type RetryResult struct {
 	Provider    string `json:"provider"`

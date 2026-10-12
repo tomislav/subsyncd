@@ -393,3 +393,127 @@ func TestHelpDescribesResultAndCodes(t *testing.T) {
 		t.Fatalf("exit/help = %d/%q", code, stderr.String())
 	}
 }
+
+type fakeRemote struct {
+	command string
+	args    any
+	err     error
+	closed  bool
+}
+
+func (r *fakeRemote) Call(_ context.Context, command string, args, result any) error {
+	r.command, r.args = command, args
+	if r.err != nil {
+		return r.err
+	}
+	if out, ok := result.(*control.RetryResult); ok {
+		*out = control.RetryResult{Provider: "titlovi", SearchesDue: 4}
+	}
+	return nil
+}
+func (r *fakeRemote) Close() error { r.closed = true; return nil }
+
+func TestRoutedCommandUsesDaemonWhenAvailable(t *testing.T) {
+	remote := &fakeRemote{}
+	var stdout bytes.Buffer
+	command := Command{
+		Stdout: &stdout, Stderr: &bytes.Buffer{},
+		Open: func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil },
+		Dial: func(context.Context, string) (Remote, error) { return remote, nil },
+	}
+	if code := command.Run(context.Background(), []string{"retry", "--provider", "titlovi"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	args, ok := remote.args.(control.RetryArgs)
+	if remote.command != "retry" || !ok || args.Provider != "titlovi" || !remote.closed {
+		t.Fatalf("call = %q %#v closed=%v", remote.command, remote.args, remote.closed)
+	}
+	if want := "provider retry state reset: titlovi; throttled searches due again: 4\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRoutedCommandJSONThroughDaemon(t *testing.T) {
+	open := func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil }
+	command := Command{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Open: open,
+		Dial: func(context.Context, string) (Remote, error) { return &fakeRemote{}, nil }}
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	if code := command.Run(context.Background(), []string{"retry", "--provider", "titlovi", "--json"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil || envelope["ok"] != true || envelope["command"] != "retry" {
+		t.Fatalf("stdout = %q (%v)", stdout.String(), err)
+	}
+}
+
+func TestRoutedCommandFallsBackWithoutDaemon(t *testing.T) {
+	backend := &fakeBackend{}
+	var opened string
+	command := Command{
+		Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+		Open: func(_ context.Context, _ string, name string) (Backend, error) { opened = name; return backend, nil },
+		Dial: func(context.Context, string) (Remote, error) { return nil, control.ErrNoDaemon },
+	}
+	if code := command.Run(context.Background(), []string{"retry", "--provider", "titlovi"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if opened != "retry" || backend.call != "retry:titlovi" {
+		t.Fatalf("opened/call = %q/%q", opened, backend.call)
+	}
+}
+
+func TestRoutedCommandReportsOtherDialErrors(t *testing.T) {
+	command := Command{
+		Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+		Open: func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil },
+		Dial: func(context.Context, string) (Remote, error) { return nil, errors.New("connect failed") },
+	}
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	code := command.Run(context.Background(), []string{"retry", "--provider", "titlovi", "--json"})
+	var envelope struct{ Error struct{ Code string } }
+	_ = json.Unmarshal(stdout.Bytes(), &envelope)
+	if code != ExitFailure || envelope.Error.Code != control.CodeInternal {
+		t.Fatalf("exit/stdout = %d/%q", code, stdout.String())
+	}
+}
+
+func TestRoutedCommandReportsDaemonErrorCode(t *testing.T) {
+	remote := &fakeRemote{err: &control.Error{Code: control.CodeUnknownProvider, Message: `unknown provider "x"`}}
+	command := Command{
+		Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+		Open: func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil },
+		Dial: func(context.Context, string) (Remote, error) { return remote, nil },
+	}
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	code := command.Run(context.Background(), []string{"retry", "--provider", "x", "--json"})
+	var envelope struct {
+		Error struct{ Code, Message string }
+	}
+	_ = json.Unmarshal(stdout.Bytes(), &envelope)
+	if code != ExitFailure || envelope.Error.Code != "unknown_provider" || envelope.Error.Message != `unknown provider "x"` || !remote.closed {
+		t.Fatalf("exit/stdout = %d/%q", code, stdout.String())
+	}
+}
+
+func TestStopFirstCommandsDoNotDial(t *testing.T) {
+	backend := &fakeBackend{}
+	command := Command{
+		Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+		Open: func(context.Context, string, string) (Backend, error) { return backend, nil },
+		Dial: func(context.Context, string) (Remote, error) { t.Fatal("Dial called"); return nil, nil },
+	}
+	for _, args := range [][]string{
+		{"rotate-webhook-token", "--instance", "tv"},
+		{"forget-instance", "--instance", "old", "--yes"},
+		{"scan", "--instance", "tv"},
+		{"doctor"},
+	} {
+		if code := command.Run(context.Background(), args); code != ExitOK {
+			t.Fatalf("%v exit = %d", args, code)
+		}
+	}
+}
