@@ -292,7 +292,7 @@ subsyncd doctor --json
 
 A failure has `"ok":false` and an `error` with a stable `code` and a readable `message` instead of `result`. Times are RFC 3339 and field names are snake_case. Output never contains credentials or absolute paths, with two exceptions: `webhook-url` prints the token by design, and an error loading the configuration file can name that file's path.
 
-**Exit status:** 0 for success (including `running`), 1 for a failure, 2 when the command line itself does not parse. A `usage` error found later, once the database is open (such as `reject` without the `--language` it needs to pick one of several languages, an invalid `webhook-url --base`, or `forget-instance` for a configured instance), exits 1, with or without a running daemon. Scripts should branch on `error.code`, not the exit status.
+**Exit status:** 0 for success (including `running`), 1 for a failure, 2 for a command-line error found before the database opens (an unknown command or flag, a flag the command does not take, a missing required flag such as `scan` without `--instance`, or an invalid value such as `--limit -1`). A `usage` error found later, once the database is open (such as `reject` without the `--language` it needs to pick one of several languages, an invalid `webhook-url --base`, or `forget-instance` for a configured instance), exits 1, with or without a running daemon. Scripts should branch on `error.code`, not the exit status.
 
 | Code | Meaning |
 | --- | --- |

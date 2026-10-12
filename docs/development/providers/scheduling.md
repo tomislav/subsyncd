@@ -91,7 +91,7 @@ A fallback install of media released less than `aged_release_days` ago (`Service
 3. about 24 hours after install;
 4. about 3 days after install.
 
-The gaps (`recentFallbackChecks`) are 6 h, 6 h, 12 h and 48 h, indexed by the upgrade attempt (0 at install, then the unchanged-check count). Each gap gets delay-only jitter of 0 to +20%, like a missing search, so no check lands inside the previous search's cache.
+The first `recentFallbackChecks` (4) checks reuse the missing-search delays: check `attempt` (0 at install, then the unchanged-check count) waits `schedule.MissingDelay(attempt+1, …)`, which is 6 h, 6 h, 12 h and 48 h with the same delay-only jitter of 0 to +20%, so no check lands inside the previous search's cache.
 
 After the fourth check, or once the release is older than `aged_release_days`, the ordinary fallback cadence follows: 7 days, then backing off to 14, 30, 60 and 90 days. When the installation was recorded while the release was recent (`installations.installed_at_ns`), the attempt is reduced by the four early steps (`max(0, attempt-4)`), so a release that ages out mid-way continues weekly instead of jumping ahead. Installs made after the release aged keep the unreduced count.
 

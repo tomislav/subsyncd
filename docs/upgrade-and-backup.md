@@ -58,7 +58,9 @@ docker compose exec subsyncd subsyncd doctor
 
 ## Roll back to an older build
 
-An older build refuses a database that a newer build has upgraded. Its error names the unknown migration and tells you to restore the backup taken before the upgrade. Do that; don't start from an empty data directory, which loses every record of installed subtitles.
+An older build refuses a database that a newer build has upgraded, and its error names the unknown migration. Restore the backup taken before the upgrade; never start from an empty data directory, which loses every record of installed subtitles.
+
+Builds from 13 October 2026 on say this in the error. Older builds, including every build you might roll back to before then, give the wrong advice: `serve` says to rebuild from an empty data directory, and `doctor` says to initialize with `serve` or `scan`. Ignore both and restore the backup.
 
 1. `docker compose stop subsyncd`
 2. Replace `data/` with the backup you took before the upgrade. Restore `subsyncd.db` together with its own `-wal` and `-shm` files, or delete the newer ones.
