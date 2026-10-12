@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -519,12 +520,39 @@ func TestHelpTextFitsEightyColumns(t *testing.T) {
 		}
 		texts = append(texts, wrapText(text, helpWidth))
 	}
+	// The full help, flag lists included, as a terminal shows it.
+	for command := range commandHelp {
+		var stdout bytes.Buffer
+		(Command{Stdout: &stdout, Stderr: io.Discard}).Run(context.Background(), []string{command, "--help"})
+		texts = append(texts, stdout.String())
+	}
 	for _, text := range texts {
 		for _, line := range strings.Split(text, "\n") {
-			if len(line) > helpWidth {
-				t.Errorf("line of %d columns: %q", len(line), line)
+			if width := terminalWidth(line); width > helpWidth {
+				t.Errorf("line of %d columns: %q", width, line)
 			}
 		}
+	}
+}
+
+// terminalWidth is a line's width with tabs expanded to eight-column stops.
+func terminalWidth(line string) int {
+	width := 0
+	for _, r := range line {
+		if r == '\t' {
+			width += 8 - width%8
+			continue
+		}
+		width++
+	}
+	return width
+}
+
+func TestHelpVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	c := Command{Stdout: &stdout, Stderr: &stderr}
+	if code := c.Run(context.Background(), []string{"help", "version"}); code != ExitOK || !strings.Contains(stdout.String(), "subsyncd version") {
+		t.Fatalf("help version = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 }
 

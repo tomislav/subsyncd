@@ -105,6 +105,9 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		case len(rest) == 0:
 			printUsage(c.Stdout)
 			return ExitOK
+		case args[0] == "help" && len(rest) == 1 && (rest[0] == "version" || rest[0] == "--version"):
+			_, _ = fmt.Fprintln(c.Stdout, "Usage: subsyncd version\n\nPrint the version and exit.")
+			return ExitOK
 		case args[0] == "help" && len(rest) == 1:
 			// "help COMMAND" is "COMMAND --help".
 			args = []string{rest[0], "--help"}
@@ -143,8 +146,8 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	since := flags.Duration("since", 0, "how far back to look, such as 90m or 72h (default 24h)")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
-	retryRejected := flags.Bool("retry-rejected", false, "clear and retry the candidates subsyncd rejected (not those you rejected)")
-	reason := flags.String("reason", "", "why the subtitle is wrong: "+strings.Join(control.RejectReasons, ", "))
+	retryRejected := flags.Bool("retry-rejected", false, "retry the candidates subsyncd rejected (not yours)")
+	reason := flags.String("reason", "", "why: "+strings.Join(control.RejectReasons, ", "))
 	undo := flags.Bool("undo", false, "remove your rejections for the file and language instead; runs no search")
 	media := flags.String("media", "", "media file path")
 	subtitle := flags.String("subtitle", "", "subtitle file path")
