@@ -1,0 +1,183 @@
+package control
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"sync"
+	"time"
+
+	"subsyncd/internal/observability"
+)
+
+const (
+	readTimeout  = 30 * time.Second
+	writeTimeout = 10 * time.Second
+)
+
+// Server serves the control protocol on a Unix socket. The caller must hold
+// the data-directory lock, so a pre-existing socket file is stale.
+type Server struct {
+	Path    string
+	Handler Handler
+	// Redact turns an unexpected handler error into a client-safe message.
+	Redact func(error) string
+	Events *observability.Emitter
+}
+
+// Serve listens until ctx is canceled, then drains in-flight connections and
+// removes the socket. It returns nil on a clean shutdown.
+func (s *Server) Serve(ctx context.Context) error {
+	if info, err := os.Lstat(s.Path); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return errors.New("control socket path exists and is not a socket")
+		}
+		if err := os.Remove(s.Path); err != nil {
+			return fmt.Errorf("remove stale control socket: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect control socket: %w", err)
+	}
+	listener, err := net.Listen("unix", s.Path)
+	if err != nil {
+		return fmt.Errorf("listen on control socket: %w", err)
+	}
+	if err := os.Chmod(s.Path, 0o600); err != nil {
+		_ = listener.Close()
+		_ = os.Remove(s.Path)
+		return fmt.Errorf("restrict control socket: %w", err)
+	}
+
+	handlerCtx, cancelHandlers := context.WithCancel(ctx)
+	defer cancelHandlers()
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		conns = map[net.Conn]struct{}{}
+	)
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+		// Unblock connections that are still waiting for a request.
+		mu.Lock()
+		for c := range conns {
+			_ = c.SetReadDeadline(time.Now())
+		}
+		mu.Unlock()
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				continue
+			}
+			cancelHandlers()
+			wg.Wait()
+			_ = listener.Close()
+			_ = os.Remove(s.Path)
+			return fmt.Errorf("accept control connection: %w", err)
+		}
+		mu.Lock()
+		conns[conn] = struct{}{}
+		mu.Unlock()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				mu.Lock()
+				delete(conns, conn)
+				mu.Unlock()
+				_ = conn.Close()
+			}()
+			s.serveConn(handlerCtx, conn)
+		}()
+	}
+
+	cancelHandlers()
+	wg.Wait()
+	_ = os.Remove(s.Path)
+	return nil
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
+	limited := &countingReader{r: io.LimitReader(conn, MaxRequestBytes+1)}
+	var req Request
+	if err := json.NewDecoder(limited).Decode(&req); err != nil || limited.n > MaxRequestBytes {
+		switch {
+		case ctx.Err() != nil:
+			s.write(conn, failure(&Error{Code: CodeDaemonStopping, Message: "subsyncd is shutting down"}))
+		case limited.n > MaxRequestBytes:
+			s.write(conn, failure(&Error{Code: CodeUsage, Message: "request is too large"}))
+		default:
+			s.write(conn, failure(&Error{Code: CodeUsage, Message: "request is not valid JSON"}))
+		}
+		return
+	}
+	if req.Version != ProtocolVersion {
+		s.write(conn, failure(&Error{Code: CodeProtocolMismatch, Message: mismatchMessage(req.Version, ProtocolVersion, true)}))
+		return
+	}
+	value, err := s.Handler.HandleControl(ctx, req.Command, req.Args)
+	if err != nil {
+		var ce *Error
+		switch {
+		case errors.As(err, &ce):
+			s.write(conn, failure(ce))
+		case ctx.Err() != nil:
+			s.write(conn, failure(&Error{Code: CodeDaemonStopping, Message: "subsyncd is shutting down"}))
+		default:
+			message := "internal error"
+			if s.Redact != nil {
+				message = s.Redact(err)
+			}
+			s.write(conn, failure(&Error{Code: CodeInternal, Message: message}))
+		}
+		return
+	}
+	var raw json.RawMessage
+	if value != nil {
+		raw, err = json.Marshal(value)
+		if err != nil {
+			s.write(conn, failure(&Error{Code: CodeInternal, Message: "internal error"}))
+			return
+		}
+	}
+	s.write(conn, Response{Version: ProtocolVersion, OK: true, Result: raw})
+}
+
+func failure(e *Error) Response {
+	return Response{Version: ProtocolVersion, Error: e}
+}
+
+func (s *Server) write(conn net.Conn, resp Response) {
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+func mismatchMessage(other, mine int, fromServer bool) string {
+	if fromServer {
+		return fmt.Sprintf("subsyncd CLI speaks control protocol %d but the daemon speaks %d", other, mine)
+	}
+	return fmt.Sprintf("subsyncd CLI speaks control protocol %d but the daemon speaks %d", mine, other)
+}
