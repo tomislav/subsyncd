@@ -123,7 +123,7 @@ The daemon carries out `retry`, so nothing needs stopping.
 | Log event | Meaning and fix |
 | --- | --- |
 | `webhook.failed` (warn) | A saved webhook could not be applied, usually because Arr did not answer. It is retried at `retry_at`. |
-| `webhook.failed` (error, `outcome` `abandoned`) | Retries ran out after about a day. The six-hourly history reconciliation applies the change anyway. |
+| `webhook.failed` (error, `outcome` `abandoned`) | Retries ran out after about 31 hours (gaps of 1m, 5m, 15m, 1h, 6h and 24h). The six-hourly history reconciliation applies the change anyway. |
 | `webhook.inbox_orphaned` | Webhooks are stored for an instance no longer configured. Run [`forget-instance`](commands.md#remove-an-instance-for-good) for it. |
 | `webhook.connection_ambiguous` | Several Arr connections look like this subsyncd's, so none was changed. Delete the extras in Arr. |
 | `webhook.connection_foreign` (info) | Connections for the same instance name point at another subsyncd. They are left alone; no action needed. |
