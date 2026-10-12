@@ -78,15 +78,30 @@ func (r *Repository) RecordUserRejection(ctx context.Context, rejection Candidat
 }
 
 // ClearUserRejections removes the owner's rejections for a media file and
-// language, for reject --undo, and reports how many it removed.
+// language, for reject --undo, and reports how many it removed. In the same
+// transaction it disarms a queued replacement (replace_installed), so no
+// later run replaces or removes the subtitle that is no longer rejected. A
+// run already under way read the flag when it started and finishes as it is;
+// its completion never sets the flag again.
 func (r *Repository) ClearUserRejections(ctx context.Context, mediaID int64, language domain.Language) (int64, error) {
-	result, err := r.store.db.ExecContext(ctx, `DELETE FROM candidate_rejections WHERE media_id=? AND language=? AND `+userReasonSQL, mediaID, language.String())
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin clear user rejections: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `DELETE FROM candidate_rejections WHERE media_id=? AND language=? AND `+userReasonSQL, mediaID, language.String())
 	if err != nil {
 		return 0, fmt.Errorf("clear user rejections: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("count cleared user rejections: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE search_states SET replace_installed=0 WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
+		return 0, fmt.Errorf("disarm queued replacement: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit clear user rejections: %w", err)
 	}
 	return count, nil
 }

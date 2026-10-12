@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/inventory"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 )
@@ -100,4 +101,36 @@ func TestReplaceInstalledLeavesAnEditedSubtitleAlone(t *testing.T) {
 	if err != nil || len(installer.removals) != 0 || result.Outcome == OutcomeRemoved {
 		t.Fatalf("Run() = %#v, %v; removals=%d", result, err, len(installer.removals))
 	}
+}
+
+func TestReplaceInstalledKeepsSubtitleWhenOneProviderFailed(t *testing.T) {
+	// One provider timed out and the other found nothing: the search did not
+	// really finish, so the rejected subtitle stays for the retry.
+	searcher := &fakeSearcher{result: provider.SearchResult{Errors: map[string]error{"down": context.DeadlineExceeded}}}
+	service, installer, request, _ := replaceFixture(t, searcher)
+	service.ProviderOrder = []string{"down", "provider"}
+	result, err := service.Run(context.Background(), request)
+	if err == nil || len(installer.removals) != 0 || result.Outcome == OutcomeRemoved {
+		t.Fatalf("Run() = %#v, %v; removals=%d", result, err, len(installer.removals))
+	}
+}
+
+func TestReplaceInstalledRemovesWhenAnotherTrackCoversTheLanguage(t *testing.T) {
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("lower")}}}
+	service, installer, request, existing := replaceFixture(t, searcher)
+	current := managedSidecarInventory(existing)
+	current.Tracks = append(current.Tracks, inventory.Track{Language: "en", Embedded: true})
+	service.Inventory = &fakeInventory{current: current}
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeRemoved || result.RemovedAfter != OutcomeSatisfied || len(installer.removals) != 1 || installer.calls != 0 || searcher.calls != 0 {
+		t.Fatalf("Run() = %#v, %v; removals=%d installs=%d searches=%d", result, err, len(installer.removals), installer.calls, searcher.calls)
+	}
+	// Without ReplaceInstalled the covered language is simply satisfied.
+	service, installer, request, existing = replaceFixture(t, searcher)
+	service.Inventory = &fakeInventory{current: current}
+	request.ReplaceInstalled = false
+	if result, err := service.Run(context.Background(), request); err != nil || result.Outcome != OutcomeSatisfied || len(installer.removals) != 0 {
+		t.Fatalf("ordinary Run() = %#v, %v", result, err)
+	}
+	_ = existing
 }

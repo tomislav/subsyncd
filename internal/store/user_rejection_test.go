@@ -253,3 +253,37 @@ func TestRecordUserRejectionLeasesTheSearchToItsOwner(t *testing.T) {
 		t.Fatalf("second reject claimed a held search: %v/%v", claimed, err)
 	}
 }
+
+func TestClearUserRejectionsDisarmsTheQueuedReplacement(t *testing.T) {
+	for _, leased := range []bool{false, true} {
+		repo := openTestRepository(t)
+		ctx := t.Context()
+		now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+		mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		var lease SearchLease
+		if leased {
+			lease = leaseOne(t, repo, now)
+		}
+		if cleared, err := repo.ClearUserRejections(ctx, mediaID, "en"); err != nil || cleared != 1 {
+			t.Fatalf("ClearUserRejections() = %d/%v", cleared, err)
+		}
+		if status, err := repo.GetSearchStatus(ctx, mediaID, "en"); err != nil || status.ReplaceInstalled {
+			t.Fatalf("leased=%v: status after undo = %+v/%v", leased, status, err)
+		}
+		if leased {
+			// A run already under way finishes; its completion keeps the flag off.
+			if _, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: lease.JobID, Outcome: "throttled", NextAttemptAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if status, _ := repo.GetSearchStatus(ctx, mediaID, "en"); status.ReplaceInstalled {
+				t.Fatal("a completion re-armed the replacement")
+			}
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -303,6 +304,11 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	)
 	if inventorySatisfied {
 		result.Outcome = OutcomeSatisfied
+		if replacing {
+			// Another track already covers the language, so nothing will
+			// replace the rejected sidecar; it goes.
+			return s.removeRejected(ctx, request, existing, result)
+		}
 		return result, nil
 	}
 	if replacing {
@@ -365,6 +371,22 @@ func (s *Service) replaceInstalled(ctx context.Context, request Request, existin
 		s.scheduleUpgrade(&result, request.UpgradeAttempt)
 		return result, nil
 	}
+	if len(result.ProviderErrors) > 0 {
+		// A provider failed, so the search did not see every candidate: a
+		// technical failure that keeps the subtitle and the queued replacement.
+		failures := make([]error, 0, len(result.ProviderErrors))
+		for _, id := range slices.Sorted(maps.Keys(result.ProviderErrors)) {
+			failures = append(failures, fmt.Errorf("%s: %w", id, result.ProviderErrors[id]))
+		}
+		return result, fmt.Errorf("rejected subtitle kept because a provider search failed: %w", errors.Join(failures...))
+	}
+	return s.removeRejected(ctx, request, existing, result)
+}
+
+// removeRejected removes the rejected managed subtitle and reports
+// OutcomeRemoved, with the outcome that led to it in RemovedAfter. One edited
+// meanwhile is the owner's and stays.
+func (s *Service) removeRejected(ctx context.Context, request Request, existing store.Installation, result Result) (Result, error) {
 	remover, ok := s.Installer.(CandidateRemover)
 	if !ok {
 		return result, fmt.Errorf("installer cannot remove the rejected subtitle")

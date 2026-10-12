@@ -416,3 +416,93 @@ func TestRejectThroughDaemon(t *testing.T) {
 		t.Fatalf("daemon reject = %+v", result)
 	}
 }
+
+func (h *rejectHarness) exec(t *testing.T, statement string, args ...any) {
+	t.Helper()
+	inspection, err := sql.Open("sqlite", filepath.Join(h.cfg.DataDir, "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inspection.Close()
+	if _, err := inspection.Exec(statement, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRejectUndoDisarmsTheQueuedReplacement(t *testing.T) {
+	h := newRejectHarness(t, nil)
+	ctx := t.Context()
+	// The rejection and its replacement are queued, but the search has not
+	// finished (a throttle, or a stop) when the owner takes it back.
+	target, err := h.app.prepareReject(ctx, rejectArgs("en", "out_of_sync"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.app.recordReject(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	h.app.releaseManualLease(ctx, target.jobID)
+	if result, err := h.app.Reject(ctx, control.RejectArgs{Selection: rejectArgs("en", "").Selection, Language: "en", Undo: true}); err != nil || result.Undone != 1 {
+		t.Fatalf("undo = %+v/%v", result, err)
+	}
+	background := h.app.Worker.(*worker.Worker)
+	if err := background.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if text := h.sidecarText(t); text != subtitleText("best") {
+		t.Fatalf("the un-rejected subtitle was replaced: %q", text)
+	}
+	if status, err := h.app.Repository.GetSearchStatus(ctx, h.mediaID, "en"); err != nil || status.ReplaceInstalled {
+		t.Fatalf("status = %+v/%v", status, err)
+	}
+}
+
+func TestRejectOfAPre023InstallationSkipsThatProviderResult(t *testing.T) {
+	h := newRejectHarness(t, nil)
+	ctx := t.Context()
+	// An installation recorded before candidate signatures existed.
+	h.exec(t, `UPDATE installations SET candidate_signature='', artifact_checksum='' WHERE media_id=?`, h.mediaID)
+	result, err := h.app.Reject(ctx, rejectArgs("en", "wrong_release"))
+	if err != nil || result.Rejected.Outcome != "installed" || result.Rejected.Candidate != "lower" {
+		t.Fatalf("Reject() = %+v/%v", result, err)
+	}
+	rejections, err := h.app.Repository.ListCandidateRejections(ctx, h.mediaID, "en", h.now)
+	if err != nil || len(rejections) != 1 || rejections[0].CandidateSignature != store.AnyCandidateSignature || rejections[0].ResultID != "best" {
+		t.Fatalf("rejections = %+v/%v", rejections, err)
+	}
+	// The exact-hash result would win an ordinary search; it stays skipped,
+	// while the provider's other result remains installable.
+	again, err := h.app.Search(ctx, searchArgs("tv", "movie", 7, "en", true))
+	if err != nil || again.Languages[0].Outcome != "satisfied" || h.sidecarText(t) != subtitleText("lower") {
+		t.Fatalf("search = %+v/%v, sidecar %q", again, err, h.sidecarText(t))
+	}
+	// Removing the installed subtitle by hand: the search reinstalls the
+	// other result, never the rejected one.
+	if err := os.Remove(h.sidecar); err != nil {
+		t.Fatal(err)
+	}
+	again, err = h.app.Search(ctx, searchArgs("tv", "movie", 7, "en", false))
+	if err != nil || again.Languages[0].Outcome != "installed" || again.Languages[0].Candidate != "lower" {
+		t.Fatalf("reacquisition = %+v/%v", again, err)
+	}
+}
+
+func TestRejectRemovesWhenAnotherTrackCoversTheLanguage(t *testing.T) {
+	h := newRejectHarness(t, nil)
+	ctx := t.Context()
+	// The owner added their own English subtitle beside it.
+	own := filepath.Join(h.cfg.MediaRoots[0], "Movie.eng.srt")
+	if err := os.WriteFile(own, []byte(subtitleText("mine")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.app.Reject(ctx, rejectArgs("en", "out_of_sync"))
+	if err != nil || result.Rejected.Outcome != "removed" || result.Rejected.Reason != "satisfied" {
+		t.Fatalf("Reject() = %+v/%v", result, err)
+	}
+	if _, err := os.Lstat(h.sidecar); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected subtitle remains: %v", err)
+	}
+	if payload, err := os.ReadFile(own); err != nil || string(payload) != subtitleText("mine") {
+		t.Fatalf("the owner's subtitle = %q/%v", payload, err)
+	}
+}
