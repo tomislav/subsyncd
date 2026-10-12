@@ -55,7 +55,7 @@ func TestSonarrSingleFileWebhookInstallsAndDeduplicatesAfterRestart(t *testing.T
 	defer arr.Close()
 	var downloads atomic.Int64
 	var provider *httptest.Server
-	provider = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	provider = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/login":
 			io.WriteString(w, `{"token":"token","expires_in":3600}`)

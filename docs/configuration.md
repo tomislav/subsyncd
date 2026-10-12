@@ -95,7 +95,7 @@ Provider-specific keys:
 | | `max_pages` | `5` | 100-result pages read per title and language, 1–20. |
 | `gestdown` | none | | No account needed. |
 
-Each provider also accepts endpoint and size overrides, meant for tests and private endpoints; `max_download_bytes` can only lower the built-in limit. Leave them unset:
+Each provider also accepts endpoint and size overrides, meant for tests and private endpoints; `max_download_bytes` can only lower the built-in limit. Every base URL must use HTTPS. Leave them unset:
 
 | Type | Keys and defaults |
 | --- | --- |
@@ -103,7 +103,7 @@ Each provider also accepts endpoint and size overrides, meant for tests and priv
 | `subdl` | `base_url`, `download_base_url`, `download_hosts` (`dl.subdl.com`), `max_download_bytes` (64 MiB) |
 | `titlovi` | `api_base_url`, `download_base_url`, `download_hosts`, `max_download_bytes` (64 MiB) |
 | `subsource` | `base_url`, `max_download_bytes` (20 MiB, also the maximum) |
-| `gestdown` | `base_url` (an HTTPS origin), `max_download_bytes` (20 MiB, also the maximum) |
+| `gestdown` | `base_url` (an origin with no path), `max_download_bytes` (20 MiB, also the maximum) |
 
 ## Languages
 

@@ -442,7 +442,7 @@ func newTestClient(t *testing.T, server *httptest.Server, hasher Hasher, maxByte
 	if len(caches) != 0 {
 		cache = caches[0]
 	}
-	client, err := New(Config{APIKey: "api-key", Username: "user", Password: "pass", UserAgent: "subsyncd-test", BaseURL: server.URL + "/api/v1", MaxDownloadBytes: maxBytes}, transport, hasher, cache, clock)
+	client, err := New(Config{APIKey: "api-key", Username: "user", Password: "pass", UserAgent: "subsyncd-test", BaseURL: server.URL + "/api/v1", MaxDownloadBytes: maxBytes, AllowInsecureForTests: true}, transport, hasher, cache, clock)
 	if err != nil {
 		t.Fatal(err)
 	}

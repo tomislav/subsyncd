@@ -28,6 +28,8 @@ type Config struct {
 	RequestsPerSecond float64 `yaml:"requests_per_second"`
 	Burst             int     `yaml:"burst"`
 	MaxConcurrent     int     `yaml:"max_concurrent"`
+	// AllowInsecureForTests lets tests point base_url at a plain-HTTP fake.
+	AllowInsecureForTests bool `yaml:"-"`
 }
 
 func DecodeConfig(payload []byte) (Config, error) {
@@ -72,6 +74,9 @@ func (c Config) Validate() error {
 	parsed, err := url.Parse(c.BaseURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("OpenSubtitles base_url is invalid")
+	}
+	if parsed.Scheme != "https" && !c.AllowInsecureForTests {
+		return fmt.Errorf("OpenSubtitles base URL must use HTTPS")
 	}
 	if c.MaxDownloadBytes <= 0 || c.RequestsPerSecond <= 0 || c.Burst <= 0 || c.MaxConcurrent <= 0 {
 		return fmt.Errorf("OpenSubtitles download and rate limits must be positive")

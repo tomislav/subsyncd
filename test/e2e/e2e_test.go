@@ -114,7 +114,7 @@ func testProviderResumeRestart(t *testing.T, cooldown time.Duration, restartCall
 	for id, item := range providers {
 		supplied[id] = item
 	}
-	cfg := e2eConfig(t, root, "http://arr.invalid", "http://provider.invalid", "")
+	cfg := e2eConfig(t, root, "http://arr.invalid", "https://provider.invalid", "")
 	cfg.Silo.Enabled = false
 	spec := cfg.Providers["opensubtitles-main"]
 	cfg.Providers = map[string]config.ProviderSpec{"open": spec, "titlovi": spec, "subdl": spec}
@@ -778,7 +778,7 @@ func newOpenSubtitlesServer(t *testing.T, exactHit bool) (*httptest.Server, *cou
 	t.Helper()
 	calls := &counts{}
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/api/v1/login":
 			_, _ = io.WriteString(response, `{"token":"token","expires_in":3600}`)
