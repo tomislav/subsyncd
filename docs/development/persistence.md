@@ -84,7 +84,7 @@ Triggers: `invalidate_inventory_probe` (003), `instances_event_revision` (005), 
 Migrations live in `internal/store/migrations/` and are embedded with `//go:embed`.
 
 - They run in file-name order (a lexicographic sort), each in its own transaction together with its `schema_migrations` row.
-- Before any migration SQL runs, every applied version must be an embedded file. Otherwise the open fails with `unsupported database migration "NAME"`. Databases from the pre-release `001_initial.sql`–`010_media_entity_ids.sql` lineage fail this way too: the supported lineage starts at `001_baseline.sql`.
+- Before any migration SQL runs, every applied version must be an embedded file. Otherwise the open fails with `unsupported database migration "NAME"`. Databases from the pre-release `001_initial.sql`–`010_media_entity_ids.sql` lineage fail this way too: the supported lineage starts at `001_baseline.sql`. A database a newer build upgraded gets advice to restore the backup taken before that upgrade; a pre-release database (its `001_initial.sql` row) is told to start from an empty data directory.
 - Migrations are forward-only. An older build that meets a database with a newer migration refuses to start and tells the operator to restore the backup taken before the upgrade, with the matching older image.
 - The runner does not check for gaps: an embedded file missing from `schema_migrations` is applied even when later ones are recorded. Several tests rely on this.
 

@@ -45,10 +45,27 @@ func TestOpenRejectsUnknownMigrationLineage(t *testing.T) {
 	_ = db.Close()
 
 	_, err = Open(context.Background(), path)
-	if err == nil || !strings.Contains(err.Error(), `unsupported database migration "001_initial.sql": the database was upgraded by a newer subsyncd and migrations are forward-only`) {
+	if err == nil || !strings.Contains(err.Error(), `unsupported database migration "001_initial.sql": the database comes from a pre-release subsyncd`) ||
+		!strings.Contains(err.Error(), "empty data directory") {
 		t.Fatalf("Open() error = %v", err)
 	}
-	// The advice restores a backup instead of discarding the data directory.
+}
+
+// A database a newer build upgraded is restored from backup, never discarded.
+func TestOpenRejectsANewerMigrationWithRestoreAdvice(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subsyncd.db")
+	database, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`INSERT INTO schema_migrations(version) VALUES ('999_from_a_newer_build.sql')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = database.Close()
+	_, err = Open(context.Background(), path)
+	if err == nil || !strings.Contains(err.Error(), `unsupported database migration "999_from_a_newer_build.sql": the database was upgraded by a newer subsyncd`) {
+		t.Fatalf("Open() error = %v", err)
+	}
 	if msg := err.Error(); !strings.Contains(msg, "restore the data backup taken before that upgrade") || strings.Contains(msg, "empty data directory") {
 		t.Fatalf("Open() error advice = %v", err)
 	}

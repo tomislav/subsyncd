@@ -146,6 +146,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
+// preReleaseBaseline is the first migration of the unsupported pre-release
+// lineage (001_initial.sql to 010_media_entity_ids.sql); the supported lineage
+// starts at 001_baseline.sql.
+const preReleaseBaseline = "001_initial.sql"
+
 func validateAppliedMigrations(ctx context.Context, db *sql.DB, allowed map[string]struct{}) error {
 	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
 	if err != nil {
@@ -158,6 +163,11 @@ func validateAppliedMigrations(ctx context.Context, db *sql.DB, allowed map[stri
 			return fmt.Errorf("scan applied migration: %w", err)
 		}
 		if _, ok := allowed[version]; !ok {
+			if version == preReleaseBaseline {
+				// The pre-release lineage has no upgrade path.
+				return fmt.Errorf("unsupported database migration %q: the database comes from a pre-release subsyncd and cannot be upgraded; "+
+					"start from an empty data directory", version)
+			}
 			// Migrations only go forward, so an older build cannot open a
 			// database a newer one upgraded. Starting from an empty data
 			// directory would throw away every installation record.
