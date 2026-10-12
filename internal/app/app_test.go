@@ -1309,7 +1309,7 @@ func TestScanSkipsDeletedMedia(t *testing.T) {
 					active = media
 				}
 			}
-			if result, err := application.Scan(ctx, "tv", false); err != nil || result.Text() != "scan complete: instance=tv media=1 force_probe=false" {
+			if result, err := application.Scan(ctx, control.ScanArgs{Instance: "tv"}); err != nil || result.Text() != "scan complete: instance=tv media=1 force_probe=false" {
 				t.Fatalf("ordinary scan=%q error=%v", result.Text(), err)
 			}
 			calls := 0
@@ -1324,7 +1324,7 @@ func TestScanSkipsDeletedMedia(t *testing.T) {
 				}
 				return nil
 			})
-			result, err := application.Scan(ctx, "tv", true)
+			result, err := application.Scan(ctx, control.ScanArgs{Instance: "tv", ForceProbe: true})
 			if concurrentDelete {
 				if !errors.Is(err, store.ErrStaleInventory) {
 					t.Fatalf("concurrent delete error=%v", err)
@@ -1360,7 +1360,7 @@ func TestScanReportsDeferredLibraryFileWithoutFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer application.Close()
-	result, err := application.Scan(ctx, "tv", false)
+	result, err := application.Scan(ctx, control.ScanArgs{Instance: "tv"})
 	if err != nil || result.Text() != "scan complete: instance=tv media=0 force_probe=false deferred=2 (Sonarr file 1001 (Example Show - season 7); Radarr movie 7 (Example Movie (2001)))" {
 		t.Fatalf("scan=%q error=%v", result.Text(), err)
 	}
@@ -1375,7 +1375,7 @@ func TestScanReportsDeferredHistoryWithoutFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer application.Close()
-	result, err := application.Scan(ctx, "tv", false)
+	result, err := application.Scan(ctx, control.ScanArgs{Instance: "tv"})
 	if err != nil || result.Text() != "scan complete: instance=tv media=0 force_probe=false deferred=1 (Radarr movie 7 (Example Movie (2001)))" {
 		t.Fatalf("scan=%q error=%v", result.Text(), err)
 	}
@@ -1820,7 +1820,7 @@ func TestUnknownReferencesReturnCodedErrors(t *testing.T) {
 		code string
 		text string
 	}{
-		"scan": {func() error { _, err := application.Scan(ctx, "nope", false); return err }(), control.CodeUnknownInstance, `unknown instance "nope"`},
+		"scan": {func() error { _, err := application.Scan(ctx, control.ScanArgs{Instance: "nope"}); return err }(), control.CodeUnknownInstance, `unknown instance "nope"`},
 		"search": {func() error {
 			_, err := application.Search(ctx, searchArgs("nope", "movie", 1, "en", false))
 			return err

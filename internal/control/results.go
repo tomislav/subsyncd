@@ -99,11 +99,22 @@ func (r FindResult) Text() string {
 	return strings.Join(lines, "\n")
 }
 
+// ScanArgs are the arguments of the scan command.
+type ScanArgs struct {
+	Instance   string        `json:"instance"`
+	ForceProbe bool          `json:"force_probe,omitempty"`
+	Wait       time.Duration `json:"wait,omitempty"`
+	NoWait     bool          `json:"no_wait,omitempty"`
+}
+
 // ScanResult reports one reconciliation of an Arr instance.
 type ScanResult struct {
 	Instance   string `json:"instance"`
 	Media      int    `json:"media"`
 	ForceProbe bool   `json:"force_probe"`
+	// Outcome is "running" when the daemon's scan outlived the wait and
+	// carries on; empty for a finished scan.
+	Outcome string `json:"outcome,omitempty"`
 	// HistoryDeferred is set when Arr could not supply some entities; the
 	// scan still completed for everything else.
 	HistoryDeferred bool     `json:"history_deferred,omitempty"`
@@ -112,6 +123,9 @@ type ScanResult struct {
 }
 
 func (r ScanResult) Text() string {
+	if r.Outcome == "running" {
+		return fmt.Sprintf("scan running: instance=%s force_probe=%t", r.Instance, r.ForceProbe)
+	}
 	summary := fmt.Sprintf("scan complete: instance=%s media=%d force_probe=%t", r.Instance, r.Media, r.ForceProbe)
 	if r.HistoryDeferred {
 		summary += fmt.Sprintf(" deferred=%d (%s)", r.Deferred, strings.Join(r.DeferredMedia, "; "))

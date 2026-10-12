@@ -820,6 +820,91 @@ func TestRunOnceReconcilesEachInstanceAtSixHourIntervals(t *testing.T) {
 	}
 }
 
+func TestWithReconcileLockExcludesDueReconcile(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	clock := testutil.NewClock(now)
+	repository := newWorkerRepository(0, now)
+	reconciler := &gatedReconciler{started: make(chan struct{}, 4)}
+	worker := testWorker(repository, &workerWorkflow{}, clock)
+	worker.Reconcilers = map[string]Reconciler{"sonarr": reconciler}
+
+	held, release := make(chan struct{}), make(chan struct{})
+	fenceDone := make(chan error, 1)
+	go func() {
+		fenceDone <- worker.WithReconcileLock(context.Background(), func(context.Context) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	runDone := make(chan error, 1)
+	go func() { runDone <- worker.RunOnce(context.Background()) }()
+	select {
+	case <-reconciler.started:
+		t.Fatal("a due reconcile ran while the fence was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-fenceDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reconciler.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the due reconcile did not run after the fence was released")
+	}
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWithReconcileLockGivesUpWhenContextEndsWhileWaiting(t *testing.T) {
+	worker := testWorker(newWorkerRepository(0, time.Now()), &workerWorkflow{}, testutil.NewClock(time.Now()))
+	held, release := make(chan struct{}), make(chan struct{})
+	holder := make(chan error, 1)
+	go func() {
+		holder <- worker.WithReconcileLock(context.Background(), func(context.Context) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	ran := false
+	err := worker.WithReconcileLock(ctx, func(context.Context) error { ran = true; return nil })
+	if !errors.Is(err, context.DeadlineExceeded) || ran {
+		t.Fatalf("waiting fence = %v (ran=%v), want deadline exceeded without running", err, ran)
+	}
+	close(release)
+	if err := <-holder; err != nil {
+		t.Fatal(err)
+	}
+	// The abandoned wait must not leave the fence locked.
+	done := make(chan error, 1)
+	go func() {
+		done <- worker.WithReconcileLock(context.Background(), func(context.Context) error { return nil })
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fence stayed locked after an abandoned wait")
+	}
+}
+
+// gatedReconciler reports each Run on started.
+type gatedReconciler struct{ started chan struct{} }
+
+func (r *gatedReconciler) Run(context.Context) error {
+	r.started <- struct{}{}
+	return nil
+}
+
 func TestRunOnceReconcileFailureBackoffAndSuccessReset(t *testing.T) {
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	clock := testutil.NewClock(now)

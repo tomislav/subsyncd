@@ -15,6 +15,7 @@ func TestResultTextMatchesTheOriginalCommandOutput(t *testing.T) {
 		want   string
 	}{
 		{"scan", ScanResult{Instance: "tv", Media: 4, ForceProbe: true}, "scan complete: instance=tv media=4 force_probe=true"},
+		{"scan running", ScanResult{Instance: "tv", ForceProbe: true, Outcome: "running"}, "scan running: instance=tv force_probe=true"},
 		{"scan deferred", ScanResult{Instance: "tv", HistoryDeferred: true, Deferred: 2, DeferredMedia: []string{"a", "b (c)"}}, "scan complete: instance=tv media=0 force_probe=false deferred=2 (a; b (c))"},
 		{"search installed", SearchResult{MediaID: 7, Languages: []LanguageOutcome{{Language: "en", Outcome: "installed", Provider: "p", Candidate: "r1", Score: 90}}}, "media_id: 7\noutcome: installed\nprovider: p\ncandidate: r1\nscore: 90"},
 		{"search throttled", SearchResult{MediaID: 7, Languages: []LanguageOutcome{{Language: "en", Outcome: "throttled", NextAttemptAt: retryAt}}}, "media_id: 7\noutcome: throttled\nretry_at: 2026-10-12T08:30:00.000000005Z"},

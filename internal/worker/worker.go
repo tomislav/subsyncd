@@ -837,6 +837,32 @@ func (w *Worker) renew(ctx context.Context, cancelJob context.CancelFunc, renew 
 	return leaseRenewal{stop: func() { stop(errRenewalFinished) }, done: done}
 }
 
+// WithReconcileLock runs fn while holding the lock that every scheduled
+// reconciliation holds, so fn and a due reconcile never overlap. It waits for
+// the lock only as long as ctx lives and runs fn with ctx.
+func (w *Worker) WithReconcileLock(ctx context.Context, fn func(context.Context) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	locked := make(chan struct{})
+	go func() {
+		w.reconcileMu.Lock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-ctx.Done():
+		// The pending Lock still completes; hand it straight back.
+		go func() {
+			<-locked
+			w.reconcileMu.Unlock()
+		}()
+		return ctx.Err()
+	}
+	defer w.reconcileMu.Unlock()
+	return fn(ctx)
+}
+
 func (w *Worker) reconcileDue(ctx context.Context) error {
 	return w.reconcileDueContexts(ctx, ctx)
 }

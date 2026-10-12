@@ -35,12 +35,12 @@ func (b *reportingBackend) ReportFailure(_ context.Context, command string, err 
 
 func (f *fakeBackend) Close() error                { return nil }
 func (f *fakeBackend) Serve(context.Context) error { f.call = "serve"; return f.err }
-func (f *fakeBackend) Scan(_ context.Context, instance string, force bool) (control.ScanResult, error) {
-	f.call = "scan:" + instance
-	if force {
+func (f *fakeBackend) Scan(_ context.Context, args control.ScanArgs) (control.ScanResult, error) {
+	f.call = "scan:" + args.Instance
+	if args.ForceProbe {
 		f.call += ":force"
 	}
-	return control.ScanResult{Instance: instance, Media: 3, ForceProbe: force}, f.err
+	return control.ScanResult{Instance: args.Instance, Media: 3, ForceProbe: args.ForceProbe}, f.err
 }
 func (f *fakeBackend) Search(_ context.Context, args control.SearchArgs) (control.SearchResult, error) {
 	f.call = "search:" + args.Instance + ":" + args.Kind + ":" + args.Language + ":" + args.Title + ":" + args.Path
@@ -454,6 +454,8 @@ func (r *fakeRemote) Call(_ context.Context, command string, args, result any) e
 		*out = control.SearchResult{MediaID: 9, Languages: []control.LanguageOutcome{{Language: "hr", Outcome: "running"}}}
 	case *control.StatusResult:
 		*out = control.StatusResult{Daemon: control.DaemonState{Running: true, Version: "1.2.3"}, MediaPause: &control.MediaPause{Until: time.Unix(1700000000, 0).UTC()}}
+	case *control.ScanResult:
+		*out = control.ScanResult{Instance: "tv", Media: 5, ForceProbe: true}
 	case *control.RejectResult:
 		*out = control.RejectResult{MediaID: 9, Rejected: control.LanguageOutcome{Language: "en", Outcome: "installed", Provider: "titlovi", Candidate: "c2", Score: 40, Subtitle: "Movie (2019)/Movie.en.srt"}}
 	}
@@ -478,6 +480,33 @@ func TestRoutedCommandUsesDaemonWhenAvailable(t *testing.T) {
 	}
 	if want := "provider retry state reset: titlovi; throttled searches due again: 4\n"; stdout.String() != want {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestScanUsesDaemonWithWaitingFlags(t *testing.T) {
+	remote := &fakeRemote{}
+	var stdout bytes.Buffer
+	command := Command{
+		Stdout: &stdout, Stderr: &bytes.Buffer{},
+		Open: func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil },
+		Dial: func(context.Context, string) (Remote, error) { return remote, nil },
+	}
+	if code := command.Run(context.Background(), []string{"scan", "--instance", "tv", "--force-probe", "--timeout", "90s"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	args, ok := remote.args.(control.ScanArgs)
+	if remote.command != "scan" || !ok || args != (control.ScanArgs{Instance: "tv", ForceProbe: true, Wait: 90 * time.Second}) {
+		t.Fatalf("call = %q %#v", remote.command, remote.args)
+	}
+	if want := "scan complete: instance=tv media=5 force_probe=true\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestScanRejectsConflictingWaitFlags(t *testing.T) {
+	command := Command{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Open: func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil }}
+	if code := command.Run(context.Background(), []string{"scan", "--instance", "tv", "--timeout", "1m", "--no-wait"}); code != ExitUsage {
+		t.Fatalf("exit = %d, want usage", code)
 	}
 }
 
@@ -557,7 +586,6 @@ func TestStopFirstCommandsDoNotDial(t *testing.T) {
 	for _, args := range [][]string{
 		{"rotate-webhook-token", "--instance", "tv"},
 		{"forget-instance", "--instance", "old", "--yes"},
-		{"scan", "--instance", "tv"},
 		{"doctor"},
 	} {
 		if code := command.Run(context.Background(), args); code != ExitOK {

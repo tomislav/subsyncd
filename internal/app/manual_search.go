@@ -161,19 +161,28 @@ func (a *App) Search(ctx context.Context, args control.SearchArgs) (control.Sear
 	return result, nil
 }
 
+// daemonWait turns a request's waiting options into how long the daemon waits
+// for the work: the default when neither is given, none with noWait.
+func daemonWait(wait time.Duration, noWait bool) (time.Duration, error) {
+	switch {
+	case noWait && wait != 0:
+		return 0, &control.Error{Code: control.CodeUsage, Message: "use only one of --timeout and --no-wait"}
+	case wait < 0:
+		return 0, &control.Error{Code: control.CodeUsage, Message: "--timeout must be positive"}
+	case wait == 0 && !noWait:
+		return defaultSearchWait, nil
+	}
+	return wait, nil
+}
+
 // searchInDaemon runs a manual search for each language on the daemon's run
 // context, so neither the request nor a vanished client cancels it. It waits
 // up to args.Wait (5 minutes when unset, none with NoWait) and reports
 // running for each language not finished by then.
 func (a *App) searchInDaemon(ctx context.Context, args control.SearchArgs) (control.SearchResult, []slog.Attr, error) {
-	wait := args.Wait
-	switch {
-	case args.NoWait && wait != 0:
-		return control.SearchResult{}, nil, &control.Error{Code: control.CodeUsage, Message: "use only one of --timeout and --no-wait"}
-	case wait < 0:
-		return control.SearchResult{}, nil, &control.Error{Code: control.CodeUsage, Message: "--timeout must be positive"}
-	case wait == 0 && !args.NoWait:
-		wait = defaultSearchWait
+	wait, err := daemonWait(args.Wait, args.NoWait)
+	if err != nil {
+		return control.SearchResult{}, nil, err
 	}
 	runCtx := a.serveCtx
 	if runCtx == nil || runCtx.Err() != nil {

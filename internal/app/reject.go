@@ -64,14 +64,9 @@ func (a *App) Reject(ctx context.Context, args control.RejectArgs) (control.Reje
 // searchInDaemon: up to args.Wait (5 minutes when unset, none with NoWait),
 // reporting running when the wait ends first.
 func (a *App) rejectInDaemon(ctx context.Context, args control.RejectArgs) (control.RejectResult, []slog.Attr, error) {
-	wait := args.Wait
-	switch {
-	case args.NoWait && wait != 0:
-		return control.RejectResult{}, nil, &control.Error{Code: control.CodeUsage, Message: "use only one of --timeout and --no-wait"}
-	case wait < 0:
-		return control.RejectResult{}, nil, &control.Error{Code: control.CodeUsage, Message: "--timeout must be positive"}
-	case wait == 0 && !args.NoWait:
-		wait = defaultSearchWait
+	wait, err := daemonWait(args.Wait, args.NoWait)
+	if err != nil {
+		return control.RejectResult{}, nil, err
 	}
 	runCtx := a.serveCtx
 	if runCtx == nil || runCtx.Err() != nil {

@@ -43,6 +43,12 @@ import (
 	"subsyncd/internal/workflow"
 )
 
+// reconcileFence runs fn while no scheduled reconciliation does. The worker
+// implements it.
+type reconcileFence interface {
+	WithReconcileLock(context.Context, func(context.Context) error) error
+}
+
 type Runner interface {
 	Run(context.Context) error
 }
@@ -111,6 +117,9 @@ type App struct {
 	// daemon's, which shutdown waits for.
 	manualSlots *manualSlots
 	manualRuns  sync.WaitGroup
+	// reconcileFence excludes the worker's scheduled reconciliations while a
+	// daemon scan runs; nil when the worker offers none.
+	reconcileFence reconcileFence
 	// manualClaimPoll overrides defaultManualClaimPoll in tests.
 	manualClaimPoll time.Duration
 	// manualJobLimit and manualJobGrace override the manual workflow's time
@@ -459,7 +468,8 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events, MediaRoots: cfg.MediaRoots}
 	}
 
-	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Version: options.Version, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens, wake: wake, manualSlots: newManualSlots(manualSearchSlots)}
+	fence, _ := workerRunner.(reconcileFence)
+	application := &App{reconcileFence: fence, mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Version: options.Version, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens, wake: wake, manualSlots: newManualSlots(manualSearchSlots)}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
@@ -826,12 +836,23 @@ func (a *App) ReportFailure(ctx context.Context, command string, err error) {
 	)
 }
 
-func (a *App) Scan(ctx context.Context, instance string, forceProbe bool) (control.ScanResult, error) {
+func (a *App) Scan(ctx context.Context, args control.ScanArgs) (control.ScanResult, error) {
+	if args.Wait != 0 || args.NoWait {
+		return control.ScanResult{}, &control.Error{Code: control.CodeDaemonRequired, Message: "--timeout and --no-wait need a running daemon; without one, scan runs to completion"}
+	}
 	release, err := a.acquireMutationLock()
 	if err != nil {
 		return control.ScanResult{}, err
 	}
 	defer release()
+	return a.runScan(ctx, args)
+}
+
+// runScan reconciles one instance and, with ForceProbe, rereads the embedded
+// tracks of all its media. The caller holds the data-directory lock; in the
+// daemon it also holds the reconcile fence.
+func (a *App) runScan(ctx context.Context, args control.ScanArgs) (control.ScanResult, error) {
+	instance, forceProbe := args.Instance, args.ForceProbe
 	reconciler, ok := a.Reconcilers[instance]
 	if !ok {
 		return control.ScanResult{}, unknownInstance(instance)

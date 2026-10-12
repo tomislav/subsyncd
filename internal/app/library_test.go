@@ -9,6 +9,7 @@ import (
 
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
@@ -104,7 +105,7 @@ func TestLibraryDiscoveryImportsExistingFilesOnceAndExplicitScanFindsMore(t *tes
 			more.Fingerprint.FileID = 101
 			more.Fingerprint.Path = filepath.Join(cfg.MediaRoots[0], "more.mkv")
 			source.items = append(source.items, more)
-			if _, err := second.Scan(ctx, "tv", false); err != nil {
+			if _, err := second.Scan(ctx, control.ScanArgs{Instance: "tv"}); err != nil {
 				t.Fatal(err)
 			}
 			if source.snapshotCalls != 3 {

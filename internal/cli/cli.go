@@ -25,7 +25,7 @@ const (
 type Backend interface {
 	Close() error
 	Serve(context.Context) error
-	Scan(context.Context, string, bool) (control.ScanResult, error)
+	Scan(context.Context, control.ScanArgs) (control.ScanResult, error)
 	Search(context.Context, control.SearchArgs) (control.SearchResult, error)
 	Reject(context.Context, control.RejectArgs) (control.RejectResult, error)
 	Retry(context.Context, string) (control.RetryResult, error)
@@ -158,6 +158,9 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "serve", "doctor", "status", "providers":
 	case "scan", "forget-instance", "webhook-url", "rotate-webhook-token":
 		validateErr = require("--instance", *instance)
+		if validateErr == nil && command == "scan" {
+			validateErr = validateSearchWait(flags, *timeout, *noWait)
+		}
 	case "search", "explain", "find":
 		sel := control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}
 		if validateErr = validateMediaSelection(sel); validateErr == nil && command == "search" {
@@ -214,6 +217,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		Wait:      *timeout,
 		NoWait:    *noWait,
 	}
+	scanArgs := control.ScanArgs{Instance: *instance, ForceProbe: *forceProbe, Wait: *timeout, NoWait: *noWait}
 	if c.Dial != nil && routed(command) {
 		remote, err := c.Dial(ctx, *configPath)
 		switch {
@@ -228,6 +232,10 @@ func (c Command) Run(ctx context.Context, args []string) int {
 			case "search":
 				var typed control.SearchResult
 				err = remote.Call(ctx, command, searchArgs, &typed)
+				result = typed
+			case "scan":
+				var typed control.ScanResult
+				err = remote.Call(ctx, command, scanArgs, &typed)
 				result = typed
 			case "reject":
 				var typed control.RejectResult
@@ -260,7 +268,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "serve":
 		err = backend.Serve(ctx)
 	case "scan":
-		result, err = wrap(backend.Scan(ctx, *instance, *forceProbe))
+		result, err = wrap(backend.Scan(ctx, scanArgs))
 	case "search":
 		result, err = wrap(backend.Search(ctx, searchArgs))
 	case "reject":
@@ -339,7 +347,7 @@ func (c Command) addDaemonState(ctx context.Context, configPath string, status *
 
 // routed reports whether the daemon can execute command when it is running.
 func routed(command string) bool {
-	return command == "retry" || command == "search" || command == "reject"
+	return command == "retry" || command == "search" || command == "reject" || command == "scan"
 }
 
 // validateReject checks reject's --reason, --undo and waiting flags.
@@ -401,7 +409,7 @@ func commandFlags(command string) map[string]bool {
 	var names []string
 	switch command {
 	case "scan":
-		names = []string{"instance", "force-probe"}
+		names = []string{"instance", "force-probe", "timeout", "no-wait"}
 	case "search":
 		names = []string{"instance", "kind", "file-id", "title", "path", "language", "retry-rejected", "timeout", "no-wait"}
 	case "reject":
@@ -577,8 +585,9 @@ func errorsText(message string) error { return fmt.Errorf("%s", message) }
 var commandHelp = map[string]string{
 	"serve": "Run the daemon. It has no result and does not accept --json.",
 	"scan": `Reconcile one Arr instance with its library.
-Result fields: instance, media, force_probe, history_deferred, deferred, deferred_media.
-Error codes: unknown_instance, busy, internal.`,
+With the daemon running, the daemon runs the scan between its scheduled reconciliations and the command waits for it, at most --timeout (default 5m). A scan still running then reports outcome running (exit 0) and finishes in the daemon; --no-wait returns at once with running. Without a daemon, scan runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
+Result fields: instance, media, force_probe, outcome (running), history_deferred, deferred, deferred_media.
+Error codes: unknown_instance, daemon_required, daemon_stopping, busy, internal.`,
 	"search": `Search subtitles for one media file now: for --language, or else for every configured language the file is missing (when none is, nothing runs and each language reports satisfied).
 Select the file with --instance, --kind and --file-id, or with --title or --path. A title or path finds only files subsyncd already knows; only --file-id adds a file it has not indexed yet.
 With the daemon running, the daemon runs the search beside its worker and the command waits for the outcome, at most --timeout (default 5m). A language still searching then reports outcome running (exit 0) and the search carries on; follow up with explain or find. --no-wait returns at once with running. A dropped connection never cancels the search. Without a daemon, search runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
