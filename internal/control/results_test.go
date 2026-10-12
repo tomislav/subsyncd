@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,5 +69,29 @@ func TestExplainResultTextSurvivesJSON(t *testing.T) {
 		"pack_cache: reusable=2\nprovider_state: provider=p scope=search reason=rate remaining=4 reset=2026-10-01T09:00:00+02:00 disabled=false"
 	if got := original.Text(); got != want {
 		t.Fatalf("Text() =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestFindResultAndCandidatesText(t *testing.T) {
+	movie := MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}
+	episode := MediaMatch{Instance: "sonarr-main", Kind: "episode", FileID: 1234, Title: "Shameless", Season: 1, Episode: 1}
+	if got, want := CandidatesText([]MediaMatch{movie, episode}), "radarr-main movie 42 \"Dune\" (2021)\nsonarr-main episode 1234 \"Shameless\" S01E01"; got != want {
+		t.Fatalf("CandidatesText = %q, want %q", got, want)
+	}
+	ranged := episode
+	ranged.EpisodeEnd = 2
+	if got := ranged.Text(); got != `sonarr-main episode 1234 "Shameless" S01E01-E02` {
+		t.Fatalf("range = %q", got)
+	}
+	result := FindResult{Matches: []FindMatch{{MediaMatch: movie, Languages: []LanguageState{{"en", "installed"}, {"hr", "missing"}}}}}
+	if got, want := result.Text(), "radarr-main movie 42 \"Dune\" (2021)\n  en: installed\n  hr: missing"; got != want {
+		t.Fatalf("FindResult.Text = %q, want %q", got, want)
+	}
+	payload, err := json.Marshal(result)
+	if err != nil || !strings.Contains(string(payload), `"file_id":42,"title":"Dune","year":2021,"languages":[{"language":"en","state":"installed"}`) {
+		t.Fatalf("payload = %s, %v", payload, err)
+	}
+	if (FindResult{}).Text() != "no matches" {
+		t.Fatal("empty text")
 	}
 }

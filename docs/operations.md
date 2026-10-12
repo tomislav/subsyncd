@@ -125,7 +125,8 @@ The container runs `serve` by default. The other commands are run through Compos
 | Command | What it does | Daemon |
 | --- | --- | --- |
 | `doctor` | Checks configuration, database, media folders, and bundled tools. | May run |
-| `explain` | Shows what subsyncd knows about one file and language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules, another LAPSE version or synchronization policy, or for the file before it was replaced no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
+| `find` | Lists the files that match a title or path, with the state of each configured language (`installed`, `satisfied`, `running`, `missing`). | May run |
+| `explain` | Shows what subsyncd knows about one file, for one language or for every configured language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules, another LAPSE version or synchronization policy, or for the file before it was replaced no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
 | `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
 | `search` | Searches one file and language now. | Stop first |
 | `scan` | Discovers unindexed files in one instance's library and reconciles its history. Add `--force-probe` to reread embedded subtitle tracks. | Stop first |
@@ -168,10 +169,12 @@ Run `subsyncd COMMAND --help` for a command's flags, result fields, and error co
 | `unknown_instance` | The instance is not configured (or, for `forget-instance`, not in the database). |
 | `unknown_provider` | The provider is not configured. |
 | `unknown_language` | The language tag is invalid or not configured. |
+| `media_not_found` | `--title` or `--path` matched no indexed file, or `--file-id` is not indexed. Check the spelling with `find`. |
+| `ambiguous_media` | `--title` or `--path` matched several files. The text output lists them one per line; with `--json` they are in `error.candidates` (`instance`, `kind`, `file_id`, `title`, and year, season or episode). Narrow the selection or use `--file-id`. |
 | `busy` | Another subsyncd process holds the data directory and the command cannot go through it. Stop the daemon and retry. |
 | `internal` | Anything else. The `message` is redacted; the logs on standard error hold the detail. |
 
-The codes `media_not_found`, `ambiguous_media`, `not_managed`, `daemon_required`, `daemon_stopping`, `protocol_mismatch`, and `arr_unreachable` are reserved for commands that talk to a running daemon and are not produced yet. Treat an unrecognized code as a failure.
+The codes `not_managed`, `daemon_required`, `daemon_stopping`, `protocol_mismatch`, and `arr_unreachable` are reserved for commands that talk to a running daemon and are not produced yet. Treat an unrecognized code as a failure.
 
 ### Remove an instance for good
 
@@ -190,21 +193,23 @@ Subtitle files it installed for that library stay on disk. It no longer knows it
 
 ## Inspect or search one file
 
-To see why a subtitle was installed, skipped, or delayed:
+A subtitle is missing in Silo and you want to know why. Name the file by title or path:
+
+```bash
+docker compose exec subsyncd subsyncd find --title "Dune (2021)"
+docker compose exec subsyncd subsyncd explain --title "Shameless S01E01" --language en
+docker compose exec subsyncd subsyncd explain --path /tv/Show/S01E01.mkv
+```
+
+`--title` takes `Dune`, `Dune (2021)`, `Show S01E02`, `Show 1x02`, or `Show - S01E02 - Episode Title`. Case, accents, and punctuation do not matter (`amelie` finds Amélie), and a title that matches exactly wins over one that only contains your words. `--path` takes a path inside the container, or the path Sonarr or Radarr shows for the file; subsyncd translates it with that instance's `path_mappings`. Silo's paths are not understood. `--instance` and `--kind` narrow either form.
+
+`find` lists every match with the state of each configured language, so it is also the way to look something up: `installed` means subsyncd put a subtitle there, `satisfied` means a track or sidecar already covers the language, `running` means a search is in progress now, and `missing` means none of those. When several files match, `find` prints them all and succeeds. `explain` and `search` need one file: if several match they stop with `ambiguous_media` and list the candidates, so add a year, season and episode, or `--instance`/`--kind`, or take the `file_id` from the list. `explain` without `--language` covers every configured language. With `--json` its result then holds the media and its tracks at the top level and one full result per language in `languages`.
+
+You can still select by Arr **media-file ID**, which is the ID of the file, not of the movie or series. For TV use the episode-file ID:
 
 ```bash
 docker compose exec subsyncd subsyncd explain --instance radarr-main --kind movie --file-id 42 --language en
 ```
-
-Replace the example values with your configured instance, Arr **media-file ID**, and language. For TV, use `--kind episode` and the episode-file ID. These are file IDs, not movie or series IDs.
-
-To find a file ID, search the logs for its title. The `job.started` record for that file carries `instance`, `media_kind`, and `file_id`:
-
-```bash
-docker compose logs subsyncd | grep job.started | grep 'Show Name - S01E02'
-```
-
-Movies appear as `Title (Year)` and episodes as `Show - S01E02 - Episode Title`. You can also read the ID from the Sonarr or Radarr API (`/api/v3/episodefile` or `/api/v3/moviefile`).
 
 `explain` can run while the daemon is active. Manual searches need it stopped so two processes cannot write at once:
 
@@ -213,6 +218,8 @@ docker compose stop subsyncd
 docker compose run --rm --no-deps subsyncd search --instance radarr-main --kind movie --file-id 42 --language en
 docker compose up -d subsyncd
 ```
+
+`search` also takes `--title` or `--path` in place of `--file-id`, but only for files subsyncd already knows. A file it has not indexed yet can be searched only by `--file-id`.
 
 Review the command's result before restarting. A manual search clears any saved provider-resume progress for that media and language, then runs the complete current preferred/fallback route; it does not reuse a stale partial-cooldown route after a configuration change. Successful manual searches save any future upgrade check, including fallback promotion, while preserving earlier queued work and retained leases. Searching a file subsyncd does not know yet, or one it recorded as deleted, first adds it to the catalog the way an Arr import would, so every configured language is scheduled. The language you searched is marked complete when that run installs or finds a subtitle, so it is not searched again. Add `--retry-rejected` only when you deliberately want to reconsider previously rejected candidates for that file and language.
 

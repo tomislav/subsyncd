@@ -39,6 +39,66 @@ type ExplainArgs struct {
 	Language string `json:"language"`
 }
 
+// Text renders the match on one line: movies as `inst movie 42 "Dune" (2021)`,
+// episodes as `inst episode 1234 "Shameless" S01E01` (S01E01-E02 for a range).
+func (m MediaMatch) Text() string {
+	line := fmt.Sprintf("%s %s %d %q", m.Instance, m.Kind, m.FileID, m.Title)
+	if m.Kind == "episode" {
+		if m.Season > 0 || m.Episode > 0 {
+			line += fmt.Sprintf(" S%02dE%02d", m.Season, m.Episode)
+			if m.EpisodeEnd > m.Episode {
+				line += fmt.Sprintf("-E%02d", m.EpisodeEnd)
+			}
+		}
+	} else if m.Year > 0 {
+		line += fmt.Sprintf(" (%d)", m.Year)
+	}
+	return line
+}
+
+// CandidatesText lists matches one per line.
+func CandidatesText(matches []MediaMatch) string {
+	lines := make([]string, len(matches))
+	for i, match := range matches {
+		lines[i] = match.Text()
+	}
+	return strings.Join(lines, "\n")
+}
+
+// LanguageState is one configured language's state for a media file: one of
+// installed, satisfied, missing or running.
+type LanguageState struct {
+	Language string `json:"language"`
+	State    string `json:"state"`
+}
+
+// FindMatch is a media file a find selection matched and where each
+// configured language stands.
+type FindMatch struct {
+	MediaMatch
+	Languages []LanguageState `json:"languages"`
+}
+
+// FindResult lists every file a selection matched. Several matches are a
+// success: it is how a caller sees the candidates.
+type FindResult struct {
+	Matches []FindMatch `json:"matches"`
+}
+
+func (r FindResult) Text() string {
+	if len(r.Matches) == 0 {
+		return "no matches"
+	}
+	var lines []string
+	for _, match := range r.Matches {
+		lines = append(lines, match.Text())
+		for _, language := range match.Languages {
+			lines = append(lines, fmt.Sprintf("  %s: %s", language.Language, language.State))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // ScanResult reports one reconciliation of an Arr instance.
 type ScanResult struct {
 	Instance   string `json:"instance"`
@@ -197,9 +257,21 @@ type ExplainResult struct {
 	Installation         *ExplainInstallation   `json:"installation"`
 	PackCacheReusable    int                    `json:"pack_cache_reusable"`
 	ProviderStates       []ExplainProviderState `json:"provider_states"`
+
+	// Languages holds one full result per configured language when explain ran
+	// without --language. The fields above then only identify the media and its
+	// inventory; each entry repeats them with that language's details.
+	Languages []ExplainResult `json:"languages,omitempty"`
 }
 
 func (r ExplainResult) Text() string {
+	if len(r.Languages) > 0 {
+		sections := make([]string, len(r.Languages))
+		for i, language := range r.Languages {
+			sections[i] = "language: " + language.Language + "\n" + language.Text()
+		}
+		return strings.Join(sections, "\n\n")
+	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "media: id=%d instance=%s kind=%s file_id=%d title=%q\n", r.MediaID, r.Instance, r.Kind, r.FileID, r.Title)
 	if r.Episodes != "" {

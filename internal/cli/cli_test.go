@@ -42,7 +42,7 @@ func (f *fakeBackend) Scan(_ context.Context, instance string, force bool) (cont
 	return control.ScanResult{Instance: instance, Media: 3, ForceProbe: force}, f.err
 }
 func (f *fakeBackend) Search(_ context.Context, args control.SearchArgs) (control.SearchResult, error) {
-	f.call = "search:" + args.Instance + ":" + args.Kind + ":" + args.Language
+	f.call = "search:" + args.Instance + ":" + args.Kind + ":" + args.Language + ":" + args.Title + ":" + args.Path
 	if args.RetryRejected {
 		f.call += ":retry-rejected"
 	}
@@ -52,8 +52,12 @@ func (f *fakeBackend) Retry(_ context.Context, provider string) (control.RetryRe
 	f.call = "retry:" + provider
 	return control.RetryResult{Provider: provider, SearchesDue: 2}, f.err
 }
+func (f *fakeBackend) Find(_ context.Context, sel control.Selection) (control.FindResult, error) {
+	f.call = "find:" + sel.Instance + ":" + sel.Kind + ":" + fmt.Sprint(sel.FileID) + ":" + sel.Title + ":" + sel.Path
+	return control.FindResult{Matches: []control.FindMatch{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}, Languages: []control.LanguageState{{Language: "en", State: "missing"}}}}}, f.err
+}
 func (f *fakeBackend) Explain(_ context.Context, args control.ExplainArgs) (control.ExplainResult, error) {
-	f.call = "explain:" + args.Instance + ":" + args.Kind + ":" + args.Language
+	f.call = "explain:" + args.Instance + ":" + args.Kind + ":" + args.Language + ":" + args.Title + ":" + args.Path
 	return control.ExplainResult{MediaID: 1, Instance: args.Instance, Kind: args.Kind, FileID: args.FileID, Title: "T", Probe: "unprobed"}, f.err
 }
 func (f *fakeBackend) Doctor(context.Context) (control.DoctorResult, error) {
@@ -81,10 +85,14 @@ func TestCommandSurface(t *testing.T) {
 	}{
 		{"serve", []string{"serve", "--config", "/data/config.yaml"}, "serve", ""},
 		{"scan", []string{"scan", "--instance", "tv", "--force-probe"}, "scan:tv:force", "scan complete: instance=tv media=3 force_probe=true\n"},
-		{"search", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr"}, "search:tv:episode:hr", "media_id: 9\noutcome: installed\n"},
-		{"search rejected", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr", "--retry-rejected"}, "search:tv:episode:hr:retry-rejected", "media_id: 9\noutcome: installed\n"},
+		{"search", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr"}, "search:tv:episode:hr::", "media_id: 9\noutcome: installed\n"},
+		{"search rejected", []string{"search", "--instance", "tv", "--kind", "episode", "--file-id", "42", "--language", "hr", "--retry-rejected"}, "search:tv:episode:hr::" + ":retry-rejected", "media_id: 9\noutcome: installed\n"},
 		{"retry", []string{"retry", "--provider", "titlovi"}, "retry:titlovi", "provider retry state reset: titlovi; throttled searches due again: 2\n"},
-		{"explain", []string{"explain", "--instance", "movies", "--kind", "movie", "--file-id", "7", "--language", "en"}, "explain:movies:movie:en", "media: id=1 instance=movies kind=movie file_id=7 title=\"T\"\ninventory: tracks=0 probe=unprobed fingerprint_size=0 fingerprint_mtime=0001-01-01T00:00:00Z\nsearch: not scheduled\ncandidates: 0\ncandidate_rejections: 0\ninstallation: none\npack_cache: reusable=0\n"},
+		{"explain", []string{"explain", "--instance", "movies", "--kind", "movie", "--file-id", "7", "--language", "en"}, "explain:movies:movie:en::", "media: id=1 instance=movies kind=movie file_id=7 title=\"T\"\ninventory: tracks=0 probe=unprobed fingerprint_size=0 fingerprint_mtime=0001-01-01T00:00:00Z\nsearch: not scheduled\ncandidates: 0\ncandidate_rejections: 0\ninstallation: none\npack_cache: reusable=0\n"},
+		{"search by title", []string{"search", "--title", "Dune (2021)", "--language", "hr"}, "search:::hr:Dune (2021):", "media_id: 9\noutcome: installed\n"},
+		{"explain by path", []string{"explain", "--path", "/tv/Show/S01E01.mkv"}, "explain:::::/tv/Show/S01E01.mkv", "media: id=1 instance= kind= file_id=0 title=\"T\"\ninventory: tracks=0 probe=unprobed fingerprint_size=0 fingerprint_mtime=0001-01-01T00:00:00Z\nsearch: not scheduled\ncandidates: 0\ncandidate_rejections: 0\ninstallation: none\npack_cache: reusable=0\n"},
+		{"find by title", []string{"find", "--title", "Dune", "--instance", "radarr-main"}, "find:radarr-main::0:Dune:", "radarr-main movie 42 \"Dune\" (2021)\n  en: missing\n"},
+		{"find by file id", []string{"find", "--instance", "radarr-main", "--kind", "movie", "--file-id", "42"}, "find:radarr-main:movie:42::", "radarr-main movie 42 \"Dune\" (2021)\n  en: missing\n"},
 		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nmedia roots: ok (1)\nLAPSE: compatible\nffprobe: available\nwebhooks: manual\n"},
 		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance complete: instance=old media=0 searches=0 installations=0 rollback_copies=0 candidates=0 rejections=0 notifications=0 events=0 replays=0\nsubtitle files installed for this instance stay on disk and will no longer be managed\n"},
 		{"webhook-url", []string{"webhook-url", "--instance", "tv", "--base", "http://x"}, "webhook-url:tv:http://x", "http://h/webhooks/tv?token=t\n"},
@@ -515,5 +523,64 @@ func TestStopFirstCommandsDoNotDial(t *testing.T) {
 		if code := command.Run(context.Background(), args); code != ExitOK {
 			t.Fatalf("%v exit = %d", args, code)
 		}
+	}
+}
+
+func TestSelectionFlagsAreExclusive(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{"title with file id", []string{"explain", "--title", "Dune", "--instance", "radarr-main", "--kind", "movie", "--file-id", "42"}},
+		{"title with path", []string{"find", "--title", "Dune", "--path", "/m/Dune.mkv"}},
+		{"nothing selected", []string{"find"}},
+		{"file id without instance", []string{"explain", "--kind", "movie", "--file-id", "42"}},
+		{"file id without kind", []string{"find", "--instance", "radarr-main", "--file-id", "42"}},
+		{"bad kind with title", []string{"find", "--title", "Dune", "--kind", "show"}},
+		{"search needs a language", []string{"search", "--title", "Dune"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			code := (Command{Open: openFake(&fakeBackend{}), Stdout: &stdout, Stderr: &bytes.Buffer{}}).Run(context.Background(), append(test.args, "--json"))
+			var out struct {
+				Error control.Error `json:"error"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &out); err != nil || code != ExitUsage || out.Error.Code != control.CodeUsage {
+				t.Fatalf("exit/out = %d/%s", code, stdout.String())
+			}
+		})
+	}
+}
+
+func TestAmbiguousMediaListsCandidates(t *testing.T) {
+	candidates := []control.MediaMatch{
+		{Instance: "sonarr-main", Kind: "episode", FileID: 1234, Title: "Shameless", Season: 1, Episode: 1},
+		{Instance: "sonarr-main", Kind: "episode", FileID: 5678, Title: "Shameless", Season: 1, Episode: 1},
+	}
+	err := &control.Error{Code: control.CodeAmbiguousMedia, Message: "2 files match this selection", Candidates: candidates}
+	var stdout, stderr bytes.Buffer
+	code := (Command{Open: openFake(&fakeBackend{err: err}), Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"explain", "--title", "Shameless"})
+	want := "subsyncd: 2 files match this selection\nsonarr-main episode 1234 \"Shameless\" S01E01\nsonarr-main episode 5678 \"Shameless\" S01E01\n"
+	if code != ExitFailure || stderr.String() != want {
+		t.Fatalf("exit/stderr = %d/%q", code, stderr.String())
+	}
+	stdout.Reset()
+	code = (Command{Open: openFake(&fakeBackend{err: err}), Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"explain", "--title", "Shameless", "--json"})
+	var out struct {
+		Error control.Error `json:"error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil || code != ExitFailure || out.Error.Code != "ambiguous_media" || len(out.Error.Candidates) != 2 || out.Error.Candidates[1].FileID != 5678 {
+		t.Fatalf("exit/out = %d/%s", code, stdout.String())
+	}
+}
+
+func TestAmbiguousMediaCandidatesPrintAfterStructuredReport(t *testing.T) {
+	err := &control.Error{Code: control.CodeAmbiguousMedia, Message: "2 files match", Candidates: []control.MediaMatch{{Instance: "radarr-main", Kind: "movie", FileID: 1, Title: "Dune", Year: 1984}, {Instance: "radarr-main", Kind: "movie", FileID: 2, Title: "Dune", Year: 2021}}}
+	backend := &reportingBackend{fakeBackend: &fakeBackend{err: err}}
+	var stderr bytes.Buffer
+	code := (Command{Open: openFake(backend), Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"find", "--file-id", "1", "--instance", "radarr-main", "--kind", "movie"})
+	want := "radarr-main movie 1 \"Dune\" (1984)\nradarr-main movie 2 \"Dune\" (2021)\n"
+	if code != ExitFailure || stderr.String() != want || backend.reportedCommand != "find" {
+		t.Fatalf("exit/stderr = %d/%q", code, stderr.String())
 	}
 }

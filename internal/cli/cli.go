@@ -28,6 +28,7 @@ type Backend interface {
 	Search(context.Context, control.SearchArgs) (control.SearchResult, error)
 	Retry(context.Context, string) (control.RetryResult, error)
 	Explain(context.Context, control.ExplainArgs) (control.ExplainResult, error)
+	Find(context.Context, control.Selection) (control.FindResult, error)
 	Doctor(context.Context) (control.DoctorResult, error)
 	AnalyzeSync(context.Context, string, string) (control.AnalyzeSyncResult, error)
 	ForgetInstance(context.Context, string, bool) (control.ForgetInstanceResult, error)
@@ -103,7 +104,9 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	configPath := flags.String("config", c.DefaultConfigPath, "configuration file")
 	instance := flags.String("instance", "", "Arr instance name")
 	kind := flags.String("kind", "", "media kind (movie or episode)")
-	fileID := flags.Int64("file-id", 0, "Arr file ID")
+	fileID := flags.Int64("file-id", 0, "Arr file ID (with --instance and --kind)")
+	title := flags.String("title", "", `media title: "Dune", "Dune (2021)", "Show S01E02", "Show 1x02"`)
+	path := flags.String("path", "", "media file path, in this container or as Sonarr or Radarr reports it")
 	language := flags.String("language", "", "subtitle language tag")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
@@ -141,8 +144,11 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "serve", "doctor":
 	case "scan", "forget-instance", "webhook-url", "rotate-webhook-token":
 		validateErr = require("--instance", *instance)
-	case "search", "explain":
-		validateErr = validateMediaSelection(*instance, *kind, *fileID, *language)
+	case "search", "explain", "find":
+		sel := control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}
+		if validateErr = validateMediaSelection(sel); validateErr == nil && command == "search" {
+			validateErr = require("--language", *language)
+		}
 	case "retry":
 		validateErr = require("--provider", *provider)
 	case "analyze-sync":
@@ -200,7 +206,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		result, err = wrap(backend.Scan(ctx, *instance, *forceProbe))
 	case "search":
 		result, err = wrap(backend.Search(ctx, control.SearchArgs{
-			Selection:     control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID},
+			Selection:     control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path},
 			Language:      *language,
 			RetryRejected: *retryRejected,
 		}))
@@ -208,9 +214,11 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		result, err = wrap(backend.Retry(ctx, *provider))
 	case "explain":
 		result, err = wrap(backend.Explain(ctx, control.ExplainArgs{
-			Selection: control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID},
+			Selection: control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path},
 			Language:  *language,
 		}))
+	case "find":
+		result, err = wrap(backend.Find(ctx, control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}))
 	case "doctor":
 		result, err = wrap(backend.Doctor(ctx))
 	case "analyze-sync":
@@ -262,9 +270,11 @@ func commandFlags(command string) map[string]bool {
 	case "scan":
 		names = []string{"instance", "force-probe"}
 	case "search":
-		names = []string{"instance", "kind", "file-id", "language", "retry-rejected"}
+		names = []string{"instance", "kind", "file-id", "title", "path", "language", "retry-rejected"}
 	case "explain":
-		names = []string{"instance", "kind", "file-id", "language"}
+		names = []string{"instance", "kind", "file-id", "title", "path", "language"}
+	case "find":
+		names = []string{"instance", "kind", "file-id", "title", "path"}
 	case "retry":
 		names = []string{"provider"}
 	case "analyze-sync":
@@ -282,17 +292,37 @@ func commandFlags(command string) map[string]bool {
 	return allowed
 }
 
-func validateMediaSelection(instance, kind string, fileID int64, language string) error {
-	if err := require("--instance", instance); err != nil {
-		return err
+// validateMediaSelection checks that exactly one of --file-id, --title and
+// --path names the media. --file-id needs --instance and --kind; the other two
+// accept them as filters.
+func validateMediaSelection(sel control.Selection) error {
+	forms := 0
+	for _, used := range []bool{sel.FileID != 0, sel.Title != "", sel.Path != ""} {
+		if used {
+			forms++
+		}
 	}
-	if kind != "movie" && kind != "episode" {
+	switch {
+	case forms == 0:
+		return fmt.Errorf("select the media with --file-id (and --instance, --kind), --title or --path")
+	case forms > 1:
+		return fmt.Errorf("use only one of --file-id, --title and --path")
+	}
+	if sel.Kind != "" && sel.Kind != "movie" && sel.Kind != "episode" {
 		return fmt.Errorf("--kind must be movie or episode")
 	}
-	if fileID <= 0 {
-		return fmt.Errorf("--file-id must be positive")
+	if sel.FileID != 0 {
+		if err := require("--instance", sel.Instance); err != nil {
+			return err
+		}
+		if sel.Kind == "" {
+			return fmt.Errorf("--kind is required with --file-id")
+		}
+		if sel.FileID < 0 {
+			return fmt.Errorf("--file-id must be positive")
+		}
 	}
-	return require("--language", language)
+	return nil
 }
 
 func require(name, value string) error {
@@ -345,6 +375,12 @@ func (c Command) failure(ctx context.Context, command string, jsonMode bool, bac
 		if reporter, ok := backend.(FailureReporter); ok {
 			reporter.ReportFailure(ctx, command, err)
 			if !jsonMode {
+				// The report is a log record; the candidates of an ambiguous
+				// selection are what the operator needs to read next.
+				var coded *control.Error
+				if errors.As(original, &coded) && len(coded.Candidates) > 0 {
+					_, _ = fmt.Fprintln(c.Stderr, control.CandidatesText(coded.Candidates))
+				}
 				return ExitFailure
 			}
 		}
@@ -366,6 +402,10 @@ func (c Command) failure(ctx context.Context, command string, jsonMode bool, bac
 		return ExitFailure
 	}
 	_, _ = fmt.Fprintln(c.Stderr, "subsyncd:", messageOf(err))
+	var coded *control.Error
+	if errors.As(original, &coded) && len(coded.Candidates) > 0 {
+		_, _ = fmt.Fprintln(c.Stderr, control.CandidatesText(coded.Candidates))
+	}
 	return ExitFailure
 }
 
@@ -401,15 +441,21 @@ var commandHelp = map[string]string{
 Result fields: instance, media, force_probe, history_deferred, deferred, deferred_media.
 Error codes: unknown_instance, busy, internal.`,
 	"search": `Search subtitles for one media file and language now.
+Select the file with --instance, --kind and --file-id, or with --title or --path. A title or path finds only files subsyncd already knows; only --file-id adds a file it has not indexed yet.
 Result fields: media_id, languages[] (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at).
 Outcomes: installed, satisfied, no_result, rejected, throttled.
-Error codes: usage, unknown_instance, unknown_language, busy, internal.`,
+Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, busy, internal.`,
 	"retry": `Clear a provider's throttle and failure state and make throttled searches due.
 Result fields: provider, searches_due.
 Error codes: unknown_provider, busy, internal.`,
 	"explain": `Show why a media file and language are in their current state.
-Result fields: media_id, instance, kind, file_id, title, probe, tracks, search, candidates, rejections, installation, pack_cache_reusable, provider_states.
-Error codes: usage, unknown_instance, unknown_language, internal.`,
+Select the file with --instance, --kind and --file-id, or with --title or --path. Without --language every configured language is explained.
+Result fields: media_id, instance, kind, file_id, title, probe, tracks, search, candidates, rejections, installation, pack_cache_reusable, provider_states. Without --language the same fields identify the media and its tracks, and languages[] holds one complete result per configured language.
+Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, internal.`,
+	"find": `List the indexed media a selection matches and the state of each configured language: installed, satisfied (a track already covers it), running or missing. Several matches are a success.
+Select with --title ("Dune", "Dune (2021)", "Show S01E02", "Show 1x02"; case, accents and punctuation do not matter; an exact title beats a partial one), --path (a path in this container or as Sonarr or Radarr reports it), or --instance, --kind and --file-id. --instance and --kind narrow --title and --path.
+Result fields: matches[] (instance, kind, file_id, title, year, season, episode, episode_end, languages[] (language, state)).
+Error codes: usage, unknown_instance, media_not_found (only for --file-id), internal.`,
 	"doctor": `Check configuration, storage, LAPSE and ffprobe without contacting Arr or providers.
 Result fields: configuration, sqlite, media_roots, lapse, ffprobe, webhooks.
 Error codes: internal.`,

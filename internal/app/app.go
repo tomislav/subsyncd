@@ -203,7 +203,7 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 // without the process lock, migrations or startup writes.
 func readOnlyCommand(command string) bool {
 	switch command {
-	case "explain", "doctor", "analyze-sync", "forget-instance-preview", "webhook-url":
+	case "explain", "find", "doctor", "analyze-sync", "forget-instance-preview", "webhook-url":
 		return true
 	}
 	return false
@@ -855,6 +855,14 @@ func (a *App) Search(ctx context.Context, args control.SearchArgs) (control.Sear
 	if err != nil {
 		return control.SearchResult{}, err
 	}
+	if args.Title != "" || args.Path != "" {
+		// A title or path names only media subsyncd already indexes.
+		_, known, err := a.Resolve(ctx, args.Selection)
+		if err != nil {
+			return control.SearchResult{}, err
+		}
+		instance, kind, fileID = known.Ref.Instance, string(known.Ref.Kind), known.Ref.FileID
+	}
 	arrCatalog := a.Catalogs[instance]
 	if arrCatalog == nil {
 		return control.SearchResult{}, unknownInstance(instance)
@@ -939,21 +947,44 @@ func (a *App) Retry(ctx context.Context, providerID string) (control.RetryResult
 }
 
 func (a *App) Explain(ctx context.Context, args control.ExplainArgs) (control.ExplainResult, error) {
-	instance, kind, fileID := args.Instance, args.Kind, args.FileID
-	language, err := domain.ParseLanguage(args.Language)
+	languages := sortedLanguages(a.Config)
+	if args.Language != "" {
+		language, err := domain.ParseLanguage(args.Language)
+		if err != nil {
+			return control.ExplainResult{}, &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
+		}
+		if _, ok := a.Config.Languages[language]; !ok {
+			return control.ExplainResult{}, languageNotConfigured(language)
+		}
+		languages = []domain.Language{language}
+	}
+	mediaID, media, err := a.Resolve(ctx, args.Selection)
 	if err != nil {
-		return control.ExplainResult{}, &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
+		return control.ExplainResult{}, err
 	}
-	if _, ok := a.Config.Languages[language]; !ok {
-		return control.ExplainResult{}, languageNotConfigured(language)
+	if args.Language != "" {
+		return a.explainLanguage(ctx, mediaID, media, languages[0])
 	}
-	if a.Catalogs[instance] == nil {
-		return control.ExplainResult{}, unknownInstance(instance)
+	// Without --language every configured language is explained. The top level
+	// then identifies the media and its inventory; each language carries the rest.
+	var all []control.ExplainResult
+	for _, language := range languages {
+		one, err := a.explainLanguage(ctx, mediaID, media, language)
+		if err != nil {
+			return control.ExplainResult{}, err
+		}
+		all = append(all, one)
 	}
-	mediaID, media, err := a.Repository.FindMedia(ctx, domain.MediaRef{Instance: instance, Kind: domain.MediaKind(kind), FileID: fileID})
-	if err != nil {
-		return control.ExplainResult{}, fmt.Errorf("media is not indexed: %w", err)
-	}
+	summary := all[0]
+	summary.Language = ""
+	summary.Search, summary.Installation, summary.RejectionsSuperseded, summary.PackCacheReusable = nil, nil, 0, 0
+	summary.Candidates, summary.Rejections, summary.ProviderStates = []control.ExplainCandidate{}, []control.ExplainRejection{}, []control.ExplainProviderState{}
+	summary.Languages = all
+	return summary, nil
+}
+
+func (a *App) explainLanguage(ctx context.Context, mediaID int64, media domain.Media, language domain.Language) (control.ExplainResult, error) {
+	instance, kind, fileID := media.Ref.Instance, string(media.Ref.Kind), media.Ref.FileID
 	result := control.ExplainResult{MediaID: mediaID, Instance: instance, Kind: kind, FileID: fileID, Language: language.String(), Title: media.Title, UnsupportedReason: string(media.UnsupportedReason)}
 	if media.IsEpisodeRange() {
 		result.Episodes = fmt.Sprintf("S%02dE%02d-E%02d", media.Season, media.Episode, media.EpisodeEnd)
