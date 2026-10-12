@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1567,5 +1568,170 @@ func TestRedactedErrorScrubsStoredToken(t *testing.T) {
 	token := application.WebhookTokens()["tv"]
 	if got := application.Redact(errors.New("x " + token)).Error(); strings.Contains(got, token) {
 		t.Fatalf("Redact() leaked the stored token: %s", got)
+	}
+}
+
+type signalWorker struct{ started chan struct{} }
+
+func (w *signalWorker) Run(ctx context.Context) error {
+	close(w.started)
+	<-ctx.Done()
+	return nil
+}
+
+func webhookApp(t *testing.T, cfg config.Config, events *observability.Emitter, run Runner, listener net.Listener) *App {
+	t.Helper()
+	application, err := New(context.Background(), cfg, Options{Events: events, Listener: listener, LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}, Worker: run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application
+}
+
+func TestServeStartsWebhookSyncWithoutDelayingReadiness(t *testing.T) {
+	requested := make(chan string, 4)
+	release := make(chan struct{})
+	arr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested <- r.Method + " " + r.URL.Path
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer arr.Close()
+	defer close(release)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.Instances[0].URL = arr.URL
+	cfg.Server.WebhookBaseURL = "http://" + listener.Addr().String()
+	application := webhookApp(t, cfg, observability.Discard(), &waitingWorker{}, listener)
+	defer application.Close()
+	if application.WebhookConnections == nil {
+		t.Fatal("maintainer not built")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- application.Serve(ctx) }()
+	client := http.Client{Timeout: time.Second}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		response, err := client.Get("http://" + listener.Addr().String() + "/readyz")
+		if err == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("readyz never answered 200: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case got := <-requested:
+		if got != "GET /api/v3/notification" {
+			t.Fatalf("Arr request = %q, want list request", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake Arr received no request")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not drain with sync in flight")
+	}
+}
+
+func TestServeArrUnreachableStillReconciles(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closedURL := closed.URL
+	closed.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs syncBuffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.Instances[0].URL = closedURL
+	cfg.Server.WebhookBaseURL = "http://" + listener.Addr().String()
+	runner := &signalWorker{started: make(chan struct{})}
+	application := webhookApp(t, cfg, events, runner, listener)
+	defer application.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- application.Serve(ctx) }()
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("worker never started")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(logs.String(), `"event":"webhook.connection_sync_failed"`) {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("no sync_failed log: %s", logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if out := logs.String(); !strings.Contains(out, `"reason":"arr_unreachable"`) {
+		t.Fatalf("log = %s", out)
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *syncBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
+
+func TestNoMaintainerWithoutBaseURL(t *testing.T) {
+	application := newTokenApp(t, testConfig(t))
+	defer application.Close()
+	if application.WebhookConnections != nil {
+		t.Fatal("maintainer built without server.webhook_base_url")
+	}
+}
+
+func TestDoctorReportsWebhookManagement(t *testing.T) {
+	for _, base := range []string{"http://subsyncd:8097", ""} {
+		cfg := testConfig(t)
+		cfg.Server.WebhookBaseURL = base
+		application := newTokenApp(t, cfg)
+		output, err := application.Doctor(context.Background())
+		application.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "webhooks: manual"
+		if base != "" {
+			want = "webhooks: managed (http://subsyncd:8097)"
+		}
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor output = %q, want %q", output, want)
+		}
 	}
 }

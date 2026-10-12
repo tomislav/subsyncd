@@ -82,11 +82,14 @@ type App struct {
 	Worker      Runner
 	// Webhooks applies accepted webhooks in the background while serving.
 	Webhooks *catalog.WebhookInbox
-	Handler  http.Handler
-	Listener net.Listener
-	Events   *observability.Emitter
-	Command  string
-	Clock    provider.Clock
+	// WebhookConnections keeps each Arr instance's webhook connection in
+	// sync while serving; nil when server.webhook_base_url is unset.
+	WebhookConnections *catalog.WebhookConnectionMaintainer
+	Handler            http.Handler
+	Listener           net.Listener
+	Events             *observability.Emitter
+	Command            string
+	Clock              provider.Clock
 
 	// redaction holds secrets generated at runtime, which no configuration
 	// value names, so error text and logs can scrub them.
@@ -403,6 +406,15 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		webhookInstances[instance.Name] = httpapi.Instance{Token: webhookTokens[instance.Name], Handler: webhooks.Handler(instance.Name)}
 	}
 
+	var webhookConnections *catalog.WebhookConnectionMaintainer
+	if cfg.Server.WebhookBaseURL != "" {
+		syncs := make(map[string]catalog.WebhookConnectionSync, len(cfg.Instances))
+		for _, instance := range cfg.Instances {
+			syncs[instance.Name] = catalog.WebhookConnectionSync{Instance: instance.Name, InstanceType: instance.Type, ArrURL: instance.URL, APIKey: instance.APIKey, BaseURL: cfg.Server.WebhookBaseURL, Token: webhookTokens[instance.Name], Store: repository, Events: events, Now: clock.Now}
+		}
+		webhookConnections = catalog.NewWebhookConnectionMaintainer(syncs, events, clock.Now)
+	}
+
 	reconcilerInterfaces := make(map[string]worker.Reconciler, len(reconcilers))
 	for name, reconciler := range reconcilers {
 		reconcilerInterfaces[name] = reconciler
@@ -421,7 +433,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		workerRunner = &worker.Worker{Repository: workerRepository, Workflow: workflowRouter(workflows), Routes: workflowRouter(workflows), Clock: clock, Notifiers: notifiers, Reconcilers: reconcilerInterfaces, ReconcilePriorities: queuePriorities, MaxWorkflows: cfg.Worker.MaxConcurrent, JobTimeout: jobTimeout(cfg.Sync), AgedAfter: time.Duration(cfg.AgedReleaseDays) * 24 * time.Hour, Wake: wake, Events: events, MediaRoots: cfg.MediaRoots}
 	}
 
-	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens}
+	application := &App{mutationRelease: release, Config: cfg, Store: database, Repository: repository, Catalogs: catalogs, Providers: providers, Reconcilers: reconcilers, Workflows: workflows, Inventory: inventoryService, Lapse: lapse, LapseRunner: options.LapseRunner, ProbeRunner: probeRunner, Worker: workerRunner, Webhooks: webhooks, WebhookConnections: webhookConnections, Listener: options.Listener, Events: events, Clock: clock, redaction: redaction, webhookTokens: webhookTokens}
 	application.Handler = httpapi.Server{Instances: webhookInstances, Ready: application.Ready, Events: events}.Handler()
 	application.pruneLapseCache(ctx)
 	return application, nil
@@ -663,6 +675,14 @@ func (a *App) Serve(ctx context.Context) error {
 		}
 	}()
 	defer func() { <-webhooksDone }()
+	webhookConnectionsDone := make(chan struct{})
+	go func() {
+		defer close(webhookConnectionsDone)
+		if a.WebhookConnections != nil {
+			_ = a.WebhookConnections.Run(runCtx)
+		}
+	}()
+	defer func() { <-webhookConnectionsDone }()
 	go func() { serverDone <- server.Serve(listener) }()
 	go func() { workerDone <- a.Worker.Run(runCtx) }()
 
@@ -997,7 +1017,11 @@ func (a *App) Doctor(ctx context.Context) (string, error) {
 	if _, _, err := a.ProbeRunner.Run(ctx, "ffprobe", "-version"); err != nil {
 		return "", fmt.Errorf("run ffprobe capability check: %w", err)
 	}
-	return fmt.Sprintf("configuration: ok\nsqlite: ok\nmedia roots: ok (%d)\nLAPSE: compatible\nffprobe: available", len(a.Config.MediaRoots)), nil
+	webhooks := "manual"
+	if a.Config.Server.WebhookBaseURL != "" {
+		webhooks = "managed (" + a.Config.Server.WebhookBaseURL + ")"
+	}
+	return fmt.Sprintf("configuration: ok\nsqlite: ok\nmedia roots: ok (%d)\nLAPSE: compatible\nffprobe: available\nwebhooks: %s", len(a.Config.MediaRoots), webhooks), nil
 }
 
 func (a *App) AnalyzeSync(ctx context.Context, mediaPath, subtitlePath string) (string, error) {
