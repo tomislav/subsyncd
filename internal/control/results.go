@@ -449,3 +449,51 @@ func (r RotateTokenResult) Text() string {
 	}
 	return fmt.Sprintf("webhook token rotated for instance %s; start subsyncd, then run subsyncd webhook-url --instance %s --base URL (the address Arr uses to reach subsyncd) and update the URL in Arr by hand.", r.Instance, r.Instance)
 }
+
+// MissingArgs are the arguments of the missing command. Limit zero means the
+// default of 50.
+type MissingArgs struct {
+	Instance string `json:"instance,omitempty"`
+	Language string `json:"language,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+}
+
+// MissingItem is one media file and configured language that has no
+// subtitle yet, why, and what to run about it. Providers names the cooling
+// providers for providers_cooling_down. NextAttemptAt is the next scheduled
+// search, zero when none is queued or one is running. Action is a complete
+// command, or for unsupported and media_unavailable a short instruction.
+type MissingItem struct {
+	MediaMatch
+	Language      string    `json:"language"`
+	Reason        string    `json:"reason"`
+	Providers     []string  `json:"providers,omitempty"`
+	NextAttemptAt time.Time `json:"next_attempt_at,omitzero"`
+	Action        string    `json:"action"`
+}
+
+// MissingResult lists the missing subtitles in queue order. Total counts every
+// one before the limit cut Items.
+type MissingResult struct {
+	Total int           `json:"total"`
+	Items []MissingItem `json:"items"`
+}
+
+func (r MissingResult) Text() string {
+	if r.Total == 0 {
+		return "nothing is missing"
+	}
+	lines := []string{fmt.Sprintf("%d missing (showing %d)", r.Total, len(r.Items))}
+	for _, item := range r.Items {
+		line := fmt.Sprintf("%s %s: %s", item.MediaMatch.Text(), item.Language, item.Reason)
+		if len(item.Providers) > 0 {
+			line += " (" + strings.Join(item.Providers, ", ") + ")"
+		}
+		if !item.NextAttemptAt.IsZero() {
+			line += " next=" + item.NextAttemptAt.UTC().Format(time.RFC3339)
+		}
+		lines = append(lines, line, "  action: "+item.Action)
+	}
+	return strings.Join(lines, "\n")
+}

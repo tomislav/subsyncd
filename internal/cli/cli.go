@@ -31,6 +31,7 @@ type Backend interface {
 	Retry(context.Context, string) (control.RetryResult, error)
 	Explain(context.Context, control.ExplainArgs) (control.ExplainResult, error)
 	Find(context.Context, control.Selection) (control.FindResult, error)
+	Missing(context.Context, control.MissingArgs) (control.MissingResult, error)
 	Doctor(context.Context) (control.DoctorResult, error)
 	AnalyzeSync(context.Context, string, string) (control.AnalyzeSyncResult, error)
 	ForgetInstance(context.Context, string, bool) (control.ForgetInstanceResult, error)
@@ -110,6 +111,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	title := flags.String("title", "", `media title: "Dune", "Dune (2021)", "Show S01E02", "Show 1x02"`)
 	path := flags.String("path", "", "media file path, in this container or as Sonarr or Radarr reports it")
 	language := flags.String("language", "", "subtitle language tag")
+	limit := flags.Int("limit", 0, "most rows to list (default 50)")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
 	retryRejected := flags.Bool("retry-rejected", false, "clear and retry the candidates subsyncd rejected (not those you rejected)")
@@ -159,6 +161,10 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		sel := control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}
 		if validateErr = validateMediaSelection(sel); validateErr == nil {
 			validateErr = validateReject(flags, *reason, *undo, *timeout, *noWait)
+		}
+	case "missing":
+		if *limit < 0 {
+			validateErr = fmt.Errorf("--limit must not be negative")
 		}
 	case "retry":
 		validateErr = require("--provider", *provider)
@@ -253,6 +259,8 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		}))
 	case "find":
 		result, err = wrap(backend.Find(ctx, control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}))
+	case "missing":
+		result, err = wrap(backend.Missing(ctx, control.MissingArgs{Instance: *instance, Language: *language, Title: *title, Limit: *limit}))
 	case "doctor":
 		result, err = wrap(backend.Doctor(ctx))
 	case "analyze-sync":
@@ -343,6 +351,8 @@ func commandFlags(command string) map[string]bool {
 		names = []string{"instance", "kind", "file-id", "title", "path", "language"}
 	case "find":
 		names = []string{"instance", "kind", "file-id", "title", "path"}
+	case "missing":
+		names = []string{"instance", "language", "title", "limit"}
 	case "retry":
 		names = []string{"provider"}
 	case "analyze-sync":
@@ -535,6 +545,12 @@ Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguo
 Select with --title ("Dune", "Dune (2021)", "Show S01E02", "Show 1x02"; case, accents and punctuation do not matter; an exact title beats a partial one), --path (a path in this container or as Sonarr or Radarr reports it), or --instance, --kind and --file-id. --instance and --kind narrow --title and --path.
 Result fields: matches[] (instance, kind, file_id, title, year, season, episode, episode_end, languages[] (language, state)).
 Error codes: usage, unknown_instance, media_not_found (only for --file-id), internal.`,
+	"missing": `List what subsyncd has no subtitle for yet: each active media file and configured language with no installation and no track that covers it (a forced-only track does not count; a hearing-impaired one only with allow_hearing_impaired). Runs beside the daemon.
+Filters: --instance, --language, --title ("Dune", "Show S01E02"; an exact title beats a partial one), --limit (default 50). Rows follow the queue: what would run next comes first, then languages with no search yet. A search running now is listed too, with no next_attempt_at.
+Reasons: not_searched (no search has finished, or the last one failed technically), no_candidates (providers returned nothing usable), all_rejected (every candidate was rejected), providers_cooling_down (the last search was throttled, or every provider of the language's route is cooling down; providers names them), media_unavailable (the media file cannot be read), unsupported (for example a multi-episode file subsyncd does not search).
+action is a complete command to run (search ..., search ... --retry-rejected, retry --provider ...); for media_unavailable and unsupported it is a short instruction instead.
+Result fields: total (all rows before --limit), items[] (instance, kind, file_id, title, year, season, episode, episode_end, language, reason, providers, next_attempt_at, action).
+Error codes: usage, unknown_instance, unknown_language, internal.`,
 	"doctor": `Check configuration, storage, LAPSE and ffprobe without contacting Arr or providers.
 Result fields: configuration, sqlite, media_roots, lapse, ffprobe, webhooks.
 Error codes: internal.`,

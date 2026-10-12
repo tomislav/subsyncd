@@ -71,6 +71,10 @@ func (f *fakeBackend) Find(_ context.Context, sel control.Selection) (control.Fi
 	f.call = "find:" + sel.Instance + ":" + sel.Kind + ":" + fmt.Sprint(sel.FileID) + ":" + sel.Title + ":" + sel.Path
 	return control.FindResult{Matches: []control.FindMatch{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}, Languages: []control.LanguageState{{Language: "en", State: "missing"}}}}}, f.err
 }
+func (f *fakeBackend) Missing(_ context.Context, args control.MissingArgs) (control.MissingResult, error) {
+	f.call = fmt.Sprintf("missing:%s:%s:%s:%d", args.Instance, args.Language, args.Title, args.Limit)
+	return control.MissingResult{Total: 1, Items: []control.MissingItem{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}, Language: "en", Reason: "no_candidates", Action: "subsyncd search --instance radarr-main --kind movie --file-id 42 --language en"}}}, f.err
+}
 func (f *fakeBackend) Explain(_ context.Context, args control.ExplainArgs) (control.ExplainResult, error) {
 	f.call = "explain:" + args.Instance + ":" + args.Kind + ":" + args.Language + ":" + args.Title + ":" + args.Path
 	return control.ExplainResult{MediaID: 1, Instance: args.Instance, Kind: args.Kind, FileID: args.FileID, Title: "T", Probe: "unprobed"}, f.err
@@ -108,6 +112,8 @@ func TestCommandSurface(t *testing.T) {
 		{"explain by path", []string{"explain", "--path", "/tv/Show/S01E01.mkv"}, "explain:::::/tv/Show/S01E01.mkv", "media: id=1 instance= kind= file_id=0 title=\"T\"\ninventory: tracks=0 probe=unprobed fingerprint_size=0 fingerprint_mtime=0001-01-01T00:00:00Z\nsearch: not scheduled\ncandidates: 0\ncandidate_rejections: 0\ninstallation: none\npack_cache: reusable=0\n"},
 		{"find by title", []string{"find", "--title", "Dune", "--instance", "radarr-main"}, "find:radarr-main::0:Dune:", "radarr-main movie 42 \"Dune\" (2021)\n  en: missing\n"},
 		{"find by file id", []string{"find", "--instance", "radarr-main", "--kind", "movie", "--file-id", "42"}, "find:radarr-main:movie:42::", "radarr-main movie 42 \"Dune\" (2021)\n  en: missing\n"},
+		{"missing", []string{"missing", "--instance", "radarr-main", "--language", "en", "--title", "Dune", "--limit", "5"}, "missing:radarr-main:en:Dune:5", "1 missing (showing 1)\nradarr-main movie 42 \"Dune\" (2021) en: no_candidates\n  action: subsyncd search --instance radarr-main --kind movie --file-id 42 --language en\n"},
+		{"missing defaults", []string{"missing"}, "missing::::0", "1 missing (showing 1)\nradarr-main movie 42 \"Dune\" (2021) en: no_candidates\n  action: subsyncd search --instance radarr-main --kind movie --file-id 42 --language en\n"},
 		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nmedia roots: ok (1)\nLAPSE: compatible\nffprobe: available\nwebhooks: manual\n"},
 		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance complete: instance=old media=0 searches=0 installations=0 rollback_copies=0 candidates=0 rejections=0 notifications=0 events=0 replays=0 history=0\nsubtitle files installed for this instance stay on disk and will no longer be managed\n"},
 		{"webhook-url", []string{"webhook-url", "--instance", "tv", "--base", "http://x"}, "webhook-url:tv:http://x", "http://h/webhooks/tv?token=t\n"},
@@ -707,5 +713,30 @@ func TestRejectGoesToTheDaemon(t *testing.T) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil || !envelope.OK || envelope.Result.Rejected.Subtitle != "Movie (2019)/Movie.en.srt" {
 		t.Fatalf("stdout = %s (%v)", stdout.String(), err)
+	}
+}
+
+func TestMissingRejectsBadFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"missing", "--limit", "-1"},
+		{"missing", "--file-id", "4"},
+		{"missing", "--path", "/m/a.mkv"},
+	} {
+		var stderr bytes.Buffer
+		backend := &fakeBackend{}
+		code := (Command{Open: openFake(backend), Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), args)
+		if code != ExitUsage || backend.call != "" {
+			t.Fatalf("%v: exit = %d call = %q stderr = %q", args, code, backend.call, stderr.String())
+		}
+	}
+}
+
+func TestMissingHelpListsReasons(t *testing.T) {
+	var stderr bytes.Buffer
+	(Command{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"missing", "--help"})
+	for _, want := range []string{"not_searched", "no_candidates", "all_rejected", "providers_cooling_down", "media_unavailable", "unsupported", "total", "items[]", "unknown_instance", "unknown_language", "--limit"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("help lacks %q: %s", want, stderr.String())
+		}
 	}
 }

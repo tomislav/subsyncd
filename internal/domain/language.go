@@ -52,3 +52,14 @@ func EquivalentLanguage(a, b Language) bool {
 	right, err := ParseLanguage(string(b))
 	return err == nil && left == right
 }
+
+// TrackCoversLanguage reports whether a subtitle track in trackLanguage
+// satisfies a wanted language when subsyncd has not installed one itself: the
+// languages are equivalent, the track is not forced-only, and it is not
+// hearing-impaired unless allowHearingImpaired is set.
+func TrackCoversLanguage(trackLanguage Language, forced, hearingImpaired bool, want Language, allowHearingImpaired bool) bool {
+	if trackLanguage == "" || forced || !EquivalentLanguage(trackLanguage, want) {
+		return false
+	}
+	return !hearingImpaired || allowHearingImpaired
+}

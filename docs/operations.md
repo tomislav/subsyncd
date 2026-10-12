@@ -126,6 +126,7 @@ The container runs `serve` by default. The other commands are run through Compos
 | --- | --- | --- |
 | `doctor` | Checks configuration, database, media folders, and bundled tools. | May run |
 | `find` | Lists the files that match a title or path, with the state of each configured language (`installed`, `satisfied`, `running`, `missing`). | May run |
+| `missing` | Lists the files and languages that have no subtitle yet, each with a reason and a command to fix it. See [What is missing](#what-is-missing). | May run |
 | `explain` | Shows what subsyncd knows about one file, for one language or for every configured language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules, another LAPSE version or synchronization policy, or for the file before it was replaced no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
 | `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
 | `search` | Searches one file now, for one language or for every configured language it is missing, and waits for the outcome. | May run; the daemon carries it out |
@@ -245,6 +246,28 @@ docker compose up -d subsyncd
 ```
 
 Review the command's result before restarting. The command queues new work; the daemon processes it after restarting. Rescanning does not reset existing search schedules, reconsider retained deletions, or overwrite installation provenance.
+
+## What is missing
+
+```bash
+docker compose exec subsyncd subsyncd missing
+docker compose exec subsyncd subsyncd missing --language hr --title "Show" --limit 20
+```
+
+`missing` lists every active file and configured language that has no subtitle: no installation, and no track or sidecar that covers the language (a forced-only track does not count, and a hearing-impaired one counts only with `allow_hearing_impaired`). `--instance`, `--language` and `--title` narrow the list, and `--limit` (default 50) cuts it. The result gives the full `total`, so an agent knows when the list was cut. Rows follow the queue, so what would be searched next comes first; languages with no search yet come last. A search running right now is listed too, without a next attempt time. The command only reads saved state, so it runs beside the daemon.
+
+Each row has a `reason` and an `action`:
+
+| Reason | Meaning | Action |
+| --- | --- | --- |
+| `not_searched` | No search has finished for it yet, or the last one failed for a technical reason and will retry (`next_attempt_at`). | `subsyncd search --instance … --kind … --file-id … --language …` |
+| `no_candidates` | The last search found no usable candidate. | The same `search` command. |
+| `all_rejected` | Every candidate was rejected. | The `search` command with `--retry-rejected`, which reconsiders the ones subsyncd rejected (not those you rejected with `reject`). |
+| `providers_cooling_down` | The last search was throttled, or every provider of the language's route is cooling down. `providers` names the ones cooling. | `subsyncd retry --provider NAME` clears the cooldown. |
+| `media_unavailable` | The last search failed and the media file cannot be read. | A short instruction: fix the storage; the search retries by itself. |
+| `unsupported` | subsyncd does not search this file, for example a multi-episode file. | A short instruction: replace the file in Sonarr or Radarr. |
+
+Actions are complete commands with the real instance, kind, file ID and language; run them through `docker compose exec subsyncd` like the others. `media_unavailable` and `unsupported` give an instruction instead of a command.
 
 ## A subtitle is wrong
 

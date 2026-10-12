@@ -1737,10 +1737,7 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 
 func inventoryStopsSearch(current inventory.Inventory, language domain.Language, allowHearingImpaired bool, installed bool, installation store.Installation) bool {
 	for _, track := range current.Tracks {
-		if track.Language == "" || !domain.EquivalentLanguage(track.Language, language) || track.Forced {
-			continue
-		}
-		if track.SDH && !allowHearingImpaired {
+		if !domain.TrackCoversLanguage(track.Language, track.Forced, track.SDH, language, allowHearingImpaired) {
 			continue
 		}
 		if track.Embedded || track.Protected || !installed || filepath.Clean(track.Path) != filepath.Clean(installation.Path) || track.Checksum != installation.Checksum {
