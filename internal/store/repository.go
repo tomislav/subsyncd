@@ -135,6 +135,8 @@ type SearchCompletion struct {
 	// the completion's transaction, after the owner guard succeeds. A deleted
 	// media row records nothing.
 	History *SearchHistoryDetail
+	// FinishedAt dates the history row; zero uses the wall clock.
+	FinishedAt time.Time
 }
 
 type SearchCompletionResult struct {
@@ -1115,7 +1117,11 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		return SearchCompletionResult{}, fmt.Errorf("search lease %s not found", completion.JobID)
 	}
 	if completion.History != nil && !deleted {
-		if err := insertSearchHistory(ctx, tx, mediaID, domain.Language(language), completion.Outcome, *completion.History, time.Now().UTC()); err != nil {
+		finishedAt := completion.FinishedAt
+		if finishedAt.IsZero() {
+			finishedAt = time.Now()
+		}
+		if err := insertSearchHistory(ctx, tx, mediaID, domain.Language(language), completion.Outcome, *completion.History, finishedAt); err != nil {
 			return SearchCompletionResult{}, err
 		}
 	}

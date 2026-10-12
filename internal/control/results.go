@@ -354,11 +354,12 @@ type ForgetInstanceResult struct {
 	Notifications  int64  `json:"notifications"`
 	Events         int64  `json:"events"`
 	Replays        int64  `json:"replays"`
+	History        int64  `json:"history"`
 }
 
 func (r ForgetInstanceResult) Text() string {
-	counts := fmt.Sprintf("media=%d searches=%d installations=%d rollback_copies=%d candidates=%d rejections=%d notifications=%d events=%d replays=%d",
-		r.Media, r.Searches, r.Installations, r.RollbackCopies, r.Candidates, r.Rejections, r.Notifications, r.Events, r.Replays)
+	counts := fmt.Sprintf("media=%d searches=%d installations=%d rollback_copies=%d candidates=%d rejections=%d notifications=%d events=%d replays=%d history=%d",
+		r.Media, r.Searches, r.Installations, r.RollbackCopies, r.Candidates, r.Rejections, r.Notifications, r.Events, r.Replays, r.History)
 	leftOnDisk := "subtitle files installed for this instance stay on disk and will no longer be managed"
 	if r.RollbackCopies > 0 {
 		leftOnDisk += fmt.Sprintf(", as do %d hidden .subsyncd-rollback-* copies beside them, which you can delete by hand", r.RollbackCopies)

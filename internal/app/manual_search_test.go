@@ -711,3 +711,29 @@ func TestHourlyMaintenancePrunesOldHistory(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestManualSearchSurvivesHistoryWriteFailure(t *testing.T) {
+	h := newManualHarness(t, 1, false, "en")
+	h.workflow.result = workflow.Result{Outcome: workflow.OutcomeInstalled}
+	h.exec(t, `DROP TABLE search_history`)
+	go func() { h.workflow.release <- struct{}{} }()
+	result, err := h.app.runManualSearch(t.Context(), h.ids[1], h.media[1], "en", manualOptions{})
+	if err != nil || result.Outcome != workflow.OutcomeInstalled {
+		t.Fatalf("manual search = %+v/%v", result, err)
+	}
+	if owner := h.leaseOwner(t, 1, "en"); owner != "" {
+		t.Fatalf("lease kept: %q", owner)
+	}
+	if !strings.Contains(h.logs.String(), `"event":"history.record_failed"`) {
+		t.Fatalf("logs = %s", h.logs.String())
+	}
+}
+
+func TestHourlyMaintenanceLogsHistoryPruneFailure(t *testing.T) {
+	h := newManualHarness(t, 1, false)
+	h.exec(t, `DROP TABLE search_history`)
+	h.app.pruneSearchHistory(t.Context())
+	if !strings.Contains(h.logs.String(), `"event":"history.prune_failed"`) {
+		t.Fatalf("logs = %s", h.logs.String())
+	}
+}

@@ -489,7 +489,7 @@ Error codes: internal.`,
 Result fields: analysis (LAPSE's document).
 Error codes: usage, internal.`,
 	"forget-instance": `Preview, or with --yes delete, the records of an instance removed from the configuration.
-Result fields: instance, applied, media, searches, installations, rollback_copies, candidates, rejections, notifications, events, replays.
+Result fields: instance, applied, media, searches, installations, rollback_copies, candidates, rejections, notifications, events, replays, history.
 Error codes: unknown_instance, busy, internal.`,
 	"webhook-url": `Print the webhook URL to enter in Arr. The result includes the token.
 Result fields: instance, url.

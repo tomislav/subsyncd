@@ -22,12 +22,13 @@ type ForgetInstanceResult struct {
 	Notifications  int64
 	Events         int64
 	Replays        int64
+	History        int64
 }
 
 // ForgetInstance deletes every row owned by a removed Arr instance in one
 // transaction: its media (and, by cascade, tracks, probes, hashes, searches,
 // candidates, rejections, LAPSE failures and installation records), its audit
-// events, reconciliation replays, outbox notifications, waiting webhooks,
+// events, reconciliation replays, search history, outbox notifications, waiting webhooks,
 // pending-install records and the instance row.
 // Subtitle files on disk are not touched. With apply false nothing is
 // committed and the result is a preview.
@@ -71,6 +72,7 @@ func (r *Repository) ForgetInstance(ctx context.Context, name string, apply bool
 		{&result.Notifications, `SELECT count(*) FROM notifications WHERE json_extract(payload_json,'$.media.ref.instance')=?1`},
 		{&result.Events, `SELECT count(*) FROM events WHERE instance=?1 OR media_id IN (` + ownedMedia + `)`},
 		{&result.Replays, `SELECT count(*) FROM reconciliation_replays WHERE instance=?1`},
+		{&result.History, `SELECT count(*) FROM search_history WHERE instance=?1`},
 	} {
 		if err := tx.QueryRowContext(ctx, count.query, name).Scan(count.dest); err != nil {
 			return ForgetInstanceResult{}, fmt.Errorf("count forgotten instance rows: %w", err)
@@ -86,6 +88,8 @@ func (r *Repository) ForgetInstance(ctx context.Context, name string, apply bool
 		`DELETE FROM notifications WHERE json_extract(payload_json,'$.media.ref.instance')=?1`,
 		`DELETE FROM events WHERE instance=?1 OR media_id IN (` + ownedMedia + `)`,
 		`DELETE FROM reconciliation_replays WHERE instance=?1`,
+		// History rows keep the instance name and survive their media row.
+		`DELETE FROM search_history WHERE instance=?1`,
 		// Waiting webhooks and interrupted installs would otherwise be
 		// applied, or undone on disk, for media no longer tracked.
 		`DELETE FROM webhook_inbox WHERE instance=?1`,

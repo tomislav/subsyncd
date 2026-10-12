@@ -184,3 +184,24 @@ func TestHistorySurvivesMediaDeletion(t *testing.T) {
 		t.Fatalf("entries = %+v/%v", entries, err)
 	}
 }
+
+func TestCompleteSearchHistoryUsesCompletionTime(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now, SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseOne(t, repo, now)
+	if _, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: lease.JobID, Outcome: "no_result", History: historyDetail(), FinishedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := repo.ListHistory(ctx, HistoryQuery{})
+	if err != nil || len(entries) != 1 || !entries[0].FinishedAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("entries = %+v/%v", entries, err)
+	}
+}

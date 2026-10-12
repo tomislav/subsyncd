@@ -428,6 +428,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		// Unreadable media is usually storage, not this search: keep its place.
 		completion.PreserveQueueOrder = workflow.MediaUnavailable(err)
 		completion.History = searchHistory(media, workflow.Result{})
+		completion.FinishedAt = w.Clock.Now()
 		preserveProviderResume(lease, result, &completion, w.Clock.Now())
 		completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
 		if completionErr != nil {
@@ -449,6 +450,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		return err
 	}
 	completion.History = searchHistory(media, result)
+	completion.FinishedAt = w.Clock.Now()
 	completionResult, err := w.Repository.CompleteSearch(jobCtx, completion)
 	if err != nil {
 		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, len(lease.ResumeProviders), err)

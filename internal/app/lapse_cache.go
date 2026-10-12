@@ -27,12 +27,15 @@ func (a *App) pruneLapseCache(ctx context.Context) {
 }
 
 // pruneSearchHistory drops history older than its retention. A failure is
-// retried on the next hourly tick, so it needs no event of its own.
+// logged and retried on the next hourly tick.
 func (a *App) pruneSearchHistory(ctx context.Context) {
 	if a.readOnly || ctx.Err() != nil {
 		return
 	}
-	_, _ = a.Repository.PruneHistory(ctx, a.Clock.Now().Add(-store.HistoryRetention))
+	if _, err := a.Repository.PruneHistory(ctx, a.Clock.Now().Add(-store.HistoryRetention)); err != nil && a.Events != nil && !errors.Is(err, context.Canceled) {
+		events := a.Events.For("app")
+		events.Log(ctx, slog.LevelWarn, "history.prune_failed", "search history cleanup failed", events.ErrorAttrs("search_history", err)...)
+	}
 }
 
 // maintainLapseCache runs the daemon's hourly maintenance: the LAPSE cache

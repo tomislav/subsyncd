@@ -43,6 +43,7 @@ func seedForgetInstance(t *testing.T, repo *Repository, name string, now time.Ti
 		{`INSERT INTO events(event_type,media_id,created_at_ns) VALUES (?,?,1)`, []any{"unattributed-" + name, mediaID}},
 		{`INSERT INTO reconciliation_replays(event_id,instance) VALUES (?,?)`, []any{"replay-" + name, name}},
 		{`INSERT INTO webhook_inbox(instance,body,received_at_ns) VALUES (?,'{}',1)`, []any{name}},
+		{`INSERT INTO search_history(media_id,instance,kind,file_id,media_title,language,outcome,finished_at_ns) VALUES (?,?,'episode',42,'Show','en','no_result',1)`, []any{mediaID, name}},
 		{`INSERT INTO pending_installs(media_id,language,destination,checksum,created_at_ns) VALUES (?,'en','/media/show.en.srt','sum',1)`, []any{mediaID}},
 	} {
 		if _, err := repo.store.db.Exec(statement.sql, statement.args...); err != nil {
@@ -66,6 +67,7 @@ func countForgetRows(t *testing.T, repo *Repository, name string) map[string]int
 		"unattributed":  `SELECT count(*) FROM events WHERE event_type='unattributed-' || ?1`,
 		"notifications": `SELECT count(*) FROM notifications WHERE json_extract(payload_json,'$.media.ref.instance')=?1`,
 		"replays":       `SELECT count(*) FROM reconciliation_replays WHERE instance=?1`,
+		"history":       `SELECT count(*) FROM search_history WHERE instance=?1`,
 		"webhooks":      `SELECT count(*) FROM webhook_inbox WHERE instance=?1`,
 		"pending":       `SELECT count(*) FROM pending_installs JOIN media ON media.id=pending_installs.media_id WHERE media.instance=?1`,
 	} {
@@ -88,7 +90,7 @@ func TestForgetInstanceRemovesOnlyThatInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Media != 1 || result.Searches != 1 || result.Installations != 1 || result.RollbackCopies != 1 || result.Candidates != 1 || result.Rejections != 1 || result.Notifications != 1 || result.Events < 2 || result.Replays != 1 {
+	if result.Media != 1 || result.Searches != 1 || result.Installations != 1 || result.RollbackCopies != 1 || result.Candidates != 1 || result.Rejections != 1 || result.Notifications != 1 || result.Events < 2 || result.Replays != 1 || result.History != 1 {
 		t.Fatalf("result=%+v", result)
 	}
 	for label, count := range countForgetRows(t, repo, "sonarr-old") {

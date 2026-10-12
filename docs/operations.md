@@ -191,7 +191,7 @@ docker compose run --rm --no-deps subsyncd forget-instance --instance sonarr-old
 docker compose up -d
 ```
 
-The first command is a read-only preview, like `doctor`: it lists how many files, searches, installations, rejections, notifications, and history records it would delete, changes nothing, and works while subsyncd runs. The run with `--yes` deletes them all in one step, or nothing if it fails. subsyncd refuses an instance that is still configured or one the database has no records for.
+The first command is a read-only preview, like `doctor`: it lists how many files, searches, installations, rejections, notifications, audit history, and recent search history it would delete, changes nothing, and works while subsyncd runs. The run with `--yes` deletes them all in one step, or nothing if it fails. subsyncd refuses an instance that is still configured or one the database has no records for.
 
 Subtitle files it installed for that library stay on disk. It no longer knows it wrote them, so if those media files are ever indexed again it treats them as your own subtitles and won't replace them. When subsyncd replaced a subtitle it may also have kept one hidden backup copy, named `.subsyncd-rollback-` plus random characters, in the same folder. The output counts these as `rollback_copies`; nothing will clean them up after this, so delete them by hand if you want them gone. This can't be undone, so back up `data/` first if you might want the records back.
 

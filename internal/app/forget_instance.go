@@ -35,7 +35,7 @@ func (a *App) ForgetInstance(ctx context.Context, instance string, apply bool) (
 	if err != nil {
 		return control.ForgetInstanceResult{}, err
 	}
-	forgotten := control.ForgetInstanceResult{Instance: instance, Applied: apply, Media: result.Media, Searches: result.Searches, Installations: result.Installations, RollbackCopies: result.RollbackCopies, Candidates: result.Candidates, Rejections: result.Rejections, Notifications: result.Notifications, Events: result.Events, Replays: result.Replays}
+	forgotten := control.ForgetInstanceResult{Instance: instance, Applied: apply, Media: result.Media, Searches: result.Searches, Installations: result.Installations, RollbackCopies: result.RollbackCopies, Candidates: result.Candidates, Rejections: result.Rejections, Notifications: result.Notifications, Events: result.Events, Replays: result.Replays, History: result.History}
 	if !apply {
 		return forgotten, nil
 	}
@@ -50,6 +50,7 @@ func (a *App) ForgetInstance(ctx context.Context, instance string, apply bool) (
 		slog.Int64("notification_count", result.Notifications),
 		slog.Int64("event_count", result.Events),
 		slog.Int64("replay_count", result.Replays),
+		slog.Int64("history_count", result.History),
 	)
 	return forgotten, nil
 }

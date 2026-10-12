@@ -411,15 +411,6 @@ func (a *App) runClaimedSearch(ctx context.Context, jobID string, mediaID int64,
 	if err != nil {
 		return workflow.Result{}, err
 	}
-	// The history row is not in the installer's transaction: a crash between
-	// the install and this write loses one history row and nothing else.
-	detail := store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(media), ProviderID: result.Candidate.ProviderID, Manual: true}
-	if len(result.Candidate.ReleaseNames) > 0 {
-		detail.ReleaseName = result.Candidate.ReleaseNames[0]
-	}
-	if err := a.Repository.RecordSearchHistory(ctx, mediaID, language, string(result.Outcome), detail, a.Clock.Now()); err != nil {
-		return workflow.Result{}, err
-	}
 	if opts.revived && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
 		// The revival (or this run's claim) queued this language too; this run
 		// already answered it, unless a change arrived meanwhile and asked for
@@ -438,6 +429,17 @@ func (a *App) runClaimedSearch(ctx context.Context, jobID string, mediaID int64,
 		if err := a.Repository.EnsureUpgradeSearch(ctx, mediaID, language, result.NextUpgrade); err != nil {
 			return workflow.Result{}, err
 		}
+	}
+	// The history row is not in the installer's transaction, and it comes last:
+	// a crash between the install and this write loses one history row and
+	// nothing else, and a failed write never undoes the finished search.
+	detail := store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(media), ProviderID: result.Candidate.ProviderID, Manual: true}
+	if len(result.Candidate.ReleaseNames) > 0 {
+		detail.ReleaseName = result.Candidate.ReleaseNames[0]
+	}
+	if err := a.Repository.RecordSearchHistory(ctx, mediaID, language, string(result.Outcome), detail, a.Clock.Now()); err != nil {
+		events := a.events().For("app")
+		events.Log(ctx, slog.LevelWarn, "history.record_failed", "search history entry could not be recorded", events.ErrorAttrs("search_history", err)...)
 	}
 	return result, nil
 }
@@ -517,6 +519,7 @@ func (a *App) recordManualTimeout(ctx context.Context, jobID string, mediaID int
 	}
 	completion := schedule.Scheduler{Clock: a.Clock}.Failure(jobID, status.FailureAttempt, "workflow_error")
 	completion.History = &store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(media), Manual: true}
+	completion.FinishedAt = a.Clock.Now()
 	if _, err := a.Repository.CompleteSearch(ctx, completion); err != nil {
 		return errors.Join(cause, err)
 	}
