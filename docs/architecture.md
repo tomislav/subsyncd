@@ -14,6 +14,7 @@ flowchart LR
     score --> lapse[LAPSE tournament]
     lapse --> install[Atomic installation and provenance]
     install --> outbox[(Notification outbox)] --> silo[Silo scan]
+    outbox --> rescan[Arr series or movie rescan]
 ```
 
 ## Durable state and event flow
@@ -92,7 +93,7 @@ Installation:
 
 A pending-install record spans publication to commit; startup undoes any publication a crash left unrecorded (restoring the rollback copy or removing the new file) and removes staging leftovers. Managed replacement keeps a rollback copy of the previous subtitle until the installation is recorded, then deletes it; a mutable start deletes any copy still recorded (`Installer.DiscardRollbackCopies`). If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
 
-A committed installation may enqueue a checksum-deduplicated Silo notification. Notification leases and retries are independent, so notification failure never rolls back subtitle acquisition.
+A committed installation, removal or sidecar move may enqueue a checksum-deduplicated Silo notification and a rescan of the owning Sonarr series or Radarr movie (`arr_rescan`, per instance `rescan_after_changes`, default on). Notification leases and retries are independent, so notification failure never rolls back subtitle acquisition.
 
 ## Existing-library discovery
 

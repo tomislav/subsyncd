@@ -18,14 +18,15 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 - **Command line that works while it runs:** see what is missing and why, search one file now, or check recent activity, by title or path instead of IDs; `--json` output for scripts ([commands](docs/operations.md#commands)).
 - **Tell it a subtitle is wrong:** `reject` drops a subtitle it installed, never picks it again, and installs the next best one, or removes it when nothing else fits ([how](docs/operations.md#a-subtitle-is-wrong)).
 - **Remembers its progress:** saves search history and provider limits across restarts, and avoids repeatedly downloading rejected results.
+- **Sonarr and Radarr stay current:** after adding, replacing or removing a subtitle, asks Sonarr or Radarr to rescan that series or movie, so its subtitle list is right without waiting for the scheduled refresh (`rescan_after_changes`, on by default).
 - **Optional Silo refresh:** asks Silo to rescan the folder after installing subtitles.
 
 ## Supported services
 
 | Service | Integration |
 | --- | --- |
-| [Sonarr](https://github.com/sonarr/sonarr) | TV library, imports, upgrades, renames, and file and series deletions |
-| [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file and movie deletions |
+| [Sonarr](https://github.com/sonarr/sonarr) | TV library, imports, upgrades, renames, and file and series deletions; series rescans after subtitle changes |
+| [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file and movie deletions; movie rescans after subtitle changes |
 | [Silo](https://github.com/Silo-Server/silo-server) | Refreshes subtitle inventory through its native scan API |
 
 TV files containing several consecutive episodes of one season (for example `S06E01-E02`) receive one subtitle that covers the whole file; only subtitles explicitly covering every episode are used. Files whose episodes span seasons or have gaps are skipped.
@@ -94,6 +95,7 @@ Edit `config/config.yaml` to:
 - Choose your languages, using tags such as `en`, `hr`, or `pt-BR`.
 - Match each `path_mappings.remote` to the path reported by Sonarr or Radarr. The `local` path is where that same folder appears inside subsyncd.
 - Optionally set `queue_priority` on an instance (0–1000, default 0) to work through its library before instances with a lower value. New imports still go first.
+- Optionally set `rescan_after_changes: false` on an instance to stop subsyncd asking it to rescan a series or movie after a subtitle change (default `true`).
 
 Keep `config/config.yaml` private—it contains all your service credentials. Keep the single quotes around values; write an apostrophe inside a value as two apostrophes (`it''s`).
 

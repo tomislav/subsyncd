@@ -51,13 +51,45 @@ func (r *Repository) DropInstallation(ctx context.Context, installation Installa
 // media file ID and size, stays. It fails, changing nothing, when the record
 // is no longer the one read.
 func (r *Repository) RebaseInstallation(ctx context.Context, installation Installation, path, mediaPath string) error {
+	_, err := r.RebaseInstallationWithNotifications(ctx, installation, path, mediaPath, nil)
+	return err
+}
+
+// RebaseInstallationWithNotifications is RebaseInstallation that also queues
+// notification intents in the same transaction, for a sidecar the workflow
+// moved on disk.
+func (r *Repository) RebaseInstallationWithNotifications(ctx context.Context, installation Installation, path, mediaPath string, requests []NotificationRequest) ([]NotificationEnqueueResult, error) {
+	for _, request := range requests {
+		if err := validateNotificationRequest(request); err != nil {
+			return nil, err
+		}
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin installation rebase: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	args := append([]any{path, mediaPath}, installationGuardArgs(installation)...)
 	args = append(args, installation.MediaPath)
-	result, err := r.store.db.ExecContext(ctx, `UPDATE installations SET path=?, media_path=? WHERE `+installationGuard+` AND media_path=?`, args...)
+	result, err := tx.ExecContext(ctx, `UPDATE installations SET path=?, media_path=? WHERE `+installationGuard+` AND media_path=?`, args...)
 	if err != nil {
-		return fmt.Errorf("rebase installation: %w", err)
+		return nil, fmt.Errorf("rebase installation: %w", err)
 	}
-	return requireOneRow(result, "installation changed before it was rebased")
+	if err := requireOneRow(result, "installation changed before it was rebased"); err != nil {
+		return nil, err
+	}
+	results := make([]NotificationEnqueueResult, 0, len(requests))
+	for _, request := range requests {
+		inserted, err := enqueueNotification(ctx, tx, request)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, NotificationEnqueueResult{Notifier: request.Notifier, DedupeKey: request.DedupeKey, Inserted: inserted})
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit installation rebase: %w", err)
+	}
+	return results, nil
 }
 
 // RollbackCopy names an installation's hidden rollback copy and the sidecar

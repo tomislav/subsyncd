@@ -34,6 +34,7 @@ func (i Installer) refreshIdenticalInstallation(ctx context.Context, request Ins
 	var requests []store.NotificationRequest
 	// A replacement media file still needs a new scan even when its sidecar bytes
 	// repeat. A same-media provenance refresh does not change Silo's inventory.
+	// No file changes here, so the owning Arr instance is not asked to rescan.
 	if !InstallationMatchesMedia(existing, request.Media) {
 		requests, err = notificationRequests(request.Media, installation, i.NotifierNames, i.now())
 		if err != nil {

@@ -689,6 +689,9 @@ func (w *Worker) processNotificationGroupContexts(dispatchCtx, ctx context.Conte
 			slog.String("notifier", delivery.lease.Notifier),
 			slog.Int("attempt", delivery.lease.Attempt),
 		)
+		if describer, ok := w.Notifiers[delivery.lease.Notifier].(notifier.Describer); ok && delivery.decodeErr == nil {
+			memberCtx = observability.WithAttrs(memberCtx, describer.DeliveryAttrs(delivery.payload.Media)...)
+		}
 		members[index] = groupMember{lease: delivery.lease, ctx: memberCtx, cancel: cancel}
 		members[index].renewal = w.renewNotificationLease(memberCtx, cancel, delivery.lease.JobID)
 	}
@@ -763,12 +766,18 @@ func finishFollowers(followers []groupMember) error {
 
 func (w *Worker) completeNotification(jobCtx context.Context, lease store.NotificationLease, deliveryErr error, started time.Time) error {
 	completion := store.NotificationCompletion{JobID: lease.JobID, Result: "success"}
-	if deliveryErr != nil {
+	skipReason, skipped := notifier.IsSkipped(deliveryErr)
+	switch {
+	case deliveryErr == nil:
+	case skipped:
+		completion.Result = "skipped"
+	case notifier.IsRetryable(deliveryErr):
+		completion.Result = "retryable_error"
+		completion.NextAttemptAt = w.Clock.Now().Add(schedule.FailureDelay(lease.Attempt))
+	case notifier.IsRefused(deliveryErr):
+		completion.Result = "refused"
+	default:
 		completion.Result = "permanent_error"
-		if notifier.IsRetryable(deliveryErr) {
-			completion.Result = "retryable_error"
-			completion.NextAttemptAt = w.Clock.Now().Add(schedule.FailureDelay(lease.Attempt))
-		}
 	}
 	if err := w.Repository.CompleteNotification(jobCtx, completion); err != nil {
 		events := w.Events.For("worker")
@@ -781,6 +790,13 @@ func (w *Worker) completeNotification(jobCtx context.Context, lease store.Notifi
 	case "success":
 		events.Log(jobCtx, slog.LevelInfo, "notification.delivered", "subtitle notification delivered",
 			slog.String("outcome", "success"), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+	case "skipped":
+		events.Log(jobCtx, slog.LevelInfo, "notification.skipped", "subtitle notification skipped",
+			slog.String("outcome", "skipped"), slog.String("reason", skipReason), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+	case "refused":
+		attrs := []slog.Attr{slog.String("outcome", "abandoned"), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
+		attrs = append(attrs, events.ErrorAttrs("notification_delivery", deliveryErr)...)
+		events.Log(jobCtx, slog.LevelWarn, "notification.abandoned", "subtitle notification refused and given up", attrs...)
 	case "retryable_error":
 		attrs := []slog.Attr{slog.String("outcome", "retry_scheduled"), slog.Time("retry_at", completion.NextAttemptAt), slog.Int64("duration_ms", time.Since(started).Milliseconds())}
 		attrs = append(attrs, events.ErrorAttrs("notification_delivery", deliveryErr)...)

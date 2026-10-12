@@ -56,6 +56,11 @@ instances:
     # Optional. Within each queue stage, instances with a higher value are
     # searched first. 0 to 1000. Default: 0.
     # queue_priority: 10
+    # Optional. After subsyncd adds, replaces or removes a subtitle, ask this
+    # instance to rescan that series or movie from disk (RescanSeries or
+    # RescanMovie, never a metadata refresh), so it shows the change at once
+    # instead of at its next scheduled refresh. true or false. Default: true.
+    # rescan_after_changes: false
   - name: radarr-main
     type: radarr
     url: http://radarr:7878

@@ -3,15 +3,12 @@ package workflow
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -56,9 +53,10 @@ type installationRemover interface {
 // otherwise it returns ErrManagedSubtitleChanged (or a containment error) and
 // changes nothing. The subtitle is first moved aside to a hidden name in its
 // directory under a pending_installs row; then one transaction deletes the
-// record, writes the history row (outcome removed), and queues the Silo
-// notification for the folder. A failed commit moves the subtitle back; a
-// crash in between is settled by RecoverPendingInstalls. After the commit the
+// record, writes the history row (outcome removed), and queues the
+// notifications (Silo's scan of the folder, the owning Arr instance's
+// rescan). A failed commit moves the subtitle back; a crash in between is
+// settled by RecoverPendingInstalls. After the commit the
 // hidden file and the installation's rollback copy (an older subtitle that
 // was already superseded) are deleted.
 func (i Installer) RemoveManaged(ctx context.Context, removal RemovalRequest) error {
@@ -111,7 +109,7 @@ func (i Installer) RemoveManaged(ctx context.Context, removal RemovalRequest) er
 	if err := syncDirectory(parent); err != nil {
 		return restore(err)
 	}
-	requests, err := removalNotificationRequests(removal.Media, installation, i.NotifierNames, i.now())
+	requests, err := removalNotificationRequests(removal.Media, installation, i.changeNotifierNames(ctx, removal.Media), i.now())
 	if err != nil {
 		return restore(err)
 	}
@@ -238,24 +236,7 @@ func (i Installer) recoverPendingRemoval(ctx context.Context, item store.Pending
 	return "removal_cleaned", nil
 }
 
-// removalNotificationRequests asks each notifier to rescan the folder after a
-// removal. The dedupe key differs from the install's, which may still be in
-// the outbox, and from any earlier removal of the same file.
+// removalNotificationRequests asks each notifier to rescan after a removal.
 func removalNotificationRequests(media domain.Media, installation store.Installation, notifierNames []string, now time.Time) ([]store.NotificationRequest, error) {
-	if len(notifierNames) == 0 {
-		return nil, nil
-	}
-	payload, err := json.Marshal(NotificationPayload{Media: media, SubtitlePath: installation.Path})
-	if err != nil {
-		return nil, fmt.Errorf("encode notification payload: %w", err)
-	}
-	names := append([]string(nil), notifierNames...)
-	sort.Strings(names)
-	requests := make([]store.NotificationRequest, 0, len(names))
-	for _, name := range names {
-		raw := fmt.Sprintf("removed\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d", name, installation.MediaID, installation.Language, installation.Checksum, installation.Path, now.UnixNano())
-		sum := sha256.Sum256([]byte(raw))
-		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: now})
-	}
-	return requests, nil
+	return changeNotificationRequests("removed", media, installation, notifierNames, now)
 }

@@ -297,7 +297,7 @@ docker compose exec subsyncd subsyncd providers
 - `running`: searches in progress, with title, language and `lease_until` (when the search's claim expires; its start time is not kept).
 - `providers`: only the providers that cannot be used right now.
 - `instances`: each Arr instance's last reconciliation (`reconcile_failures` is 0 when it succeeded), whether library discovery is complete, and its webhook state (`connected`, `pending`, or `unmanaged` without `server.webhook_base_url`).
-- `backlog`: waiting webhooks and Silo notifications.
+- `backlog`: waiting webhooks and notifications (Sonarr and Radarr rescans, Silo refreshes).
 
 `providers` lists every configured provider with the languages it serves and its state:
 
@@ -363,6 +363,21 @@ The first command is a read-only preview, like `doctor`: it lists how many files
 
 Subtitle files it installed for that library stay on disk. It no longer knows it wrote them, so if those media files are ever indexed again it treats them as your own subtitles and won't replace them. When subsyncd replaces a subtitle it keeps a hidden backup copy, named `.subsyncd-rollback-` plus random characters, in the same folder only until the new one is recorded; earlier versions kept it until the next replacement, and the daemon deletes those at startup. The output counts any still recorded as `rollback_copies` (normally 0); nothing will clean them up after this, so delete them by hand if you want them gone. This can't be undone, so back up `data/` first if you might want the records back.
 
+## Sonarr and Radarr rescans
+
+Sonarr and Radarr only notice subtitle files when they rescan a series or movie, which they do on a schedule (Sonarr every 12 hours, Radarr every 24). So after subsyncd installs, replaces or removes a subtitle (including the one it deletes when Arr replaces the media file, and one it moves after Arr renamed the media file), it asks that instance to rescan the series or movie: `RescanSeries` in Sonarr, `RescanMovie` in Radarr. It never asks for a refresh, which would also query Arr's metadata sources. A rescan shows the change in Arr's interface right away, lets a later rename move the subtitle along with the media, and drops a removed subtitle from Arr's list.
+
+This is on by default and uses the instance's `url` and `api_key`. To turn it off for one instance, set `rescan_after_changes: false` under it and restart:
+
+```yaml
+instances:
+  - name: sonarr-main
+    # ...
+    rescan_after_changes: false
+```
+
+Rescans go through the same queue as Silo refreshes, so they survive a restart and are retried when Arr is unreachable, times out or answers with a 5xx (after 5 minutes, then longer). Several subtitles changed for one series or movie at about the same time, such as a season pack, are sent as one rescan. If Arr answers with another error, such as 404 for a series deleted meanwhile or 401 for a wrong API key, that rescan is given up with a `notification.abandoned` warning; the next change or Arr's own schedule catches up. A failed rescan never undoes a subtitle change. Episodes indexed by an older subsyncd may not know their Sonarr series ID yet; their rescan is skipped (`notification.skipped`, `reason` `unknown_arr_id`) until subsyncd reads the episode from Sonarr again, for example after an import or rename or a `scan`.
+
 ## Optional Silo refresh
 
 subsyncd can ask Silo to rescan the containing folder after a subtitle is installed. Enter the admin API key directly in `config/config.yaml`:
@@ -413,6 +428,7 @@ Allow the container to stop fully before starting another process against the sa
 | `webhook.failed` warning | A saved Sonarr or Radarr webhook could not be applied, usually because Arr was unreachable. It is retried automatically; if it is given up (`outcome` `abandoned`), the next reconciliation applies the change from Arr's history. |
 | LAPSE reports `unsure` or `nothing` | The candidate did not pass timing verification; subsyncd will consider other matches. |
 | Silo does not refresh | Check the API address, admin key, path mapping, and notification logs. |
+| Sonarr or Radarr does not show a new subtitle | Look for `notification.delivered`, `notification.retry_scheduled` or `notification.abandoned` with `notifier` `arr_rescan` and the instance; check the instance `url` and API key, and that `rescan_after_changes` is not `false`. |
 | `queue.route_paused` warning | Every provider for that language and media kind is in a cooldown, out of quota, or has rejected credentials. Searches resume after `reset_at`; for rejected credentials, fix them and run `retry`. |
 | `reconcile.deferred` warning | Sonarr or Radarr reports a file subsyncd cannot read, such as a broken symlink. Fix or replace the file in Arr; the check repeats hourly. |
 | `webhook.connection_sync_failed` warning | subsyncd could not keep an instance's Arr webhook connection correct; it retries by itself. The `reason` says why. `arr_unreachable`: Arr did not answer within 15 seconds; check the instance `url`. When this happens while saving the connection, Arr may instead be waiting on its own test call to `server.webhook_base_url` (for example a firewall that silently drops it); check that Arr can reach that address. `arr_status`: Arr answered with an unexpected status (`status`), such as 401, 404 or 5xx; check the instance `url` and API key. `arr_response_invalid`: Arr answered with something subsyncd does not understand; check that the instance is Sonarr or Radarr v3 or later. `arr_test_rejected`: Arr refused to save the connection (a 400 validation error, typically that its test of the webhook URL got an error from subsyncd); check `server.webhook_base_url` and any reverse-proxy path prefix. `arr_test_unreachable`: Arr could not reach subsyncd at that address; fix `server.webhook_base_url`, and allow subsyncd's address through Arr's HTTP proxy if one is set. `name_unavailable`: nine connection names are taken; delete a stale `subsyncd (...)` connection in Arr. `schema_missing_webhook`: this Arr offers no Webhook connection type. `internal`: a local failure such as an unreadable database; the redacted `error` and `error_kind` fields on the same line say what failed; fix it and restart. |

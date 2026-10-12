@@ -17,6 +17,7 @@ import (
 	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
+	"subsyncd/internal/notifier"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/testutil"
@@ -65,6 +66,8 @@ type rejectHarness struct {
 	searches *int
 	// probe answers ffprobe; nil reports no embedded subtitles.
 	probe inventory.CommandRunner
+	// rescanners are the Arr rescan clients; nil rescans nothing.
+	rescanners map[string]notifier.ArrRescanner
 }
 
 // newRejectHarness indexes a movie and installs the exact-hash subtitle for
@@ -108,7 +111,7 @@ func (h *rejectHarness) open(t *testing.T) {
 	if h.probe != nil {
 		runner = h.probe
 	}
-	application, err := New(t.Context(), h.cfg, Options{Clock: testutil.NewClock(h.now), LapseRunner: capabilityRunner{}, ProbeRunner: runner, Providers: map[string]provider.Provider{"english": h.provider}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: h.media}}})
+	application, err := New(t.Context(), h.cfg, Options{Clock: testutil.NewClock(h.now), LapseRunner: capabilityRunner{}, ProbeRunner: runner, Providers: map[string]provider.Provider{"english": h.provider}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: h.media}}, ArrRescanners: h.rescanners})
 	if err != nil {
 		t.Fatal(err)
 	}

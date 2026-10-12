@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/store"
 )
@@ -213,7 +214,7 @@ func (i Installer) followRename(ctx context.Context, records installationRecordS
 		}
 		return nil
 	case oldState == sidecarMatches:
-		return i.moveRenamedSidecar(ctx, records, installation, old, expected, media.Path)
+		return i.moveRenamedSidecar(ctx, records, request.Media, installation, old, expected)
 	default:
 		reason := reconcileMissing
 		if oldState == sidecarChanged {
@@ -228,8 +229,11 @@ func (i Installer) followRename(ctx context.Context, records installationRecordS
 // at the new name is never overwritten, then removes the old name; on a
 // filesystem without hard links it renames after checking the new name is
 // free. A crash after the link leaves the same file at both names, which the
-// next reconciliation records at the new name, removing the old link.
-func (i Installer) moveRenamedSidecar(ctx context.Context, records installationRecordStore, installation store.Installation, old, expected, mediaPath string) error {
+// next reconciliation records at the new name, removing the old link. The
+// record queues the owning Arr instance's rescan in the same transaction,
+// since Arr knows the sidecar by its old name; Silo is not told, as before.
+func (i Installer) moveRenamedSidecar(ctx context.Context, records installationRecordStore, media domain.Media, installation store.Installation, old, expected string) error {
+	mediaPath := media.Fingerprint.Path
 	destination, parent, err := containedDestination(expected, i.MediaRoots)
 	if err != nil {
 		return err
@@ -269,7 +273,13 @@ func (i Installer) moveRenamedSidecar(ctx context.Context, records installationR
 	if err := syncDirectory(parent); err != nil {
 		return err
 	}
-	if err := records.RebaseInstallation(context.WithoutCancel(ctx), installation, destination, mediaPath); err != nil {
+	moved := installation
+	moved.Path, moved.MediaPath = destination, mediaPath
+	requests, err := changeNotificationRequests("moved", media, moved, arrRescanOnly(i.changeNotifierNames(ctx, media)), i.now())
+	if err == nil {
+		err = i.rebaseWithNotifications(context.WithoutCancel(ctx), records, installation, destination, mediaPath, requests)
+	}
+	if err != nil {
 		if linked {
 			_ = removeSameFile(destination, source)
 		} else {
@@ -286,6 +296,25 @@ func (i Installer) moveRenamedSidecar(ctx context.Context, records installationR
 	}
 	_ = syncDirectory(sourceParent)
 	i.logRenamed(ctx, installation, true)
+	return nil
+}
+
+// notifyingRebaser records a sidecar's new path together with notification
+// intents. Repositories without it (test doubles) record the path only.
+type notifyingRebaser interface {
+	RebaseInstallationWithNotifications(context.Context, store.Installation, string, string, []store.NotificationRequest) ([]store.NotificationEnqueueResult, error)
+}
+
+func (i Installer) rebaseWithNotifications(ctx context.Context, records installationRecordStore, installation store.Installation, path, mediaPath string, requests []store.NotificationRequest) error {
+	rebaser, ok := records.(notifyingRebaser)
+	if !ok || len(requests) == 0 {
+		return records.RebaseInstallation(ctx, installation, path, mediaPath)
+	}
+	enqueued, err := rebaser.RebaseInstallationWithNotifications(ctx, installation, path, mediaPath, requests)
+	if err != nil {
+		return err
+	}
+	i.logEnqueuedNotifications(ctx, enqueued)
 	return nil
 }
 

@@ -64,7 +64,11 @@ type Options struct {
 	ProbeRunner inventory.CommandRunner
 	Providers   map[string]provider.Provider
 	Catalogs    map[string]catalog.Catalog
-	Worker      Runner
+	// ArrRescanners replace the Arr clients that rescan a series or movie
+	// after a sidecar change, by instance. When nil, New builds them from the
+	// configuration unless Catalogs is supplied (then nothing is rescanned).
+	ArrRescanners map[string]notifier.ArrRescanner
+	Worker        Runner
 	// Version is the release the daemon reports to status.
 	Version string
 	// Command is the CLI command the application is opened for. It chooses
@@ -400,8 +404,21 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		notifierNames = append(notifierNames, name)
 	}
 	sort.Strings(notifierNames)
+	// The Arr rescan is queued per change, only for its own instance, so it
+	// stays out of the notifier names every change queues.
+	rescanners, err := buildArrRescanners(cfg, options)
+	if err != nil {
+		return nil, err
+	}
+	rescanInstances := make(map[string]bool, len(rescanners))
+	for name := range rescanners {
+		rescanInstances[name] = true
+	}
+	if len(rescanners) > 0 {
+		notifiers[notifier.ArrRescanName] = notifier.NewArrRescan(rescanners)
+	}
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner, MediaRoots: cfg.MediaRoots}}
-	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
+	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, ArrRescanInstances: rescanInstances, Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
 	// Only a mutable assembly gets here (read-only diagnostics returned
 	// above): it holds the mutation lock, so no other process can be
 	// mid-install and any pending install was interrupted by a crash. It runs
@@ -601,6 +618,29 @@ func discardRollbackCopies(ctx context.Context, sweeper rollbackCopySweeper, eve
 		appEvents.Log(ctx, slog.LevelWarn, "install.rollback_sweep_timed_out", "deleting the rollback copies of replaced subtitles took too long; continuing startup and retrying at the next start",
 			slog.Int64("timeout_ms", timeout.Milliseconds()))
 	}
+}
+
+// buildArrRescanners returns the rescan client of every instance whose
+// rescan_after_changes is on.
+func buildArrRescanners(cfg config.Config, options Options) (map[string]notifier.ArrRescanner, error) {
+	result := make(map[string]notifier.ArrRescanner, len(cfg.Instances))
+	for _, instance := range cfg.Instances {
+		if !instance.RescanEnabled() {
+			continue
+		}
+		if options.ArrRescanners != nil || options.Catalogs != nil {
+			if supplied := options.ArrRescanners[instance.Name]; supplied != nil {
+				result[instance.Name] = supplied
+			}
+			continue
+		}
+		client, err := catalog.NewArrRescanClient(instance.Name, instance.Type, instance.URL, instance.APIKey, nil)
+		if err != nil {
+			return nil, fmt.Errorf("configure Arr instance %s rescans: %w", instance.Name, err)
+		}
+		result[instance.Name] = client
+	}
+	return result, nil
 }
 
 func buildCatalogs(cfg config.Config, supplied map[string]catalog.Catalog, events *observability.Emitter) (map[string]catalog.Catalog, error) {

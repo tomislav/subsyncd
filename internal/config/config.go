@@ -97,6 +97,15 @@ type InstanceConfig struct {
 	// QueuePriority ranks this instance's searches within each queue class.
 	// Higher runs first; the default 0 keeps queue order unchanged.
 	QueuePriority int `yaml:"queue_priority"`
+	// RescanAfterChanges asks the instance to rescan a series or movie after
+	// subsyncd adds, replaces or removes one of its subtitle sidecars. Unset
+	// means on; see RescanEnabled.
+	RescanAfterChanges *bool `yaml:"rescan_after_changes"`
+}
+
+// RescanEnabled reports whether rescan_after_changes is on (the default).
+func (c InstanceConfig) RescanEnabled() bool {
+	return c.RescanAfterChanges == nil || *c.RescanAfterChanges
 }
 
 type ProviderSpec struct {

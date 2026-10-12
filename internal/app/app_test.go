@@ -373,6 +373,8 @@ func TestLoggingDocumentationContract(t *testing.T) {
 			"control.request_completed", "control.request_failed", "install.removed",
 			"install.record_dropped", "install.renamed", "install.rollback_sweep_completed",
 			"install.rollback_cleanup_failed", "scan.completed", "scan.failed",
+			"notification.delivered", "notification.retry_scheduled", "notification.abandoned",
+			"notification.skipped", "arr_rescan", "series_id", "movie_id",
 		}},
 		{"../../docs/development/logging.md", []string{
 			"service", "level", "component", "event", "job_id", "media_id", "duration_ms",
@@ -380,6 +382,9 @@ func TestLoggingDocumentationContract(t *testing.T) {
 			"control.request_completed", "control.request_failed", "install.removed",
 			"install.record_dropped", "install.renamed", "install.rollback_sweep_completed",
 			"install.rollback_cleanup_failed", "scan.completed", "scan.failed",
+			"notification.queued", "notification.delivered", "notification.retry_scheduled",
+			"notification.abandoned", "notification.failed", "notification.skipped",
+			"arr_rescan", "series_id", "movie_id", "rescan_disabled", "unknown_arr_id",
 		}},
 	} {
 		t.Run(document.path, func(t *testing.T) {

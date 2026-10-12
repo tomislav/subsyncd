@@ -92,8 +92,11 @@ type Installer struct {
 	// Link creates the fresh-install hard link; nil uses os.Link.
 	Link          func(oldname, newname string) error
 	NotifierNames []string
-	Now           func() time.Time
-	Events        *observability.Emitter
+	// ArrRescanInstances are the Arr instances (rescan_after_changes) asked
+	// to rescan a series or movie after one of its sidecars changes on disk.
+	ArrRescanInstances map[string]bool
+	Now                func() time.Time
+	Events             *observability.Emitter
 	// StripWatermarks drops subtitle-site advert cues from SRT subtitles.
 	StripWatermarks bool
 }
@@ -300,7 +303,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 	}
 	fingerprint := request.Media.Fingerprint
 	installation := store.Installation{Fallback: request.Fallback, MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: published, ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, CandidateSignature: request.CandidateSignature, ArtifactChecksum: request.ArtifactChecksum, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
-	requests, err := notificationRequests(request.Media, installation, i.NotifierNames, i.now())
+	requests, err := notificationRequests(request.Media, installation, i.changeNotifierNames(ctx, request.Media), i.now())
 	if err != nil {
 		return restore(err)
 	}

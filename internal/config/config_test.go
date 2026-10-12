@@ -779,3 +779,41 @@ func TestValidWebhookBaseURL(t *testing.T) {
 		}
 	}
 }
+
+func TestInstanceRescanAfterChangesDefaultsOnAndLoads(t *testing.T) {
+	root := t.TempDir()
+	extra := fmt.Sprintf(`
+languages:
+  en: {providers: [subdl-main]}
+instances:
+  - {name: radarr-main, type: radarr, url: "http://radarr:7878", api_key: key, rescan_after_changes: false, path_mappings: [{remote: /movies, local: %q}]}
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, path_mappings: [{remote: /tv, local: %q}]}
+  - {name: sonarr-4k, type: sonarr, url: "http://sonarr-4k:8989", api_key: key, rescan_after_changes: true, path_mappings: [{remote: /tv, local: %q}]}
+`, root, root, root)
+	cfg, err := loadText(t, validConfigWithoutInstances(root, extra))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []bool{false, true, true} {
+		if got := cfg.Instances[index].RescanEnabled(); got != want {
+			t.Fatalf("%s rescan_after_changes = %v, want %v", cfg.Instances[index].Name, got, want)
+		}
+	}
+}
+
+func TestValidateRejectsNonBooleanRescanAfterChanges(t *testing.T) {
+	for _, value := range []string{"1", "sometimes", "[true]", "{on: true}"} {
+		root := t.TempDir()
+		extra := fmt.Sprintf(`
+languages:
+  en: {providers: [subdl-main]}
+instances:
+  - {name: sonarr-main, type: sonarr, url: "http://sonarr:8989", api_key: key, rescan_after_changes: %s, path_mappings: [{remote: /tv, local: %q}]}
+`, value, root)
+		if _, err := loadText(t, validConfigWithoutInstances(root, extra)); err == nil {
+			t.Fatalf("rescan_after_changes %s accepted", value)
+		} else if !strings.Contains(err.Error(), "bool") && !strings.Contains(err.Error(), "rescan_after_changes") {
+			t.Fatalf("rescan_after_changes %s error = %v", value, err)
+		}
+	}
+}
