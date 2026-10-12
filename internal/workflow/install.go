@@ -315,11 +315,14 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 		return restore(fmt.Errorf("record installed subtitle: %w", err))
 	}
 	i.logEnqueuedNotifications(ctx, enqueued)
+	// A copy an older build kept for the previous install is not needed
+	// either; the startup sweep deletes it if this fails.
 	if found && existing.RollbackPath != "" && filepath.Clean(existing.RollbackPath) != filepath.Clean(rollbackPath) {
 		if err := i.inject(StageCleanup); err == nil {
 			_ = removeContainedFile(existing.RollbackPath, parent)
 		}
 	}
+	installation.RollbackPath = i.discardRollback(ctx, installation, parent)
 	return installation, nil
 }
 

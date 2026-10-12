@@ -407,6 +407,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	// mid-install and any pending install was interrupted by a crash. It runs
 	// before the worker exists, so no install of this process races it.
 	recoverPendingInstalls(ctx, installer, events, pendingInstallRecoveryTimeout)
+	discardRollbackCopies(ctx, installer, events, pendingInstallRecoveryTimeout)
 	workflows := make(map[domain.Language]*workflow.Service, len(routes))
 	// Languages share providers, so a refusal confirms across all of them.
 	refusals := &workflow.RefusalLedger{}
@@ -557,6 +558,47 @@ func recoverPendingInstalls(ctx context.Context, recoverer pendingInstallRecover
 			return
 		}
 		appEvents.Log(ctx, slog.LevelWarn, "install.recovery_timed_out", "settling interrupted subtitle installs took too long; continuing startup and retrying them at the next start",
+			slog.Int64("timeout_ms", timeout.Milliseconds()))
+	}
+}
+
+type rollbackCopySweeper interface {
+	DiscardRollbackCopies(context.Context) (workflow.RollbackSweep, error)
+}
+
+// discardRollbackCopies deletes the hidden rollback copies older builds kept
+// beside installed subtitles (Installer.DiscardRollbackCopies), waiting at
+// most timeout. Like recoverPendingInstalls it runs after the mutation lock
+// is held and before the worker exists, and a sweep stuck on a hung mount is
+// abandoned: its context is canceled, so it changes nothing more once the
+// blocked call returns, and what is left is swept at the next start.
+func discardRollbackCopies(ctx context.Context, sweeper rollbackCopySweeper, events *observability.Emitter, timeout time.Duration) {
+	appEvents := events.For("app")
+	sweepCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	type outcome struct {
+		sweep workflow.RollbackSweep
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		sweep, err := sweeper.DiscardRollbackCopies(sweepCtx)
+		done <- outcome{sweep: sweep, err: err}
+	}()
+	select {
+	case result := <-done:
+		if result.sweep.Removed > 0 || result.sweep.Skipped > 0 {
+			appEvents.Log(ctx, slog.LevelInfo, "install.rollback_sweep_completed", "deleted the rollback copies of replaced subtitles",
+				slog.Int("removed_count", result.sweep.Removed), slog.Int("skipped_count", result.sweep.Skipped))
+		}
+		if result.err != nil {
+			appEvents.Log(ctx, slog.LevelWarn, "install.rollback_sweep_failed", "could not delete every rollback copy of replaced subtitles; retried at the next start", appEvents.ErrorAttrs("rollback_cleanup", result.err)...)
+		}
+	case <-sweepCtx.Done():
+		if ctx.Err() != nil {
+			return
+		}
+		appEvents.Log(ctx, slog.LevelWarn, "install.rollback_sweep_timed_out", "deleting the rollback copies of replaced subtitles took too long; continuing startup and retrying at the next start",
 			slog.Int64("timeout_ms", timeout.Milliseconds()))
 	}
 }
@@ -1056,7 +1098,7 @@ func (a *App) explainLanguage(ctx context.Context, mediaID int64, media domain.M
 		return control.ExplainResult{}, err
 	}
 	if installed {
-		result.Installation = &control.ExplainInstallation{Provider: installation.ProviderID, Candidate: installation.CandidateID, Checksum: installation.Checksum, Score: json.RawMessage(compactJSON(installation.ScoreJSON)), Lapse: json.RawMessage(compactJSON(installation.SyncResultJSON)), Rollback: installation.RollbackPath != "", Fallback: installation.Fallback}
+		result.Installation = &control.ExplainInstallation{Provider: installation.ProviderID, Candidate: installation.CandidateID, Checksum: installation.Checksum, Score: json.RawMessage(compactJSON(installation.ScoreJSON)), Lapse: json.RawMessage(compactJSON(installation.SyncResultJSON)), Fallback: installation.Fallback}
 	}
 	packs, err := a.Repository.ListReusablePacks(ctx, store.PackLookup{SeriesIDs: media.ExternalIDs, SeriesTitle: media.Title, SeriesYear: media.Year, Season: media.Season, Episode: media.Episode, AbsoluteEpisode: media.AbsoluteEpisode, Language: language.String()}, a.Clock.Now())
 	if err != nil {

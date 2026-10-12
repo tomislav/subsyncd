@@ -154,7 +154,9 @@ func (i Installer) recoverPendingInstall(ctx context.Context, item store.Pending
 	if item.StagedPath != "" {
 		cleanup = append(cleanup, removeContainedFile(item.StagedPath, parent))
 	}
-	// A recorded install owns its rollback copy until the next replacement.
+	// A recorded install keeps its rollback copy here, as the install would
+	// have until it deleted it; DiscardRollbackCopies, which runs next,
+	// deletes it.
 	if item.RollbackPath != "" && !recorded {
 		cleanup = append(cleanup, removeContainedFile(item.RollbackPath, parent))
 	}

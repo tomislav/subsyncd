@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -57,4 +58,47 @@ func (r *Repository) RebaseInstallation(ctx context.Context, installation Instal
 		return fmt.Errorf("rebase installation: %w", err)
 	}
 	return requireOneRow(result, "installation changed before it was rebased")
+}
+
+// RollbackCopy names an installation's hidden rollback copy and the sidecar
+// it sits beside.
+type RollbackCopy struct {
+	MediaID      int64
+	Language     string
+	Path         string
+	RollbackPath string
+}
+
+// ListRollbackCopies lists the installations that still record a rollback
+// copy.
+func (r *Repository) ListRollbackCopies(ctx context.Context) ([]RollbackCopy, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT media_id, language, path, rollback_path FROM installations WHERE rollback_path<>'' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list rollback copies: %w", err)
+	}
+	var copies []RollbackCopy
+	for rows.Next() {
+		var item RollbackCopy
+		if err := rows.Scan(&item.MediaID, &item.Language, &item.Path, &item.RollbackPath); err != nil {
+			return nil, errors.Join(fmt.Errorf("scan rollback copy: %w", err), rows.Close())
+		}
+		copies = append(copies, item)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("list rollback copies: %w", err)
+	}
+	return copies, nil
+}
+
+// ClearInstallationRollback forgets an installation's rollback copy once it
+// is deleted. A record that no longer names that copy (replaced or removed
+// meanwhile) is left as it is.
+func (r *Repository) ClearInstallationRollback(ctx context.Context, mediaID int64, language, rollbackPath string) error {
+	if rollbackPath == "" {
+		return nil
+	}
+	if _, err := r.store.db.ExecContext(ctx, `UPDATE installations SET rollback_path='' WHERE media_id=? AND language=? AND rollback_path=?`, mediaID, language, rollbackPath); err != nil {
+		return fmt.Errorf("clear installation rollback copy: %w", err)
+	}
+	return nil
 }

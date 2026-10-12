@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"subsyncd/internal/catalog"
+	"subsyncd/internal/domain"
 	"subsyncd/internal/observability"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
+	"subsyncd/internal/workflow"
 )
 
 func TestOnlyMutableAssemblySettlesPendingInstalls(t *testing.T) {
@@ -134,5 +136,103 @@ func TestStartupWarnsAboutWebhooksOfUnconfiguredInstances(t *testing.T) {
 	}
 	if len(warnings) != 1 || warnings[0]["instance"] != "old-radarr" || warnings[0]["webhook_count"] != float64(2) || warnings[0]["level"] != "warn" {
 		t.Fatalf("orphaned webhook warnings = %#v", warnings)
+	}
+}
+
+func TestMutableStartDeletesRollbackCopiesOlderBuildsKept(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	options := Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}}
+	daemon, err := New(ctx, cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := cfg.MediaRoots[0]
+	media := domain.Media{EntityID: 7, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 7}, Title: "Movie", Fingerprint: domain.MediaFingerprint{Path: filepath.Join(root, "Movie.mkv"), FileID: 7, Size: 5, ModTime: time.Unix(100, 0).UTC()}}
+	mediaID, _, err := daemon.Repository.UpsertMedia(ctx, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := filepath.Join(root, "Movie.en.srt")
+	rollback := filepath.Join(root, ".subsyncd-rollback-123")
+	for _, path := range []string{sidecar, rollback} {
+		if err := os.WriteFile(path, []byte("subtitle"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installation := store.Installation{MediaID: mediaID, Language: "en", Path: sidecar, Checksum: "sum", RollbackPath: rollback, MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 5, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano()}
+	if err := daemon.Repository.RecordInstallation(ctx, installation); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A read-only diagnostic leaves the copy alone.
+	readOnly := options
+	readOnly.ReadOnly = true
+	diagnostic, err := New(ctx, cfg, readOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostic.Close()
+	if _, err := os.Stat(rollback); err != nil {
+		t.Fatalf("read-only assembly touched the rollback copy: %v", err)
+	}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Events = events
+	restarted, err := New(ctx, cfg, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if _, err := os.Stat(rollback); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback copy after a mutable start: %v", err)
+	}
+	if got, _, err := restarted.Repository.GetInstallation(ctx, mediaID, "en"); err != nil || got.RollbackPath != "" {
+		t.Fatalf("installation = %+v/%v", got, err)
+	}
+	var found bool
+	for _, record := range decodeLogRecords(t, logs.String()) {
+		if record["event"] == "install.rollback_sweep_completed" && record["removed_count"] == float64(1) && record["skipped_count"] == float64(0) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no install.rollback_sweep_completed summary: %s", logs.String())
+	}
+}
+
+type blockingSweeper struct{ release chan struct{} }
+
+func (s blockingSweeper) DiscardRollbackCopies(ctx context.Context) (workflow.RollbackSweep, error) {
+	<-s.release
+	return workflow.RollbackSweep{}, ctx.Err()
+}
+
+func TestRollbackSweepOnAHungMountTimesOut(t *testing.T) {
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sweeper := blockingSweeper{release: make(chan struct{})}
+	defer close(sweeper.release)
+	started := time.Now()
+	discardRollbackCopies(context.Background(), sweeper, events, 50*time.Millisecond)
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("startup waited %s for a hung sweep", elapsed)
+	}
+	var found bool
+	for _, record := range decodeLogRecords(t, logs.String()) {
+		if record["event"] == "install.rollback_sweep_timed_out" && record["level"] == "warn" && record["timeout_ms"] == float64(50) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no install.rollback_sweep_timed_out warning: %s", logs.String())
 	}
 }

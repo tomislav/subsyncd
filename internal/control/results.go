@@ -294,7 +294,6 @@ type ExplainInstallation struct {
 	Checksum  string          `json:"checksum"`
 	Score     json.RawMessage `json:"score"`
 	Lapse     json.RawMessage `json:"lapse"`
-	Rollback  bool            `json:"rollback"`
 	Fallback  bool            `json:"fallback"`
 }
 
@@ -378,7 +377,7 @@ func (r ExplainResult) Text() string {
 		fmt.Fprintf(&output, "  rejection: provider=%s result=%s reason=%s artifact=%s expires=never\n", rejection.Provider, rejection.ResultID, rejection.Reason, rejection.Artifact)
 	}
 	if installation := r.Installation; installation != nil {
-		fmt.Fprintf(&output, "installation: provider=%s candidate=%s checksum=%s score=%s lapse=%s rollback=%t fallback=%t\n", installation.Provider, installation.Candidate, installation.Checksum, installation.Score, installation.Lapse, installation.Rollback, installation.Fallback)
+		fmt.Fprintf(&output, "installation: provider=%s candidate=%s checksum=%s score=%s lapse=%s fallback=%t\n", installation.Provider, installation.Candidate, installation.Checksum, installation.Score, installation.Lapse, installation.Fallback)
 	} else {
 		output.WriteString("installation: none\n")
 	}

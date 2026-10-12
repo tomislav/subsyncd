@@ -25,7 +25,8 @@ type removalFixture struct {
 }
 
 // newRemovalFixture installs a managed subtitle and then replaces it, so the
-// installation owns a rollback copy of the first one.
+// installation owns a rollback copy of the first one: deleting the copy after
+// the install fails, as it did for copies older builds kept.
 func newRemovalFixture(t *testing.T) *removalFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -55,7 +56,14 @@ func newRemovalFixture(t *testing.T) *removalFixture {
 		t.Fatal(err)
 	}
 	request.SourcePath = writeInstallFile(t, filepath.Join(t.TempDir(), "replacement.srt"), strings.Replace(installSRT, "Hello", "Replacement", 1))
-	installation, err := installer.Install(ctx, request)
+	keepRollback := installer
+	keepRollback.Fault = func(stage InstallStage) error {
+		if stage == StageCleanup {
+			return errors.New("injected cleanup failure")
+		}
+		return nil
+	}
+	installation, err := keepRollback.Install(ctx, request)
 	if err != nil {
 		t.Fatal(err)
 	}

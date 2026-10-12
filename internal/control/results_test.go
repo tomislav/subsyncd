@@ -46,7 +46,7 @@ func TestExplainResultTextSurvivesJSON(t *testing.T) {
 		Search:     &ExplainSearch{State: "idle", Outcome: "installed", Priority: "missing", MissingAttempt: 1, NextAttemptAt: mtime},
 		Candidates: []ExplainCandidate{{Provider: "p", ResultID: "r", Score: json.RawMessage(`{"total":9}`), Identity: json.RawMessage(`{}`)}},
 		Rejections: []ExplainRejection{{Provider: "p", ResultID: "bad", Reason: "lapse_unsure", Artifact: "abc"}}, RejectionsSuperseded: 1,
-		Installation:      &ExplainInstallation{Provider: "p", Candidate: "r", Checksum: "c", Score: json.RawMessage(`{}`), Lapse: json.RawMessage(`{}`), Rollback: true},
+		Installation:      &ExplainInstallation{Provider: "p", Candidate: "r", Checksum: "c", Score: json.RawMessage(`{}`), Lapse: json.RawMessage(`{}`)},
 		PackCacheReusable: 2,
 		ProviderStates:    []ExplainProviderState{{Provider: "p", Scope: "search", Reason: "rate", Remaining: 4, ResetAt: mtime}},
 	}
@@ -67,7 +67,7 @@ func TestExplainResultTextSurvivesJSON(t *testing.T) {
 		"search: state=idle outcome=installed priority=missing rerun_pending=false missing_attempt=1 failure_attempt=0 next_attempt=2026-10-01T09:00:00+02:00\n" +
 		"candidates: 1\n  candidate: provider=p result=r score={\"total\":9} identity={}\n" +
 		"candidate_rejections: 1\ncandidate_rejections_superseded: 1\n  rejection: provider=p result=bad reason=lapse_unsure artifact=abc expires=never\n" +
-		"installation: provider=p candidate=r checksum=c score={} lapse={} rollback=true fallback=false\n" +
+		"installation: provider=p candidate=r checksum=c score={} lapse={} fallback=false\n" +
 		"pack_cache: reusable=2\nprovider_state: provider=p scope=search reason=rate remaining=4 reset=2026-10-01T09:00:00+02:00 disabled=false"
 	if got := original.Text(); got != want {
 		t.Fatalf("Text() =\n%s\nwant\n%s", got, want)

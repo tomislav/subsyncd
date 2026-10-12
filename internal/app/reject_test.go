@@ -200,9 +200,14 @@ func TestRejectRemovesWhenNoReplacement(t *testing.T) {
 	if _, err := h.app.Reject(ctx, rejectArgs("en", "out_of_sync")); err != nil {
 		t.Fatal(err)
 	}
+	// The replacement deleted the rollback copy of the first subtitle once
+	// it was recorded.
 	installation, _, err := h.app.Repository.GetInstallation(ctx, h.mediaID, "en")
-	if err != nil || installation.RollbackPath == "" {
-		t.Fatalf("replacement has no rollback copy: %+v/%v", installation, err)
+	if err != nil || installation.RollbackPath != "" {
+		t.Fatalf("replacement kept a rollback copy: %+v/%v", installation, err)
+	}
+	if copies, err := filepath.Glob(filepath.Join(h.cfg.MediaRoots[0], ".subsyncd-rollback-*")); err != nil || len(copies) != 0 {
+		t.Fatalf("rollback copies = %v/%v", copies, err)
 	}
 	// The install notifications were delivered.
 	inspection, err := sql.Open("sqlite", filepath.Join(h.cfg.DataDir, "subsyncd.db"))
@@ -220,9 +225,6 @@ func TestRejectRemovesWhenNoReplacement(t *testing.T) {
 	}
 	if _, err := os.Lstat(h.sidecar); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rejected subtitle remains: %v", err)
-	}
-	if _, err := os.Lstat(installation.RollbackPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("rollback copy remains: %v", err)
 	}
 	if _, found, err := h.app.Repository.GetInstallation(ctx, h.mediaID, "en"); err != nil || found {
 		t.Fatalf("installation found/error = %v/%v", found, err)

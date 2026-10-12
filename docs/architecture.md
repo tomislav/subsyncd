@@ -90,7 +90,7 @@ Installation:
 2. fsyncs and atomically publishes it: a fresh sidecar is hard-linked so a file created concurrently at the destination is never overwritten (falling back to rename on filesystems without hard links), and a managed replacement is renamed;
 3. fsyncs the directory and commits checksum-bound provenance.
 
-A pending-install record spans publication to commit; startup undoes any publication a crash left unrecorded (restoring the rollback copy or removing the new file) and removes staging leftovers. Managed replacement uses a retained rollback copy. If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
+A pending-install record spans publication to commit; startup undoes any publication a crash left unrecorded (restoring the rollback copy or removing the new file) and removes staging leftovers. Managed replacement keeps a rollback copy of the previous subtitle until the installation is recorded, then deletes it; a mutable start deletes any copy still recorded (`Installer.DiscardRollbackCopies`). If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
 
 A committed installation may enqueue a checksum-deduplicated Silo notification. Notification leases and retries are independent, so notification failure never rolls back subtitle acquisition.
 
