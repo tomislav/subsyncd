@@ -406,9 +406,18 @@ func (a *App) runClaimedSearch(ctx context.Context, jobID string, mediaID int64,
 		return workflow.Result{}, fmt.Errorf("%w: %w", errManualLeaseLost, renewErr)
 	}
 	if errors.Is(err, errManualTimedOut) {
-		return workflow.Result{}, a.recordManualTimeout(ctx, jobID, mediaID, language, err)
+		return workflow.Result{}, a.recordManualTimeout(ctx, jobID, mediaID, media, language, err)
 	}
 	if err != nil {
+		return workflow.Result{}, err
+	}
+	// The history row is not in the installer's transaction: a crash between
+	// the install and this write loses one history row and nothing else.
+	detail := store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(media), ProviderID: result.Candidate.ProviderID, Manual: true}
+	if len(result.Candidate.ReleaseNames) > 0 {
+		detail.ReleaseName = result.Candidate.ReleaseNames[0]
+	}
+	if err := a.Repository.RecordSearchHistory(ctx, mediaID, language, string(result.Outcome), detail, a.Clock.Now()); err != nil {
 		return workflow.Result{}, err
 	}
 	if opts.revived && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
@@ -499,14 +508,16 @@ func (a *App) runManualWorkflow(ctx context.Context, mediaID int64, media domain
 // recordManualTimeout completes a timed-out manual search as a technical
 // failure on the failure schedule while jobID still owns it, so the worker
 // does not lease it again at once beside a stuck workflow.
-func (a *App) recordManualTimeout(ctx context.Context, jobID string, mediaID int64, language domain.Language, cause error) error {
+func (a *App) recordManualTimeout(ctx context.Context, jobID string, mediaID int64, media domain.Media, language domain.Language, cause error) error {
 	events := a.events().For("app")
 	events.Log(ctx, slog.LevelWarn, "job.timed_out", "subtitle job exceeded its time limit", slog.String("priority", "manual"))
 	status, err := a.Repository.GetSearchStatus(ctx, mediaID, language)
 	if err != nil {
 		return errors.Join(cause, err)
 	}
-	if _, err := a.Repository.CompleteSearch(ctx, schedule.Scheduler{Clock: a.Clock}.Failure(jobID, status.FailureAttempt, "workflow_error")); err != nil {
+	completion := schedule.Scheduler{Clock: a.Clock}.Failure(jobID, status.FailureAttempt, "workflow_error")
+	completion.History = &store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(media), Manual: true}
+	if _, err := a.Repository.CompleteSearch(ctx, completion); err != nil {
 		return errors.Join(cause, err)
 	}
 	return cause

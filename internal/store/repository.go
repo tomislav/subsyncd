@@ -131,6 +131,10 @@ type SearchCompletion struct {
 	// PreserveQueueOrder keeps the search's queue position while NextAttemptAt
 	// moves, so a throttle changes when it may run but not where it runs.
 	PreserveQueueOrder bool
+	// History, when set, records the finished search in the search history in
+	// the completion's transaction, after the owner guard succeeds. A deleted
+	// media row records nothing.
+	History *SearchHistoryDetail
 }
 
 type SearchCompletionResult struct {
@@ -297,20 +301,24 @@ type PackMemberRecord struct {
 }
 
 type Installation struct {
-	Fallback       bool
-	MediaID        int64
-	Language       string
-	Path           string
-	Checksum       string
-	ProviderID     string
-	CandidateID    string
-	ScoreJSON      []byte
-	SyncResultJSON []byte
-	RollbackPath   string
-	MediaPath      string
-	MediaFileID    int64
-	MediaSize      int64
-	MediaModTimeNS int64
+	Fallback    bool
+	MediaID     int64
+	Language    string
+	Path        string
+	Checksum    string
+	ProviderID  string
+	CandidateID string
+	// CandidateSignature and ArtifactChecksum identify the installed candidate
+	// as candidate_rejections does; empty for installations that predate them.
+	CandidateSignature string
+	ArtifactChecksum   string
+	ScoreJSON          []byte
+	SyncResultJSON     []byte
+	RollbackPath       string
+	MediaPath          string
+	MediaFileID        int64
+	MediaSize          int64
+	MediaModTimeNS     int64
 	// PendingInstallID, when set, names the pending_installs row this
 	// installation settles. Recording deletes it in the same transaction, so
 	// a recorded install never leaves a pending row behind. It is not stored.
@@ -1046,10 +1054,11 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 	}
 	defer func() { _ = tx.Rollback() }()
 	var rerunScheduled, deleted bool
+	var mediaID int64
 	var language string
 	var fingerprint domain.MediaFingerprint
 	var modTime int64
-	if err := tx.QueryRowContext(ctx, `SELECT search_states.rerun_requested, media.deleted, search_states.language, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE search_states.lease_owner=?`, completion.JobID).Scan(&rerunScheduled, &deleted, &language, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT search_states.rerun_requested, media.deleted, search_states.media_id, search_states.language, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE search_states.lease_owner=?`, completion.JobID).Scan(&rerunScheduled, &deleted, &mediaID, &language, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); errors.Is(err, sql.ErrNoRows) {
 		return SearchCompletionResult{}, fmt.Errorf("search lease %s not found", completion.JobID)
 	} else if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("read search completion state: %w", err)
@@ -1104,6 +1113,11 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 	}
 	if count != 1 {
 		return SearchCompletionResult{}, fmt.Errorf("search lease %s not found", completion.JobID)
+	}
+	if completion.History != nil && !deleted {
+		if err := insertSearchHistory(ctx, tx, mediaID, domain.Language(language), completion.Outcome, *completion.History, time.Now().UTC()); err != nil {
+			return SearchCompletionResult{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("commit search completion: %w", err)
@@ -1644,7 +1658,7 @@ func (r *Repository) DeletePack(ctx context.Context, packID int64) error {
 
 func (r *Repository) GetInstallation(ctx context.Context, mediaID int64, language domain.Language) (Installation, bool, error) {
 	var installation Installation
-	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, fallback FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath, &installation.MediaPath, &installation.MediaFileID, &installation.MediaSize, &installation.MediaModTimeNS, &installation.Fallback)
+	err := r.store.db.QueryRowContext(ctx, `SELECT media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, fallback, candidate_signature, artifact_checksum FROM installations WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&installation.MediaID, &installation.Language, &installation.Path, &installation.Checksum, &installation.ProviderID, &installation.CandidateID, &installation.ScoreJSON, &installation.SyncResultJSON, &installation.RollbackPath, &installation.MediaPath, &installation.MediaFileID, &installation.MediaSize, &installation.MediaModTimeNS, &installation.Fallback, &installation.CandidateSignature, &installation.ArtifactChecksum)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Installation{}, false, nil
 	}
@@ -1696,7 +1710,7 @@ func (r *Repository) RecordInstallationWithNotifications(ctx context.Context, in
 	if len(installation.SyncResultJSON) == 0 {
 		installation.SyncResultJSON = []byte(`{}`)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, installed_at_ns, fallback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET path=excluded.path, checksum=excluded.checksum, provider_id=excluded.provider_id, candidate_id=excluded.candidate_id, score_json=excluded.score_json, sync_result_json=excluded.sync_result_json, rollback_path=excluded.rollback_path, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, installed_at_ns=excluded.installed_at_ns, fallback=excluded.fallback`, installation.MediaID, installation.Language, installation.Path, installation.Checksum, installation.ProviderID, installation.CandidateID, installation.ScoreJSON, installation.SyncResultJSON, installation.RollbackPath, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS, now, installation.Fallback)
+	_, err = tx.ExecContext(ctx, `INSERT INTO installations(media_id, language, path, checksum, provider_id, candidate_id, score_json, sync_result_json, rollback_path, media_path, media_file_id, media_size, media_mod_time_ns, installed_at_ns, fallback, candidate_signature, artifact_checksum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language) DO UPDATE SET path=excluded.path, checksum=excluded.checksum, provider_id=excluded.provider_id, candidate_id=excluded.candidate_id, score_json=excluded.score_json, sync_result_json=excluded.sync_result_json, rollback_path=excluded.rollback_path, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, installed_at_ns=excluded.installed_at_ns, fallback=excluded.fallback, candidate_signature=excluded.candidate_signature, artifact_checksum=excluded.artifact_checksum`, installation.MediaID, installation.Language, installation.Path, installation.Checksum, installation.ProviderID, installation.CandidateID, installation.ScoreJSON, installation.SyncResultJSON, installation.RollbackPath, installation.MediaPath, installation.MediaFileID, installation.MediaSize, installation.MediaModTimeNS, now, installation.Fallback, installation.CandidateSignature, installation.ArtifactChecksum)
 	if err != nil {
 		return nil, fmt.Errorf("record installation: %w", err)
 	}

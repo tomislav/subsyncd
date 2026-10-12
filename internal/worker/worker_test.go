@@ -69,6 +69,23 @@ func TestRunSearchLeaseCompletesUnsupportedMediaWithoutWorkflow(t *testing.T) {
 	}
 }
 
+func TestWorkerCompletionCarriesHistoryDetail(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeInstalled, Candidate: domain.Candidate{ProviderID: "alpha", ResultID: "r1", ReleaseNames: []string{"Movie.1080p"}}}}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	if err := worker.runSearchLease(context.Background(), repository.searches[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.searchCompletions) != 1 {
+		t.Fatalf("completions = %#v", repository.searchCompletions)
+	}
+	history := repository.searchCompletions[0].History
+	if history == nil || history.MediaTitle != "Movie" || history.ProviderID != "alpha" || history.ReleaseName != "Movie.1080p" || history.Manual {
+		t.Fatalf("history detail = %#v", history)
+	}
+}
+
 func TestWorkerPassesProviderResume(t *testing.T) {
 	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)

@@ -73,6 +73,9 @@ type InstallRequest struct {
 	Candidate       domain.Candidate
 	Score           domain.Score
 	SyncResult      domain.SyncResult
+	// CandidateSignature and ArtifactChecksum are recorded on the installation.
+	CandidateSignature string
+	ArtifactChecksum   string
 }
 
 type Installer struct {
@@ -292,7 +295,7 @@ func (i Installer) Install(ctx context.Context, request InstallRequest) (store.I
 		return restore(fmt.Errorf("encode synchronization result: %w", err))
 	}
 	fingerprint := request.Media.Fingerprint
-	installation := store.Installation{Fallback: request.Fallback, MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: published, ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
+	installation := store.Installation{Fallback: request.Fallback, MediaID: request.MediaID, Language: request.Language.String(), Path: destination, Checksum: published, ProviderID: request.Candidate.ProviderID, CandidateID: request.Candidate.ResultID, CandidateSignature: request.CandidateSignature, ArtifactChecksum: request.ArtifactChecksum, ScoreJSON: scoreJSON, SyncResultJSON: syncJSON, RollbackPath: rollbackPath, MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
 	requests, err := notificationRequests(request.Media, installation, i.NotifierNames, i.now())
 	if err != nil {
 		return restore(err)

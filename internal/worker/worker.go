@@ -427,6 +427,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		completion := schedule.Scheduler{Clock: w.Clock}.Failure(lease.JobID, lease.FailureAttempt, "workflow_error")
 		// Unreadable media is usually storage, not this search: keep its place.
 		completion.PreserveQueueOrder = workflow.MediaUnavailable(err)
+		completion.History = searchHistory(media, workflow.Result{})
 		preserveProviderResume(lease, result, &completion, w.Clock.Now())
 		completionResult, completionErr := w.Repository.CompleteSearch(jobCtx, completion)
 		if completionErr != nil {
@@ -447,6 +448,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "workflow_outcome", time.Time{}, started, len(lease.ResumeProviders), err)
 		return err
 	}
+	completion.History = searchHistory(media, result)
 	completionResult, err := w.Repository.CompleteSearch(jobCtx, completion)
 	if err != nil {
 		w.logJobCompleted(jobCtx, slog.LevelError, "failed", "search_completion", time.Time{}, started, len(lease.ResumeProviders), err)
@@ -515,6 +517,16 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		return store.SearchCompletion{}, fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
 	}
 	return completion, nil
+}
+
+// searchHistory describes a finished search for the history: the display
+// title, and the candidate when the workflow chose one.
+func searchHistory(media domain.Media, result workflow.Result) *store.SearchHistoryDetail {
+	detail := &store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(media), ProviderID: result.Candidate.ProviderID}
+	if len(result.Candidate.ReleaseNames) > 0 {
+		detail.ReleaseName = result.Candidate.ReleaseNames[0]
+	}
+	return detail
 }
 
 func (w *Worker) scheduler() schedule.Scheduler {

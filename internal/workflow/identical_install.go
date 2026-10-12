@@ -14,6 +14,8 @@ func (i Installer) refreshIdenticalInstallation(ctx context.Context, request Ins
 	installation := existing
 	installation.ProviderID = request.Candidate.ProviderID
 	installation.CandidateID = request.Candidate.ResultID
+	installation.CandidateSignature = request.CandidateSignature
+	installation.ArtifactChecksum = request.ArtifactChecksum
 	installation.Fallback = request.Fallback
 	fingerprint := request.Media.Fingerprint
 	installation.MediaPath = fingerprint.Path

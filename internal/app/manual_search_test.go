@@ -652,3 +652,62 @@ func TestManualSearchReportsSubtitleRelativeToItsRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestManualSearchRecordsHistory(t *testing.T) {
+	h := newManualHarness(t, 1, false, "en")
+	h.workflow.outcome = workflow.OutcomeSatisfied
+	h.workflow.result = workflow.Result{Outcome: workflow.OutcomeInstalled, Candidate: domain.Candidate{ProviderID: "english", ResultID: "r1", ReleaseNames: []string{"Show.S01E01.1080p", "other"}}}
+	go func() { h.workflow.release <- struct{}{} }()
+	if _, err := h.app.runManualSearch(t.Context(), h.ids[1], h.media[1], "en", manualOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := h.app.Repository.ListHistory(t.Context(), store.HistoryQuery{})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("history = %+v/%v", entries, err)
+	}
+	got := entries[0]
+	if !got.Manual || got.Outcome != "installed" || got.ProviderID != "english" || got.ReleaseName != "Show.S01E01.1080p" || got.MediaTitle != "Show - S01E01" || got.Language != "en" || got.MediaID != h.ids[1] {
+		t.Fatalf("entry = %+v", got)
+	}
+}
+
+func TestManualTimeoutRecordsManualHistory(t *testing.T) {
+	h := newManualHarness(t, 1, false)
+	h.workflow.deaf = true
+	t.Cleanup(func() { close(h.workflow.release) })
+	h.app.manualJobLimit = 30 * time.Millisecond
+	h.app.manualJobGrace = 60 * time.Millisecond
+	go func() { _, _ = h.app.runManualSearch(t.Context(), h.ids[1], h.media[1], "en", manualOptions{}) }()
+	h.workflow.awaitStart(t)
+	var entries []store.HistoryEntry
+	eventually(t, "timeout history was not recorded", func() bool {
+		entries, _ = h.app.Repository.ListHistory(t.Context(), store.HistoryQuery{})
+		return len(entries) == 1
+	})
+	if !entries[0].Manual || entries[0].Outcome != "workflow_error" || entries[0].MediaTitle != "Show - S01E01" {
+		t.Fatalf("entry = %+v", entries[0])
+	}
+}
+
+func TestHourlyMaintenancePrunesOldHistory(t *testing.T) {
+	h := newManualHarness(t, 1, false)
+	now := h.app.Clock.Now()
+	for _, at := range []time.Time{now.Add(-31 * 24 * time.Hour), now.Add(-time.Hour)} {
+		if err := h.app.Repository.RecordSearchHistory(t.Context(), h.ids[1], "en", "no_result", store.SearchHistoryDetail{MediaTitle: "Show"}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() { defer close(done); h.app.maintainLapseCache(ctx, ticks) }()
+	ticks <- now
+	ticks <- now // the first sweep finished before accepting the next tick
+	entries, err := h.app.Repository.ListHistory(t.Context(), store.HistoryQuery{})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("history after maintenance = %+v/%v", entries, err)
+	}
+	cancel()
+	<-done
+}

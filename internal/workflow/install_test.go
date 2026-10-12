@@ -393,6 +393,21 @@ func TestInstallerCreatesAtomicRecordedSidecar(t *testing.T) {
 	}
 }
 
+func TestInstallerRecordsCandidateIdentity(t *testing.T) {
+	root := t.TempDir()
+	source := writeInstallFile(t, filepath.Join(t.TempDir(), "candidate.srt"), installSRT)
+	repository := &installationRepository{}
+	installer := Installer{Repository: repository, MediaRoots: []string{root}, Mode: 0o640}
+	request := installRequest(t, source, filepath.Join(root, "Movie.en.srt"))
+	request.CandidateSignature, request.ArtifactChecksum = "sig", "artifact"
+	if _, err := installer.Install(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if repository.recorded.CandidateSignature != "sig" || repository.recorded.ArtifactChecksum != "artifact" {
+		t.Fatalf("recorded installation = %#v", repository.recorded)
+	}
+}
+
 func TestInstallerProtectsUnmanagedSymlinkAndModifiedManagedFiles(t *testing.T) {
 	for _, test := range []struct {
 		name    string

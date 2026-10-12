@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"subsyncd/internal/store"
 )
 
 // Cleanup is best-effort maintenance, never a subtitle acquisition failure.
@@ -24,6 +26,17 @@ func (a *App) pruneLapseCache(ctx context.Context) {
 	}
 }
 
+// pruneSearchHistory drops history older than its retention. A failure is
+// retried on the next hourly tick, so it needs no event of its own.
+func (a *App) pruneSearchHistory(ctx context.Context) {
+	if a.readOnly || ctx.Err() != nil {
+		return
+	}
+	_, _ = a.Repository.PruneHistory(ctx, a.Clock.Now().Add(-store.HistoryRetention))
+}
+
+// maintainLapseCache runs the daemon's hourly maintenance: the LAPSE cache
+// and search history cleanup.
 func (a *App) maintainLapseCache(ctx context.Context, ticks <-chan time.Time) {
 	for {
 		select {
@@ -34,6 +47,7 @@ func (a *App) maintainLapseCache(ctx context.Context, ticks <-chan time.Time) {
 				return
 			}
 			a.pruneLapseCache(ctx)
+			a.pruneSearchHistory(ctx)
 		}
 	}
 }

@@ -1587,7 +1587,19 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	}
 	s.workflowEvents().Log(ctx, slog.LevelInfo, "candidate.selected", "subtitle candidate selected", slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("exact_hash", prepared.candidate.ExactHash), slog.String("selection_mode", selectionMode))
 	startedAt := time.Now()
-	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, Fallback: s.fallbackTier, SourcePath: prepared.output, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync})
+	identityRequest := request
+	if prepared.memberScope != "" {
+		identityRequest.memberScope = prepared.memberScope
+	}
+	artifactChecksum, err := fileChecksum(prepared.path)
+	if err != nil {
+		return result, err
+	}
+	identity, err := s.candidateRejectionIdentity(identityRequest, prepared.candidate, artifactChecksum)
+	if err != nil {
+		return result, err
+	}
+	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, Fallback: s.fallbackTier, SourcePath: prepared.output, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync, CandidateSignature: identity.CandidateSignature, ArtifactChecksum: identity.ArtifactChecksum})
 	if err != nil {
 		attrs := append([]slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}, s.workflowEvents().ErrorAttrs("installation", err)...)
 		// A subtitle that fails installation validation is a candidate

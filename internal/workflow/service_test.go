@@ -1962,3 +1962,25 @@ func TestServiceBacksOffRetainedUpgradeButReacquiresMissingSidecar(t *testing.T)
 		})
 	}
 }
+
+func TestServicePassesCandidateIdentityToInstaller(t *testing.T) {
+	request := serviceRequest(t)
+	candidate := exactCandidate("same")
+	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{candidate}},
+	}}
+	installer := &fakeInstaller{}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, installer)
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || installer.calls != 1 {
+		t.Fatalf("Run() = %#v, %v; installs=%d", result, err, installer.calls)
+	}
+	want, err := candidateSignature(candidate, request.Media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installer.request.CandidateSignature != want || installer.request.ArtifactChecksum == "" {
+		t.Fatalf("install request identity = %q/%q, want signature %q and a checksum", installer.request.CandidateSignature, installer.request.ArtifactChecksum, want)
+	}
+}
