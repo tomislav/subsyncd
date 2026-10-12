@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/schedule"
 	"subsyncd/internal/store"
 )
 
@@ -233,7 +234,7 @@ func TestFallbackPromotionChecksFollowTheMissingMilestones(t *testing.T) {
 	released := installed.Add(-24 * time.Hour)
 	now := installed
 	var got []time.Duration
-	for attempt := range len(recentFallbackChecks) {
+	for attempt := range recentFallbackChecks {
 		s := &Service{Clock: fixedWorkflowClock{at: now}, RandomUnit: func() float64 { return 0 }, FallbackProviderOrder: []string{"fallback"}, AgedAfter: 30 * 24 * time.Hour, MaxUpgradeChecks: 4}
 		outcome := OutcomeSatisfied
 		if attempt == 0 {
@@ -250,11 +251,22 @@ func TestFallbackPromotionChecksFollowTheMissingMilestones(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("checks after install = %v, want %v", got, want)
 	}
+	// Same as missing searches: the milestones of search attempts 1 to 4.
+	var missing []time.Duration
+	var at time.Duration
+	for attempt := 1; attempt <= recentFallbackChecks; attempt++ {
+		at += schedule.MissingDelay(attempt, 0)
+		missing = append(missing, at)
+	}
+	if !slices.Equal(got, missing) {
+		t.Fatalf("checks after install = %v, missing-search milestones = %v", got, missing)
+	}
 }
 
 func TestFallbackPromotionJitterNeverPrecedesTheStep(t *testing.T) {
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-	for attempt, step := range recentFallbackChecks {
+	for attempt := range recentFallbackChecks {
+		step := schedule.MissingDelay(attempt+1, 0)
 		for _, unit := range []float64{-0.5, 0, 0.25, 0.5, 0.999, 1, 1.5} {
 			s := &Service{Clock: fixedWorkflowClock{at: now}, RandomUnit: func() float64 { return unit }, FallbackProviderOrder: []string{"fallback"}, AgedAfter: 30 * 24 * time.Hour}
 			outcome := OutcomeSatisfied

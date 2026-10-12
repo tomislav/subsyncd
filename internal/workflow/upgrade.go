@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/schedule"
 	"subsyncd/internal/store"
 )
 
@@ -75,15 +76,14 @@ func installedScore(installation store.Installation) (domain.Score, bool, error)
 	return score, false, nil
 }
 
-// recentFallbackChecks are the gaps, by upgrade attempt, between the unchanged
-// promotion checks of a fallback installation of a recent release. Like the
-// missing-search intervals they add up to the same early milestones: about 6h,
-// 12h, 24h and 3 days after install, because a preferred provider often
-// publishes days after release. They are gaps from each check rather than
-// offsets from the install time, so a check that ran late (a throttled
-// provider, a stopped daemon) still leaves a full step, and at least the
-// six-hour search cache, before the next one.
-var recentFallbackChecks = [...]time.Duration{6 * time.Hour, 6 * time.Hour, 12 * time.Hour, 48 * time.Hour}
+// recentFallbackChecks is how many unchanged promotion checks of a fallback
+// installation of a recent release follow the missing-search schedule
+// (schedule.MissingDelay): about 6h, 12h, 24h and 3 days after install,
+// because a preferred provider often publishes days after release. Like
+// missing searches, each delay counts from the previous check, so a check that
+// ran late (a throttled provider, a stopped daemon) still leaves a full step,
+// and at least the six-hour search cache, before the next one.
+const recentFallbackChecks = 4
 
 // scheduleUpgrade spreads ordinary checks and lengthens repeated unchanged
 // assessments, and ends them after MaxUpgradeChecks unchanged checks. A preferred-provider reset earlier than the base interval remains
@@ -101,11 +101,9 @@ func (s *Service) scheduleUpgrade(result *Result, attempt int, releasedAt, insta
 		attempt = 0
 	}
 	fallback := s.isFallbackProvider(result.Candidate.ProviderID)
-	if fallback && s.recentRelease(releasedAt, now) && attempt < len(recentFallbackChecks) {
-		// Jitter only delays, like missing searches, so no check lands inside
-		// the six-hour search cache of the previous one.
-		step := recentFallbackChecks[attempt]
-		next := now.Add(step + time.Duration(float64(step)*0.2*s.randomUnit()))
+	if fallback && s.recentRelease(releasedAt, now) && attempt < recentFallbackChecks {
+		// The missing-search delay after search attempt+1, jitter included.
+		next := now.Add(schedule.MissingDelay(attempt+1, s.randomUnit()))
 		if !result.upgradeRecovery || next.Before(result.NextUpgrade) {
 			result.NextUpgrade = next
 		}
@@ -116,7 +114,7 @@ func (s *Service) scheduleUpgrade(result *Result, attempt int, releasedAt, insta
 	}
 	if fallback && s.recentRelease(releasedAt, installedAt) {
 		// The early steps already used do not stretch the weekly cadence.
-		attempt = max(0, attempt-len(recentFallbackChecks))
+		attempt = max(0, attempt-recentFallbackChecks)
 	}
 	if s.MaxUpgradeChecks > 0 && attempt >= s.MaxUpgradeChecks && !fallback {
 		result.NextUpgrade = time.Time{}
