@@ -763,7 +763,7 @@ func (c Command) printHelp(out io.Writer, flags *flag.FlagSet, command string) {
 	})
 	own.PrintDefaults()
 	if allowed["json"] {
-		_, _ = fmt.Fprint(out, "\n"+wrapText("With --json, stdout is one JSON object: {\"schema\":\"subsyncd.cli/v1\",\"command\",\"ok\",\"result\"} or, on failure, {...,\"ok\":false,\"error\":{\"code\",\"message\"}}. Exit codes: 0 success, 1 failure, 2 usage.", helpWidth))
+		_, _ = fmt.Fprint(out, "\n"+wrapText("With --json, stdout is one JSON object: {\"schema\":\"subsyncd.cli/v1\",\"command\",\"ok\",\"result\"} or, on failure, {...,\"ok\":false,\"error\":{\"code\",\"message\"}}. Exit codes: 0 success, 1 failure, 2 command-line error; branch on error.code, not the exit code.", helpWidth))
 	}
 }
 
