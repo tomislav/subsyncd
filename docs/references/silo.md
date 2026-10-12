@@ -1,42 +1,46 @@
 # Silo native scan API reference
 
-Checked: 2026-09-14
-
-Primary references:
-
-- [Silo API v2 documentation](https://silo.cerberus.group/api/v2/docs)
-- [Silo API v2 OpenAPI contract](https://silo.cerberus.group/api/v2/openapi.json)
+The part of Silo's API that subsyncd uses. The authoritative contract is your Silo server's own documentation at `/api/v2/docs` (OpenAPI at `/api/v2/openapi.json`) and the upstream Silo project. How intents are queued, deduplicated and retried is in [Notifications](../development/notifications.md).
 
 ## Contract used by subsyncd
 
-`subsyncd` supports only `POST /api/v2/scan` (`startLibraryScan`), on Silo's native API listener. Configure the server base URL, for example `http://silo:8080`, without an API suffix. The adapter appends `/api/v2/scan`, preserving any reverse-proxy base path. There is no v1 adapter, version selection, or fallback.
+subsyncd supports only `POST /api/v2/scan` (`startLibraryScan`) on Silo's native API listener. There is no v1 adapter, version selection or fallback.
 
-The route requires admin authorization through `Authorization: Bearer …`. `subsyncd` uses an admin API key and sends `Content-Type: application/json`. The profile headers are optional and are omitted.
+- **Base URL**: configure the server base URL, for example `http://silo:8080`, without an API suffix. The adapter appends `/api/v2/scan` and keeps any reverse-proxy base path.
+- **Authorization**: `Authorization: Bearer <api_key>` with an admin API key. The request sends `Content-Type: application/json`; the optional profile headers are omitted.
+- **Body**:
 
-The request body is:
+  ```json
+  {
+    "path": "/mnt/media/movies/Movie"
+  }
+  ```
 
-```json
-{
-  "path": "/mnt/media/movies/Movie"
-}
-```
+  `ScanStartInputBody` permits `path` and an optional string `library_id`. subsyncd always sends a non-empty mapped parent directory and omits `library_id`, so Silo resolves the library from the path. The path must be visible to Silo inside a configured library root.
+- **Response**: a valid scan returns `202 Accepted` with `status: "accepted"`, `mode` (`library`, `subtree` or `file`) and an opaque `library_id`. This acknowledges dispatch, not completion. subsyncd treats any 2xx as delivered and does not read or store the body.
 
-`ScanStartInputBody` permits `path` and optional string `library_id`; neither is required by the schema. `subsyncd` always supplies a nonempty mapped parent directory and omits `library_id`, allowing Silo to resolve the library from the path. The path must be accessible to Silo within a configured library root.
+## Path mapping
 
-A valid scan returns `202 Accepted` with `status: "accepted"`, `mode` (`library`, `subtree`, or `file`), and an opaque string `library_id`. This acknowledges dispatch, not scan completion. The notifier does not consume or persist response bodies.
+subsyncd maps the media file's path into Silo's namespace and sends its parent directory, so a subtree scan discovers the sibling subtitle.
 
-`subsyncd` maps the media-file path into Silo's namespace and sends its parent directory so a subtree scan discovers the sibling subtitle. Optional rewrites select the longest matching local prefix at a path-component boundary before choosing the parent directory. `/` is valid on either side of a mapping: `/media -> /` removes the local mount prefix, while `/ -> /mnt/media` adds the Silo mount prefix. Relative endpoints and traversal fail closed before any request.
+- `silo.path_mappings` rewrites the longest matching local prefix at a path-component boundary, before the parent directory is taken.
+- `/` is valid on either side: `/media -> /` removes the local mount prefix, and `/ -> /mnt/media` adds Silo's.
+- Relative endpoints and traversal fail closed before any request.
 
-## Delivery and retries
+## Status handling
 
-Notification deduplication includes the committed media fingerprint and subtitle destination, as well as notifier, media row, language, and subtitle checksum. Identical subtitle content installed for a replacement file triggers a new scan. Retries of the same installation share one outbox intent while it is pending. Once an intent is delivered or terminally rejected it releases its key, so publishing the same subtitle again (for example after the sidecar was deleted and reinstalled) enqueues a new scan.
+| Answer | Handling |
+| --- | --- |
+| Any 2xx | Delivered |
+| Timeout, transport failure, 408, 429, 5xx | Retried with the outbox backoff |
+| 409 Conflict | Retried: a scan of the same scope is already active and may already have passed the new subtitle |
+| Any other status (404, 410, 422, …) | Terminal: the intent completes as a permanent error and logs `notification.failed` (error) |
 
-The worker coalesces due notifications it leases together: intents in one batch whose mapped scan directory matches (for example, two episodes of one season, or two languages of one file) are satisfied by a single request, and every coalesced intent is completed with that request's outcome, each with its own attempt-based retry delay. Every leased intent was committed after its subtitle was published, so one subtree scan discovers them all. Before this, concurrent requests for the same directory reached Silo while its first scan was still active, and Silo's unique active-scope index rejected the duplicates (logged by Postgres as `duplicate key value violates unique constraint "idx_scan_runs_active_scope"`). Intents leased in different batches are not coalesced.
-
-Silo marks this operation `x-silo-retry-safety: non_retryable`; it provides no scan idempotency key or replay guarantee. The existing outbox deliberately retains at-least-once delivery for subtitle refreshes: timeouts, transport failures, HTTP 408, 409, 429, and 5xx retry asynchronously. Silo answers 409 Conflict (listed for `startLibraryScan` in the OpenAPI contract, checked 2026-10-12) when a scan of the same scope is already active, the same unique active-scope rule described above. That running scan may already have passed the new subtitle, so the intent is retried with the normal backoff rather than dropped. An uncertain response or recovered lease can therefore dispatch a duplicate targeted scan. The client makes one request per delivery attempt, never follows redirects, and never retries against another API version. Other failures, including 404, 410, and 422, are terminal. Errors expose only bounded categories and status codes, never credentials, response bodies, or transport URLs.
-
-Installation and notification intent commit atomically before asynchronous delivery. A Silo failure never rolls back an installed subtitle. Existing pending outbox rows use v2 after upgrading; completed rows are not replayed. No configuration or database migration is needed, but the configured Silo server must support API v2.
+- Each attempt makes one request with a 15-second timeout, never follows redirects, and never retries against another API version.
+- Errors expose only bounded categories and status codes, never credentials, response bodies or URLs.
+- Silo marks this operation `x-silo-retry-safety: non_retryable` and offers no idempotency key. The outbox deliberately keeps at-least-once delivery, so an uncertain response or a recovered lease can dispatch a duplicate targeted scan.
+- Intents leased together whose mapped scan directory matches (two episodes of one season, two languages of one file) share one request, because Silo rejects a second scan of a scope that is still active.
 
 ## Contract tests
 
-`internal/notifier/silo_test.go` verifies the v2 route (including a reverse-proxy prefix), method, bearer header, strict path-only request body, mapped parent directory, and accepted response. It also covers status classification with no version fallback, timeout behavior, redirect rejection, credential/body redaction, and boundary-aware path mapping. Tests use local fake servers and sanitized data.
+`internal/notifier/silo_test.go` covers the v2 route (including a reverse-proxy prefix), method, bearer header, the path-only body, the mapped parent directory, the accepted response, status classification without version fallback, timeouts, redirect refusal, credential and body redaction, and boundary-aware path mapping. Tests use local fake servers and sanitized data.

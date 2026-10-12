@@ -75,7 +75,7 @@ func TestWebhookWakeDispatchesPersistedSearch(t *testing.T) {
 func TestProviderResumeSurvivesRestart(t *testing.T) {
 	// The saved clean-empty providers survive a restart while their answers are
 	// within the six-hour search-result cache (store.ResumeProvidersTTL); a
-	// cooldown that outlasts it asks them again (docs/development/providers.md).
+	// cooldown that outlasts it asks them again (docs/development/providers/limits.md).
 	for _, test := range []struct {
 		name          string
 		cooldown      time.Duration

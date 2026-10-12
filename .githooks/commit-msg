@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rejects commit subjects that are not Conventional Commits; see AGENTS.md.
+# Rejects commit subjects that are not Conventional Commits; see CONTRIBUTING.md.
 subject=$(sed -n '/^[^#]/{p;q;}' "$1")
 
 case "$subject" in

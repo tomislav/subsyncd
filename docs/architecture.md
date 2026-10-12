@@ -1,12 +1,13 @@
 # Architecture
 
-`subsyncd` is a headless, SQLite-authoritative subtitle acquisition service. Sonarr and Radarr supply media identity and lifecycle events; language-specific provider chains supply candidates; inventory, scoring, LAPSE, installation, and optional Silo notification form the processing pipeline. There is no management HTTP API or browser UI.
+subsyncd is a headless, SQLite-authoritative subtitle acquisition service. Sonarr and Radarr supply media identity and lifecycle events; language-specific provider chains supply candidates; inventory, scoring, LAPSE and atomic installation form the processing pipeline; Silo scans and Arr rescans are notified afterwards. There is no management HTTP API or browser UI: operators use the CLI, which talks to the running daemon over a local control socket.
 
 ```mermaid
 flowchart LR
     arr[Sonarr / Radarr] -- webhooks --> inbox[(Webhook inbox)] --> mut
     arr -- history and library --> recon[Reconciliation and discovery] --> mut
     mut[Transactional media mutation] --> queue[(SQLite search queue)]
+    cli[CLI] -- control socket --> daemon[Daemon commands] --> queue
     queue --> worker[Worker lease]
     worker --> inv[Inventory: embedded tracks and sidecars]
     inv --> prov[Provider chain per language]
@@ -15,88 +16,85 @@ flowchart LR
     lapse --> install[Atomic installation and provenance]
     install --> outbox[(Notification outbox)] --> silo[Silo scan]
     outbox --> rescan[Arr series or movie rescan]
+    install --> history[(Search history)]
 ```
 
-## Durable state and event flow
+Each package's responsibility is listed in the [package map](development/README.md#package-map).
 
-Webhooks and periodic Arr reconciliation converge on the same transactional media-mutation helper. It records an idempotent audit event, applies an import, rename, upgrade, or deletion, invalidates stale evidence when content changes, and updates every configured language search. A webhook is answered once it is stored in the durable webhook inbox; one processor per instance applies stored webhooks in arrival order, retries failures with backoff, and resumes after a restart. Each change is dated by its receipt time, and an import or rename of a file or entity deleted after that time is not applied, so a late or retried upsert cannot revive a deleted row.
+## Processes and entry points
 
-Reconciliation:
+| Entry point | Role |
+| --- | --- |
+| `subsyncd serve` | The daemon: HTTP server (`/healthz`, `/readyz`, webhooks), webhook inbox processors, the worker, the managed webhook connection, and the control socket |
+| Routed commands (`search`, `reject`, `scan`, `retry`) | Sent to the daemon over `<data_dir>/subsyncd.sock`; run in process with the lock when no daemon runs |
+| Read-only commands (`explain`, `find`, `missing`, `recent`, `status`, `providers`, `doctor`, `analyze-sync`, `webhook-url`, the `forget-instance` preview) | Open the database read-only beside the daemon |
+| Stop-first commands (`rotate-webhook-token`, `forget-instance --yes`) | Take the process lock, so the daemon must be stopped |
 
-- fetches descending 100-record history pages with strict completeness and progress checks;
-- reduces history by stable Arr entity (`movieId` or `episodeId`) and resolves the authoritative current entity;
-- commits all resulting mutations and the cursor in one transaction, so any page failure leaves the prior cursor intact.
+See [Queue and control](development/queue-and-control.md#routed-and-read-only-commands).
 
-Because Arr history accepts only whole-second timestamps, the request overlaps the fractional persisted cursor; stable history event IDs and the same transaction make replay harmless.
+## Startup
 
-The catalog keeps two identities deliberately. `entity_id` is the stable movie or episode and survives file replacement; `file_id` identifies the current physical Arr file and remains part of byte fingerprints, webhook events, workflows, installations, and hashes. An upgrade therefore updates one logical media row while invalidating evidence tied to the prior bytes; installations keep naming the file they were installed for, and the next search for the language removes the managed sidecar of a replaced file (only while it still has the recorded checksum) or follows a rename of the same file. `github.com/cplieger/arrapi/v2` v2.0.5 owns bounded history and current-entity requests. A temporary hardened detail client owns only richer release, quality, edition, runtime, and provenance enrichment that arrapi does not expose.
+Startup and readiness are local and offline: they need no Arr, provider or Silo access, run no full-library scan and do no backfill. Startup fails only for invalid configuration, unsafe or missing local roots, SQLite open or migration errors, a missing `ffprobe`, or an incompatible LAPSE.
 
-Path mapping is also a scope boundary. A deliberately unmapped or safely mapped-outside-root entity becomes an outside-scope deletion/audit, so a narrow canary does not index or read the remaining Arr library. Traversal, malformed mappings, inaccessible paths, and unsafe filesystem resolution fail the page closed. Every persisted media row has a positive stable Arr entity ID. Startup performs no Arr request, identity backfill, or full-library scan.
+A mutable start takes the data-directory lock, applies migrations, ensures webhook tokens, settles interrupted installs and rollback copies, and adds searches for newly configured languages, all from local state. Arr traffic begins only afterwards, in background work: reconciliation, library discovery and the managed webhook connection sync. Their failures are scheduled and logged and never affect readiness. `/readyz` checks SQLite and the media roots.
 
-SQLite state begins at `001_baseline.sql`. Databases containing migration names from the pre-release `001_initial.sql`–`010_media_entity_ids.sql` lineage are unsupported and rejected before migration SQL runs. Operators must preserve the old data directory for rollback and start this build with an empty one. The ordered migration runner applies later migrations after the baseline.
+## Durable state
 
-### Search queue
+SQLite is authoritative for media state, scheduling, leases, cursors, provider availability, rejections, provenance, notifications and history. Related state transitions are atomic and owner-guarded.
 
-Search states in SQLite are the queue. The durable attempt counter tracks missing retries or unchanged upgrade checks according to priority. Retained valid installations remain upgrade work even when searches return no eligible candidates; successful replacements reset the counter, while missing sidecars restart acquisition backoff.
+| Area | Tables |
+| --- | --- |
+| Catalog | `instances` (cursor, reconcile timing, discovery scope, webhook token and managed connection), `media`, `events`, `reconciliation_replays`, `webhook_inbox` |
+| Inventory | `tracks`, `inventory_probes`, `media_hashes` |
+| Queue | `search_states` |
+| Providers | `provider_states`, `provider_cache`, `pack_cache`, `pack_members`, `candidates` |
+| Decisions | `candidate_rejections` (system and user), `candidate_lapse_failures` |
+| Publication | `installations`, `pending_installs`, `notifications` |
+| History | `search_history` (30 days) |
 
-Dispatch order is, in turn:
+Finished notifications are pruned after 30 days, and search history after 30 days. The table list, data-directory layout and migration index are in [Persistence](development/persistence.md).
 
-1. priority class: import, then missing, then upgrade;
-2. each instance's `queue_priority`;
-3. a durable queue position that a throttle does not reset;
-4. media order (title, series, season with specials last or a movie's year, episode), so a batch queued together runs show by show.
+## Catalog flow
 
-Provider cooldowns and the independent missing/technical schedules determine when work is eligible. The daemon leases nothing for a language and media kind while every provider on that route is unable to download. Advisory wakes reduce latency but carry no correctness: startup and recovery polling always rediscover due work. A change arriving during an active same-key lease preserves its owner and expiry, coalesces one rerun, and prevents a stale completion from restoring prior progress.
+Webhooks and periodic Arr reconciliation converge on one transactional media-mutation helper. It records an idempotent audit event, applies an import, rename, upgrade or deletion, invalidates stale evidence when content changes, and updates every configured language's search.
 
-### Cooldown resume progress
+- A webhook is answered once it is stored in the inbox. One processor per instance applies stored webhooks in arrival order, retries failures, and resumes after a restart. A late or retried upsert cannot revive a row deleted after it.
+- Reconciliation reads descending 100-record history pages per instance every six hours, reduces them by stable entity, and commits all mutations with the cursor in one transaction. It withholds snapshot deletions that look like an emptied or foreign Arr database.
+- Library discovery enumerates each instance's in-scope files once per scope, additively.
+- With `server.webhook_base_url` set, a maintainer creates, adopts and repairs each instance's Arr webhook connection.
 
-For an unfinished first-install cooldown cycle, the search row also holds a strictly validated, bounded configured-order list of clean-empty provider IDs and a route signature.
+The catalog keeps two identities. `entity_id` is the stable movie or episode and survives file replacement; `file_id` is the current physical Arr file and is part of fingerprints, webhook events, installations and hashes. An upgrade therefore updates one media row while invalidating evidence tied to the old bytes.
 
-- A provider becomes clean-empty only after broad completion without candidates and, if applicable, exact completion without candidates. Candidates, availability failures, and technical errors never create suppression state.
-- The persisted signature hashes the canonical language/ordered-tier route together with media path, file ID, size, and nanosecond mtime; only the opaque digest is stored.
-- The list is dated by its oldest answer and dropped once that is six hours old, the provider search-result cache lifetime. A list that fails validation is reset for that search alone instead of failing the lease batch.
-- The worker supplies the saved state only when the signature matches the assembled language workflow; otherwise it runs the full route and clears stale progress on completion. The workflow validates the signature before inventory and again after adopting the live inventory fingerprint, and inventory replacement transactionally clears every language's progress.
-- Owner-guarded completion atomically retains the state only for throttled or retryable technical first-install outcomes and clears it for terminal, upgrade, media-reset, and rerun paths.
-- The worker repository derives JSON-size and membership bounds from each accepted configured route, invalidates stale signatures before applying smaller current bounds, and checks the current fingerprint inside completion. This permits every accepted route, preserves exact provider-ID identity, and prevents stale in-flight completions from restoring old progress. Unscoped repository utilities perform structural JSON validation; daemon assembly always supplies the route policy.
-- Completion returns the authoritative retained count, which worker lifecycle logs report as the low-cardinality `resume_provider_count`, never the provider list or route signature.
+Path mapping is a scope boundary: unmapped media is ignored, while traversal and unsafe resolution fail closed. Details: [Reconciliation](development/reconciliation.md).
 
-### Leases, shutdown, and locking
+## Search queue
 
-Workers lease only available concurrency slots, filtering current instance/language routes and active media before ordering and limiting claims. Removing a route preserves durable work for re-enable; `forget-instance` explicitly discards a removed instance's records. Leases are renewed and completed by owner compare-and-swap. Deletion retains active ownership; completion leaves deleted media terminal, while reimport during that lease coalesces one rerun.
+Search states are the queue. Dispatch order is class (import, missing, upgrade), then instance `queue_priority`, then a durable queue position that throttles do not reset, then media order (title, series, season with specials last or a movie's year, episode).
 
-Shutdown stops new acquisition, waits one configured window, cancels active work, waits one more window, then returns even if a dependency ignores cancellation. Work that returns canceled gives its lease back so the next start leases it at once; work that never returns keeps its lease until expiry. An expired lease counts as unleased everywhere it is checked. Reconciliation timing is persisted per instance, so a restart keeps its schedule and failure backoff.
+- Provider cooldowns and the missing, failure and upgrade schedules decide when work is due ([Scheduling](development/providers/scheduling.md)).
+- The worker leases nothing for a language and media kind while every provider on that route is unable to download.
+- Advisory wakes reduce latency but carry no correctness: polling always rediscovers due work.
+- A change arriving during a lease keeps the owner, coalesces one rerun, and prevents a stale completion from restoring old progress.
+- After a cooldown, providers that already answered cleanly are skipped while their answers are within the six-hour cache.
 
-Mutating application assembly acquires the data-directory lock before database migration or durable initialization and retains it through close. Diagnostic assembly validates an existing current-schema database in read-only mode, without backfills or persistent cache construction. It can read the running daemon's WAL without taking its mutation lock.
+## Leases, shutdown and locking
+
+- Workers lease only free slots, filtered to configured routes and active media. Leases last five minutes, are renewed every minute, and are completed by owner compare-and-swap. An expired lease counts as unleased everywhere.
+- Shutdown stops new acquisition, waits a fixed 30-second window, cancels active work, waits one more 30-second window, then returns even if a dependency ignores cancellation. Work that returns canceled gives its lease back; work that never returns keeps its lease until it expires.
+- Mutating assembly takes the data-directory lock before migrations and keeps it until close. Read-only assembly validates a current-schema database without writing and can read the running daemon's WAL.
+
+See [Queue and control](development/queue-and-control.md).
 
 ## Media support boundary
 
-Media fingerprints bind path, replaceable Arr file ID, size, and modification time. Embedded inventory requires a separately recorded completed-probe fingerprint, including empty probe results; catalog metadata alone cannot validate the cache. Inventory reads one catalog/probe/track snapshot and compares the original catalog identity when committing, so a stale probe cannot restore obsolete media. Expensive file hashes are also cached against exact physical identity; external sidecars are scanned live before every search. The separate stable entity ID is catalog identity, not evidence that two file versions have identical bytes.
+Media fingerprints bind path, Arr file ID, size and modification time. Embedded inventory requires a completed-probe marker; sidecars are scanned live before every search. Expensive file hashes are cached against the exact fingerprint.
 
-A Sonarr media file associated with several consecutive episodes of one season is a range target (`episode`..`episode_end`). Its stable entity is the earliest episode. Every candidate must cover the whole range: a standard or absolute release-name range, a spanning range pack, or an exact hash; whole-season packs are not used.
-
-- First-episode evidence alone is rejected before download.
-- Pack selection accepts only covering filename ranges.
-- Installation requires the subtitle to reach 75% of the runtime (`partial_coverage`).
-- Single-episode-only providers are not searched.
-
-Files whose episodes span seasons, leave gaps or lack numbers stay `unsupported_multi_episode` with terminal searches; that remains a durable fail-closed boundary, not silent first-episode behavior.
+A Sonarr file covering several consecutive episodes of one season is a range target; every candidate must cover the whole range, and the subtitle must reach 75% of the runtime. Files whose episodes span seasons, leave gaps or lack numbers stay `unsupported_multi_episode` with terminal searches.
 
 ## Acquisition and publication
 
-Each canonical language owns an ordered provider chain. Candidates pass identity gates and deterministic release scoring before any download. Exact hashes can install directly; policy-qualified strong first installs may use an auditable score bypass; other candidates enter the lazy score-tier LAPSE tournament. Each required candidate is prepared with one strict output-producing LAPSE invocation. Equal-score candidates rank by the resulting confidence, and the retained winning artifact installs without repeating LAPSE. Deterministic candidate failures are scoped and quarantined, while operational failures remain retryable.
+Each language owns an ordered provider chain with a preferred and a fallback tier. Candidates pass identity gates and release scoring before any download. Exact hashes install directly; strong first installs may bypass LAPSE by policy; other candidates enter the lazy score-tier LAPSE tournament, where each candidate is synchronized once and the winning artifact installs without another run. Deterministic candidate failures are retained as rejections; operational failures stay retryable. See [Providers and matching](development/providers/README.md).
 
-Installation:
+Installation validates and stages a sidecar beside its destination, fsyncs and publishes it atomically (hard link for a fresh file, rename for a managed replacement), fsyncs the directory, and commits checksum-bound provenance with its notification intents. A pending-install record spans publication to commit, so startup can undo a publication a crash left unrecorded. A managed replacement's rollback copy lives only until the installation is recorded. User-owned or changed sidecars are never overwritten. See [Installation safety](development/installation-safety.md).
 
-1. validates and stages a sidecar beside its destination and applies permissions;
-2. fsyncs and atomically publishes it: a fresh sidecar is hard-linked so a file created concurrently at the destination is never overwritten (falling back to rename on filesystems without hard links), and a managed replacement is renamed;
-3. fsyncs the directory and commits checksum-bound provenance.
-
-A pending-install record spans publication to commit; startup undoes any publication a crash left unrecorded (restoring the rollback copy or removing the new file) and removes staging leftovers. Managed replacement keeps a rollback copy of the previous subtitle until the installation is recorded, then deletes it; a mutable start deletes any copy still recorded (`Installer.DiscardRollbackCopies`). If cleanup, restoration, or directory sync also fails, that error is joined with the initiating error and the surviving file is protected rather than automatically adopted. Operator inspection is required for a valid-looking but untracked sidecar.
-
-A committed installation, removal or sidecar move may enqueue a checksum-deduplicated Silo notification and a rescan of the owning Sonarr series or Radarr movie (`arr_rescan`, per instance `rescan_after_changes`, default on; a change for a series or movie whose rescan is still queued joins it). Notification leases and retries are independent, so notification failure never rolls back subtitle acquisition.
-
-## Existing-library discovery
-
-Concrete Sonarr/Radarr catalogs expose optional full-library enumeration via arrapi v2.0.5. A reconciler first performs one background discovery pass per configured scope; explicit scan forces another. Assembly/readiness remain offline. Sonarr lists series then their episode files, Radarr lists movies with files, and both scope-check before complete detail hydration. Missing library history does not prevent discovery.
-
-Each instance persists its discovery scope and event revision. Discovery captures the revision before network work, then atomically inserts only unknown media with missing-priority searches and records completion if the revision still matches. Existing rows (including deleted rows), leases, schedules, rejections, and installations remain unchanged. Every inserted event advances the revision, including unknown entity/series deletions, so a concurrent webhook forces retry. History cursor advancement remains separate. A busy instance may delay discovery until an enumeration pass completes without a concurrent event. The snapshot is additive; its omissions never delete catalog rows.
+A committed install, removal or sidecar move queues notification intents in the same transaction: a Silo folder scan for installs and removals, and a rescan of the owning Sonarr series or Radarr movie (per instance `rescan_after_changes`, default on) for all three. Delivery is asynchronous and retried, so a notification failure never rolls back a subtitle. See [Notifications](development/notifications.md).

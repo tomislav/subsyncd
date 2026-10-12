@@ -109,7 +109,7 @@ func TestExistingArrLibraryInstallsWithoutHistoryOrWebhooks(t *testing.T) {
 			}
 			// Reconciliation timing is saved per instance, so a restart soon
 			// after a reconciliation keeps its six-hour schedule instead of
-			// enumerating the Arr library again (docs/development/operations.md).
+			// enumerating the Arr library again (docs/development/reconciliation.md).
 			now = now.Add(time.Minute)
 			b := build()
 			defer b.Close()
