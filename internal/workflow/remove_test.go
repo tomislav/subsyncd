@@ -233,3 +233,17 @@ func TestRecoverPendingRemoval(t *testing.T) {
 }
 
 var errSimulatedCrash = errors.New("simulated crash")
+
+func TestManagedFileMatchesErrorsCarryNoPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads unreadable files")
+	}
+	path := filepath.Join(t.TempDir(), "Private Title.en.srt")
+	if err := os.WriteFile(path, []byte("1\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	err := managedFileMatches(path, "checksum")
+	if err == nil || errors.Is(err, ErrManagedSubtitleChanged) || strings.Contains(err.Error(), "Private Title") {
+		t.Fatalf("managedFileMatches() = %v", err)
+	}
+}

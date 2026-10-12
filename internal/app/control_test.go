@@ -181,7 +181,7 @@ func TestStopFirstCommandsStillRequireStop(t *testing.T) {
 	_ = dialDaemon(t, application)
 	var stdout bytes.Buffer
 	command := cli.Command{Stdout: &stdout, Stderr: &bytes.Buffer{}, Open: func(ctx context.Context, _, _ string) (cli.Backend, error) {
-		return New(ctx, application.Config, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+		return New(ctx, application.Config, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
 	}}
 	code := command.Run(t.Context(), []string{"rotate-webhook-token", "--instance", "tv", "--json"})
 	var envelope struct {
@@ -193,4 +193,56 @@ func TestStopFirstCommandsStillRequireStop(t *testing.T) {
 	if code != cli.ExitFailure || envelope.Error.Code != control.CodeBusy || !strings.Contains(envelope.Error.Message, "stop the daemon first") {
 		t.Fatalf("exit/envelope = %d/%+v", code, envelope)
 	}
+}
+
+// A daemon still starting holds the lock before its socket exists: a routed
+// command with a waiting flag is busy, not daemon_required, and the message
+// does not tell the owner to stop the daemon.
+func TestRoutedCommandWithWaitIsBusyWhileTheLockIsHeld(t *testing.T) {
+	cfg := testConfig(t)
+	holder, err := New(t.Context(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+	open := func(ctx context.Context, _, command string) (cli.Backend, error) {
+		return New(ctx, cfg, Options{Command: command, LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	}
+	dial := func(ctx context.Context, _ string) (cli.Remote, error) { return control.Dial(ctx, cfg.DataDir) }
+	for _, args := range [][]string{
+		{"search", "--instance", "tv", "--kind", "movie", "--file-id", "7", "--timeout", "1m", "--json"},
+		{"reject", "--instance", "tv", "--kind", "movie", "--file-id", "7", "--reason", "out_of_sync", "--no-wait", "--json"},
+		{"scan", "--instance", "tv", "--timeout", "1m", "--json"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			var stdout bytes.Buffer
+			code := (cli.Command{Stdout: &stdout, Stderr: &bytes.Buffer{}, Open: open, Dial: dial}).Run(t.Context(), args)
+			var envelope struct {
+				Error struct{ Code, Message string }
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+				t.Fatalf("stdout = %q: %v", stdout.String(), err)
+			}
+			if code != cli.ExitFailure || envelope.Error.Code != control.CodeBusy || !strings.Contains(envelope.Error.Message, "a daemon still starting") {
+				t.Fatalf("exit/envelope = %d/%+v", code, envelope)
+			}
+		})
+	}
+}
+
+// The in-process methods check the lock before the waiting flags too.
+func TestInProcessWaitChecksTheLockFirst(t *testing.T) {
+	cfg := testConfig(t)
+	holder, err := New(t.Context(), cfg, Options{LapseRunner: capabilityRunner{}, ProbeRunner: probeRunner{}, Providers: map[string]provider.Provider{"english": fakeProvider{id: "english"}}, Catalogs: map[string]catalog.Catalog{"tv": fakeCatalog{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+	other := &App{Config: cfg}
+	_, err = other.Search(t.Context(), control.SearchArgs{Wait: time.Minute})
+	requireCode(t, err, control.CodeBusy)
+	_, err = other.Reject(t.Context(), control.RejectArgs{NoWait: true})
+	requireCode(t, err, control.CodeBusy)
+	_, err = other.Scan(t.Context(), control.ScanArgs{Wait: time.Minute})
+	requireCode(t, err, control.CodeBusy)
 }

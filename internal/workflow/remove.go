@@ -90,7 +90,7 @@ func (i Installer) RemoveManaged(ctx context.Context, removal RemovalRequest) er
 	}
 	if err := os.Rename(destination, hidden); err != nil {
 		i.finishPendingInstall(ctx, pendingID)
-		return fmt.Errorf("move managed subtitle aside: %w", err)
+		return fmt.Errorf("move managed subtitle aside: %w", observability.PathErrorCause(err))
 	}
 	restore := func(cause error) error {
 		if restoreErr := restoreRemoved(hidden, destination, parent); restoreErr != nil {
@@ -150,14 +150,14 @@ func managedFileMatches(path, checksum string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return ErrManagedSubtitleChanged
 		}
-		return fmt.Errorf("inspect managed subtitle: %w", err)
+		return fmt.Errorf("inspect managed subtitle: %w", observability.PathErrorCause(err))
 	}
 	if !info.Mode().IsRegular() {
 		return ErrManagedSubtitleChanged
 	}
 	payload, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read managed subtitle: %w", err)
+		return fmt.Errorf("read managed subtitle: %w", observability.PathErrorCause(err))
 	}
 	if checksum == "" || checksumBytes(payload) != checksum {
 		return ErrManagedSubtitleChanged
@@ -180,14 +180,14 @@ func removalPath(parent string) (string, error) {
 func restoreRemoved(hidden, destination, parent string) error {
 	if err := os.Link(hidden, destination); err == nil {
 		if err := os.Remove(hidden); err != nil {
-			return fmt.Errorf("remove set-aside subtitle after restoring it: %w", err)
+			return fmt.Errorf("remove set-aside subtitle after restoring it: %w", observability.PathErrorCause(err))
 		}
 	} else if errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("restore removed subtitle: destination was recreated")
 	} else if _, statErr := os.Lstat(destination); !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("restore removed subtitle: destination was recreated")
 	} else if err := os.Rename(hidden, destination); err != nil {
-		return fmt.Errorf("restore removed subtitle: %w", err)
+		return fmt.Errorf("restore removed subtitle: %w", observability.PathErrorCause(err))
 	}
 	return syncDirectory(parent)
 }

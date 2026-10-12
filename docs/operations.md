@@ -181,7 +181,7 @@ Run `subsyncd COMMAND --help` for a command's flags, result fields, and error co
 | `daemon_required` | `--timeout` or `--no-wait` was given but no daemon is running. Without one, `search`, `reject` and `scan` run to completion in their own process; drop the flag or start subsyncd. |
 | `daemon_stopping` | The daemon is shutting down, or closed the connection without answering. A search or scan it was running is canceled (a search stays queued); retry once subsyncd is back. |
 | `protocol_mismatch` | The CLI and the running daemon are different builds that speak different socket protocols. Run the CLI from the same image as the daemon. |
-| `arr_unreachable` | Sonarr or Radarr did not answer when `search --file-id` looked up the file. Check the instance `url`. |
+| `arr_unreachable` | Sonarr or Radarr did not answer when `search` looked up the file (with `--file-id`, `--title` or `--path`). Check the instance `url`. |
 | `internal` | Anything else. The `message` is redacted; the logs on standard error hold the detail. |
 
 Treat an unrecognized code as a failure.
@@ -228,9 +228,11 @@ docker compose exec subsyncd subsyncd search --title "Shameless S01E01" --langua
 docker compose exec subsyncd subsyncd search --instance radarr-main --kind movie --file-id 42
 ```
 
-Without `--language`, `search` covers every configured language that `find` reports `missing`; if none is, it searches nothing and reports each language `satisfied`. `search` takes `--title` or `--path` only for files subsyncd already knows. A file it has not indexed yet can be searched only by `--file-id`, which asks Sonarr or Radarr for it.
+Without `--language`, `search` covers every configured language that `find` reports `missing`; if none is, it searches nothing and reports each language `satisfied`. `search` takes `--title` or `--path` only for files subsyncd already knows. A file it has not indexed yet can be searched only by `--file-id`. Either way, `search` then asks Sonarr or Radarr for the file's current details, so an instance that does not answer fails it with `arr_unreachable`.
 
 The command waits at most `--timeout` (default `5m`). A language still searching then reports outcome `running` (exit status 0) and the search carries on in the daemon; check on it later with `find` or `explain`. `--no-wait` returns at once with `running`. Losing the connection, for example when an SSH session drops, never cancels the search; only stopping the daemon does, and the search then stays queued. At most two manual searches run at once; more wait their turn in the order they arrived. If the daemon is already searching that file and language, the manual search waits for it to finish and then runs, and that wait counts against `--timeout`.
+
+A search can also report `removed`. That happens when a replacement queued by `reject` is still pending for the language (for example, because providers were throttled when you rejected the subtitle): `search` runs that replacement, and when it finds nothing acceptable it removes the rejected subtitle, as `reject` would (see [A subtitle is wrong](#a-subtitle-is-wrong)).
 
 When the daemon is not running, `search` runs in its own process to completion instead, and `--timeout` and `--no-wait` fail with `daemon_required`:
 

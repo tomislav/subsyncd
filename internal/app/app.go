@@ -66,7 +66,10 @@ type Options struct {
 	Catalogs    map[string]catalog.Catalog
 	Worker      Runner
 	// Version is the release the daemon reports to status.
-	Version        string
+	Version string
+	// Command is the CLI command the application is opened for. It chooses
+	// the busy message when another process holds the lock.
+	Command        string
 	Listener       net.Listener
 	SkipLapseCheck bool
 	SkipProbeCheck bool
@@ -180,10 +183,21 @@ type OpenOptions struct {
 	Runtime   Options
 }
 
-type reportedStartupError struct{ message string }
+type reportedStartupError struct {
+	message string
+	// code carries the stable error code of a coded startup failure, with
+	// the same redacted message.
+	code *control.Error
+}
 
 func (e *reportedStartupError) Error() string         { return e.message }
 func (e *reportedStartupError) AlreadyReported() bool { return true }
+func (e *reportedStartupError) Unwrap() error {
+	if e.code == nil {
+		return nil
+	}
+	return e.code
+}
 
 func Open(ctx context.Context, configPath string, options OpenOptions) (*App, error) {
 	cfg, err := config.Load(configPath, os.LookupEnv)
@@ -218,10 +232,17 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 	runtimeOptions.Events = events
 	runtimeOptions.redaction = redaction
 	runtimeOptions.ReadOnly = readOnlyCommand(options.Command)
+	runtimeOptions.Command = options.Command
 	application, err := New(ctx, cfg, runtimeOptions)
 	if err != nil {
 		appEvents.Log(ctx, slog.LevelError, "service.start_failed", "subsyncd failed to start", appEvents.ErrorAttrs("startup", err)...)
-		return nil, &reportedStartupError{message: redactedError(err, cfg, redaction.Values())}
+		reported := &reportedStartupError{message: redactedError(err, cfg, redaction.Values())}
+		// A coded failure (busy) keeps its code for the JSON envelope.
+		if coded := (*control.Error)(nil); errors.As(err, &coded) && coded.Code != "" {
+			reported.message = redactedError(errors.New(coded.Message), cfg, redaction.Values())
+			reported.code = &control.Error{Code: coded.Code, Message: reported.message}
+		}
+		return nil, reported
 	}
 	application.Command = options.Command
 	appEvents.Log(ctx, slog.LevelInfo, "service.ready", "subsyncd ready", slog.String("command", options.Command))
@@ -250,7 +271,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 			return nil, fmt.Errorf("create data directory: %w", err)
 		}
-		release, err = (&App{Config: cfg}).acquireMutationLock()
+		release, err = (&App{Config: cfg}).acquireLock(control.Routed(options.Command))
 		if err != nil {
 			return nil, err
 		}
@@ -837,14 +858,16 @@ func (a *App) ReportFailure(ctx context.Context, command string, err error) {
 }
 
 func (a *App) Scan(ctx context.Context, args control.ScanArgs) (control.ScanResult, error) {
-	if args.Wait != 0 || args.NoWait {
-		return control.ScanResult{}, &control.Error{Code: control.CodeDaemonRequired, Message: "--timeout and --no-wait need a running daemon; without one, scan runs to completion"}
-	}
-	release, err := a.acquireMutationLock()
+	// The lock comes first: a daemon still starting holds it before its
+	// socket answers, and the command is then busy, not daemon_required.
+	release, err := a.acquireRoutedLock()
 	if err != nil {
 		return control.ScanResult{}, err
 	}
 	defer release()
+	if args.Wait != 0 || args.NoWait {
+		return control.ScanResult{}, &control.Error{Code: control.CodeDaemonRequired, Message: "--timeout and --no-wait need a running daemon; without one, scan runs to completion"}
+	}
 	return a.runScan(ctx, args)
 }
 
@@ -919,7 +942,7 @@ func (a *App) Retry(ctx context.Context, providerID string) (control.RetryResult
 	if a.Providers[providerID] == nil {
 		return control.RetryResult{}, &control.Error{Code: control.CodeUnknownProvider, Message: fmt.Sprintf("unknown provider %q", providerID)}
 	}
-	release, err := a.acquireMutationLock()
+	release, err := a.acquireRoutedLock()
 	if err != nil {
 		return control.RetryResult{}, err
 	}
@@ -1106,7 +1129,28 @@ func (a *App) workflowFor(tag string) (domain.Language, *workflow.Service, error
 	return language, service, nil
 }
 
+// Busy messages, both with code busy. A stop-first command must not run
+// beside the daemon. A routed command reaches the lock only when no daemon
+// socket answered, so the holder is a daemon still starting or another
+// one-shot command.
+const (
+	stopFirstBusy      = "another subsyncd mutation process is active; stop the daemon first"
+	routedCommandsBusy = "another subsyncd process holds the lock (a daemon still starting, or another command); try again shortly"
+)
+
+// acquireMutationLock takes the data-directory lock for a command that must
+// not run beside the daemon.
 func (a *App) acquireMutationLock() (func(), error) {
+	return a.acquireLock(false)
+}
+
+// acquireRoutedLock takes the lock for a command the daemon would run when
+// it is up (search, reject, scan, retry).
+func (a *App) acquireRoutedLock() (func(), error) {
+	return a.acquireLock(true)
+}
+
+func (a *App) acquireLock(routed bool) (func(), error) {
 	if a.readOnly {
 		return nil, fmt.Errorf("diagnostic application is read-only")
 	}
@@ -1120,7 +1164,11 @@ func (a *App) acquireMutationLock() (func(), error) {
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("another subsyncd mutation process is active; stop the daemon first")
+		message := stopFirstBusy
+		if routed {
+			message = routedCommandsBusy
+		}
+		return nil, &control.Error{Code: control.CodeBusy, Message: message}
 	}
 	return func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
 }

@@ -132,3 +132,12 @@ func TestSafeTextIsSingleLineValidUTF8AndBounded(t *testing.T) {
 		t.Fatalf("SafeText invalid or unbounded: runes=%d", utf8.RuneCountInString(got))
 	}
 }
+
+func TestPathErrorCauseDropsLinkErrorPaths(t *testing.T) {
+	dir := t.TempDir()
+	err := os.Rename(filepath.Join(dir, "Private Title.srt"), filepath.Join(dir, "Other.srt"))
+	cause := PathErrorCause(err)
+	if cause == nil || strings.Contains(cause.Error(), "Private Title") || !errors.Is(cause, os.ErrNotExist) {
+		t.Fatalf("PathErrorCause(%v) = %v", err, cause)
+	}
+}

@@ -102,14 +102,19 @@ func (e *Emitter) RelativePath(path string) (string, bool) {
 	return "", false
 }
 
-// PathErrorCause drops the path an os.PathError carries, keeping its cause so
-// errors.Is checks such as os.ErrNotExist still hold. Use it before a
-// filesystem error reaches a log or user-visible message: error text only has
-// configured roots redacted, and the rest of a media path is user data.
+// PathErrorCause drops the path an os.PathError (or the two paths an
+// os.LinkError from a rename or link) carries, keeping its cause so errors.Is
+// checks such as os.ErrNotExist still hold. Use it before a filesystem error
+// reaches a log or user-visible message: error text only has configured roots
+// redacted, and the rest of a media path is user data.
 func PathErrorCause(err error) error {
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) {
 		return pathErr.Err
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return linkErr.Err
 	}
 	return err
 }

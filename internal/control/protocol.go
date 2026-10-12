@@ -20,6 +20,11 @@ const (
 	MaxRequestBytes = 64 << 10
 )
 
+// Routed reports whether the running daemon executes command itself.
+func Routed(command string) bool {
+	return command == "retry" || command == "search" || command == "reject" || command == "scan"
+}
+
 // Error codes carried in Error.Code.
 const (
 	CodeUsage            = "usage"

@@ -17,6 +17,9 @@ import (
 const (
 	readTimeout  = 30 * time.Second
 	writeTimeout = 10 * time.Second
+	// defaultDrainTimeout bounds how long shutdown waits for handlers after
+	// canceling them, like the manual-search drain.
+	defaultDrainTimeout = 30 * time.Second
 )
 
 // Server serves the control protocol on a Unix socket. The caller must hold
@@ -27,6 +30,11 @@ type Server struct {
 	// Redact turns an unexpected handler error into a client-safe message.
 	Redact func(error) string
 	Events *observability.Emitter
+	// DrainTimeout bounds the shutdown wait for in-flight handlers after
+	// their context is canceled (30 seconds when zero). A handler still
+	// running then, stuck in uninterruptible I/O, is left behind with its
+	// connection closed.
+	DrainTimeout time.Duration
 }
 
 // Serve listens until ctx is canceled, then drains in-flight connections and
@@ -103,9 +111,34 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 
 	cancelHandlers()
-	wg.Wait()
+	s.drain(&wg, &mu, conns)
 	_ = os.Remove(s.Path)
 	return nil
+}
+
+// drain waits for the canceled handlers, at most DrainTimeout. Handlers still
+// running then have their connections closed and are left behind.
+func (s *Server) drain(wg *sync.WaitGroup, mu *sync.Mutex, conns map[net.Conn]struct{}) {
+	timeout := s.DrainTimeout
+	if timeout <= 0 {
+		timeout = defaultDrainTimeout
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		mu.Lock()
+		for c := range conns {
+			_ = c.Close()
+		}
+		mu.Unlock()
+	}
 }
 
 type countingReader struct {

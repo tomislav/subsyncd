@@ -34,14 +34,16 @@ type rejectTarget struct {
 // follow-up search in this process, waiting for it like search. A running
 // daemon executes the command itself (rejectInDaemon).
 func (a *App) Reject(ctx context.Context, args control.RejectArgs) (control.RejectResult, error) {
-	if args.Wait != 0 || args.NoWait {
-		return control.RejectResult{}, &control.Error{Code: control.CodeDaemonRequired, Message: "--timeout and --no-wait need a running daemon; without one, reject runs to completion"}
-	}
-	release, err := a.acquireMutationLock()
+	// The lock comes first: a daemon still starting holds it before its
+	// socket answers, and the command is then busy, not daemon_required.
+	release, err := a.acquireRoutedLock()
 	if err != nil {
 		return control.RejectResult{}, err
 	}
 	defer release()
+	if args.Wait != 0 || args.NoWait {
+		return control.RejectResult{}, &control.Error{Code: control.CodeDaemonRequired, Message: "--timeout and --no-wait need a running daemon; without one, reject runs to completion"}
+	}
 	target, err := a.prepareReject(ctx, args)
 	if err != nil {
 		return control.RejectResult{}, err
@@ -209,14 +211,14 @@ func managedSubtitleUnchanged(installation store.Installation, roots []string) e
 		return &control.Error{Code: control.CodeNotManaged, Message: "the installed subtitle is no longer on disk"}
 	}
 	if err != nil {
-		return fmt.Errorf("inspect installed subtitle: %w", err)
+		return fmt.Errorf("inspect installed subtitle: %w", observability.PathErrorCause(err))
 	}
 	if !info.Mode().IsRegular() {
 		return notManaged
 	}
 	payload, err := os.ReadFile(installation.Path)
 	if err != nil {
-		return fmt.Errorf("read installed subtitle: %w", err)
+		return fmt.Errorf("read installed subtitle: %w", observability.PathErrorCause(err))
 	}
 	sum := sha256.Sum256(payload)
 	if hex.EncodeToString(sum[:]) != installation.Checksum {

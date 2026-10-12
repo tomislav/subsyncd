@@ -347,7 +347,7 @@ func (c Command) addDaemonState(ctx context.Context, configPath string, status *
 
 // routed reports whether the daemon can execute command when it is running.
 func routed(command string) bool {
-	return command == "retry" || command == "search" || command == "reject" || command == "scan"
+	return control.Routed(command)
 }
 
 // validateReject checks reject's --reason, --undo and waiting flags.
@@ -587,13 +587,13 @@ var commandHelp = map[string]string{
 	"scan": `Reconcile one Arr instance with its library.
 With the daemon running, the daemon runs the scan between its scheduled reconciliations and the command waits for it, at most --timeout (default 5m). A scan still running then reports outcome running (exit 0) and finishes in the daemon; --no-wait returns at once with running. Without a daemon, scan runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
 Result fields: instance, media, force_probe, probe_skipped, outcome (running), history_deferred, deferred, deferred_media.
-Error codes: unknown_instance, daemon_required, daemon_stopping, busy, internal.`,
+Error codes: usage, unknown_instance, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
 	"search": `Search subtitles for one media file now: for --language, or else for every configured language the file is missing (when none is, nothing runs and each language reports satisfied).
 Select the file with --instance, --kind and --file-id, or with --title or --path. A title or path finds only files subsyncd already knows; only --file-id adds a file it has not indexed yet.
 With the daemon running, the daemon runs the search beside its worker and the command waits for the outcome, at most --timeout (default 5m). A language still searching then reports outcome running (exit 0) and the search carries on; follow up with explain or find. --no-wait returns at once with running. A dropped connection never cancels the search. Without a daemon, search runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
 --retry-rejected reconsiders the candidates subsyncd rejected itself; those you rejected with reject stay rejected (reject --undo removes them).
 Result fields: media_id, languages[] (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at). subtitle is relative to its media root.
-Outcomes: installed, satisfied, no_result, rejected, throttled, running.
+Outcomes: installed, satisfied, no_result, rejected, throttled, running, and removed when a replacement queued by reject was still pending for the language and found nothing acceptable (see reject).
 Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, arr_unreachable, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
 	"reject": `Reject a subtitle subsyncd installed that is wrong, so it is never chosen again, and search for a replacement now.
 Select the file with --instance, --kind and --file-id, or with --title or --path. --language may be left out when the file has a managed subtitle in only one language. --reason is one of out_of_sync, wrong_language, wrong_release, poor_quality, other.
@@ -605,8 +605,9 @@ Result fields: media_id, rejected (language, outcome, provider, candidate, relea
 Outcomes: installed, satisfied, removed, no_result, rejected, throttled, running.
 Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, not_managed, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
 	"retry": `Clear a provider's throttle and failure state and make throttled searches due.
+With the daemon running, the daemon clears the state itself.
 Result fields: provider, searches_due.
-Error codes: unknown_provider, busy, internal.`,
+Error codes: usage, unknown_provider, busy, daemon_stopping, protocol_mismatch, internal.`,
 	"explain": `Show why a media file and language are in their current state.
 Select the file with --instance, --kind and --file-id, or with --title or --path. Without --language every configured language is explained.
 Result fields: media_id, instance, kind, file_id, title, probe, tracks, search, candidates, rejections, installation, pack_cache_reusable, provider_states. Without --language the same fields identify the media and its tracks, and languages[] holds one complete result per configured language.

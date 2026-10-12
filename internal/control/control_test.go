@@ -359,3 +359,56 @@ func TestDialKeepsContextCancellation(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestServerShutdownLeavesAStuckHandlerBehind(t *testing.T) {
+	dir := shortDir(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	// The handler ignores cancellation, as one blocked in uninterruptible I/O.
+	h := handlerFunc(func(context.Context, string, json.RawMessage) (any, error) {
+		close(entered)
+		<-release
+		return nil, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := &control.Server{Path: control.SocketPath(dir), Handler: h, DrainTimeout: 100 * time.Millisecond}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	var client *control.Client
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		var err error
+		if client, err = control.Dial(context.Background(), dir); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not start: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	defer client.Close()
+	errc := make(chan error, 1)
+	go func() { errc <- client.Call(context.Background(), "stuck", nil, nil) }()
+	<-entered
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve waited for a stuck handler")
+	}
+	if _, err := os.Lstat(control.SocketPath(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket after shutdown: %v", err)
+	}
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("the client of a stuck handler got a result")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client of a stuck handler was not disconnected")
+	}
+}

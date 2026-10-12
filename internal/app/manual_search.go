@@ -138,14 +138,16 @@ type searchTarget struct {
 // daemon executes the command itself (searchInDaemon); without one nothing
 // would carry a search on after the CLI exits, so waiting limits are refused.
 func (a *App) Search(ctx context.Context, args control.SearchArgs) (control.SearchResult, error) {
-	if args.Wait != 0 || args.NoWait {
-		return control.SearchResult{}, &control.Error{Code: control.CodeDaemonRequired, Message: "--timeout and --no-wait need a running daemon; without one, search runs to completion"}
-	}
-	release, err := a.acquireMutationLock()
+	// The lock comes first: a daemon still starting holds it before its
+	// socket answers, and the command is then busy, not daemon_required.
+	release, err := a.acquireRoutedLock()
 	if err != nil {
 		return control.SearchResult{}, err
 	}
 	defer release()
+	if args.Wait != 0 || args.NoWait {
+		return control.SearchResult{}, &control.Error{Code: control.CodeDaemonRequired, Message: "--timeout and --no-wait need a running daemon; without one, search runs to completion"}
+	}
 	target, err := a.prepareSearch(ctx, args)
 	if err != nil {
 		return control.SearchResult{}, err

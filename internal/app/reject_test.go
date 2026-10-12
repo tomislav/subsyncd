@@ -585,3 +585,18 @@ func TestRejectAfterMediaChangeRemoves(t *testing.T) {
 		t.Fatalf("installation found/error = %v/%v", found, err)
 	}
 }
+
+func TestRejectReadErrorCarriesNoPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads unreadable files")
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "Private Title.en.srt")
+	if err := os.WriteFile(path, []byte("1\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	err := managedSubtitleUnchanged(store.Installation{Path: path, Checksum: "checksum"}, []string{root})
+	if err == nil || strings.Contains(err.Error(), "Private Title") {
+		t.Fatalf("managedSubtitleUnchanged() = %v", err)
+	}
+}
