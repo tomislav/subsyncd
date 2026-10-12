@@ -208,8 +208,8 @@ func TestRemoveSameFileKeepsOneFileUnderTwoSpellings(t *testing.T) {
 	// that both spellings name; removing either would delete it.
 	root := t.TempDir()
 	path := writeInstallFile(t, filepath.Join(root, "Movie.Old.en.srt"), installSRT)
-	if err := removeSameFile(path, path); err != nil {
-		t.Fatal(err)
+	if removed, err := removeSameFile(path, path); err != nil || removed {
+		t.Fatalf("removeSameFile(same name) = %v/%v", removed, err)
 	}
 	assertFile(t, path, installSRT)
 	lower := filepath.Join(root, "movie.old.en.srt")
@@ -218,21 +218,148 @@ func TestRemoveSameFileKeepsOneFileUnderTwoSpellings(t *testing.T) {
 		if !os.SameFile(info, original) {
 			t.Fatal("lower-case name is another file")
 		}
-		if err := removeSameFile(path, lower); err != nil {
-			t.Fatal(err)
+		if removed, err := removeSameFile(path, lower); err != nil || removed {
+			t.Fatalf("removeSameFile(case-only) = %v/%v", removed, err)
 		}
 		assertFile(t, path, installSRT)
+		// Another link elsewhere (a seeding copy) gives the file two links,
+		// but the two spellings still name one directory entry.
+		if err := os.Link(path, filepath.Join(t.TempDir(), "seed.srt")); err == nil {
+			if removed, err := removeSameFile(path, lower); err != nil || removed {
+				t.Fatalf("removeSameFile(case-only, linked elsewhere) = %v/%v", removed, err)
+			}
+			assertFile(t, path, installSRT)
+		}
+		// So do one name under two spellings of its folder.
+		folder := filepath.Join(root, "Season 01")
+		if err := os.Mkdir(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		inFolder := writeInstallFile(t, filepath.Join(folder, "Episode.en.srt"), installSRT)
+		if err := os.Link(inFolder, filepath.Join(t.TempDir(), "seed.srt")); err == nil {
+			if removed, err := removeSameFile(inFolder, filepath.Join(root, "SEASON 01", "Episode.en.srt")); err != nil || removed {
+				t.Fatalf("removeSameFile(folder spelling) = %v/%v", removed, err)
+			}
+			assertFile(t, inFolder, installSRT)
+		}
 	}
 	// A real second name is removed.
 	link := filepath.Join(root, "Movie.New.en.srt")
 	if err := os.Link(path, link); err != nil {
 		t.Skipf("no hard links: %v", err)
 	}
-	if err := removeSameFile(path, link); err != nil {
-		t.Fatal(err)
+	if removed, err := removeSameFile(path, link); err != nil || !removed {
+		t.Fatalf("removeSameFile(second link) = %v/%v", removed, err)
 	}
 	assertGone(t, path)
 	assertFile(t, link, installSRT)
+}
+
+// caseSensitive skips the test on a case-insensitive filesystem (macOS APFS
+// by default), where a case-only rename cannot leave two names.
+func caseSensitive(t *testing.T, root string) {
+	t.Helper()
+	probe := writeInstallFile(t, filepath.Join(root, "Probe.txt"), "probe")
+	defer func() { _ = os.Remove(probe) }()
+	if _, err := os.Lstat(filepath.Join(root, "probe.txt")); err == nil {
+		t.Skip("case-insensitive filesystem")
+	}
+}
+
+func TestRemoveSameFileRemovesACaseOnlyDuplicateLink(t *testing.T) {
+	root := t.TempDir()
+	caseSensitive(t, root)
+	path := writeInstallFile(t, filepath.Join(root, "Movie.Old.en.srt"), installSRT)
+	lower := filepath.Join(root, "movie.old.en.srt")
+	if err := os.Link(path, lower); err != nil {
+		t.Skipf("no hard links: %v", err)
+	}
+	if removed, err := removeSameFile(path, lower); err != nil || !removed {
+		t.Fatalf("removeSameFile() = %v/%v, want the old spelling removed", removed, err)
+	}
+	assertGone(t, path)
+	assertFile(t, lower, installSRT)
+}
+
+// On a case-sensitive filesystem a case-only rename is a rename like any
+// other: the sidecar Arr left at the old spelling is moved, and no second
+// link stays behind.
+func TestReconcileCaseOnlyRenameLeavesNoDuplicateOnACaseSensitiveFilesystem(t *testing.T) {
+	f := newReconcileFixture(t, "Movie.Old.mkv")
+	caseSensitive(t, f.root)
+	old := f.sidecar
+	renamed := f.media
+	renamed.Fingerprint.Path = filepath.Join(f.root, "movie.old.mkv")
+	if err := os.Rename(f.media.Fingerprint.Path, renamed.Fingerprint.Path); err != nil {
+		t.Fatal(err)
+	}
+	f.import_(t, "rename", renamed)
+	moved := f.sidecarFor(renamed)
+	if changed, err := f.reconcile(t); err != nil || !changed {
+		t.Fatalf("ReconcileInstallation() = %v/%v", changed, err)
+	}
+	assertGone(t, old)
+	assertFile(t, moved, f.content)
+	if got := f.installation(t); got.Path != moved || got.MediaPath != renamed.Fingerprint.Path {
+		t.Fatalf("installation = %#v", got)
+	}
+	if n := f.count(t, `SELECT count(*) FROM pending_installs`); n != 0 {
+		t.Fatalf("pending rows = %d", n)
+	}
+}
+
+// A crash between the link and the unlink of a case-only move leaves the
+// same file under both spellings; recovery removes the old one.
+func TestRecoveryRemovesACaseOnlyDuplicateLink(t *testing.T) {
+	f := newReconcileFixture(t, "Movie.Old.mkv")
+	caseSensitive(t, f.root)
+	old := f.sidecar
+	moved := filepath.Join(f.root, "movie.old.en.srt")
+	if err := os.Link(old, moved); err != nil {
+		t.Skipf("no hard links: %v", err)
+	}
+	info, err := os.Lstat(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := store.PendingInstall{MediaID: f.mediaID, Language: "en", Destination: moved, Checksum: f.installation(t).Checksum, RollbackPath: old, PublishedInode: fileInode(info)}
+	if _, err := f.installer.beginPendingInstall(f.ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	if settled, err := f.installer.RecoverPendingInstalls(f.ctx); err != nil || settled != 1 {
+		t.Fatalf("RecoverPendingInstalls() = %d/%v", settled, err)
+	}
+	assertGone(t, old)
+	assertFile(t, moved, f.content)
+	if record := f.event(t, "install.recovered"); record["outcome"] != "move_finished" {
+		t.Fatalf("install.recovered = %#v", record)
+	}
+}
+
+// On a case-insensitive filesystem the two spellings of a case-only move are
+// one directory entry: recovery removes nothing.
+func TestRecoveryKeepsTheOnlyEntryOfACaseOnlyMove(t *testing.T) {
+	f := newReconcileFixture(t, "Movie.Old.mkv")
+	old := f.sidecar
+	moved := filepath.Join(f.root, "movie.old.en.srt")
+	if _, err := os.Lstat(moved); err != nil {
+		t.Skip("case-sensitive filesystem")
+	}
+	info, err := os.Lstat(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := store.PendingInstall{MediaID: f.mediaID, Language: "en", Destination: moved, Checksum: f.installation(t).Checksum, RollbackPath: old, PublishedInode: fileInode(info)}
+	if _, err := f.installer.beginPendingInstall(f.ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	if settled, err := f.installer.RecoverPendingInstalls(f.ctx); err != nil || settled != 1 {
+		t.Fatalf("RecoverPendingInstalls() = %d/%v", settled, err)
+	}
+	assertFile(t, old, f.content)
+	if record := f.event(t, "install.recovered"); record["outcome"] != "move_cleaned" {
+		t.Fatalf("install.recovered = %#v", record)
+	}
 }
 
 func TestReconcileCaseOnlyRenameKeepsTheSidecar(t *testing.T) {

@@ -295,9 +295,10 @@ func (i Installer) followRename(ctx context.Context, records installationRecordS
 		return Reconciliation{}, i.dropInstallation(ctx, records, installation, reconcileChanged)
 	case state == sidecarMatches, state == sidecarChanged && oldState != sidecarMatches:
 		// Arr moved the sidecar (an edited one stays the owner's, protected
-		// as before). A hard link left at the old name is the same file; on
-		// a case-insensitive filesystem a rename that only changed letter
-		// case leaves one file under both spellings, which stays.
+		// as before). A hard link left at the old name is the same file and
+		// goes, also after a case-only rename on a case-sensitive
+		// filesystem; on a case-insensitive one both spellings name one
+		// directory entry, which stays.
 		if err := ctx.Err(); err != nil {
 			return Reconciliation{}, err
 		}
@@ -305,7 +306,7 @@ func (i Installer) followRename(ctx context.Context, records installationRecordS
 			return Reconciliation{}, err
 		}
 		if old != expected && state == sidecarMatches {
-			_ = removeSameFile(old, expected)
+			_, _ = removeSameFile(old, expected)
 		}
 		i.logRenamed(ctx, installation, false)
 		return Reconciliation{}, nil
@@ -411,7 +412,7 @@ func (i Installer) moveRenamedSidecar(ctx context.Context, records installationR
 	undo := func(cause error) error {
 		var undoErr error
 		if linked {
-			undoErr = removeSameFile(destination, source)
+			_, undoErr = removeSameFile(destination, source)
 		} else {
 			undoErr = restoreRemoved(destination, source, sourceParent)
 		}
@@ -438,7 +439,7 @@ func (i Installer) moveRenamedSidecar(ctx context.Context, records installationR
 		return undo(err)
 	}
 	if linked {
-		if err := removeSameFile(source, destination); err != nil {
+		if _, err := removeSameFile(source, destination); err != nil {
 			// Recorded at the new name; the pending row stays, and the
 			// startup sweep removes the old name.
 			i.Events.For("workflow").Log(ctx, slog.LevelWarn, "install.rename_cleanup_failed", "the old name of a moved subtitle could not be removed; it is retried at the next start",
@@ -464,9 +465,10 @@ func isPendingMove(item store.PendingInstall) bool {
 
 // recoverPendingMove finishes a sidecar move a crash or a failed unlink left
 // with the same file at both names: the old name is removed only while it is
-// still the moved inode, with the recorded checksum, and a second name of the
-// file at the new name. Anything else at the old name is left alone; the next
-// reconciliation settles the record.
+// still the moved inode, with the recorded checksum, and a second link of the
+// file at the new name (removeSameFile: names that differ byte for byte, at
+// least two links, two directory entries). Anything else at the old name is
+// left alone; the next reconciliation settles the record.
 func (i Installer) recoverPendingMove(ctx context.Context, item store.PendingInstall, destination string) (string, error) {
 	source, sourceParent, err := containedDestination(item.RollbackPath, i.MediaRoots)
 	if err != nil {
@@ -500,8 +502,14 @@ func (i Installer) recoverPendingMove(ctx context.Context, item store.PendingIns
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if err := removeSameFile(source, destination); err != nil {
+	removed, err := removeSameFile(source, destination)
+	if err != nil {
 		return "", fmt.Errorf("remove old subtitle name: %w", observability.PathErrorCause(err))
+	}
+	if !removed {
+		// One directory entry under two spellings (a case-only rename on a
+		// case-insensitive filesystem): nothing is left to remove.
+		return "move_cleaned", nil
 	}
 	if err := syncDirectory(sourceParent); err != nil {
 		return "", err
@@ -602,29 +610,74 @@ func sidecarNamedFor(path, mediaPath string) bool {
 }
 
 // removeSameFile removes path when it is a regular file that is the same file
-// (a hard link) as other, so no content is lost. It removes nothing when the
-// file has a single name or the two names differ only in letter case: on a
-// case-insensitive filesystem both spell one name, and removing either would
-// delete the only copy.
-func removeSameFile(path, other string) error {
+// (a hard link) as other, so no content is lost. It removes it only as a
+// second link: the two names differ byte for byte, the file has at least two
+// links, and both names are entries of their directories as spelled. A
+// case-only rename on a case-sensitive filesystem leaves two links, and the
+// old spelling goes; on a case-insensitive one both spellings name a single
+// directory entry (one link, or one entry listed even when the file has
+// another link elsewhere), and nothing is removed. It reports whether it
+// removed path.
+func removeSameFile(path, other string) (bool, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	otherInfo, err := os.Lstat(other)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !info.Mode().IsRegular() || !os.SameFile(info, otherInfo) {
-		return fmt.Errorf("not the same file")
+		return false, fmt.Errorf("not the same file")
 	}
-	if strings.EqualFold(filepath.Clean(path), filepath.Clean(other)) || linkCount(info) < 2 {
-		return nil
+	if filepath.Clean(path) == filepath.Clean(other) || linkCount(info) < 2 {
+		return false, nil
 	}
-	return os.Remove(path)
+	distinct, err := distinctEntries(path, other)
+	if err != nil || !distinct {
+		return false, err
+	}
+	if err := os.Remove(path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// distinctEntries reports whether path and other are two directory entries.
+// Names in different directories are. In one directory (however its path is
+// spelled) the names must differ and both be listed byte for byte: a
+// case-insensitive or normalization-insensitive filesystem lists one
+// spelling of a name that both paths resolve to.
+func distinctEntries(path, other string) (bool, error) {
+	parent, otherParent := filepath.Dir(filepath.Clean(path)), filepath.Dir(filepath.Clean(other))
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return false, err
+	}
+	otherParentInfo, err := os.Stat(otherParent)
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(parentInfo, otherParentInfo) {
+		return true, nil
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return false, err
+	}
+	name, otherName := filepath.Base(path), filepath.Base(other)
+	if name == otherName {
+		return false, nil
+	}
+	listed, otherListed := false, false
+	for _, entry := range entries {
+		listed = listed || entry.Name() == name
+		otherListed = otherListed || entry.Name() == otherName
+	}
+	return listed && otherListed, nil
 }
 
 func checksumPrefix(checksum string) string {
