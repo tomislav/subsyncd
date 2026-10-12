@@ -87,7 +87,30 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	}
 	jsonMode := wantsJSON(args)
 	if len(args) == 0 {
-		return c.usageError("", jsonMode, "command is required")
+		_, _ = fmt.Fprintln(c.Stderr, "subsyncd: command is required")
+		_, _ = fmt.Fprintln(c.Stderr)
+		printUsage(c.Stderr)
+		return ExitUsage
+	}
+	switch args[0] {
+	case "help", "-h", "-help", "--help":
+		// Help is text, also with --json.
+		var rest []string
+		for _, arg := range args[1:] {
+			if !wantsJSON([]string{arg}) {
+				rest = append(rest, arg)
+			}
+		}
+		switch {
+		case len(rest) == 0:
+			printUsage(c.Stdout)
+			return ExitOK
+		case args[0] == "help" && len(rest) == 1:
+			// "help COMMAND" is "COMMAND --help".
+			args = []string{rest[0], "--help"}
+		default:
+			return c.usageError("", jsonMode, "unexpected arguments after "+args[0])
+		}
 	}
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "version") {
 		version := c.Version
@@ -98,17 +121,17 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		return ExitOK
 	}
 	command := args[0]
+	if _, ok := commandHelp[command]; !ok {
+		return c.usageError("", jsonMode, "unknown command "+command+`; run "subsyncd --help" for the list`)
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	if jsonMode {
 		flags.SetOutput(io.Discard)
 	} else {
 		flags.SetOutput(c.Stderr)
 	}
-	flags.Usage = func() {
-		if !jsonMode {
-			c.printHelp(flags, command)
-		}
-	}
+	// Parse reports a request for help as flag.ErrHelp, handled below.
+	flags.Usage = func() {}
 	configPath := flags.String("config", c.DefaultConfigPath, "configuration file")
 	instance := flags.String("instance", "", "Arr instance name")
 	kind := flags.String("kind", "", "media kind (movie or episode)")
@@ -117,7 +140,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	path := flags.String("path", "", "media file path, in this container or as Sonarr or Radarr reports it")
 	language := flags.String("language", "", "subtitle language tag")
 	limit := flags.Int("limit", 0, "most rows to list (default 50)")
-	since := flags.Duration("since", 0, "how far back to look, as a Go duration (default 24h)")
+	since := flags.Duration("since", 0, "how far back to look, such as 90m or 72h (default 24h)")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
 	retryRejected := flags.Bool("retry-rejected", false, "clear and retry the candidates subsyncd rejected (not those you rejected)")
@@ -132,10 +155,12 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	flags.Bool("json", false, "write one JSON object to stdout instead of text")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			if jsonMode {
-				c.printHelp(flags, command)
-			}
-			return ExitUsage
+			// Asked-for help is a success, and text also with --json.
+			c.printHelp(c.Stdout, flags, command)
+			return ExitOK
+		}
+		if !jsonMode {
+			c.printHelp(c.Stderr, flags, command)
 		}
 		return c.usageError(command, jsonMode, err.Error())
 	}
@@ -191,6 +216,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 			validateErr = require("--subtitle", *subtitle)
 		}
 	default:
+		// commandHelp and this switch list the same commands.
 		return c.usageError(command, jsonMode, "unknown command "+command)
 	}
 	if validateErr != nil {
@@ -581,90 +607,145 @@ func errorsText(message string) error { return fmt.Errorf("%s", message) }
 
 // commandHelp describes what each command returns. With --json the result
 // fields below are the "result" object of the envelope; a failure carries
-// "error": {"code", "message"} with one of the codes named here.
+// "error": {"code", "message"} with one of the codes named here. Each line is
+// a paragraph, wrapped when printed; the first sentence is the command's
+// summary in the top-level help, so keep it short.
 var commandHelp = map[string]string{
-	"serve": "Run the daemon. It has no result and does not accept --json.",
+	"serve": `Run the daemon.
+It has no result and does not accept --json.`,
 	"scan": `Reconcile one Arr instance with its library.
 With the daemon running, the daemon runs the scan between its scheduled reconciliations and the command waits for it, at most --timeout (default 5m). A scan still running then reports outcome running (exit 0) and finishes in the daemon; --no-wait returns at once with running. Without a daemon, scan runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
 Result fields: instance, media, force_probe, probe_skipped, outcome (running), history_deferred, deferred, deferred_media.
 Error codes: usage, unknown_instance, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
-	"search": `Search subtitles for one media file now: for --language, or else for every configured language the file is missing (when none is, nothing runs and each language reports satisfied).
+	"search": `Search subtitles for one media file now.
+It searches for --language, or else for every configured language the file is missing; when none is, nothing runs and each language reports satisfied.
 Select the file with --instance, --kind and --file-id, or with --title or --path. A title or path finds only files subsyncd already knows; only --file-id adds a file it has not indexed yet.
 With the daemon running, the daemon runs the search beside its worker and the command waits for the outcome, at most --timeout (default 5m). A language still searching then reports outcome running (exit 0) and the search carries on; follow up with explain or find. --no-wait returns at once with running. A dropped connection never cancels the search. Without a daemon, search runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
 --retry-rejected reconsiders the candidates subsyncd rejected itself; those you rejected with reject stay rejected (reject --undo removes them).
 Result fields: media_id, languages[] (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at). subtitle is relative to its media root.
 Outcomes: installed, satisfied, no_result, rejected, throttled, running, and removed when a replacement queued by reject was still pending for the language and found nothing acceptable (see reject).
 Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, arr_unreachable, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
-	"reject": `Reject a subtitle subsyncd installed that is wrong, so it is never chosen again, and search for a replacement now.
+	"reject": `Reject a wrong subtitle and search for a replacement.
+The rejected subtitle is never chosen again, and the search runs now.
 Select the file with --instance, --kind and --file-id, or with --title or --path. --language may be left out when the file has a managed subtitle in only one language. --reason is one of out_of_sync, wrong_language, wrong_release, poor_quality, other.
-The rejection is bound to this media file and holds across LAPSE upgrades and search --retry-rejected; replacing the media file drops it. The search that follows installs the best acceptable remaining candidate even when it scores lower. When none is acceptable, the rejected subtitle is removed (outcome removed) and the language counts as missing again. A throttled or failed search keeps the subtitle; the queued search retries the replacement.
+The rejection is bound to this media file and holds across LAPSE and rule changes, and search --retry-rejected keeps it; replacing the media file drops it. The search that follows installs the best acceptable remaining candidate even when it scores lower. When none is acceptable, the rejected subtitle is removed (outcome removed) and the language counts as missing again. A throttled or failed search keeps the subtitle; the queued search retries the replacement.
 Only a subtitle subsyncd installed and that is unchanged on disk can be rejected: embedded tracks, your own sidecars and sidecars you edited fail with not_managed.
 --undo removes your rejections for the file and language, for a reject made by mistake, and runs no search.
 With the daemon running, it waits like search: at most --timeout (default 5m), then reports running and carries on; --no-wait returns at once. Without a daemon, it runs in this process, and --timeout and --no-wait fail with daemon_required.
 Result fields: media_id, rejected (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at), undone, undo. For removed, reason is the search outcome (no_result or rejected) that found nothing acceptable.
 Outcomes: installed, satisfied, removed, no_result, rejected, throttled, running.
 Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, not_managed, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
-	"retry": `Clear a provider's throttle and failure state and make throttled searches due.
-With the daemon running, the daemon clears the state itself.
+	"retry": `Clear a provider's throttle and failure state.
+Throttled searches become due at once; one still held back by another provider is throttled again.
+With the daemon running, the daemon clears the state itself and its worker picks the searches up. Without a daemon, this process clears the stored state, and the searches run when the daemon next starts; it fails with busy while another command is changing the database.
 Result fields: provider, searches_due.
 Error codes: usage, unknown_provider, busy, daemon_stopping, protocol_mismatch, internal.`,
-	"explain": `Show why a media file and language are in their current state.
+	"explain": `Show why a media file and language are in their state.
 Select the file with --instance, --kind and --file-id, or with --title or --path. Without --language every configured language is explained.
 Result fields: media_id, instance, kind, file_id, title, probe, tracks, search, candidates, rejections, installation, pack_cache_reusable, provider_states. Without --language the same fields identify the media and its tracks, and languages[] holds one complete result per configured language.
 Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, internal.`,
-	"find": `List the indexed media a selection matches and the state of each configured language: installed, satisfied (a track already covers it), running or missing. Several matches are a success.
+	"find": `List the media a selection matches and their languages.
+For each indexed match it shows the state of every configured language: installed, satisfied (a track already covers it), running or missing. Several matches are a success.
 Select with --title ("Dune", "Dune (2021)", "Show S01E02", "Show 1x02"; case, accents and punctuation do not matter; an exact title beats a partial one), --path (a path in this container or as Sonarr or Radarr reports it), or --instance, --kind and --file-id. --instance and --kind narrow --title and --path.
 Result fields: matches[] (instance, kind, file_id, title, year, season, episode, episode_end, languages[] (language, state)).
 Error codes: usage, unknown_instance, media_not_found (only for --file-id), internal.`,
-	"missing": `List what subsyncd has no subtitle for yet: each active media file and configured language with no installation and no track that covers it (a forced-only track does not count; a hearing-impaired one only with allow_hearing_impaired). Runs beside the daemon.
+	"missing": `List what subsyncd has no subtitle for yet.
+Each row is an active media file and configured language with no installation and no track that covers it (a forced-only track does not count; a hearing-impaired one only with allow_hearing_impaired). Runs beside the daemon.
 Filters: --instance, --language, --title ("Dune", "Show S01E02"; an exact title beats a partial one), --limit (default 50). Rows follow the queue: what would run next comes first, then languages with no search yet. A search running now is listed too, with no next_attempt_at.
 Reasons: not_searched (no search has run yet), no_candidates (providers returned nothing usable), all_rejected (every candidate was rejected), providers_cooling_down (the last search was throttled, or every provider of the language's route is cooling down; providers names them), search_failing (the last search failed technically, for example a network, LAPSE or media-storage problem; it retries by itself at next_attempt_at, and explain or the logs show the cause), unsupported (for example a multi-episode file subsyncd does not search).
 action is a complete command to run (search ..., search ... --retry-rejected); for providers_cooling_down it is providers, which shows when the cooldown or quota resets (searches resume by themselves), or retry --provider ... when a provider rejected its credentials; for search_failing it is the explain command to see the cause, and for unsupported a short instruction instead.
 Result fields: total (all rows before --limit), items[] (instance, kind, file_id, title, year, season, episode, episode_end, language, reason, providers, next_attempt_at, action).
 Error codes: usage, unknown_instance, unknown_language, internal.`,
-	"recent": `List what happened in a time window, newest first: subtitles installed (and replaced), searches that ended with no result or only rejected candidates, subtitles you rejected, subtitles removed, and searches that gave up on upgrade checks. Reads the search history beside the daemon; the history is kept for 30 days.
-Filters: --since (a Go duration such as 90m or 72h; default 24h), --instance, --language, --limit (default 50).
+	"recent": `List what happened in a time window, newest first.
+That is subtitles installed (and replaced), searches that ended with no result or only rejected candidates, subtitles you rejected, subtitles removed, and searches that gave up on upgrade checks. Reads the search history beside the daemon; the history is kept for 30 days.
+Filters: --since (such as 90m or 72h; default 24h), --instance, --language, --limit (default 50).
 Outcomes: installed (a subtitle was installed or replaced), satisfied (nothing needed doing), no_result (providers returned nothing usable), rejected (every candidate was rejected; a reason starting with user_ is a rejection you made with reject, such as user_out_of_sync; its replacement's result is a separate row; reject --undo does not remove rows), throttled (providers were rate limited, or the subtitle of a replaced media file waits for its hourly deletion slot), removed (a rejected subtitle was taken out and nothing acceptable replaced it). manual is true for searches you started.
 Result fields: since, items[] (instance, kind, file_id, title, language, outcome, provider, release, reason, manual, finished_at). The title is the name the log shows (episodes include season and episode); a file subsyncd has since forgotten still appears.
 Error codes: usage, unknown_instance, unknown_language, internal.`,
-	"status": `Overview to read before acting: the daemon, the queue, running searches, providers that cannot be used, the media pause, each Arr instance and the backlogs. Runs beside the daemon, and still answers without one.
+	"status": `Show an overview to read before acting.
+It covers the daemon, the queue, running searches, providers that cannot be used, the media pause, each Arr instance and the backlogs. Runs beside the daemon, and still answers without one.
 Result fields: daemon (running, version, started_at, error), queue (new, missing, upgrade; each total and due), running[] (the media fields, language, lease_until), providers[] (id, state, until, last_failure), media_pause (until), instances[] (name, last_reconcile_at, reconcile_failures, discovery_complete, webhook, webhook_checked_at), backlog (webhook_inbox, notification_outbox).
 daemon.running is false when no daemon answers, with daemon.error set (a code, or "daemon unreachable") when something did but failed. version, started_at and media_pause come from the daemon only. A pause is reported only while it lasts.
 queue counts pending searches: new (just imported or renamed, or queued by reject), missing, and upgrade checks. due counts those scheduled now and not running. running[] are searches holding a live lease (the worker's, or a manual search); the database records when the lease ends (lease_until), not when the search began.
-providers[] lists only providers that cannot be used now; providers shows them all. State is cooling_down (a rate limit, busy service, blocked client or transient failure until the reset time in until), quota_exhausted (a quota is used up until until), or auth_failed (credentials were rejected; until is empty and the provider stays off until you fix them and run retry --provider ID).
+providers[] lists only providers that cannot be used now; providers shows them all. State is cooling_down (a rate limit, busy service, blocked client or transient failure until the reset time in until), quota_exhausted (a quota is used up until the time in until), or auth_failed (credentials were rejected; until is empty and the provider stays off until you fix them and run retry --provider ID).
 instances[]: last_reconcile_at is the last attempt and succeeded when reconcile_failures is 0; discovery_complete is whether the first library discovery finished; webhook is connected (subsyncd manages the Arr connection and checked it at webhook_checked_at), pending (managed, not yet connected) or unmanaged (no server.webhook_base_url).
-Error codes: internal.`,
-	"providers": `Show every configured provider: its routes, its state, and what it did in the last 24 hours. Runs beside the daemon.
+Error codes: usage, internal.`,
+	"providers": `Show every provider's routes, state and last 24 hours.
+Runs beside the daemon.
 Result fields: providers[] (id, type, routes[] (language, tier), state, until, last_failure, last_success_at, last_24h (installed, no_result, rejected)).
 routes[] lists the languages the provider serves; tier is preferred (tried first) or fallback (tried when the preferred providers find nothing).
 state is available, cooling_down (until is when it can be used again; last_failure is the reason, such as rate_limit or service_busy), quota_exhausted (until is the quota reset) or auth_failed (credentials rejected; until is empty). retry --provider ID clears a provider's state, which helps for a cooldown or after fixing credentials, not while the quota is truly exhausted.
 last_success_at is the last installed subtitle from the provider that the search history (kept 30 days) still holds; last_24h counts its search outcomes over the last 24 hours.
-Error codes: internal.`,
-	"doctor": `Check configuration, storage, LAPSE and ffprobe without contacting Arr or providers.
+Error codes: usage, internal.`,
+	"doctor": `Check configuration, storage, LAPSE and ffprobe.
+It contacts neither Arr nor the providers.
 Result fields: configuration, sqlite, media_roots, lapse, ffprobe, webhooks.
-Error codes: internal.`,
-	"analyze-sync": `Run LAPSE on a media file and a subtitle file and report its verdict.
+Error codes: usage, internal.`,
+	"analyze-sync": `Report LAPSE's verdict for a media and subtitle file.
 Result fields: analysis (LAPSE's document).
 Error codes: usage, internal.`,
-	"forget-instance": `Preview, or with --yes delete, the records of an instance removed from the configuration.
+	"forget-instance": `Preview or delete the records of a removed instance.
+Remove the instance from the configuration first. Without --yes it only previews what would be deleted; --yes deletes it.
 Result fields: instance, applied, media, searches, installations, rollback_copies, candidates, rejections, notifications, events, replays, history.
-Error codes: unknown_instance, busy, internal.`,
-	"webhook-url": `Print the webhook URL to enter in Arr. The result includes the token.
+Error codes: usage, unknown_instance, busy, internal.`,
+	"webhook-url": `Print the webhook URL to enter in Arr.
+The result includes the token.
 Result fields: instance, url.
-Error codes: unknown_instance, internal.`,
-	"rotate-webhook-token": `Replace an instance's webhook token. Stop the daemon first.
+Error codes: usage, unknown_instance, internal.`,
+	"rotate-webhook-token": `Replace an instance's webhook token.
+Stop the daemon first.
 Result fields: instance, managed.
-Error codes: unknown_instance, busy, internal.`,
+Error codes: usage, unknown_instance, busy, internal.`,
+}
+
+// commandGroups orders the commands of the top-level help. Every command in
+// commandHelp appears in exactly one group.
+var commandGroups = []struct {
+	title    string
+	commands []string
+}{
+	{"Daemon", []string{"serve"}},
+	{"Inspect", []string{"status", "providers", "missing", "recent", "find", "explain", "doctor", "analyze-sync"}},
+	{"Act", []string{"search", "reject", "retry", "scan"}},
+	{"Set up", []string{"webhook-url", "rotate-webhook-token", "forget-instance"}},
+}
+
+// helpWidth is the column the help text wraps at.
+const helpWidth = 80
+
+// commandSummary is the first sentence of a command's help, without its
+// period.
+func commandSummary(command string) string {
+	summary, _, _ := strings.Cut(commandHelp[command], "\n")
+	summary, _, _ = strings.Cut(summary, ". ")
+	return strings.TrimSuffix(summary, ".")
+}
+
+// printUsage writes the top-level help: every command with its summary.
+func printUsage(out io.Writer) {
+	width := 0
+	for _, group := range commandGroups {
+		for _, command := range group.commands {
+			width = max(width, len(command))
+		}
+	}
+	_, _ = fmt.Fprintln(out, "Usage: subsyncd COMMAND [flags]")
+	for _, group := range commandGroups {
+		_, _ = fmt.Fprintf(out, "\n%s:\n", group.title)
+		for _, command := range group.commands {
+			_, _ = fmt.Fprintf(out, "  %-*s  %s\n", width, command, commandSummary(command))
+		}
+	}
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprint(out, wrapText(`Run "subsyncd COMMAND --help" (or "subsyncd help COMMAND") for a command's flags, result fields and error codes. "subsyncd version" prints the version.`, helpWidth))
 }
 
 // printHelp writes the usage of command: only its own flags, then what it
 // returns.
-func (c Command) printHelp(flags *flag.FlagSet, command string) {
-	out := c.Stderr
+func (c Command) printHelp(out io.Writer, flags *flag.FlagSet, command string) {
 	_, _ = fmt.Fprintf(out, "Usage: subsyncd %s [flags]\n\n", command)
 	if text, ok := commandHelp[command]; ok {
-		_, _ = fmt.Fprintln(out, text)
-		_, _ = fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out, wrapText(text, helpWidth))
 	}
 	allowed := commandFlags(command)
 	own := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -672,10 +753,40 @@ func (c Command) printHelp(flags *flag.FlagSet, command string) {
 	flags.VisitAll(func(item *flag.Flag) {
 		if allowed[item.Name] {
 			own.Var(item.Value, item.Name, item.Usage)
+			// Var takes the current value as the default; a flag already
+			// parsed (--json before --help) must still show the real one.
+			own.Lookup(item.Name).DefValue = item.DefValue
 		}
 	})
 	own.PrintDefaults()
 	if allowed["json"] {
-		_, _ = fmt.Fprintln(out, "\nWith --json, stdout is one JSON object: {\"schema\":\"subsyncd.cli/v1\",\"command\",\"ok\",\"result\"} or, on failure, {...,\"ok\":false,\"error\":{\"code\",\"message\"}}. Exit codes: 0 success, 1 failure, 2 usage.")
+		_, _ = fmt.Fprint(out, "\n"+wrapText("With --json, stdout is one JSON object: {\"schema\":\"subsyncd.cli/v1\",\"command\",\"ok\",\"result\"} or, on failure, {...,\"ok\":false,\"error\":{\"code\",\"message\"}}. Exit codes: 0 success, 1 failure, 2 usage.", helpWidth))
 	}
+}
+
+// wrapText wraps each line of text, a paragraph, at width columns and puts a
+// blank line between paragraphs. A word longer than width keeps its own line.
+func wrapText(text string, width int) string {
+	var out strings.Builder
+	for i, paragraph := range strings.Split(text, "\n") {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		column := 0
+		for _, word := range strings.Fields(paragraph) {
+			switch {
+			case column == 0:
+			case column+1+len(word) > width:
+				out.WriteString("\n")
+				column = 0
+			default:
+				out.WriteString(" ")
+				column++
+			}
+			out.WriteString(word)
+			column += len(word)
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
 }

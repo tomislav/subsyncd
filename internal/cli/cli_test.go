@@ -430,8 +430,121 @@ func TestCodedErrorsPrintTheirMessageInTextMode(t *testing.T) {
 func TestHelpDescribesResultAndCodes(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := (Command{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"search", "--help"})
-	if code != ExitUsage || !strings.Contains(stderr.String(), "--json") || !strings.Contains(stderr.String(), "unknown_instance") || strings.Contains(stderr.String(), "-force-probe") {
-		t.Fatalf("exit/help = %d/%q", code, stderr.String())
+	if code != ExitOK || stderr.Len() != 0 || !strings.Contains(stdout.String(), "--json") || !strings.Contains(stdout.String(), "unknown_instance") || strings.Contains(stdout.String(), "-force-probe") {
+		t.Fatalf("exit/help/stderr = %d/%q/%q", code, stdout.String(), stderr.String())
+	}
+}
+
+// commandHelpText runs "COMMAND --help" and returns its output with the
+// wrapping undone, so phrases split across lines still match.
+func commandHelpText(t *testing.T, args ...string) string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	if code := (Command{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), args); code != ExitOK || stderr.Len() != 0 {
+		t.Fatalf("%v: exit = %d stderr = %q", args, code, stderr.String())
+	}
+	return strings.Join(strings.Fields(stdout.String()), " ")
+}
+
+func TestTopLevelHelpListsEveryCommand(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"--help", "--json"}} {
+		var stdout, stderr bytes.Buffer
+		code := (Command{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), args)
+		if code != ExitOK || stderr.Len() != 0 || !strings.HasPrefix(stdout.String(), "Usage: subsyncd COMMAND [flags]\n") {
+			t.Fatalf("%v: exit/stdout/stderr = %d/%q/%q", args, code, stdout.String(), stderr.String())
+		}
+		for command := range commandHelp {
+			if !strings.Contains(stdout.String(), "  "+command+" ") || !strings.Contains(stdout.String(), commandSummary(command)+"\n") {
+				t.Errorf("%v: help lacks %s: %s", args, command, stdout.String())
+			}
+		}
+	}
+}
+
+func TestBareCommandIsAUsageErrorWithTheCommandList(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := (Command{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), nil)
+	if code != ExitUsage || stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), "subsyncd: command is required\n") || !strings.Contains(stderr.String(), "rotate-webhook-token") {
+		t.Fatalf("exit/stdout/stderr = %d/%q/%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestCommandHelpIsASuccessAlsoWithJSON(t *testing.T) {
+	want := commandHelpText(t, "search", "--help")
+	for _, args := range [][]string{{"search", "-h"}, {"search", "--help", "--json"}, {"search", "--json", "--help"}, {"help", "search"}, {"help", "search", "--json"}} {
+		if got := commandHelpText(t, args...); got != want {
+			t.Errorf("%v: help = %q, want %q", args, got, want)
+		}
+	}
+	if !strings.HasPrefix(want, "Usage: subsyncd search [flags]") {
+		t.Fatalf("help = %q", want)
+	}
+}
+
+func TestHelpHasNoUnknownCommands(t *testing.T) {
+	for _, args := range [][]string{{"help", "wat"}, {"wat", "--help"}, {"help", "search", "scan"}} {
+		var stdout, stderr bytes.Buffer
+		if code := (Command{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), args); code != ExitUsage || stdout.Len() != 0 {
+			t.Errorf("%v: exit/stdout = %d/%q", args, code, stdout.String())
+		}
+	}
+}
+
+func TestCommandGroupsCoverEveryCommandOnce(t *testing.T) {
+	seen := map[string]int{}
+	for _, group := range commandGroups {
+		for _, command := range group.commands {
+			seen[command]++
+		}
+	}
+	for command := range commandHelp {
+		if seen[command] != 1 {
+			t.Errorf("%s is in %d groups", command, seen[command])
+		}
+	}
+	for command := range seen {
+		if _, ok := commandHelp[command]; !ok {
+			t.Errorf("group command %s has no help", command)
+		}
+	}
+}
+
+func TestHelpTextFitsEightyColumns(t *testing.T) {
+	var top bytes.Buffer
+	printUsage(&top)
+	texts := []string{top.String()}
+	for command, text := range commandHelp {
+		if summary := commandSummary(command); summary == "" || strings.Contains(summary, "\n") {
+			t.Errorf("%s summary = %q", command, summary)
+		}
+		texts = append(texts, wrapText(text, helpWidth))
+	}
+	for _, text := range texts {
+		for _, line := range strings.Split(text, "\n") {
+			if len(line) > helpWidth {
+				t.Errorf("line of %d columns: %q", len(line), line)
+			}
+		}
+	}
+}
+
+func TestHelpWording(t *testing.T) {
+	for _, tc := range []struct{ command, want, not string }{
+		{"status", "a quota is used up until the time in until", "until until"},
+		{"reject", "holds across LAPSE and rule changes", "LAPSE upgrades"},
+		{"recent", "-since duration how far back to look, such as 90m or 72h", "Go duration"},
+		{"retry", "Without a daemon, this process clears the stored state", ""},
+	} {
+		text := commandHelpText(t, tc.command, "--help")
+		if !strings.Contains(text, tc.want) || (tc.not != "" && strings.Contains(text, tc.not)) {
+			t.Errorf("%s help: want %q, not %q: %s", tc.command, tc.want, tc.not, text)
+		}
+	}
+	// Every command that takes --json can fail with usage (an unknown flag).
+	for command, text := range commandHelp {
+		if command != "serve" && !strings.Contains(text, "Error codes: usage,") {
+			t.Errorf("%s error codes lack usage: %s", command, text)
+		}
 	}
 }
 
@@ -774,11 +887,10 @@ func TestMissingRejectsBadFlags(t *testing.T) {
 }
 
 func TestMissingHelpListsReasons(t *testing.T) {
-	var stderr bytes.Buffer
-	(Command{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"missing", "--help"})
+	help := commandHelpText(t, "missing", "--help")
 	for _, want := range []string{"not_searched", "no_candidates", "all_rejected", "providers_cooling_down", "search_failing", "unsupported", "total", "items[]", "unknown_instance", "unknown_language", "--limit"} {
-		if !strings.Contains(stderr.String(), want) {
-			t.Errorf("help lacks %q: %s", want, stderr.String())
+		if !strings.Contains(help, want) {
+			t.Errorf("help lacks %q: %s", want, help)
 		}
 	}
 }
@@ -865,11 +977,10 @@ func TestStatusAndProvidersHelp(t *testing.T) {
 		"status":    {"cooling_down", "auth_failed", "quota_exhausted", "daemon", "queue", "running", "media_pause", "instances", "backlog", "lease_until"},
 		"providers": {"available", "cooling_down", "auth_failed", "quota_exhausted", "routes", "preferred", "fallback", "last_success_at", "last_24h", "retry --provider"},
 	} {
-		var stderr bytes.Buffer
-		(Command{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{command, "--help"})
+		help := commandHelpText(t, command, "--help")
 		for _, want := range wants {
-			if !strings.Contains(stderr.String(), want) {
-				t.Errorf("%s help lacks %q: %s", command, want, stderr.String())
+			if !strings.Contains(help, want) {
+				t.Errorf("%s help lacks %q: %s", command, want, help)
 			}
 		}
 	}
@@ -927,11 +1038,10 @@ func TestRecentRejectsBadFlags(t *testing.T) {
 }
 
 func TestRecentHelp(t *testing.T) {
-	var stderr bytes.Buffer
-	(Command{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), []string{"recent", "--help"})
+	help := commandHelpText(t, "recent", "--help")
 	for _, want := range []string{"installed", "no_result", "rejected", "removed", "user_", "--since", "items[]", "finished_at", "unknown_instance", "unknown_language", "--limit"} {
-		if !strings.Contains(stderr.String(), want) {
-			t.Errorf("help lacks %q: %s", want, stderr.String())
+		if !strings.Contains(help, want) {
+			t.Errorf("help lacks %q: %s", want, help)
 		}
 	}
 }
