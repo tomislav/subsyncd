@@ -179,7 +179,7 @@ Logs are available through `docker compose logs`. Set `logging.level: debug` in 
 ## Documentation
 
 - [Configuration example](config.example.yaml) — all settings in one place.
-- [Operations guide](docs/operations.md) — commands, manual searches (which run beside the daemon), [driving subsyncd from an AI agent](docs/operations.md#driving-subsyncd-from-an-ai-agent), diagnostics, Silo setup, backups, and troubleshooting.
+- [Operations guide](docs/operations.md) — commands, manual searches (which run beside the daemon), [scripting and automation](docs/operations.md#scripting-and-automation), diagnostics, Silo setup, backups, and troubleshooting.
 - [Provider guide](docs/providers.md) — language support, matching, synchronization, and retry schedules.
 - [Logging guide](docs/logging.md) — log levels, workflow tracing, warnings, and safe diagnostic sharing.
 - [Architecture](docs/architecture.md) — system boundaries and durable processing flow.

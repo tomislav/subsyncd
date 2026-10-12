@@ -463,7 +463,7 @@ type MissingArgs struct {
 // subtitle yet, why, and what to run about it. Providers names the cooling
 // providers for providers_cooling_down. NextAttemptAt is the next scheduled
 // search, zero when none is queued or one is running. Action is a complete
-// command, or for unsupported and media_unavailable a short instruction.
+// command, or for unsupported a short instruction.
 type MissingItem struct {
 	MediaMatch
 	Language      string    `json:"language"`
@@ -567,7 +567,7 @@ type Backlog struct {
 	NotificationOutbox int `json:"notification_outbox"`
 }
 
-// StatusResult is the overview an agent reads before acting. Daemon and
+// StatusResult is the overview to read before acting. Daemon and
 // MediaPause come from the running daemon; everything else from the database.
 type StatusResult struct {
 	Daemon     DaemonState     `json:"daemon"`

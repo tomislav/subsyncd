@@ -127,7 +127,7 @@ The container runs `serve` by default. The other commands are run through Compos
 | `doctor` | Checks configuration, database, media folders, and bundled tools. | May run |
 | `find` | Lists the files that match a title or path, with the state of each configured language (`installed`, `satisfied`, `running`, `missing`). | May run |
 | `missing` | Lists the files and languages that have no subtitle yet, each with a reason and a command to fix it. See [What is missing](#what-is-missing). | May run |
-| `status` | One overview to read before acting: whether the daemon runs (version, start time), the queue by class with how many searches are due, running searches, providers that cannot be used, the media-unavailable pause, each Arr instance, and the webhook and notification backlogs. See [Status and providers](#status-and-providers). | May run; asks the daemon when it can, and works without it |
+| `status` | One overview of the daemon and queue: whether the daemon runs (version, start time), the queue by class with how many searches are due, running searches, providers that cannot be used, the media-unavailable pause, each Arr instance, and the webhook and notification backlogs. See [Status and providers](#status-and-providers). | May run; asks the daemon when it can, and works without it |
 | `providers` | Shows every configured provider: the languages it serves and at which tier, its state (`available`, `cooling_down`, `auth_failed`, `quota_exhausted`), its last failure and last success, and what its searches did in the last 24 hours. | May run |
 | `explain` | Shows what subsyncd knows about one file, for one language or for every configured language: existing subtitles, candidates, rejections, installation, and the next search. Rejections made under older subtitle or archive-selection rules, another LAPSE version or synchronization policy, or for the file before it was replaced no longer count; they are left out of the list and only counted (`candidate_rejections_superseded`). | May run |
 | `analyze-sync` | Runs a LAPSE timing check of a subtitle file against a media file without installing anything. | May run |
@@ -256,7 +256,7 @@ docker compose exec subsyncd subsyncd missing
 docker compose exec subsyncd subsyncd missing --language hr --title "Show" --limit 20
 ```
 
-`missing` lists every active file and configured language that has no subtitle: no installation, and no track or sidecar that covers the language (a forced-only track does not count, and a hearing-impaired one counts only with `allow_hearing_impaired`). `--instance`, `--language` and `--title` narrow the list, and `--limit` (default 50) cuts it. The result gives the full `total`, so an agent knows when the list was cut. Rows follow the queue, so what would be searched next comes first; languages with no search yet come last. A search running right now is listed too, without a next attempt time. The command only reads saved state, so it runs beside the daemon.
+`missing` lists every active file and configured language that has no subtitle: no installation, and no track or sidecar that covers the language (a forced-only track does not count, and a hearing-impaired one counts only with `allow_hearing_impaired`). `--instance`, `--language` and `--title` narrow the list, and `--limit` (default 50) cuts it. The result gives the full `total`, so a caller knows when the list was cut. Rows follow the queue, so what would be searched next comes first; languages with no search yet come last. A search running right now is listed too, without a next attempt time. The command only reads saved state, so it runs beside the daemon.
 
 Each row has a `reason` and an `action`:
 
@@ -307,20 +307,20 @@ docker compose exec subsyncd subsyncd reject --title "Movie (2019)" --language e
 
 `--undo` removes your rejections for that file and language (it reports how many as `undone`) and runs no search. A replacement that was still queued (say, because providers were throttled) is called off too, so the subtitle you took the rejection back for is kept. A subtitle that was already replaced or removed stays that way; run `search --retry-rejected` or wait for the next scheduled search if you want the old one considered again. `--language` is required with `--undo` unless only one language is configured.
 
-## Driving subsyncd from an AI agent
+## Scripting and automation
 
-The CLI is the whole interface, so an agent such as Claude Code on another machine drives subsyncd by reaching the host over SSH and running commands in the container with `--json`:
+Every command works from scripts, cron jobs and other tools, on the host or from another machine. Reach the host over SSH and run commands in the container with `--json`:
 
 ```bash
 ssh media-host 'cd /srv/subsyncd && docker compose exec -T subsyncd subsyncd find --title "Show S02E05" --json'
 ssh media-host 'cd /srv/subsyncd && docker compose exec -T subsyncd subsyncd search --title "Show S02E05" --timeout 4m --json'
 ```
 
-(`media-host` and `/srv/subsyncd` stand for your host and Compose folder; `-T` keeps Compose from allocating a terminal.) Each command prints exactly one JSON object on standard output (see [Machine-readable output](#machine-readable-output)), never prompts, and never picks a file on its own: when a title matches several files, it fails with `ambiguous_media` and lists them in `error.candidates`, and the agent narrows the title or uses a `file_id` from the list. Name files by `--title` (as Silo shows them, for example `Show S02E05` or `Movie (2019)`) or by `--path`; `find` confirms the match and each language's state before acting.
+(`media-host` and `/srv/subsyncd` stand for your host and Compose folder; `-T` keeps Compose from allocating a terminal.) Each command prints exactly one JSON object on standard output (see [Machine-readable output](#machine-readable-output)), never prompts, and never picks a file on its own: when a title matches several files, it fails with `ambiguous_media` and lists them in `error.candidates`, and you narrow the title or use a `file_id` from the list. Name files by `--title` (as Silo shows them, for example `Show S02E05` or `Movie (2019)`) or by `--path`; `find` confirms the match and each language's state before acting.
 
-When the owner reports a bad subtitle, the agent runs `reject` with the matching reason, for example `subsyncd reject --title "Movie (2019)" --language en --reason out_of_sync --json`, and reports `result.rejected.outcome`: `installed` (a replacement is in place), `removed` (nothing acceptable, the subtitle is gone and the language is missing again), or `running`. `not_managed` means the subtitle is not one subsyncd installed, or the owner edited it.
+To mark a subtitle as wrong, run `reject` with the matching reason, for example `subsyncd reject --title "Movie (2019)" --language en --reason out_of_sync --json`, and read `result.rejected.outcome`: `installed` (a replacement is in place), `removed` (nothing acceptable, the subtitle is gone and the language is missing again), or `running`. `not_managed` means the subtitle is not one subsyncd installed, or you edited it.
 
-`search` and `reject` wait for the outcome. Give `--timeout` a value inside the agent's own command time limit; when it ends first, the language reports `running`, the exit status is still 0, and the search carries on in the daemon even if the SSH session drops. Follow up with `find` (the language turns from `running` to `installed`, `satisfied` or `missing`) or `explain` for the reasons and next attempt. Branch on `error.code`, not on the message; the [error-code table](#machine-readable-output) lists them. `busy` and `daemon_stopping` are worth retrying later; `daemon_required` means no daemon is running.
+`search` and `reject` wait for the outcome. Give `--timeout` a value inside your own command time limit; when it ends first, the language reports `running`, the exit status is still 0, and the search carries on in the daemon even if the SSH session drops. Follow up with `find` (the language turns from `running` to `installed`, `satisfied` or `missing`) or `explain` for the reasons and next attempt. Branch on `error.code`, not on the message; the [error-code table](#machine-readable-output) lists them. `busy` and `daemon_stopping` are worth retrying later; `daemon_required` means no daemon is running.
 
 ## Optional Silo refresh
 
