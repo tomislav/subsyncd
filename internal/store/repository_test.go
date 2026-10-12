@@ -286,7 +286,9 @@ func TestEntityUpgradeUpdatesOneRowAndPreservesLease(t *testing.T) {
 		t.Fatalf("candidate rows = %d/%v, want 0/nil", rows, err)
 	}
 	installation, found, err := repo.GetInstallation(ctx, mediaID, "hr")
-	if err != nil || !found || string(installation.ScoreJSON) != "{}" || string(installation.SyncResultJSON) != "{}" || installation.MediaFileID != 0 {
+	// The record keeps naming the old file and its sidecar for the workflow
+	// to remove; only its scoring evidence and modification time go.
+	if err != nil || !found || string(installation.ScoreJSON) != "{}" || string(installation.SyncResultJSON) != "{}" || installation.MediaFileID != 1001 || installation.MediaPath != "/media/show-old.mkv" || installation.Path != "/media/show-old.hr.srt" || installation.MediaModTimeNS != 0 {
 		t.Fatalf("invalidated installation = %#v/%v/%v", installation, found, err)
 	}
 	var owner string
@@ -1058,7 +1060,7 @@ func TestInstallationFingerprintRoundTripsAndInvalidatesOnMediaChange(t *testing
 		t.Fatalf("changed UpsertMedia() = %v/%v", changed, err)
 	}
 	got, found, err = repo.GetInstallation(context.Background(), mediaID, "en")
-	if err != nil || !found || string(got.ScoreJSON) != "{}" || string(got.SyncResultJSON) != "{}" || got.MediaPath != "" {
+	if err != nil || !found || string(got.ScoreJSON) != "{}" || string(got.SyncResultJSON) != "{}" || got.MediaModTimeNS != 0 || got.MediaSize != installation.MediaSize || got.MediaPath != installation.MediaPath {
 		t.Fatalf("invalidated installation = %#v/%v/%v", got, found, err)
 	}
 }
@@ -1110,7 +1112,9 @@ func TestInventoryFingerprintChangeInvalidatesInstallationProvenance(t *testing.
 		t.Fatal(err)
 	}
 	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
-	if err != nil || !found || string(got.ScoreJSON) != "{}" || string(got.SyncResultJSON) != "{}" || got.MediaPath != "" || got.MediaFileID != 0 || got.MediaSize != 0 || got.MediaModTimeNS != 0 {
+	// A new modification time alone keeps the file identity (path, file ID,
+	// size): the subtitle still belongs to this file.
+	if err != nil || !found || string(got.ScoreJSON) != "{}" || string(got.SyncResultJSON) != "{}" || got.MediaPath != installation.MediaPath || got.MediaFileID != installation.MediaFileID || got.MediaSize != installation.MediaSize || got.MediaModTimeNS != 0 {
 		t.Fatalf("invalidated installation = %#v/%v/%v", got, found, err)
 	}
 }
@@ -1209,7 +1213,9 @@ func TestMediaRenameRetainsInstallationProvenanceAndRebasesManagedPaths(t *testi
 	if err != nil || !found {
 		t.Fatalf("GetInstallation() = %#v/%v/%v", got, found, err)
 	}
-	if got.MediaPath != media.Fingerprint.Path || got.Path != "/media/renamed/New.Name.en.srt" || got.RollbackPath != "/media/renamed/.subsyncd-rollback-old" || string(got.ScoreJSON) != `{"total":70}` || string(got.SyncResultJSON) != `{"verdict":"solid"}` {
+	// The sidecar record follows the rename; the media path stays the old one
+	// until the workflow has found the sidecar there (ReconcileInstallation).
+	if got.MediaPath != "/media/Old.Name.mkv" || got.Path != "/media/renamed/New.Name.en.srt" || got.RollbackPath != "/media/renamed/.subsyncd-rollback-old" || string(got.ScoreJSON) != `{"total":70}` || string(got.SyncResultJSON) != `{"verdict":"solid"}` {
 		t.Fatalf("renamed installation = %#v", got)
 	}
 }
@@ -1236,12 +1242,15 @@ func TestRenameEventRetainsInstallationProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, found, err := repo.GetInstallation(context.Background(), mediaID, "en")
-	if err != nil || !found || got.Path != "/media/New.Name.en.srt" || got.MediaPath != media.Fingerprint.Path || string(got.ScoreJSON) != `{"total":70}` {
+	if err != nil || !found || got.Path != "/media/New.Name.en.srt" || got.MediaPath != "/media/Old.Name.mkv" || string(got.ScoreJSON) != `{"total":70}` {
 		t.Fatalf("renamed event installation = %#v/%v/%v", got, found, err)
 	}
 }
 
-func TestUpgradeWithNewFilenameRebasesAndInvalidatesInstallation(t *testing.T) {
+// An upgrade is a new file, not a rename: the record keeps the old sidecar
+// path and the old file's identity, so the workflow removes that sidecar
+// instead of adopting it under the new name.
+func TestUpgradeWithNewFilenameKeepsOldSidecarRecordAndInvalidates(t *testing.T) {
 	for _, path := range []string{"event", "upsert"} {
 		t.Run(path, func(t *testing.T) {
 			repo := openTestRepository(t)
@@ -1275,11 +1284,11 @@ func TestUpgradeWithNewFilenameRebasesAndInvalidatesInstallation(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("GetInstallation() = %#v/%v/%v", got, found, err)
 			}
-			if got.Path != "/media/Show.S01E01.1080p.en.srt" {
-				t.Fatalf("installation path = %q, want it rebased to the new media stem", got.Path)
+			if got.Path != "/media/Show.S01E01.720p.en.srt" {
+				t.Fatalf("installation path = %q, want the old sidecar's", got.Path)
 			}
-			if got.MediaPath != "" || got.MediaFileID != 0 || string(got.ScoreJSON) != "{}" {
-				t.Fatalf("upgrade did not invalidate provenance: %#v", got)
+			if got.MediaPath != media.Fingerprint.Path || got.MediaFileID != media.Fingerprint.FileID || got.MediaModTimeNS != 0 || string(got.ScoreJSON) != "{}" {
+				t.Fatalf("upgrade did not invalidate provenance or lost the old file: %#v", got)
 			}
 		})
 	}

@@ -407,11 +407,11 @@ func (r *Repository) UpsertMedia(ctx context.Context, media domain.Media) (int64
 			return 0, false, fmt.Errorf("update media: %w", err)
 		}
 	}
-	// Managed sidecars follow the media stem even when the content changed, so
-	// a sidecar carried over to a renamed upgrade stays managed (and
-	// replaceable) instead of looking user-owned. Invalidation runs after.
-	if found && existingPath != media.Fingerprint.Path {
-		if err := rebaseInstallationPathsTx(ctx, tx, id, existingPath, media.Fingerprint.Path); err != nil {
+	// Only a rename of the same file moves the managed sidecar records. A
+	// replaced file keeps them as recorded, for the workflow to remove the old
+	// file's sidecars; see rebaseInstallationPathsTx.
+	if found && existingPath != media.Fingerprint.Path && !contentChanged {
+		if err := rebaseInstallationPathsTx(ctx, tx, id, existingFileID, existingPath, media.Fingerprint.Path); err != nil {
 			return 0, false, err
 		}
 	}
@@ -2053,9 +2053,10 @@ func upsertMediaTx(ctx context.Context, tx *sql.Tx, media domain.Media, at time.
 		if err != nil {
 			return 0, false, fmt.Errorf("update media for event: %w", err)
 		}
-		// Callers invalidate provenance after this when the content changed.
-		if existingPath != media.Fingerprint.Path {
-			if err := rebaseInstallationPathsTx(ctx, tx, id, existingPath, media.Fingerprint.Path); err != nil {
+		// Callers invalidate provenance after this when the content changed;
+		// only a rename of the same file moves the sidecar records.
+		if existingPath != media.Fingerprint.Path && !changed {
+			if err := rebaseInstallationPathsTx(ctx, tx, id, existingFileID, existingPath, media.Fingerprint.Path); err != nil {
 				return 0, false, err
 			}
 		}
@@ -2116,21 +2117,35 @@ func preserveAuthoritativeModTime(media *domain.Media, existingFileID, existingS
 	}
 }
 
+// invalidateInstallationTx drops the scoring and synchronization evidence of
+// installations whose media content changed. The recorded media path, Arr file
+// ID and size stay: they name the file the subtitle was installed for, which
+// tells the workflow a replaced file (another file ID or size) from the same
+// file with a new modification time, and where the old file's sidecar is.
+// Clearing the modification time is enough to stop the installation matching
+// the media (InstallationMatchesMedia).
 func invalidateInstallationTx(ctx context.Context, tx *sql.Tx, mediaID int64) error {
-	_, err := tx.ExecContext(ctx, `UPDATE installations SET score_json='{}', sync_result_json='{}', fallback=0, media_path='', media_file_id=0, media_size=0, media_mod_time_ns=0 WHERE media_id=?`, mediaID)
+	_, err := tx.ExecContext(ctx, `UPDATE installations SET score_json='{}', sync_result_json='{}', fallback=0, media_mod_time_ns=0 WHERE media_id=?`, mediaID)
 	if err != nil {
 		return fmt.Errorf("invalidate installation provenance: %w", err)
 	}
 	return nil
 }
 
-func rebaseInstallationPathsTx(ctx context.Context, tx *sql.Tx, mediaID int64, oldMediaPath, newMediaPath string) error {
+// rebaseInstallationPathsTx records a rename of the same media file (Arr file
+// ID fileID): installations recorded for that file, or with unknown
+// provenance, get the sidecar path named after the new media path. It is a
+// record change only. The recorded media_path keeps the old media path until
+// the workflow has checked that the sidecar really is at the new name (or moved
+// it there): see Installer.ReconcileInstallation. Installations of an earlier,
+// replaced file are left for the workflow to remove.
+func rebaseInstallationPathsTx(ctx context.Context, tx *sql.Tx, mediaID, fileID int64, oldMediaPath, newMediaPath string) error {
 	type installationPaths struct {
 		language string
 		path     string
 		rollback string
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT language, path, rollback_path FROM installations WHERE media_id=?`, mediaID)
+	rows, err := tx.QueryContext(ctx, `SELECT language, path, rollback_path FROM installations WHERE media_id=? AND media_file_id IN (?, 0)`, mediaID, fileID)
 	if err != nil {
 		return fmt.Errorf("list installation paths for media rename: %w", err)
 	}
@@ -2151,16 +2166,20 @@ func rebaseInstallationPathsTx(ctx context.Context, tx *sql.Tx, mediaID int64, o
 		return fmt.Errorf("close installation paths for media rename: %w", err)
 	}
 	for _, installation := range installations {
-		path := rebaseSidecarPath(installation.path, oldMediaPath, newMediaPath)
+		path := RebaseSidecarPath(installation.path, oldMediaPath, newMediaPath)
 		rollback := rebaseSiblingPath(installation.rollback, oldMediaPath, newMediaPath)
-		if _, err := tx.ExecContext(ctx, `UPDATE installations SET path=?, rollback_path=?, media_path=? WHERE media_id=? AND language=?`, path, rollback, newMediaPath, mediaID, installation.language); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE installations SET path=?, rollback_path=? WHERE media_id=? AND language=?`, path, rollback, mediaID, installation.language); err != nil {
 			return fmt.Errorf("rebase installation paths for media rename: %w", err)
 		}
 	}
 	return nil
 }
 
-func rebaseSidecarPath(sidecar, oldMediaPath, newMediaPath string) string {
+// RebaseSidecarPath names a sidecar of oldMediaPath after newMediaPath: the
+// same suffix after the new media stem, in the new media's directory. A path
+// that is not a sidecar of oldMediaPath (another directory or stem) is
+// returned unchanged.
+func RebaseSidecarPath(sidecar, oldMediaPath, newMediaPath string) string {
 	if filepath.Clean(filepath.Dir(sidecar)) != filepath.Clean(filepath.Dir(oldMediaPath)) {
 		return sidecar
 	}

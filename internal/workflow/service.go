@@ -294,6 +294,27 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	if err != nil {
 		return s.finishProviderResume(request, false, result, err), err
 	}
+	if reconciler, ok := s.Installer.(InstallationReconciler); ok && installed {
+		// A record left by a replaced or renamed media file is settled first,
+		// so the search sees the current file's subtitles only.
+		changed, err := reconciler.ReconcileInstallation(ctx, RemovalRequest{Installation: existing, Media: request.Media, Manual: request.Manual})
+		if err != nil {
+			runErr = fmt.Errorf("reconcile installed subtitle: %w", err)
+			return s.finishProviderResume(request, false, result, runErr), runErr
+		}
+		if changed {
+			current, err = s.Inventory.Refresh(ctx, request.MediaID, request.Media, false)
+			err = markIfMediaUnreadable(err, request.Media)
+			if err != nil {
+				events.Log(ctx, slog.LevelError, "inventory.refresh_failed", "subtitle inventory refresh failed", events.ErrorAttrs("inventory", err)...)
+				runErr = fmt.Errorf("refresh subtitle inventory: %w", err)
+				return s.finishProviderResume(request, false, result, runErr), runErr
+			}
+			if existing, installed, err = s.Repository.GetInstallation(ctx, request.MediaID, request.Language); err != nil {
+				return s.finishProviderResume(request, false, result, err), err
+			}
+		}
+	}
 	activeInstallation := installed && managedInstallationPresent(current, existing)
 	// Only a managed subtitle still unedited on disk is replaced or removed;
 	// an edited one is the owner's and stops the search below. It need not

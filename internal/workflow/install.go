@@ -28,6 +28,10 @@ import (
 
 const maximumInstallBytes int64 = 100 << 20
 
+// rollbackPrefix names the hidden copy of a managed subtitle that a
+// replacement keeps beside it until the new one is recorded.
+const rollbackPrefix = ".subsyncd-rollback-"
+
 var ErrProtectedSubtitle = errors.New("subtitle is protected from replacement")
 
 // subtitleValidationError identifies deterministic source-content failures.
@@ -565,7 +569,7 @@ func copyRollback(source, parent string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read subtitle rollback: %w", err)
 	}
-	file, err := os.CreateTemp(parent, ".subsyncd-rollback-")
+	file, err := os.CreateTemp(parent, rollbackPrefix)
 	if err != nil {
 		return "", fmt.Errorf("create subtitle rollback: %w", err)
 	}

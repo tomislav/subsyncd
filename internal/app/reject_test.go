@@ -16,6 +16,7 @@ import (
 	"subsyncd/internal/config"
 	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
+	"subsyncd/internal/inventory"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 	"subsyncd/internal/testutil"
@@ -62,6 +63,8 @@ type rejectHarness struct {
 	sidecar  string
 	now      time.Time
 	searches *int
+	// probe answers ffprobe; nil reports no embedded subtitles.
+	probe inventory.CommandRunner
 }
 
 // newRejectHarness indexes a movie and installs the exact-hash subtitle for
@@ -101,7 +104,11 @@ func newRejectHarness(t *testing.T, mutate func(*config.Config), languages ...do
 // open assembles the application, as a process start does.
 func (h *rejectHarness) open(t *testing.T) {
 	t.Helper()
-	application, err := New(t.Context(), h.cfg, Options{Clock: testutil.NewClock(h.now), LapseRunner: capabilityRunner{}, ProbeRunner: notificationProbe{}, Providers: map[string]provider.Provider{"english": h.provider}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: h.media}}})
+	var runner inventory.CommandRunner = notificationProbe{}
+	if h.probe != nil {
+		runner = h.probe
+	}
+	application, err := New(t.Context(), h.cfg, Options{Clock: testutil.NewClock(h.now), LapseRunner: capabilityRunner{}, ProbeRunner: runner, Providers: map[string]provider.Provider{"english": h.provider}, Catalogs: map[string]catalog.Catalog{"tv": staticCatalog{media: h.media}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +535,8 @@ func TestRecentShowsUserRejectionThenReplacement(t *testing.T) {
 
 // changeMedia replaces the media file's content, as an Arr upgrade in place
 // does, and indexes the new fingerprint. The installation's provenance is
-// invalidated, while the managed sidecar still matches its checksum.
+// invalidated but still names the old file (its size), while the managed
+// sidecar still matches its checksum.
 func (h *rejectHarness) changeMedia(t *testing.T) {
 	t.Helper()
 	if err := os.WriteFile(h.media.Fingerprint.Path, []byte("replaced media content"), 0o600); err != nil {
@@ -543,7 +551,7 @@ func (h *rejectHarness) changeMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 	installation, found, err := h.app.Repository.GetInstallation(t.Context(), h.mediaID, "en")
-	if err != nil || !found || installation.MediaPath != "" {
+	if err != nil || !found || installation.MediaModTimeNS != 0 || installation.MediaSize == h.media.Fingerprint.Size {
 		t.Fatalf("installation after the media change = %+v/%v/%v", installation, found, err)
 	}
 	_ = h.app.Close()
@@ -574,8 +582,10 @@ func TestRejectAfterMediaChangeRemoves(t *testing.T) {
 	h.provider.mu.Lock()
 	h.provider.results = []string{"best"}
 	h.provider.mu.Unlock()
+	// The subtitle belongs to the replaced file, so the search removes it
+	// before looking for one; it then finds only the rejected candidate.
 	result, err := h.app.Reject(ctx, rejectArgs("en", "out_of_sync"))
-	if err != nil || result.Rejected.Outcome != "removed" {
+	if err != nil || result.Rejected.Outcome != "rejected" {
 		t.Fatalf("Reject() = %+v/%v", result, err)
 	}
 	if _, err := os.Lstat(h.sidecar); !errors.Is(err, os.ErrNotExist) {

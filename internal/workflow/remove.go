@@ -31,10 +31,14 @@ const removalPrefix = ".subsyncd-removing-"
 
 // RemovalRequest names a managed subtitle to remove. Media supplies the
 // notification payload and the history title; Manual marks the history row.
+// Reason, when set, is the history row's reason and the install.removed
+// event's: media_replaced or media_renamed for a sidecar left behind by a
+// media change (see ReconcileInstallation); a reject leaves it empty.
 type RemovalRequest struct {
 	Installation store.Installation
 	Media        domain.Media
 	Manual       bool
+	Reason       string
 }
 
 // CandidateRemover removes a managed subtitle, as a reject that finds no
@@ -114,7 +118,7 @@ func (i Installer) RemoveManaged(ctx context.Context, removal RemovalRequest) er
 	if err := i.inject(StageDatabase); err != nil {
 		return restore(err)
 	}
-	detail := store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(removal.Media), ProviderID: installation.ProviderID, Manual: removal.Manual}
+	detail := store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(removal.Media), ProviderID: installation.ProviderID, Reason: removal.Reason, Manual: removal.Manual}
 	enqueued, err := remover.RemoveInstallation(ctx, store.InstallationRemoval{Installation: installation, History: detail, At: i.now(), Notifications: requests})
 	if err != nil {
 		return restore(fmt.Errorf("record subtitle removal: %w", err))
@@ -124,9 +128,12 @@ func (i Installer) RemoveManaged(ctx context.Context, removal RemovalRequest) er
 	if len(checksum) > 12 {
 		checksum = checksum[:12]
 	}
-	i.Events.For("workflow").Log(ctx, slog.LevelInfo, "install.removed", "managed subtitle removed",
-		slog.String("provider", observability.SafeText(installation.ProviderID)), slog.String("candidate_id", observability.SafeText(installation.CandidateID)),
-		slog.String("checksum_prefix", observability.SafeText(checksum)), slog.Bool("rollback_deleted", rollback != ""))
+	attrs := []slog.Attr{slog.String("provider", observability.SafeText(installation.ProviderID)), slog.String("candidate_id", observability.SafeText(installation.CandidateID)),
+		slog.String("checksum_prefix", observability.SafeText(checksum)), slog.Bool("rollback_deleted", rollback != "")}
+	if removal.Reason != "" {
+		attrs = append(attrs, slog.String("reason", removal.Reason))
+	}
+	i.Events.For("workflow").Log(ctx, slog.LevelInfo, "install.removed", "managed subtitle removed", attrs...)
 	if err := i.inject(StageCleanup); err != nil {
 		// The record is gone; the startup sweep deletes what is left.
 		return nil
