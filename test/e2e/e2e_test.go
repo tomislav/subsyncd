@@ -24,6 +24,7 @@ import (
 	"subsyncd/internal/app"
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/config"
+	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/httpapi"
 	"subsyncd/internal/provider"
@@ -430,7 +431,7 @@ func TestManualAndDaemonInstallationsKeepDurableNotificationAcrossFailureAndRest
 			}
 			defer audit.Close()
 			if mode == "manual" {
-				if _, err := first.Search(ctx, "radarr-main", "movie", 42, "en", false); err != nil {
+				if _, err := first.Search(ctx, control.SearchArgs{Selection: control.Selection{Instance: "radarr-main", Kind: "movie", FileID: 42}, Language: "en"}); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -482,7 +483,7 @@ func TestManualAndDaemonInstallationsKeepDurableNotificationAcrossFailureAndRest
 			if err := os.Remove(sidecar); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := first.Search(ctx, "radarr-main", "movie", 42, "en", false); err != nil {
+			if _, err := first.Search(ctx, control.SearchArgs{Selection: control.Selection{Instance: "radarr-main", Kind: "movie", FileID: 42}, Language: "en"}); err != nil {
 				t.Fatal(err)
 			}
 			assertOutbox()
