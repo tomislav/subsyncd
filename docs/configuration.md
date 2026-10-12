@@ -95,7 +95,7 @@ Provider-specific keys:
 | | `max_pages` | `5` | 100-result pages read per title and language, 1–20. |
 | `gestdown` | none | | No account needed. |
 
-Each provider also accepts endpoint and size overrides. Leave them unset:
+Each provider also accepts endpoint and size overrides, meant for tests and private endpoints; `max_download_bytes` can only lower the built-in limit. Leave them unset:
 
 | Type | Keys and defaults |
 | --- | --- |

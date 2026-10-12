@@ -80,6 +80,14 @@ Use your own accounts, and never commit their values or the responses.
 - **Preserve unrelated working-tree changes.**
 - **Migrations** follow [Adding a migration](docs/development/persistence.md#adding-a-migration); providers follow [Adding a provider](docs/development/providers/adapters.md#adding-a-provider).
 
+## Changes and reviews
+
+- **Describe behaviour as a timeline or example.** "Installed at T: checks at T+6h, T+12h, T+24h, T+3d" cannot be misread; "steps 6h, 12h, 24h, 3d" can (from install, or from the previous check?).
+- **"Same as X" means reuse X.** Call the existing code or share its constants; a copied list drifts.
+- **Acceptance tests come from the request.** Write at least one test in the request's own terms (the timeline or example), not only from your reading of it. For a "same as X" change, compare against X directly.
+- **Say when you interpreted.** If you chose one reading of an ambiguous request, or deviated from it, say so explicitly in the commit body or pull request. A reviewer treats that as a question to settle, not a footnote.
+- **Review against the request.** A review checks that the change does what was asked, not only that it is internally correct, and that code, comments and docs agree. A comment that disagrees with the code ("about a day" over a 2.5-hour schedule) is a bug in one of them.
+
 ## Commit messages
 
 Use Conventional Commits: `<type>(<scope>): <summary>`.

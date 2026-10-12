@@ -17,7 +17,8 @@ Read the pages relevant to the change:
 
 ## Agent rules
 
-- Follow the working rules and commit conventions in [CONTRIBUTING.md](CONTRIBUTING.md#working-rules); the commit hook enforces the subject format.
+- Follow the working rules, [Changes and reviews](CONTRIBUTING.md#changes-and-reviews) and commit conventions in [CONTRIBUTING.md](CONTRIBUTING.md#working-rules); the commit hook enforces the subject format.
+- When you delegate or hand back work: state behaviour as a timeline or example, include the user's request verbatim in review briefs, and treat any interpretation or deviation an implementer reports as a question to resolve (with the user if it changes requested behaviour) before reviewing or shipping.
 - Before inspecting, debugging, deploying or otherwise touching a production installation, read `.agents/production.local.md` completely when it exists. It is an ignored, host-specific operator file. Never commit it, require it in a clean clone, copy secrets from it, or guess production details when it is absent. `.agents/production.example.md` is only the tracked schema.
 - Never run the `provider_contract` tests or contact real Arr, provider or Silo services unless the user asks.
 
