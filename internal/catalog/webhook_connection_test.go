@@ -1086,3 +1086,40 @@ func TestSyncNeverLeaksSecrets(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncRememberedIDWithForeignPathIgnored(t *testing.T) {
+	// After an Arr reinstall the remembered ID can name someone else's webhook.
+	reused := syncResource("sonarr", 9, "Autoscan", "Webhook", "http://autoscan:3030/api/v2/autoscan/webhooks/x?token=SENTINEL-OTHER", syncFlags("onDownload"))
+	others := append(syncOthers("sonarr"), reused)
+	arr := newFakeSyncArr(t, "sonarr", others...)
+	h := newSyncHarness(t, arr)
+	h.store.stored = store.WebhookConnection{ID: 9, ArrURL: arr.server.URL}
+
+	if err := h.sync.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync() = %v", err)
+	}
+	posts := arr.writesBy(http.MethodPost)
+	if len(posts) != 1 || len(arr.writes()) != 1 {
+		t.Fatalf("writes = %+v, want one POST", arr.writes())
+	}
+	expectCreated(t, posts[0], "sonarr", syncName, syncDesiredURL(), sonarrRequired)
+	arr.assertUntouched(others, 1, 2, 3, 9)
+	h.expectEvent(t, "webhook.connection_created", "info", map[string]any{"connection_id": float64(100)})
+	h.expectRecorded(t, 100)
+}
+
+func TestSyncRememberedIDOnOtherHostRepaired(t *testing.T) {
+	// A remembered connection at our path keeps being repaired even when
+	// its host and token no longer match.
+	owned := syncResource("sonarr", 7, "subsyncd", "Webhook", "http://old-host:9000/webhooks/"+syncInstance+"?token=old", syncFlags(sonarrRequired...))
+	arr := newFakeSyncArr(t, "sonarr", owned)
+	h := newSyncHarness(t, arr)
+	h.store.stored = store.WebhookConnection{ID: 7, ArrURL: arr.server.URL}
+
+	if err := h.sync.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync() = %v", err)
+	}
+	expectPut(t, arr, 7, owned, func(want map[string]any) { setTestFieldValue(want, "url", syncDesiredURL()) })
+	h.expectNoEvent(t, "webhook.connection_adopted")
+	h.expectRecorded(t, 7)
+}

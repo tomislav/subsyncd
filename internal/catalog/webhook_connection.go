@@ -107,7 +107,7 @@ func (s WebhookConnectionSync) Sync(ctx context.Context) error {
 		return err
 	}
 
-	owned := rememberedConnection(connections, stored, s.ArrURL)
+	owned := rememberedConnection(connections, stored, s.ArrURL, s.Instance)
 	adopted := false
 	if owned == nil {
 		candidates, ours := s.matchConnections(connections, base)
@@ -172,17 +172,40 @@ func (s WebhookConnectionSync) record(ctx context.Context, id int64) error {
 }
 
 // rememberedConnection returns the stored connection when it was recorded
-// against this Arr and still exists as a Webhook.
-func rememberedConnection(connections []arrResource, stored store.WebhookConnection, arrURL string) arrResource {
+// against this Arr and still exists as a Webhook at this instance's webhook
+// path. Host and token may differ; they are repaired. The path check guards
+// against an ID reused by another webhook after Arr's database was reset.
+func rememberedConnection(connections []arrResource, stored store.WebhookConnection, arrURL, instance string) arrResource {
 	if stored.ID == 0 || stored.ArrURL != arrURL {
 		return nil
 	}
 	for _, connection := range connections {
 		if id, ok := resourceID(connection); ok && id == stored.ID && isWebhook(connection) {
-			return connection
+			if _, ok := webhookCandidateURL(connection, instance); ok {
+				return connection
+			}
+			return nil
 		}
 	}
 	return nil
+}
+
+// webhookCandidateURL returns a Webhook connection's URL when its unescaped
+// path ends in /webhooks/<instance>.
+func webhookCandidateURL(connection arrResource, instance string) (*url.URL, bool) {
+	raw, ok := fieldValue(connection, "url")
+	if !ok {
+		return nil, false
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, false
+	}
+	hook, err := url.Parse(value)
+	if err != nil || !strings.HasSuffix(hook.Path, "/webhooks/"+instance) {
+		return nil, false
+	}
+	return hook, true
 }
 
 // matchConnections returns how many Webhook connections point at this
@@ -195,16 +218,8 @@ func (s WebhookConnectionSync) matchConnections(connections []arrResource, base 
 		if !isWebhook(connection) {
 			continue
 		}
-		raw, ok := fieldValue(connection, "url")
+		hook, ok := webhookCandidateURL(connection, s.Instance)
 		if !ok {
-			continue
-		}
-		var value string
-		if json.Unmarshal(raw, &value) != nil {
-			continue
-		}
-		hook, err := url.Parse(value)
-		if err != nil || !strings.HasSuffix(hook.Path, "/webhooks/"+s.Instance) {
 			continue
 		}
 		candidates++
