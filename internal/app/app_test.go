@@ -370,12 +370,12 @@ func TestLoggingDocumentationContract(t *testing.T) {
 		{"../../docs/logging.md", []string{
 			"docker compose logs", "SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
 			"job_id", "outcome", "reason", "development/logging.md",
-			"control.request_completed", "control.request_failed",
+			"control.request_completed", "control.request_failed", "install.removed",
 		}},
 		{"../../docs/development/logging.md", []string{
 			"service", "level", "component", "event", "job_id", "media_id", "duration_ms",
 			"Credentials", "absolute media/data/temp paths", "never intentional log fields",
-			"control.request_completed", "control.request_failed",
+			"control.request_completed", "control.request_failed", "install.removed",
 		}},
 	} {
 		t.Run(document.path, func(t *testing.T) {

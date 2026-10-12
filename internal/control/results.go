@@ -158,6 +158,63 @@ func (r SearchResult) Text() string {
 	return strings.Join(lines, "\n")
 }
 
+// RejectReasons are the reasons reject accepts; the rejection is stored with
+// reason code "user_" + reason.
+var RejectReasons = []string{"out_of_sync", "wrong_language", "wrong_release", "poor_quality", "other"}
+
+// ValidRejectReason reports whether reason is one of RejectReasons.
+func ValidRejectReason(reason string) bool {
+	for _, known := range RejectReasons {
+		if reason == known {
+			return true
+		}
+	}
+	return false
+}
+
+// RejectArgs are the arguments of the reject command. Language may be empty
+// when the file has exactly one managed subtitle. Undo removes the owner's
+// rejections instead and needs no Reason.
+type RejectArgs struct {
+	Selection
+	Language string        `json:"language,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Undo     bool          `json:"undo,omitempty"`
+	Wait     time.Duration `json:"wait,omitempty"`
+	NoWait   bool          `json:"no_wait,omitempty"`
+}
+
+// RejectResult reports a reject: the follow-up search's outcome for the
+// language (removed when nothing acceptable replaced the subtitle), or, for
+// --undo, how many of the owner's rejections were removed.
+type RejectResult struct {
+	MediaID  int64           `json:"media_id"`
+	Rejected LanguageOutcome `json:"rejected"`
+	Undone   int             `json:"undone"`
+	Undo     bool            `json:"undo,omitempty"`
+}
+
+func (r RejectResult) Text() string {
+	if r.Undo {
+		return fmt.Sprintf("media_id: %d\nlanguage: %s\nundone: %d", r.MediaID, r.Rejected.Language, r.Undone)
+	}
+	lines := []string{fmt.Sprintf("media_id: %d", r.MediaID), "language: " + r.Rejected.Language, "outcome: " + r.Rejected.Outcome}
+	language := r.Rejected
+	if language.Reason != "" {
+		lines = append(lines, "reason: "+language.Reason)
+	}
+	if language.Provider != "" {
+		lines = append(lines, "provider: "+language.Provider, "candidate: "+language.Candidate, fmt.Sprintf("score: %d", language.Score))
+	}
+	if language.Subtitle != "" {
+		lines = append(lines, "subtitle: "+language.Subtitle)
+	}
+	if !language.NextAttemptAt.IsZero() {
+		lines = append(lines, "retry_at: "+language.NextAttemptAt.Format(time.RFC3339Nano))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // RetryArgs is the request of the retry command.
 type RetryArgs struct {
 	Provider string `json:"provider"`

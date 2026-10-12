@@ -48,11 +48,15 @@ var errManualTimedOut = errors.New("manual search exceeded its time limit")
 
 // manualOptions adjusts one manual search.
 type manualOptions struct {
-	// RetryRejected clears subsyncd's own candidate rejections first.
+	// RetryRejected clears subsyncd's own candidate rejections first; the
+	// owner's (reject) stay.
 	RetryRejected bool
-	// ReplaceInstalled lets a lower-scoring candidate replace the installed
-	// subtitle; reject sets it.
-	ReplaceInstalled bool
+	// jobID is a lease owner the caller already holds the search's lease
+	// for, as reject does; empty generates one.
+	jobID string
+	// replace is read from the search row once claimed: a queued reject
+	// treats the installed subtitle as replaceable or removable.
+	replace bool
 	// revived reports that the search just added or revived the media, which
 	// queued every configured language afresh.
 	revived bool
@@ -324,15 +328,19 @@ func (a *App) prepareSearch(ctx context.Context, args control.SearchArgs) (searc
 // keeps the upgrade schedule, and gives the lease back on every path; after
 // cancellation the release uses a fresh bounded context.
 func (a *App) runManualSearch(ctx context.Context, mediaID int64, media domain.Media, language domain.Language, opts manualOptions) (workflow.Result, error) {
+	jobID := opts.jobID
+	if jobID == "" {
+		generated, err := manualJobID()
+		if err != nil {
+			return workflow.Result{}, err
+		}
+		jobID = generated
+	}
+	defer a.releaseManualLease(ctx, jobID)
 	if err := a.manualSlots.acquire(ctx); err != nil {
 		return workflow.Result{}, err
 	}
 	defer a.manualSlots.release()
-	jobID, err := manualJobID()
-	if err != nil {
-		return workflow.Result{}, err
-	}
-	defer a.releaseManualLease(ctx, jobID)
 	// Only a search this run queued itself, or one the revival just queued,
 	// may be settled by it; earlier queued work keeps its progress.
 	_, statusErr := a.Repository.GetSearchStatus(ctx, mediaID, language)
@@ -343,6 +351,13 @@ func (a *App) runManualSearch(ctx context.Context, mediaID int64, media domain.M
 	if err := a.claimManualSearch(ctx, mediaID, language, jobID); err != nil {
 		return workflow.Result{}, err
 	}
+	// Under the lease, the row says whether a reject's replacement is still
+	// queued; a run that finished it meanwhile has cleared it.
+	claimed, err := a.Repository.GetSearchStatus(ctx, mediaID, language)
+	if err != nil {
+		return workflow.Result{}, err
+	}
+	opts.replace = claimed.ReplaceInstalled
 	started := time.Now()
 	workflowCtx := observability.WithAttrs(ctx,
 		slog.String("job_id", jobID),
@@ -411,6 +426,11 @@ func (a *App) runClaimedSearch(ctx context.Context, jobID string, mediaID int64,
 	if err != nil {
 		return workflow.Result{}, err
 	}
+	if opts.replace {
+		// The replacement completes the queued search as the worker would,
+		// owner-guarded, with its history row and the next schedule.
+		return result, a.completeReplacement(ctx, jobID, media, result)
+	}
 	if opts.revived && (result.Outcome == workflow.OutcomeInstalled || result.Outcome == workflow.OutcomeSatisfied) {
 		// The revival (or this run's claim) queued this language too; this run
 		// already answered it, unless a change arrived meanwhile and asked for
@@ -457,7 +477,7 @@ func (a *App) runManualWorkflow(ctx context.Context, mediaID int64, media domain
 	if run == nil {
 		run = workflowRouter(a.Workflows).Run
 	}
-	request := workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true}
+	request := workflow.Request{MediaID: mediaID, Media: media, Language: language, Manual: true, ReplaceInstalled: opts.replace}
 	limit, grace := a.manualJobLimit, a.manualJobGrace
 	if limit <= 0 {
 		limit = jobTimeout(a.Config.Sync)
@@ -505,6 +525,48 @@ func (a *App) runManualWorkflow(ctx context.Context, mediaID int64, media domain
 			return workflow.Result{}, ctx.Err()
 		}
 	}
+}
+
+// completeReplacement completes the search a reject queued, while jobID owns
+// it: like a worker completion, an installed or satisfied outcome schedules
+// the upgrade, a removed, no_result or rejected one the missing-subtitle
+// retry, and a throttle the provider's reset. Every outcome but a throttle
+// ends the replacement. A removal's history row was written with it.
+func (a *App) completeReplacement(ctx context.Context, jobID string, media domain.Media, result workflow.Result) error {
+	now := a.Clock.Now()
+	completion := store.SearchCompletion{JobID: jobID, Outcome: string(result.Outcome)}
+	switch result.Outcome {
+	case workflow.OutcomeInstalled, workflow.OutcomeSatisfied:
+		completion.NextAttemptAt = result.NextUpgrade
+		if !result.NextUpgrade.IsZero() {
+			completion.Priority = store.SearchPriorityUpgrade
+		}
+		completion.ResetMissingAttempt = true
+		completion.ResetFailureAttempt = true
+	case workflow.OutcomeRemoved, workflow.OutcomeNoResult, workflow.OutcomeRejected:
+		completion = schedule.Scheduler{Clock: a.Clock, AgedAfter: time.Duration(a.Config.AgedReleaseDays) * 24 * time.Hour}.Missing(jobID, 1, media.ReleasedAt)
+		completion.Outcome = string(result.Outcome)
+		completion.ResetMissingAttempt = true
+	case workflow.OutcomeThrottled:
+		completion.NextAttemptAt = result.RetryAt
+		if completion.NextAttemptAt.Before(now) {
+			completion.NextAttemptAt = now
+		}
+		completion.PreserveQueueOrder = true
+	default:
+		return fmt.Errorf("workflow returned unsupported outcome %q", result.Outcome)
+	}
+	completion.ClearReplaceInstalled = result.Outcome != workflow.OutcomeThrottled
+	if result.Outcome != workflow.OutcomeRemoved {
+		detail := store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(media), ProviderID: result.Candidate.ProviderID, Manual: true}
+		if len(result.Candidate.ReleaseNames) > 0 {
+			detail.ReleaseName = result.Candidate.ReleaseNames[0]
+		}
+		completion.History = &detail
+	}
+	completion.FinishedAt = now
+	_, err := a.Repository.CompleteSearch(ctx, completion)
+	return err
 }
 
 // recordManualTimeout completes a timed-out manual search as a technical
@@ -616,6 +678,9 @@ func (a *App) languageOutcome(language domain.Language, result workflow.Result) 
 		if len(result.Candidate.ReleaseNames) > 0 {
 			outcome.Release = result.Candidate.ReleaseNames[0]
 		}
+	}
+	if result.Outcome == workflow.OutcomeRemoved {
+		outcome.Reason = string(result.RemovedAfter)
 	}
 	if result.Outcome == workflow.OutcomeInstalled {
 		outcome.SyncVerdict = result.SyncResult.Verdict

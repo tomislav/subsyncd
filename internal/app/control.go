@@ -51,7 +51,7 @@ func (a *App) HandleControl(ctx context.Context, command string, args json.RawMe
 // controlCommandLabel keeps an arbitrary client-supplied name out of the log.
 func controlCommandLabel(command string) string {
 	switch command {
-	case "retry", "search":
+	case "retry", "search", "reject":
 		return command
 	}
 	return "unknown"
@@ -81,6 +81,16 @@ func (a *App) dispatchControl(ctx context.Context, command string, raw json.RawM
 			return nil, nil, err
 		}
 		result, attrs, err := a.searchInDaemon(ctx, args)
+		if err != nil {
+			return nil, nil, err
+		}
+		return result, attrs, nil
+	case "reject":
+		var args control.RejectArgs
+		if err := decodeControlArgs(raw, &args); err != nil {
+			return nil, nil, err
+		}
+		result, attrs, err := a.rejectInDaemon(ctx, args)
 		if err != nil {
 			return nil, nil, err
 		}

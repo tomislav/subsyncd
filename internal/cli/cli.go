@@ -27,6 +27,7 @@ type Backend interface {
 	Serve(context.Context) error
 	Scan(context.Context, string, bool) (control.ScanResult, error)
 	Search(context.Context, control.SearchArgs) (control.SearchResult, error)
+	Reject(context.Context, control.RejectArgs) (control.RejectResult, error)
 	Retry(context.Context, string) (control.RetryResult, error)
 	Explain(context.Context, control.ExplainArgs) (control.ExplainResult, error)
 	Find(context.Context, control.Selection) (control.FindResult, error)
@@ -111,13 +112,15 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	language := flags.String("language", "", "subtitle language tag")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
-	retryRejected := flags.Bool("retry-rejected", false, "clear and retry rejected subtitle candidates")
+	retryRejected := flags.Bool("retry-rejected", false, "clear and retry the candidates subsyncd rejected (not those you rejected)")
+	reason := flags.String("reason", "", "why the subtitle is wrong: "+strings.Join(control.RejectReasons, ", "))
+	undo := flags.Bool("undo", false, "remove your rejections for the file and language instead; runs no search")
 	media := flags.String("media", "", "media file path")
 	subtitle := flags.String("subtitle", "", "subtitle file path")
 	base := flags.String("base", "", "webhook base URL overriding server.webhook_base_url")
 	yes := flags.Bool("yes", false, "delete the records instead of previewing them")
 	timeout := flags.Duration("timeout", 0, "how long to wait for the outcome (default 5m); needs a running daemon")
-	noWait := flags.Bool("no-wait", false, "return once the daemon has accepted the search; needs a running daemon")
+	noWait := flags.Bool("no-wait", false, "return once the daemon has accepted the request; needs a running daemon")
 	flags.Bool("json", false, "write one JSON object to stdout instead of text")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -152,6 +155,11 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		if validateErr = validateMediaSelection(sel); validateErr == nil && command == "search" {
 			validateErr = validateSearchWait(flags, *timeout, *noWait)
 		}
+	case "reject":
+		sel := control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}
+		if validateErr = validateMediaSelection(sel); validateErr == nil {
+			validateErr = validateReject(flags, *reason, *undo, *timeout, *noWait)
+		}
 	case "retry":
 		validateErr = require("--provider", *provider)
 	case "analyze-sync":
@@ -177,6 +185,14 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		Wait:          *timeout,
 		NoWait:        *noWait,
 	}
+	rejectArgs := control.RejectArgs{
+		Selection: searchArgs.Selection,
+		Language:  *language,
+		Reason:    *reason,
+		Undo:      *undo,
+		Wait:      *timeout,
+		NoWait:    *noWait,
+	}
 	if c.Dial != nil && routed(command) {
 		remote, err := c.Dial(ctx, *configPath)
 		switch {
@@ -191,6 +207,10 @@ func (c Command) Run(ctx context.Context, args []string) int {
 			case "search":
 				var typed control.SearchResult
 				err = remote.Call(ctx, command, searchArgs, &typed)
+				result = typed
+			case "reject":
+				var typed control.RejectResult
+				err = remote.Call(ctx, command, rejectArgs, &typed)
 				result = typed
 			}
 			if err != nil {
@@ -222,6 +242,8 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		result, err = wrap(backend.Scan(ctx, *instance, *forceProbe))
 	case "search":
 		result, err = wrap(backend.Search(ctx, searchArgs))
+	case "reject":
+		result, err = wrap(backend.Reject(ctx, rejectArgs))
 	case "retry":
 		result, err = wrap(backend.Retry(ctx, *provider))
 	case "explain":
@@ -250,7 +272,26 @@ func (c Command) Run(ctx context.Context, args []string) int {
 
 // routed reports whether the daemon can execute command when it is running.
 func routed(command string) bool {
-	return command == "retry" || command == "search"
+	return command == "retry" || command == "search" || command == "reject"
+}
+
+// validateReject checks reject's --reason, --undo and waiting flags.
+func validateReject(flags *flag.FlagSet, reason string, undo bool, timeout time.Duration, noWait bool) error {
+	waiting := false
+	flags.Visit(func(item *flag.Flag) { waiting = waiting || item.Name == "timeout" || item.Name == "no-wait" })
+	switch {
+	case undo && reason != "":
+		return fmt.Errorf("--reason is not used with --undo")
+	case undo && waiting:
+		return fmt.Errorf("--timeout and --no-wait are not used with --undo, which runs no search")
+	case undo:
+		return nil
+	case reason == "":
+		return fmt.Errorf("--reason is required: one of %s", strings.Join(control.RejectReasons, ", "))
+	case !control.ValidRejectReason(reason):
+		return fmt.Errorf("unknown --reason %q: use one of %s", reason, strings.Join(control.RejectReasons, ", "))
+	}
+	return validateSearchWait(flags, timeout, noWait)
 }
 
 // validateSearchWait checks search's --timeout and --no-wait.
@@ -296,6 +337,8 @@ func commandFlags(command string) map[string]bool {
 		names = []string{"instance", "force-probe"}
 	case "search":
 		names = []string{"instance", "kind", "file-id", "title", "path", "language", "retry-rejected", "timeout", "no-wait"}
+	case "reject":
+		names = []string{"instance", "kind", "file-id", "title", "path", "language", "reason", "undo", "timeout", "no-wait"}
 	case "explain":
 		names = []string{"instance", "kind", "file-id", "title", "path", "language"}
 	case "find":
@@ -468,9 +511,19 @@ Error codes: unknown_instance, busy, internal.`,
 	"search": `Search subtitles for one media file now: for --language, or else for every configured language the file is missing (when none is, nothing runs and each language reports satisfied).
 Select the file with --instance, --kind and --file-id, or with --title or --path. A title or path finds only files subsyncd already knows; only --file-id adds a file it has not indexed yet.
 With the daemon running, the daemon runs the search beside its worker and the command waits for the outcome, at most --timeout (default 5m). A language still searching then reports outcome running (exit 0) and the search carries on; follow up with explain or find. --no-wait returns at once with running. A dropped connection never cancels the search. Without a daemon, search runs in this process to completion, and --timeout and --no-wait fail with daemon_required.
+--retry-rejected reconsiders the candidates subsyncd rejected itself; those you rejected with reject stay rejected (reject --undo removes them).
 Result fields: media_id, languages[] (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at). subtitle is relative to its media root.
 Outcomes: installed, satisfied, no_result, rejected, throttled, running.
 Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, arr_unreachable, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
+	"reject": `Reject a subtitle subsyncd installed that is wrong, so it is never chosen again, and search for a replacement now.
+Select the file with --instance, --kind and --file-id, or with --title or --path. --language may be left out when the file has a managed subtitle in only one language. --reason is one of out_of_sync, wrong_language, wrong_release, poor_quality, other.
+The rejection is bound to this media file and holds across LAPSE upgrades and search --retry-rejected; replacing the media file drops it. The search that follows installs the best acceptable remaining candidate even when it scores lower. When none is acceptable, the rejected subtitle is removed (outcome removed) and the language counts as missing again. A throttled or failed search keeps the subtitle; the queued search retries the replacement.
+Only a subtitle subsyncd installed and that is unchanged on disk can be rejected: embedded tracks, your own sidecars and sidecars you edited fail with not_managed.
+--undo removes your rejections for the file and language, for a reject made by mistake, and runs no search.
+With the daemon running, it waits like search: at most --timeout (default 5m), then reports running and carries on; --no-wait returns at once. Without a daemon, it runs in this process, and --timeout and --no-wait fail with daemon_required.
+Result fields: media_id, rejected (language, outcome, provider, candidate, release, reason, score, sync_verdict, offset_ms, subtitle, next_attempt_at), undone, undo. For removed, reason is the search outcome (no_result or rejected) that found nothing acceptable.
+Outcomes: installed, satisfied, removed, no_result, rejected, throttled, running.
+Error codes: usage, unknown_instance, unknown_language, media_not_found, ambiguous_media, not_managed, busy, daemon_required, daemon_stopping, protocol_mismatch, internal.`,
 	"retry": `Clear a provider's throttle and failure state and make throttled searches due.
 Result fields: provider, searches_due.
 Error codes: unknown_provider, busy, internal.`,

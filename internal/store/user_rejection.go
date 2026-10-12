@@ -30,10 +30,12 @@ func IsUserRejection(reasonCode string) bool {
 // RecordUserRejection records the owner's rejection of an installed candidate
 // and queues the follow-up search in one transaction: the search becomes due
 // at now at import priority, with replace_installed set so whichever run
-// takes it treats the rejected subtitle as replaceable or removable. A search
-// leased at now gets a rerun request instead, so that run's completion leaves
+// takes it treats the rejected subtitle as replaceable or removable. With an
+// owner, an unleased search is also leased to owner for lease, so the manual
+// run that follows takes it before the worker does. A search another owner
+// holds at now gets a rerun request instead, so that run's completion leaves
 // it queued.
-func (r *Repository) RecordUserRejection(ctx context.Context, rejection CandidateRejection, now time.Time) error {
+func (r *Repository) RecordUserRejection(ctx context.Context, rejection CandidateRejection, now time.Time, owner string, lease time.Duration) error {
 	if err := validateCandidateRejection(rejection); err != nil {
 		return err
 	}
@@ -48,14 +50,25 @@ func (r *Repository) RecordUserRejection(ctx context.Context, rejection Candidat
 	if err := putCandidateRejection(ctx, tx, rejection); err != nil {
 		return err
 	}
+	if (owner == "") != (lease <= 0) {
+		return fmt.Errorf("a user rejection's lease needs both an owner and a duration")
+	}
 	at := now.UnixNano()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, queue_order_ns, priority, replace_installed)
- VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, 1)
+	var leaseOwner any
+	var leaseUntil any
+	if owner != "" {
+		leaseOwner, leaseUntil = owner, now.Add(lease).UnixNano()
+	}
+	held := `(search_states.lease_until_ns IS NOT NULL AND search_states.lease_until_ns > ?)`
+	if _, err := tx.ExecContext(ctx, `INSERT INTO search_states(media_id, language, state, attempt, failure_attempt, next_attempt_at_ns, queue_order_ns, priority, replace_installed, lease_owner, lease_until_ns)
+ VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, 1, ?, ?)
  ON CONFLICT(media_id, language) DO UPDATE SET state='pending', attempt=0, failure_attempt=0, next_attempt_at_ns=excluded.next_attempt_at_ns,
  queue_order_ns=excluded.queue_order_ns, priority=excluded.priority, last_outcome='', replace_installed=1,
  resume_providers_json='[]', resume_route_signature='', resume_saved_at_ns=0,
- rerun_requested=CASE WHEN search_states.lease_until_ns IS NOT NULL AND search_states.lease_until_ns > ? THEN 1 ELSE search_states.rerun_requested END`,
-		rejection.MediaID, rejection.Language, at, at, SearchPriorityImport, at); err != nil {
+ rerun_requested=CASE WHEN `+held+` THEN 1 WHEN excluded.lease_owner IS NOT NULL THEN 0 ELSE search_states.rerun_requested END,
+ lease_owner=CASE WHEN `+held+` OR excluded.lease_owner IS NULL THEN search_states.lease_owner ELSE excluded.lease_owner END,
+ lease_until_ns=CASE WHEN `+held+` OR excluded.lease_owner IS NULL THEN search_states.lease_until_ns ELSE excluded.lease_until_ns END`,
+		rejection.MediaID, rejection.Language, at, at, SearchPriorityImport, leaseOwner, leaseUntil, at, at, at); err != nil {
 		return fmt.Errorf("queue rejected subtitle replacement: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

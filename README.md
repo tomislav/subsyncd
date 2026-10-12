@@ -15,6 +15,7 @@ Subtitles are saved alongside your media files. Configuration lives in a YAML fi
 - **Season-pack support:** extracts the matching episode from ZIP and RAR downloads, skipping ambiguous matches.
 - **Ongoing searches:** keeps checking for missing subtitles when no suitable match is available.
 - **Safe subtitle upgrades:** can replace subtitles it installed with better matches, while protecting manually added subtitles and any files you’ve edited.
+- **Tell it a subtitle is wrong:** `reject` drops a subtitle it installed, never picks it again, and installs the next best one, or removes it when nothing else fits ([how](docs/operations.md#a-subtitle-is-wrong)).
 - **Remembers its progress:** saves search history and provider limits across restarts, and avoids repeatedly downloading rejected results.
 - **Optional Silo refresh:** asks Silo to rescan a media file after installing subtitles.
 

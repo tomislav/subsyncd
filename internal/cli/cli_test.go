@@ -55,6 +55,14 @@ func (f *fakeBackend) Search(_ context.Context, args control.SearchArgs) (contro
 	}
 	return control.SearchResult{MediaID: 9, Languages: []control.LanguageOutcome{{Language: args.Language, Outcome: "installed"}}}, f.err
 }
+func (f *fakeBackend) Reject(_ context.Context, args control.RejectArgs) (control.RejectResult, error) {
+	f.call = "reject:" + args.Title + ":" + args.Language + ":" + args.Reason
+	if args.Undo {
+		f.call += ":undo"
+		return control.RejectResult{MediaID: 9, Rejected: control.LanguageOutcome{Language: "en"}, Undone: 1, Undo: true}, f.err
+	}
+	return control.RejectResult{MediaID: 9, Rejected: control.LanguageOutcome{Language: "en", Outcome: "removed", Reason: "rejected"}}, f.err
+}
 func (f *fakeBackend) Retry(_ context.Context, provider string) (control.RetryResult, error) {
 	f.call = "retry:" + provider
 	return control.RetryResult{Provider: provider, SearchesDue: 2}, f.err
@@ -426,6 +434,8 @@ func (r *fakeRemote) Call(_ context.Context, command string, args, result any) e
 		*out = control.RetryResult{Provider: "titlovi", SearchesDue: 4}
 	case *control.SearchResult:
 		*out = control.SearchResult{MediaID: 9, Languages: []control.LanguageOutcome{{Language: "hr", Outcome: "running"}}}
+	case *control.RejectResult:
+		*out = control.RejectResult{MediaID: 9, Rejected: control.LanguageOutcome{Language: "en", Outcome: "installed", Provider: "titlovi", Candidate: "c2", Score: 40, Subtitle: "Movie (2019)/Movie.en.srt"}}
 	}
 	return nil
 }
@@ -638,5 +648,64 @@ func TestSearchWithoutDaemonPassesWaitToTheBackend(t *testing.T) {
 	}
 	if backend.call != "search::::Dune::wait=2m0s" {
 		t.Fatalf("call = %q", backend.call)
+	}
+}
+
+func TestRejectCommand(t *testing.T) {
+	backend := &fakeBackend{}
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr, Open: openFake(backend),
+		Dial: func(context.Context, string) (Remote, error) { return nil, control.ErrNoDaemon }}
+	if code := command.Run(context.Background(), []string{"reject", "--title", "Movie (2019)", "--language", "en", "--reason", "out_of_sync"}); code != ExitOK {
+		t.Fatalf("exit = %d, stderr %q", code, stderr.String())
+	}
+	if backend.call != "reject:Movie (2019):en:out_of_sync" || stdout.String() != "media_id: 9\nlanguage: en\noutcome: removed\nreason: rejected\n" {
+		t.Fatalf("call/stdout = %q/%q", backend.call, stdout.String())
+	}
+	stdout.Reset()
+	if code := command.Run(context.Background(), []string{"reject", "--title", "Movie (2019)", "--language", "en", "--undo"}); code != ExitOK {
+		t.Fatalf("undo exit = %d, stderr %q", code, stderr.String())
+	}
+	if backend.call != "reject:Movie (2019):en::undo" || stdout.String() != "media_id: 9\nlanguage: en\nundone: 1\n" {
+		t.Fatalf("undo call/stdout = %q/%q", backend.call, stdout.String())
+	}
+	for _, args := range [][]string{
+		{"reject", "--title", "Movie"},
+		{"reject", "--title", "Movie", "--reason", "boring"},
+		{"reject", "--title", "Movie", "--undo", "--reason", "other"},
+		{"reject", "--title", "Movie", "--undo", "--timeout", "1m"},
+		{"reject", "--reason", "other"},
+		{"reject", "--title", "Movie", "--reason", "other", "--retry-rejected"},
+		{"reject", "--title", "Movie", "--reason", "other", "--timeout", "1m", "--no-wait"},
+	} {
+		backend.call = ""
+		var out bytes.Buffer
+		usage := Command{Stdout: &out, Stderr: &bytes.Buffer{}, Open: openFake(backend)}
+		if code := usage.Run(context.Background(), append(args, "--json")); code != ExitUsage || backend.call != "" || !strings.Contains(out.String(), `"code":"usage"`) {
+			t.Fatalf("%v: exit = %d, call %q, stdout %q", args, code, backend.call, out.String())
+		}
+	}
+}
+
+func TestRejectGoesToTheDaemon(t *testing.T) {
+	remote := &fakeRemote{}
+	var stdout bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &bytes.Buffer{},
+		Open: func(context.Context, string, string) (Backend, error) { t.Fatal("Open called"); return nil, nil },
+		Dial: func(context.Context, string) (Remote, error) { return remote, nil },
+	}
+	if code := command.Run(context.Background(), []string{"reject", "--title", "Movie (2019)", "--reason", "wrong_release", "--timeout", "2m", "--json"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	want := control.RejectArgs{Selection: control.Selection{Title: "Movie (2019)"}, Reason: "wrong_release", Wait: 2 * time.Minute}
+	if args, ok := remote.args.(control.RejectArgs); remote.command != "reject" || !ok || args != want {
+		t.Fatalf("call = %q %#v", remote.command, remote.args)
+	}
+	var envelope struct {
+		OK     bool
+		Result control.RejectResult
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil || !envelope.OK || envelope.Result.Rejected.Subtitle != "Movie (2019)/Movie.en.srt" {
+		t.Fatalf("stdout = %s (%v)", stdout.String(), err)
 	}
 }

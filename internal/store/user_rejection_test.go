@@ -29,7 +29,7 @@ func TestRecordUserRejectionQueuesReplaceSearch(t *testing.T) {
 	if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now.Add(30*24*time.Hour), SearchPriorityUpgrade); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	status, err := repo.GetSearchStatus(ctx, mediaID, "en")
@@ -73,7 +73,7 @@ func TestRecordUserRejectionDuringLeaseRequestsRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	lease := leaseOne(t, repo, now)
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	// The running worker's completion must not settle the reject's search.
@@ -94,7 +94,7 @@ func TestUserRejectionMatchesAcrossToolSignatures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := repo.GetCandidateRejection(ctx, userLookup(mediaID, "signature", "lapse-2/policy-b")); err != nil || !found {
@@ -112,7 +112,7 @@ func TestUserRejectionMatchesAcrossToolSignatures(t *testing.T) {
 	// rejected by provider and result ID: any signature matches.
 	other := userRejection(mediaID, AnyCandidateSignature, now)
 	other.ResultID = "legacy"
-	if err := repo.RecordUserRejection(ctx, other, now); err != nil {
+	if err := repo.RecordUserRejection(ctx, other, now, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	lookup := userLookup(mediaID, "whatever/member-abc", "lapse-9/policy-z")
@@ -139,7 +139,7 @@ func TestClearCandidateRejectionsKeepsUserRejections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	system := userRejection(mediaID, "signature", now)
@@ -217,5 +217,39 @@ func TestRemoveInstallationIsOneTransaction(t *testing.T) {
 	languages, err := repo.InstalledLanguages(ctx, mediaID)
 	if err != nil || len(languages) != 0 {
 		t.Fatalf("installed languages = %v/%v", languages, err)
+	}
+}
+
+func TestRecordUserRejectionLeasesTheSearchToItsOwner(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "manual-1", 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute); err != nil || len(leases) != 0 {
+		t.Fatalf("the worker leased the reject's search: %+v/%v", leases, err)
+	}
+	// The owner's own claim succeeds; another owner's does not.
+	if claimed, err := repo.ClaimSearch(ctx, mediaID, "en", "manual-2", now, time.Minute); err != nil || claimed {
+		t.Fatalf("other claim = %v/%v", claimed, err)
+	}
+	if claimed, err := repo.ClaimSearch(ctx, mediaID, "en", "manual-1", now, time.Minute); err != nil || !claimed {
+		t.Fatalf("own claim = %v/%v", claimed, err)
+	}
+	// A reject while that search runs only requests a rerun.
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature-2", now), now, "manual-3", 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	status, err := repo.GetSearchStatus(ctx, mediaID, "en")
+	if err != nil || !status.RerunPending {
+		t.Fatalf("status = %+v/%v", status, err)
+	}
+	if claimed, err := repo.ClaimSearch(ctx, mediaID, "en", "manual-3", now, time.Minute); err != nil || claimed {
+		t.Fatalf("second reject claimed a held search: %v/%v", claimed, err)
 	}
 }
