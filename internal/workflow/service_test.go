@@ -1984,3 +1984,24 @@ func TestServicePassesCandidateIdentityToInstaller(t *testing.T) {
 		t.Fatalf("install request identity = %q/%q, want signature %q and a checksum", installer.request.CandidateSignature, installer.request.ArtifactChecksum, want)
 	}
 }
+
+func TestUserRejectionSurvivesToolSignatureChange(t *testing.T) {
+	request := serviceRequest(t)
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
+	fingerprint := request.Media.Fingerprint
+	rejection := store.CandidateRejection{MediaID: request.MediaID, Language: "en", ProviderID: "provider", ResultID: "bad", CandidateSignature: "signature", ReasonCode: "user_out_of_sync",
+		ToolSignature: "lapse-0.1/policy-old", MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano()}
+	if !service.RejectionActive(rejection, fingerprint) {
+		t.Fatal("a user rejection lapsed with the LAPSE version")
+	}
+	system := rejection
+	system.ReasonCode = "lapse_unsure"
+	if service.RejectionActive(system, fingerprint) {
+		t.Fatal("a system rejection outlived its LAPSE version")
+	}
+	replaced := fingerprint
+	replaced.Size++
+	if service.RejectionActive(rejection, replaced) {
+		t.Fatal("a user rejection outlived the media file")
+	}
+}

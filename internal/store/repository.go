@@ -104,6 +104,10 @@ type SearchLease struct {
 	ResumeRouteSignature string
 	// ResumeSavedAt is when the oldest provider in ResumeProviders answered.
 	ResumeSavedAt time.Time
+	// ReplaceInstalled is set while a reject's follow-up search is queued:
+	// the rejected subtitle is replaced by the best acceptable candidate, or
+	// removed when none is.
+	ReplaceInstalled bool
 }
 
 // ResumeProvidersTTL is how long a saved clean-empty provider stays skipped:
@@ -137,6 +141,9 @@ type SearchCompletion struct {
 	History *SearchHistoryDetail
 	// FinishedAt dates the history row; zero uses the wall clock.
 	FinishedAt time.Time
+	// ClearReplaceInstalled ends a reject's replacement: the run finished it.
+	// A rerun requested during the run keeps it.
+	ClearReplaceInstalled bool
 }
 
 type SearchCompletionResult struct {
@@ -251,6 +258,8 @@ type SearchStatus struct {
 	LastOutcome    string
 	Priority       SearchPriority
 	RerunPending   bool
+	// ReplaceInstalled marks a reject's queued replacement.
+	ReplaceInstalled bool
 }
 
 type MediaRecord struct {
@@ -580,7 +589,7 @@ func (r *Repository) ListActiveCatalogIdentities(ctx context.Context, instance s
 func (r *Repository) GetSearchStatus(ctx context.Context, mediaID int64, language domain.Language) (SearchStatus, error) {
 	var status SearchStatus
 	var next int64
-	err := r.store.db.QueryRowContext(ctx, `SELECT state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, priority, rerun_requested FROM search_states WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&status.State, &status.Attempt, &status.FailureAttempt, &next, &status.LastOutcome, &status.Priority, &status.RerunPending)
+	err := r.store.db.QueryRowContext(ctx, `SELECT state, attempt, failure_attempt, next_attempt_at_ns, last_outcome, priority, rerun_requested, replace_installed FROM search_states WHERE media_id=? AND language=?`, mediaID, language.String()).Scan(&status.State, &status.Attempt, &status.FailureAttempt, &next, &status.LastOutcome, &status.Priority, &status.RerunPending, &status.ReplaceInstalled)
 	if err != nil {
 		return SearchStatus{}, fmt.Errorf("get search status: %w", err)
 	}
@@ -910,7 +919,7 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		return nil, fmt.Errorf("begin search lease: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	query := `SELECT media_id, language, attempt, failure_attempt, priority, resume_providers_json, resume_route_signature, resume_saved_at_ns, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE media.deleted=0 AND state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`
+	query := `SELECT media_id, language, attempt, failure_attempt, priority, replace_installed, resume_providers_json, resume_route_signature, resume_saved_at_ns, media.path, media.file_id, media.size, media.mod_time_ns FROM search_states JOIN media ON media.id=search_states.media_id WHERE media.deleted=0 AND state = 'pending' AND next_attempt_at_ns <= ? AND (lease_until_ns IS NULL OR lease_until_ns <= ?)`
 	args := []any{now.UnixNano(), now.UnixNano()}
 	if scope := r.searchScope; scope != nil {
 		if len(scope.instances) == 0 || len(scope.languages) == 0 {
@@ -948,6 +957,7 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		attempt         int
 		failureAttempt  int
 		priority        SearchPriority
+		replace         bool
 		resumeProviders []string
 		resumeSignature string
 		resumeSavedAt   time.Time
@@ -959,7 +969,7 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 		var encodedProviders string
 		var fingerprint domain.MediaFingerprint
 		var modTime, savedAt int64
-		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt, &item.failureAttempt, &item.priority, &encodedProviders, &item.resumeSignature, &savedAt, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); err != nil {
+		if err := rows.Scan(&item.mediaID, &item.language, &item.attempt, &item.failureAttempt, &item.priority, &item.replace, &encodedProviders, &item.resumeSignature, &savedAt, &fingerprint.Path, &fingerprint.FileID, &fingerprint.Size, &modTime); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan due search: %w", err)
 		}
@@ -1012,7 +1022,7 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 			return nil, fmt.Errorf("count claimed search: %w", err)
 		}
 		if claimed == 1 {
-			leases = append(leases, SearchLease{MediaID: item.mediaID, Language: item.language, JobID: jobID, Attempt: item.attempt, FailureAttempt: item.failureAttempt, LeaseUntil: leaseUntil, Priority: item.priority, ResumeProviders: item.resumeProviders, ResumeRouteSignature: item.resumeSignature, ResumeSavedAt: item.resumeSavedAt})
+			leases = append(leases, SearchLease{MediaID: item.mediaID, Language: item.language, JobID: jobID, Attempt: item.attempt, FailureAttempt: item.failureAttempt, LeaseUntil: leaseUntil, Priority: item.priority, ResumeProviders: item.resumeProviders, ResumeRouteSignature: item.resumeSignature, ResumeSavedAt: item.resumeSavedAt, ReplaceInstalled: item.replace})
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1090,7 +1100,7 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		// A deleted row stays terminal even if its old workflow reports a retry or
 		// success. Retain ownership until this owner-checked completion arrives.
 		rerunScheduled = false
-		result, err = tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, queue_order_ns=0, rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL, resume_providers_json='[]', resume_route_signature='' WHERE lease_owner=?`, completion.JobID)
+		result, err = tx.ExecContext(ctx, `UPDATE search_states SET state='complete', last_outcome='deleted', next_attempt_at_ns=0, queue_order_ns=0, rerun_requested=0, replace_installed=0, lease_owner=NULL, lease_until_ns=NULL, resume_providers_json='[]', resume_route_signature='' WHERE lease_owner=?`, completion.JobID)
 	} else {
 		result, err = tx.ExecContext(ctx, `UPDATE search_states SET
 		state=CASE WHEN rerun_requested=1 THEN 'pending' ELSE ? END,
@@ -1103,8 +1113,9 @@ func (r *Repository) CompleteSearch(ctx context.Context, completion SearchComple
 		resume_providers_json=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '[]' END,
 		resume_route_signature=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE '' END,
 		resume_saved_at_ns=CASE WHEN rerun_requested=0 AND ?=1 THEN ? ELSE 0 END,
+		replace_installed=CASE WHEN rerun_requested=0 AND ?=1 THEN 0 ELSE replace_installed END,
 		rerun_requested=0, lease_owner=NULL, lease_until_ns=NULL
-		WHERE lease_owner=?`, state, completion.MissingAttemptFloor, completion.ResetMissingAttempt, advanceMissing, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.PreserveQueueOrder, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.PreserveResume, resumeSavedAt, completion.JobID)
+		WHERE lease_owner=?`, state, completion.MissingAttemptFloor, completion.ResetMissingAttempt, advanceMissing, advanceMissing, completion.ResetFailureAttempt, advanceFailure, next, completion.PreserveQueueOrder, next, completion.Outcome, completion.Priority, completion.Priority, completion.PreserveResume, resumeProvidersJSON, completion.PreserveResume, resumeSignature, completion.PreserveResume, resumeSavedAt, completion.ClearReplaceInstalled, completion.JobID)
 	}
 	if err != nil {
 		return SearchCompletionResult{}, fmt.Errorf("complete search: %w", err)
@@ -1408,7 +1419,7 @@ func validateCandidateRejectionIdentity(rejection CandidateRejection) error {
 }
 
 func putCandidateRejection(ctx context.Context, writer candidateRejectionWriter, rejection CandidateRejection) error {
-	_, err := writer.ExecContext(ctx, `INSERT INTO candidate_rejections(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature) DO UPDATE SET reason_code=excluded.reason_code, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, rejected_at_ns=excluded.rejected_at_ns, expires_at_ns=excluded.expires_at_ns`, rejection.MediaID, rejection.Language, rejection.ProviderID, rejection.ResultID, rejection.CandidateSignature, rejection.ArtifactChecksum, rejection.ReasonCode, rejection.ToolSignature, rejection.MediaPath, rejection.MediaFileID, rejection.MediaSize, rejection.MediaModTimeNS, rejection.RejectedAt.UnixNano(), int64(0))
+	_, err := writer.ExecContext(ctx, `INSERT INTO candidate_rejections(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, tool_signature) DO UPDATE SET reason_code=CASE WHEN candidate_rejections.reason_code LIKE 'user\_%' ESCAPE '\' THEN candidate_rejections.reason_code ELSE excluded.reason_code END, media_path=excluded.media_path, media_file_id=excluded.media_file_id, media_size=excluded.media_size, media_mod_time_ns=excluded.media_mod_time_ns, rejected_at_ns=excluded.rejected_at_ns, expires_at_ns=excluded.expires_at_ns`, rejection.MediaID, rejection.Language, rejection.ProviderID, rejection.ResultID, rejection.CandidateSignature, rejection.ArtifactChecksum, rejection.ReasonCode, rejection.ToolSignature, rejection.MediaPath, rejection.MediaFileID, rejection.MediaSize, rejection.MediaModTimeNS, rejection.RejectedAt.UnixNano(), int64(0))
 	if err != nil {
 		return fmt.Errorf("put candidate rejection: %w", err)
 	}
@@ -1467,8 +1478,12 @@ func candidateLapseFailureIdentityArgs(failure CandidateLapseFailure) []any {
 }
 
 func (r *Repository) GetCandidateRejection(ctx context.Context, lookup CandidateRejectionLookup) (CandidateRejection, bool, error) {
-	query := `SELECT media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns FROM candidate_rejections WHERE media_id=? AND language=? AND provider_id=? AND result_id=? AND candidate_signature=? AND tool_signature=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=?`
-	args := []any{lookup.MediaID, lookup.Language, lookup.ProviderID, lookup.ResultID, lookup.CandidateSignature, lookup.ToolSignature, lookup.MediaPath, lookup.MediaFileID, lookup.MediaSize, lookup.MediaModTimeNS}
+	// The owner's rejections hold under any LAPSE tool signature and for any
+	// artifact of the candidate; one recorded for an installation without a
+	// candidate signature matches every signature. All are bound to the file.
+	query := `SELECT media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns FROM candidate_rejections WHERE media_id=? AND language=? AND provider_id=? AND result_id=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=?
+ AND ((` + userReasonSQL + ` AND candidate_signature IN (?, ?)) OR (candidate_signature=? AND tool_signature=?`
+	args := []any{lookup.MediaID, lookup.Language, lookup.ProviderID, lookup.ResultID, lookup.MediaPath, lookup.MediaFileID, lookup.MediaSize, lookup.MediaModTimeNS, lookup.CandidateSignature, AnyCandidateSignature, lookup.CandidateSignature, lookup.ToolSignature}
 	if lookup.ArtifactChecksum != "" {
 		query += ` AND artifact_checksum=?`
 		args = append(args, lookup.ArtifactChecksum)
@@ -1477,7 +1492,7 @@ func (r *Repository) GetCandidateRejection(ctx context.Context, lookup Candidate
 		query += ` AND reason_code<>?`
 		args = append(args, reason)
 	}
-	query += ` ORDER BY rejected_at_ns DESC LIMIT 1`
+	query += `)) ORDER BY rejected_at_ns DESC LIMIT 1`
 	var rejection CandidateRejection
 	var rejectedAt, expiresAt int64
 	err := r.store.db.QueryRowContext(ctx, query, args...).Scan(&rejection.MediaID, &rejection.Language, &rejection.ProviderID, &rejection.ResultID, &rejection.CandidateSignature, &rejection.ArtifactChecksum, &rejection.ReasonCode, &rejection.ToolSignature, &rejection.MediaPath, &rejection.MediaFileID, &rejection.MediaSize, &rejection.MediaModTimeNS, &rejectedAt, &expiresAt)
@@ -1517,13 +1532,17 @@ func (r *Repository) ListCandidateRejections(ctx context.Context, mediaID int64,
 	return rejections, nil
 }
 
+// ClearCandidateRejections clears subsyncd's own rejections and LAPSE strikes
+// for a media file and language, as search --retry-rejected does. The owner's
+// rejections (reason user_*) stay.
 func (r *Repository) ClearCandidateRejections(ctx context.Context, mediaID int64, language domain.Language) error {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin clear candidate rejections: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM candidate_rejections WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {
+	// The owner's own rejections stay; only reject --undo removes them.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM candidate_rejections WHERE media_id=? AND language=? AND NOT `+userReasonSQL, mediaID, language.String()); err != nil {
 		return fmt.Errorf("clear candidate rejections: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM candidate_lapse_failures WHERE media_id=? AND language=?`, mediaID, language.String()); err != nil {

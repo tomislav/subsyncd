@@ -376,7 +376,9 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			w.logJobCompleted(jobCtx, slog.LevelInfo, string(media.UnsupportedReason), string(media.UnsupportedReason), time.Time{}, started, 0, nil)
 			return nil
 		}
-		request := workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language)}
+		// A queued reject treats the rejected subtitle as replaceable or
+		// removable, also after a restart.
+		request := workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language), ReplaceInstalled: lease.ReplaceInstalled}
 		if lease.Priority == store.SearchPriorityUpgrade {
 			request.UpgradeAttempt = lease.Attempt + 1
 		}
@@ -450,6 +452,12 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		return err
 	}
 	completion.History = searchHistory(media, result)
+	if result.Outcome == workflow.OutcomeRemoved {
+		// The removal recorded its history row with the record's deletion.
+		completion.History = nil
+	}
+	// A replacement is finished by any outcome but a throttle, which retries it.
+	completion.ClearReplaceInstalled = lease.ReplaceInstalled && result.Outcome != workflow.OutcomeThrottled
 	completion.FinishedAt = w.Clock.Now()
 	completionResult, err := w.Repository.CompleteSearch(jobCtx, completion)
 	if err != nil {
@@ -501,7 +509,8 @@ func (w *Worker) workflowCompletion(lease store.SearchLease, result workflow.Res
 		}
 		completion.ResetMissingAttempt = true
 		completion.ResetFailureAttempt = true
-	case workflow.OutcomeNoResult, workflow.OutcomeRejected:
+	case workflow.OutcomeNoResult, workflow.OutcomeRejected, workflow.OutcomeRemoved:
+		// A removed subtitle leaves the language missing; normal retries go on.
 		attempt := lease.Attempt + 1
 		if lease.Priority == store.SearchPriorityUpgrade {
 			attempt = 1
@@ -1165,6 +1174,8 @@ func completionReason(outcome workflow.Outcome) string {
 		return "candidate_rejected"
 	case workflow.OutcomeThrottled:
 		return "provider_throttle"
+	case workflow.OutcomeRemoved:
+		return "rejected_subtitle_removed"
 	default:
 		return "unsupported_outcome"
 	}

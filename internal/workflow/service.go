@@ -34,13 +34,19 @@ const (
 	OutcomeNoResult  Outcome = "no_result"
 	OutcomeRejected  Outcome = "rejected"
 	OutcomeThrottled Outcome = "throttled"
+	// OutcomeRemoved reports that a ReplaceInstalled search found no
+	// acceptable candidate and removed the rejected managed subtitle.
+	OutcomeRemoved Outcome = "removed"
 )
 
 type Request struct {
-	memberScope          string
-	attemptedArtifacts   map[candidateArtifactIdentity]struct{}
-	lapseTimeout         *lapseTimeoutLatch
-	refusals             *refusalRun
+	memberScope        string
+	attemptedArtifacts map[candidateArtifactIdentity]struct{}
+	lapseTimeout       *lapseTimeoutLatch
+	refusals           *refusalRun
+	// replacing holds the managed installation a ReplaceInstalled search
+	// installs over; it no longer counts as installed.
+	replacing            *store.Installation
 	MediaID              int64
 	Media                domain.Media
 	Language             domain.Language
@@ -49,6 +55,11 @@ type Request struct {
 	UpgradeAttempt       int
 	ResumeProviders      []string
 	ResumeRouteSignature string
+	// ReplaceInstalled treats the managed subtitle as rejected: it is not
+	// compared by score, the best acceptable candidate is installed over it,
+	// and when a finished search finds none it is removed (OutcomeRemoved).
+	// A search that is throttled or fails keeps it.
+	ReplaceInstalled bool
 }
 
 type Decision struct {
@@ -78,6 +89,9 @@ type Result struct {
 	ProviderErrors       map[string]error
 	ResumeProviders      []string
 	ResumeRouteSignature string
+	// RemovedAfter is the search outcome (no_result or rejected) that led a
+	// ReplaceInstalled search to remove the subtitle.
+	RemovedAfter         Outcome
 	cleanEmptyProviders  []string
 	upgradeRecovery      bool
 	retainedInstallation bool
@@ -276,6 +290,9 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		return s.finishProviderResume(request, false, result, err), err
 	}
 	activeInstallation := installed && managedInstallationPresent(current, existing)
+	// Only a managed subtitle still unedited on disk is replaced or removed;
+	// an edited one is the owner's and stops the search below.
+	replacing := request.ReplaceInstalled && activeInstallation && InstallationMatchesMedia(existing, request.Media)
 	inventorySatisfied := inventoryStopsSearch(current, request.Language, s.AllowHearingImpaired, activeInstallation, existing)
 	embeddedCount, sidecarCount := inventoryTrackCounts(current)
 	events.Log(ctx, slog.LevelInfo, "inventory.refresh_completed", "subtitle inventory refreshed",
@@ -287,6 +304,9 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	if inventorySatisfied {
 		result.Outcome = OutcomeSatisfied
 		return result, nil
+	}
+	if replacing {
+		return s.replaceInstalled(ctx, request, existing, &candidateCount)
 	}
 	if activeInstallation && InstallationMatchesMedia(existing, request.Media) {
 		_, exact, scoreErr := installedScore(existing)
@@ -320,6 +340,46 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		s.scheduleUpgrade(&result, request.UpgradeAttempt)
 	}
 	return result, runErr
+}
+
+// replaceInstalled runs the search for a managed subtitle the owner rejected.
+// The subtitle no longer counts as installed: candidates are not compared with
+// it, and the best acceptable one is installed over it. When the search
+// finishes with nothing acceptable (no_result or rejected) the subtitle is
+// removed; a throttled or failed search keeps it for the retry.
+func (s *Service) replaceInstalled(ctx context.Context, request Request, existing store.Installation, candidateCount *int) (Result, error) {
+	request.attemptedArtifacts = make(map[candidateArtifactIdentity]struct{})
+	request.lapseTimeout = &lapseTimeoutLatch{}
+	request.refusals = &refusalRun{ledger: s.Refusals, now: s.Clock.Now}
+	if request.refusals.ledger == nil {
+		request.refusals.ledger = &RefusalLedger{}
+	}
+	request.replacing = &existing
+	result, err := s.runProviderTiers(ctx, request, existing, false, candidateCount)
+	if err != nil {
+		return result, err
+	}
+	switch result.Outcome {
+	case OutcomeNoResult, OutcomeRejected:
+	default:
+		s.scheduleUpgrade(&result, request.UpgradeAttempt)
+		return result, nil
+	}
+	remover, ok := s.Installer.(CandidateRemover)
+	if !ok {
+		return result, fmt.Errorf("installer cannot remove the rejected subtitle")
+	}
+	if err := remover.RemoveManaged(ctx, RemovalRequest{Installation: existing, Media: request.Media, Manual: request.Manual}); err != nil {
+		if errors.Is(err, ErrManagedSubtitleChanged) {
+			// Edited meanwhile: the subtitle is the owner's now and stays.
+			result.Decisions = append(result.Decisions, Decision{Stage: "removal", Reason: "managed subtitle changed on disk; kept"})
+			return result, nil
+		}
+		return result, err
+	}
+	result.RemovedAfter, result.Outcome = result.Outcome, OutcomeRemoved
+	result.NextUpgrade = time.Time{}
+	return result, nil
 }
 
 // acquire performs one provider tier after inventory has been checked once.
@@ -721,6 +781,8 @@ func workflowCompletion(result Result, err error) (string, string, slog.Level) {
 		return string(result.Outcome), "no_eligible_candidate", slog.LevelInfo
 	case OutcomeThrottled:
 		return string(result.Outcome), "provider_unavailable", slog.LevelWarn
+	case OutcomeRemoved:
+		return string(result.Outcome), "rejected_subtitle_removed", slog.LevelInfo
 	default:
 		return "failed", "incomplete_result", slog.LevelError
 	}
@@ -1050,10 +1112,19 @@ var versionedRejectionReasons = []string{"invalid_subtitle", "pack_selection"}
 
 // RejectionActive reports whether a stored rejection still counts for the
 // media file with fingerprint, as lookup decides: it must have been recorded
-// under the current LAPSE tool signature, for that exact media file, and, when
-// its reason follows versioned rules, under the current rules version. Other
-// rows, including legacy bare-signature ones, are ignored by lookup.
+// for that exact media file and, unless it is the owner's (user_*), which
+// holds across LAPSE and rule changes, under the current LAPSE tool signature
+// and, when its reason follows versioned rules, the current rules version.
+// Other rows, including legacy bare-signature ones, are ignored by lookup.
 func (s *Service) RejectionActive(rejection store.CandidateRejection, fingerprint domain.MediaFingerprint) bool {
+	if rejection.MediaPath != fingerprint.Path || rejection.MediaFileID != fingerprint.FileID ||
+		rejection.MediaSize != fingerprint.Size || rejection.MediaModTimeNS != fingerprint.ModTime.UnixNano() {
+		return false
+	}
+	// The owner's rejections hold across LAPSE and rule changes.
+	if store.IsUserRejection(rejection.ReasonCode) {
+		return true
+	}
 	if rejection.ToolSignature != s.RejectionToolSignature() || rejection.MediaPath != fingerprint.Path || rejection.MediaFileID != fingerprint.FileID ||
 		rejection.MediaSize != fingerprint.Size || rejection.MediaModTimeNS != fingerprint.ModTime.UnixNano() {
 		return false
@@ -1573,13 +1644,26 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 		ctx = observability.WithAttrs(ctx, slog.Int("member_index", prepared.memberIndex), slog.Int("member_count", prepared.memberCount))
 	}
 	destination := subtitleDestination(request.Media.Fingerprint.Path, request.Language, prepared.output)
-	if installed {
+	if request.replacing != nil {
+		existing = *request.replacing
+	}
+	if installed || request.replacing != nil {
 		if !strings.EqualFold(filepath.Ext(existing.Path), filepath.Ext(prepared.output)) {
 			result.Outcome = OutcomeRejected
 			result.Decisions = append(result.Decisions, Decision{Stage: "installation", ProviderID: prepared.candidate.ProviderID, ResultID: prepared.candidate.ResultID, Reason: "format-changing upgrades are not supported"})
 			return result, nil
 		}
 		destination = existing.Path
+	}
+	if request.replacing != nil {
+		// A candidate with the rejected subtitle's exact text is as wrong.
+		if checksum, err := fileChecksum(prepared.output); err != nil {
+			return result, err
+		} else if checksum == request.replacing.Checksum {
+			result.Outcome = OutcomeRejected
+			result.Decisions = append(result.Decisions, Decision{Stage: "installation", ProviderID: prepared.candidate.ProviderID, ResultID: prepared.candidate.ResultID, Reason: "identical to the rejected subtitle"})
+			return result, nil
+		}
 	}
 	selectionMode := prepared.sync.Verdict
 	if selectionMode != "exact_hash" && selectionMode != "score_bypass" && selectionMode != "sync_disabled" {
