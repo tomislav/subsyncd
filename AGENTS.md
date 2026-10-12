@@ -22,6 +22,16 @@ Before inspecting, debugging, deploying, or otherwise interacting with a product
 - Keep user documentation and the appropriate development reference in sync with behavior changes. Do not add task ledgers, completed plans, review transcripts, or implementation-status files; Git history is the record of completed work.
 - Preserve unrelated working-tree changes and never include secrets, production paths, provider responses, or real media metadata in fixtures, logs, commits, or documentation.
 
+## Commit messages
+
+Use Conventional Commits: `<type>(<scope>): <summary>`, imperative, lowercase, no trailing period, at most 72 characters. Put the detail in the body. Older history uses sentence-style subjects; don't imitate it.
+
+- Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `chore`.
+- Scope is the subsystem, usually the package: `cli`, `control`, `app`, `store`, `workflow`, `worker`, `catalog`, `provider`, `syncer`, `notifier`, `e2e`, `docs`, `docker`.
+- Example: `fix(control): bound socket drain on shutdown`.
+
+`.githooks/commit-msg` enforces the format. Enable it once per clone with `git config core.hooksPath .githooks`.
+
 ## Safety invariants
 
 - SQLite is authoritative for media state, search scheduling, leases, reconciliation cursors, provider availability, rejection state, installation provenance, and the notification outbox. Related state transitions must remain atomic and owner-guarded.

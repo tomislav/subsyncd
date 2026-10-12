@@ -1,0 +1,19 @@
+#!/bin/sh
+# Rejects commit subjects that are not Conventional Commits; see AGENTS.md.
+subject=$(sed -n '/^[^#]/{p;q;}' "$1")
+
+case "$subject" in
+Merge\ * | Revert\ * | fixup!\ * | squash!\ * | amend!\ *) exit 0 ;;
+esac
+
+if ! printf '%s\n' "$subject" | grep -Eq '^(feat|fix|docs|test|refactor|perf|build|ci|chore)(\([a-z0-9-]+\))?!?: [^ ].*[^.]$'; then
+	echo "commit-msg: subject must be '<type>(<scope>): <summary>', for example 'fix(control): bound socket drain on shutdown'." >&2
+	echo "Types: feat, fix, docs, test, refactor, perf, build, ci, chore. No trailing period." >&2
+	echo "Got: $subject" >&2
+	exit 1
+fi
+
+if [ "${#subject}" -gt 72 ]; then
+	echo "commit-msg: subject is ${#subject} characters; keep it to 72 or fewer." >&2
+	exit 1
+fi
