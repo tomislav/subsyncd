@@ -7,6 +7,7 @@ Record only:
 - host name and an already configured access alias;
 - deployment manager and project name;
 - exact Compose, configuration, and data paths;
+- where database and configuration backups go, and the backup command to run before a migration, database write, or config edit;
 - service/container names and network exposure;
 - safe read-only status and log commands;
 - the exact prefix for running subsyncd commands in the container (for example `docker compose exec -T subsyncd subsyncd ... --json`), and whether a manual `search` through the running daemon is approved;
