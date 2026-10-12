@@ -342,6 +342,41 @@ install: {file_mode: "0644"}
 	}
 }
 
+func TestLoggingDocumentationContract(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(payload)
+	}
+	for _, document := range []struct {
+		path     string
+		required []string
+	}{
+		{"../../README.md", []string{"docs/logging.md"}},
+		{"../../docs/operations.md", []string{"(logging.md)"}},
+		{"../../docs/logging.md", []string{
+			"docker compose logs", "SUBSYNCD_LOG_LEVEL", "logging:", "level: info",
+			"job_id", "outcome", "reason", "development/logging.md",
+		}},
+		{"../../docs/development/logging.md", []string{
+			"service", "level", "component", "event", "job_id", "media_id", "duration_ms",
+			"Credentials", "absolute media/data/temp paths", "never intentional log fields",
+		}},
+	} {
+		t.Run(document.path, func(t *testing.T) {
+			content := read(document.path)
+			for _, required := range document.required {
+				if !strings.Contains(content, required) {
+					t.Errorf("%s is missing %q", document.path, required)
+				}
+			}
+		})
+	}
+}
+
 func TestOpenLogsSanitizedStartupFailure(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.yaml")

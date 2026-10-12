@@ -743,6 +743,7 @@ func TestWebhookBaseURLValidation(t *testing.T) {
 	for input, want := range map[string]string{
 		"http://subsyncd:8097":   "http://subsyncd:8097",
 		"https://host/subsyncd/": "https://host/subsyncd",
+		"http://host/subsyncd//": "http://host/subsyncd",
 		"":                       "",
 	} {
 		cfg, err := loadText(t, build(input))
