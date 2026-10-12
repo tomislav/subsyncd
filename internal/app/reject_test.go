@@ -506,3 +506,22 @@ func TestRejectRemovesWhenAnotherTrackCoversTheLanguage(t *testing.T) {
 		t.Fatalf("the owner's subtitle = %q/%v", payload, err)
 	}
 }
+
+func TestRecentShowsUserRejectionThenReplacement(t *testing.T) {
+	h := newRejectHarness(t, nil)
+	ctx := t.Context()
+	if _, err := h.app.Reject(ctx, rejectArgs("en", "out_of_sync")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.app.Recent(ctx, control.RecentArgs{})
+	if err != nil || len(result.Items) != 3 {
+		t.Fatalf("recent = %+v/%v", result, err)
+	}
+	replacement, rejection, first := result.Items[0], result.Items[1], result.Items[2]
+	if replacement.Outcome != "installed" || !replacement.Manual || first.Outcome != "installed" {
+		t.Fatalf("replacement/first = %+v / %+v", replacement, first)
+	}
+	if rejection.Outcome != "rejected" || rejection.Reason != "user_out_of_sync" || !rejection.Manual || rejection.Provider != "english" || rejection.Title == "" || rejection.FileID != 7 || rejection.Language != "en" {
+		t.Fatalf("rejection = %+v", rejection)
+	}
+}

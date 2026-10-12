@@ -34,8 +34,9 @@ func IsUserRejection(reasonCode string) bool {
 // owner, an unleased search is also leased to owner for lease, so the manual
 // run that follows takes it before the worker does. A search another owner
 // holds at now gets a rerun request instead, so that run's completion leaves
-// it queued.
-func (r *Repository) RecordUserRejection(ctx context.Context, rejection CandidateRejection, now time.Time, owner string, lease time.Duration) error {
+// it queued. The same transaction appends a search history row (outcome
+// rejected, the reason code, manual) built from history's title and provider.
+func (r *Repository) RecordUserRejection(ctx context.Context, rejection CandidateRejection, now time.Time, owner string, lease time.Duration, history SearchHistoryDetail) error {
 	if err := validateCandidateRejection(rejection); err != nil {
 		return err
 	}
@@ -70,6 +71,13 @@ func (r *Repository) RecordUserRejection(ctx context.Context, rejection Candidat
  lease_until_ns=CASE WHEN `+held+` OR excluded.lease_owner IS NULL THEN search_states.lease_until_ns ELSE excluded.lease_until_ns END`,
 		rejection.MediaID, rejection.Language, at, at, SearchPriorityImport, leaseOwner, leaseUntil, at, at, at); err != nil {
 		return fmt.Errorf("queue rejected subtitle replacement: %w", err)
+	}
+	history.Reason, history.Manual = rejection.ReasonCode, true
+	if history.ProviderID == "" {
+		history.ProviderID = rejection.ProviderID
+	}
+	if err := insertSearchHistory(ctx, tx, rejection.MediaID, domain.Language(rejection.Language), "rejected", history, now); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit user rejection: %w", err)

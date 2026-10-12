@@ -253,7 +253,7 @@ func (a *App) recordReject(ctx context.Context, target rejectTarget) error {
 		CandidateSignature: signature, ArtifactChecksum: installation.ArtifactChecksum, ReasonCode: store.UserRejectionPrefix + target.reason, ToolSignature: service.RejectionToolSignature(),
 		MediaPath: installation.MediaPath, MediaFileID: installation.MediaFileID, MediaSize: installation.MediaSize, MediaModTimeNS: installation.MediaModTimeNS, RejectedAt: now,
 	}
-	if err := a.Repository.RecordUserRejection(ctx, rejection, now, target.jobID, manualLeaseDuration); err != nil {
+	if err := a.Repository.RecordUserRejection(ctx, rejection, now, target.jobID, manualLeaseDuration, store.SearchHistoryDetail{MediaTitle: observability.MediaTitle(target.media), ProviderID: installation.ProviderID}); err != nil {
 		return err
 	}
 	events := a.events().For("app")

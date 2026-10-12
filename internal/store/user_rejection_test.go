@@ -29,7 +29,7 @@ func TestRecordUserRejectionQueuesReplaceSearch(t *testing.T) {
 	if err := repo.UpsertSearchStateWithPriority(ctx, mediaID, "en", now.Add(30*24*time.Hour), SearchPriorityUpgrade); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0, SearchHistoryDetail{}); err != nil {
 		t.Fatal(err)
 	}
 	status, err := repo.GetSearchStatus(ctx, mediaID, "en")
@@ -73,7 +73,7 @@ func TestRecordUserRejectionDuringLeaseRequestsRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	lease := leaseOne(t, repo, now)
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0, SearchHistoryDetail{}); err != nil {
 		t.Fatal(err)
 	}
 	// The running worker's completion must not settle the reject's search.
@@ -94,7 +94,7 @@ func TestUserRejectionMatchesAcrossToolSignatures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0, SearchHistoryDetail{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := repo.GetCandidateRejection(ctx, userLookup(mediaID, "signature", "lapse-2/policy-b")); err != nil || !found {
@@ -112,7 +112,7 @@ func TestUserRejectionMatchesAcrossToolSignatures(t *testing.T) {
 	// rejected by provider and result ID: any signature matches.
 	other := userRejection(mediaID, AnyCandidateSignature, now)
 	other.ResultID = "legacy"
-	if err := repo.RecordUserRejection(ctx, other, now, "", 0); err != nil {
+	if err := repo.RecordUserRejection(ctx, other, now, "", 0, SearchHistoryDetail{}); err != nil {
 		t.Fatal(err)
 	}
 	lookup := userLookup(mediaID, "whatever/member-abc", "lapse-9/policy-z")
@@ -139,7 +139,7 @@ func TestClearCandidateRejectionsKeepsUserRejections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0, SearchHistoryDetail{}); err != nil {
 		t.Fatal(err)
 	}
 	system := userRejection(mediaID, "signature", now)
@@ -228,7 +228,7 @@ func TestRecordUserRejectionLeasesTheSearchToItsOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "manual-1", 5*time.Minute); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "manual-1", 5*time.Minute, SearchHistoryDetail{}); err != nil {
 		t.Fatal(err)
 	}
 	if leases, err := repo.LeaseDueSearches(ctx, now, 1, time.Minute); err != nil || len(leases) != 0 {
@@ -242,7 +242,7 @@ func TestRecordUserRejectionLeasesTheSearchToItsOwner(t *testing.T) {
 		t.Fatalf("own claim = %v/%v", claimed, err)
 	}
 	// A reject while that search runs only requests a rerun.
-	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature-2", now), now, "manual-3", 5*time.Minute); err != nil {
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature-2", now), now, "manual-3", 5*time.Minute, SearchHistoryDetail{}); err != nil {
 		t.Fatal(err)
 	}
 	status, err := repo.GetSearchStatus(ctx, mediaID, "en")
@@ -263,7 +263,7 @@ func TestClearUserRejectionsDisarmsTheQueuedReplacement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0); err != nil {
+		if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0, SearchHistoryDetail{}); err != nil {
 			t.Fatal(err)
 		}
 		var lease SearchLease
@@ -285,5 +285,37 @@ func TestClearUserRejectionsDisarmsTheQueuedReplacement(t *testing.T) {
 				t.Fatal("a completion re-armed the replacement")
 			}
 		}
+	}
+}
+
+func TestRecordUserRejectionWritesHistoryAtomically(t *testing.T) {
+	repo := openTestRepository(t)
+	ctx := t.Context()
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	mediaID, _, err := repo.UpsertMedia(ctx, testMedia())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "signature", now), now, "", 0, SearchHistoryDetail{MediaTitle: "Movie (2019)"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := repo.ListHistory(ctx, HistoryQuery{})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("history = %+v/%v", entries, err)
+	}
+	if got := entries[0]; got.Outcome != "rejected" || got.Reason != "user_out_of_sync" || !got.Manual || got.ProviderID != "alpha" || got.MediaTitle != "Movie (2019)" || !got.FinishedAt.Equal(now) || got.MediaID != mediaID {
+		t.Fatalf("entry = %+v", got)
+	}
+
+	// A failing history insert rolls back the rejection and the queued search.
+	if _, err := repo.store.db.Exec(`CREATE TRIGGER fail_history BEFORE INSERT ON search_history BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordUserRejection(ctx, userRejection(mediaID, "other", now), now, "", 0, SearchHistoryDetail{}); err == nil {
+		t.Fatal("RecordUserRejection succeeded despite the failing history insert")
+	}
+	var rejections int
+	if err := repo.store.db.QueryRow(`SELECT COUNT(*) FROM candidate_rejections WHERE candidate_signature='other'`).Scan(&rejections); err != nil || rejections != 0 {
+		t.Fatalf("rejections after rollback = %d/%v", rejections, err)
 	}
 }

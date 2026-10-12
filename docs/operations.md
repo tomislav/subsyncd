@@ -279,7 +279,7 @@ docker compose exec subsyncd subsyncd recent
 docker compose exec subsyncd subsyncd recent --since 72h --language hr --limit 20
 ```
 
-`recent` lists finished searches and rejections from the last 24 hours, newest first. `--since` takes a Go duration such as `90m` or `72h`, `--instance` and `--language` narrow the list, and `--limit` (default 50) cuts it. Each row gives the title, language, outcome (`installed`, `no_result`, `rejected`, `removed`, and so on), the provider and candidate release when there was one, a `reason` (a code starting with `user_` marks a rejection you made with `reject`), whether the search was `manual`, and when it finished. The history is kept for 30 days, so a longer `--since` shows no more than that, and a file subsyncd has since forgotten still appears under its stored title. The command only reads saved state, so it runs beside the daemon.
+`recent` lists finished searches and rejections from the last 24 hours, newest first. `--since` takes a Go duration such as `90m` or `72h`, `--instance` and `--language` narrow the list, and `--limit` (default 50) cuts it. Each row gives the title, language, outcome (`installed`, `no_result`, `rejected`, `removed`, and so on), the provider and candidate release when there was one, a `reason` (a code starting with `user_` marks a rejection you made with `reject`, which gets its own `rejected` row before the replacement's result), whether the search was `manual`, and when it finished. The history is kept for 30 days, so a longer `--since` shows no more than that, and a file subsyncd has since forgotten still appears under its stored title. The command only reads saved state, so it runs beside the daemon.
 
 ## Status and providers
 
@@ -315,7 +315,7 @@ Rejected the wrong file or language? Undo it:
 docker compose exec subsyncd subsyncd reject --title "Movie (2019)" --language en --undo
 ```
 
-`--undo` removes your rejections for that file and language (it reports how many as `undone`) and runs no search. A replacement that was still queued (say, because providers were throttled) is called off too, so the subtitle you took the rejection back for is kept. A subtitle that was already replaced or removed stays that way; run `search --retry-rejected` or wait for the next scheduled search if you want the old one considered again. `--language` is required with `--undo` unless only one language is configured.
+`--undo` removes your rejections for that file and language (it reports how many as `undone`) and runs no search; `recent` keeps its history of the earlier rejection. A replacement that was still queued (say, because providers were throttled) is called off too, so the subtitle you took the rejection back for is kept. A subtitle that was already replaced or removed stays that way; run `search --retry-rejected` or wait for the next scheduled search if you want the old one considered again. `--language` is required with `--undo` unless only one language is configured.
 
 ## Scripting and automation
 

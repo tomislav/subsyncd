@@ -40,23 +40,6 @@ func TestRecentDefaultsTo24Hours(t *testing.T) {
 	}
 }
 
-func TestRecentIncludesUserRejectionAndRemoval(t *testing.T) {
-	application, root := newMissingApp(t)
-	id := storeEpisode(t, application, 7, "Show", 2020, filepath.Join(root, "a.mkv"))
-	recordRecent(t, application, id, "en", "rejected", store.SearchHistoryDetail{MediaTitle: "Show S01E01", ReleaseName: "Bad.Release", Reason: "user_out_of_sync", Manual: true}, 2*time.Hour)
-	recordRecent(t, application, id, "en", "removed", store.SearchHistoryDetail{MediaTitle: "Show S01E01", ProviderID: "english", Manual: true}, time.Hour)
-	result, err := application.Recent(t.Context(), control.RecentArgs{})
-	if err != nil || len(result.Items) != 2 {
-		t.Fatalf("result = %+v, %v", result, err)
-	}
-	if got := result.Items[0]; got.Outcome != "removed" || !got.Manual || got.Provider != "english" {
-		t.Fatalf("newest = %+v", got)
-	}
-	if got := result.Items[1]; got.Outcome != "rejected" || got.Reason != "user_out_of_sync" || got.Release != "Bad.Release" {
-		t.Fatalf("older = %+v", got)
-	}
-}
-
 func TestRecentFilters(t *testing.T) {
 	application, root := newMissingApp(t)
 	first := storeEpisode(t, application, 7, "Show", 2020, filepath.Join(root, "a.mkv"))
