@@ -96,13 +96,16 @@ func (m *WebhookConnectionMaintainer) Run(ctx context.Context) error {
 				index = len(webhookRetryDelays) - 1
 			}
 			due[name] = now().Add(webhookRetryDelays[index])
-			reason, status := "internal", 0
+			attrs := []slog.Attr{slog.String("instance", name)}
 			var syncErr *WebhookSyncError
 			if errors.As(err, &syncErr) {
-				reason, status = syncErr.Reason, syncErr.StatusCode
+				attrs = append(attrs, slog.String("reason", syncErr.Reason), slog.Int("status", syncErr.StatusCode))
+			} else {
+				// A local failure; the emitter's redactor cleans the error.
+				attrs = append(attrs, slog.String("reason", "internal"), slog.Int("status", 0))
+				attrs = append(attrs, events.ErrorAttrs("webhook_connection_sync", err)...)
 			}
-			events.Log(ctx, slog.LevelWarn, "webhook.connection_sync_failed", "webhook connection sync failed",
-				slog.String("instance", name), slog.String("reason", reason), slog.Int("status", status))
+			events.Log(ctx, slog.LevelWarn, "webhook.connection_sync_failed", "webhook connection sync failed", attrs...)
 		}
 		earliest := due[names[0]]
 		for _, name := range names[1:] {

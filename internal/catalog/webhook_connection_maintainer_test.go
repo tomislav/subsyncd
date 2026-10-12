@@ -152,15 +152,38 @@ func TestMaintainerBackoffSequence(t *testing.T) {
 }
 
 func TestMaintainerLogsInternalForPlainErrors(t *testing.T) {
+	const secret = "token-SENTINEL"
 	var logs bytes.Buffer
-	events, _ := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
-	failing := &fakeSyncer{fn: func(context.Context, int) error { return errors.New("boom") }}
+	events, _ := observability.New(&logs, observability.Options{Level: "info", Version: "test", Redact: func(err error) string {
+		return strings.ReplaceAll(err.Error(), secret, "[redacted]")
+	}})
+	failing := &fakeSyncer{fn: func(context.Context, int) error { return errors.New("database is locked " + secret) }}
 	after := newAfterRecorder()
 	clock := &fakeMaintainerClock{now: time.Unix(1000, 0)}
 	m := &WebhookConnectionMaintainer{Syncs: map[string]webhookSyncer{"tv": failing}, Events: events, After: after.After, Now: clock.Now}
 	startMaintainer(t, m)
 	after.nextDelay(t)
-	if out := logs.String(); !strings.Contains(out, `"reason":"internal"`) || strings.Contains(out, "boom") {
+	out := logs.String()
+	for _, want := range []string{`"reason":"internal"`, `"error_kind":"webhook_connection_sync"`, `"error":"database is locked [redacted]"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log lacks %s: %s", want, out)
+		}
+	}
+	if strings.Contains(out, secret) {
+		t.Fatalf("log leaks the secret: %s", out)
+	}
+}
+
+func TestMaintainerOmitsErrorForSyncErrors(t *testing.T) {
+	var logs bytes.Buffer
+	events, _ := observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	failing := &fakeSyncer{fn: func(context.Context, int) error { return &WebhookSyncError{Reason: "arr_status", StatusCode: 401} }}
+	after := newAfterRecorder()
+	clock := &fakeMaintainerClock{now: time.Unix(1000, 0)}
+	m := &WebhookConnectionMaintainer{Syncs: map[string]webhookSyncer{"tv": failing}, Events: events, After: after.After, Now: clock.Now}
+	startMaintainer(t, m)
+	after.nextDelay(t)
+	if out := logs.String(); !strings.Contains(out, `"reason":"arr_status"`) || strings.Contains(out, "error_kind") {
 		t.Fatalf("log = %s", out)
 	}
 }
