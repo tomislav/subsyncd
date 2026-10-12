@@ -37,19 +37,19 @@ func (s *Server) Serve(ctx context.Context) error {
 			return errors.New("control socket path exists and is not a socket")
 		}
 		if err := os.Remove(s.Path); err != nil {
-			return fmt.Errorf("remove stale control socket: %w", err)
+			return pathFree("remove stale control socket", err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect control socket: %w", err)
+		return pathFree("inspect control socket", err)
 	}
 	listener, err := net.Listen("unix", s.Path)
 	if err != nil {
-		return fmt.Errorf("listen on control socket: %w", err)
+		return pathFree("listen on control socket", err)
 	}
 	if err := os.Chmod(s.Path, 0o600); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(s.Path)
-		return fmt.Errorf("restrict control socket: %w", err)
+		return pathFree("restrict control socket", err)
 	}
 
 	handlerCtx, cancelHandlers := context.WithCancel(ctx)

@@ -5,8 +5,10 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"syscall"
 )
 
 const (
@@ -82,4 +84,15 @@ type Handler interface {
 // SocketPath returns the control socket location for a data directory.
 func SocketPath(dataDir string) string {
 	return filepath.Join(dataDir, SocketName)
+}
+
+// pathFree describes a failed operation without the file path that
+// *net.OpError and *fs.PathError embed in their messages. It keeps the errno
+// so errors.Is still works.
+func pathFree(op string, err error) error {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return fmt.Errorf("%s: %w", op, errno)
+	}
+	return errors.New(op)
 }

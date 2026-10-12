@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -295,5 +296,49 @@ func TestClientDisconnectDoesNotCancelHandler(t *testing.T) {
 	close(release)
 	if err := <-result; err != nil {
 		t.Fatalf("handler ctx canceled: %v", err)
+	}
+}
+
+func TestDialErrorOmitsSocketPath(t *testing.T) {
+	dir := shortDir(t)
+	l, err := net.Listen("unix", control.SocketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if err := os.Chmod(control.SocketPath(dir), 0); err != nil {
+		t.Fatal(err)
+	}
+	_, err = control.Dial(context.Background(), dir)
+	if err == nil || errors.Is(err, control.ErrNoDaemon) {
+		t.Skipf("connect to a mode 0 socket did not fail with a permission error: %v", err)
+	}
+	if strings.Contains(err.Error(), dir) {
+		t.Fatalf("error leaks the socket path: %v", err)
+	}
+	if !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("errno not preserved: %v", err)
+	}
+}
+
+func TestServeStartupErrorOmitsSocketPath(t *testing.T) {
+	dir := shortDir(t)
+	for name, path := range map[string]string{
+		"missing directory": filepath.Join(dir, "missing", control.SocketName),
+		"regular file":      filepath.Join(dir, "file.sock"),
+	} {
+		if name == "regular file" {
+			if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		srv := &control.Server{Path: path, Handler: handlerFunc(echo)}
+		err := srv.Serve(context.Background())
+		if err == nil {
+			t.Fatalf("%s: Serve succeeded", name)
+		}
+		if strings.Contains(err.Error(), dir) {
+			t.Fatalf("%s: error leaks the socket path: %v", name, err)
+		}
 	}
 }

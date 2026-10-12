@@ -25,7 +25,7 @@ func Dial(ctx context.Context, dataDir string) (*Client, error) {
 		if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
 			return nil, ErrNoDaemon
 		}
-		return nil, fmt.Errorf("connect to control socket: %w", err)
+		return nil, pathFree("connect to control socket", err)
 	}
 	return &Client{conn: conn}, nil
 }
