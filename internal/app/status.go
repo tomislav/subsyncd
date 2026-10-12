@@ -163,7 +163,8 @@ type providerHealthState struct {
 // providerHealth reduces a provider's saved states (one per scope) to one.
 // A disabled state is auth_failed: only a credential rejection disables a
 // provider, and it lasts until retry --provider or new credentials, so Until
-// is zero. Otherwise only states whose reset lies in the future count:
+// is zero. Otherwise only exhausted states whose reset lies in the future
+// count, as in the provider gate:
 // quota_exhausted for the download_quota reason, the only quota the provider
 // layer records (a 429 keeps the header limit with nothing remaining, so
 // limit and remaining cannot tell a quota from a rate limit); cooling_down for
@@ -182,7 +183,9 @@ func (a *App) providerHealth(ctx context.Context, providerID string, now time.Ti
 		switch {
 		case state.Disabled:
 			candidate.State = providerAuthFailed
-		case !state.ResetAt.After(now):
+		case state.Remaining > 0 || !state.ResetAt.After(now):
+			// The provider gate blocks only an exhausted window that has not
+			// reset; a window with requests left is a usable provider.
 			continue
 		case state.Reason == "download_quota":
 			candidate.State, candidate.Until = providerQuotaExhausted, state.ResetAt.UTC()

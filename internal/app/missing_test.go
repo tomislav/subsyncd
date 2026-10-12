@@ -81,8 +81,29 @@ func TestMissingProvidersCoolingDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := onlyMissing(t, application, control.MissingArgs{})
-	if item.Reason != "providers_cooling_down" || len(item.Providers) != 1 || item.Providers[0] != "english" || item.Action != "subsyncd retry --provider english" {
+	// A cooldown ends by itself, so the action shows when rather than retry.
+	if item.Reason != "providers_cooling_down" || len(item.Providers) != 1 || item.Providers[0] != "english" || item.Action != "subsyncd providers" {
 		t.Fatalf("item = %+v", item)
+	}
+	// An exhausted download quota cannot be cleared by retry either.
+	if err := application.Repository.PutProviderState(t.Context(), store.ProviderState{ProviderID: "english", Scope: "download", Reason: "download_quota", ResetAt: reset}); err != nil {
+		t.Fatal(err)
+	}
+	if item := onlyMissing(t, application, control.MissingArgs{}); item.Action != "subsyncd providers" {
+		t.Fatalf("quota item = %+v", item)
+	}
+	// Rejected credentials only clear with retry, after fixing them.
+	if err := application.Repository.PutProviderState(t.Context(), store.ProviderState{ProviderID: "english", Scope: "auth", Reason: "login credentials rejected", Disabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if item := onlyMissing(t, application, control.MissingArgs{}); item.Action != "subsyncd retry --provider english" {
+		t.Fatalf("auth item = %+v", item)
+	}
+	if err := application.Repository.ClearProviderState(t.Context(), "english"); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.PutProviderState(t.Context(), store.ProviderState{ProviderID: "english", Scope: "search", Reason: "rate_limit", ResetAt: reset}); err != nil {
+		t.Fatal(err)
 	}
 	// A cooled-down route is reported even when the last search found nothing.
 	settle(t, application, id, "no_result")

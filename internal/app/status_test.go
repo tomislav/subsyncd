@@ -266,6 +266,23 @@ func TestRateLimitWithHeaderLimitIsCoolingDownNotQuota(t *testing.T) {
 	}
 }
 
+func TestRateLimitWindowWithCapacityLeftIsAvailable(t *testing.T) {
+	application := newStatusApp(t, providersConfig)
+	ctx := t.Context()
+	// What a successful response with rate-limit headers stores: requests left
+	// in the window. The provider gate lets searches through, so it is usable.
+	if err := application.Repository.PutProviderState(ctx, store.ProviderState{ProviderID: "english", Scope: "search", Reason: "x-ratelimit", Limit: 100, Remaining: 40, ResetAt: application.Clock.Now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := application.ListProviders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := providerRow(t, result.Providers, "english"); got.State != "available" || !got.Until.IsZero() {
+		t.Fatalf("english = %+v", got)
+	}
+}
+
 func TestStatusHasNoAbsolutePaths(t *testing.T) {
 	application := newStatusApp(t, providersConfig)
 	ctx := t.Context()
