@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"subsyncd/internal/catalog"
 	"subsyncd/internal/domain"
@@ -14,6 +15,12 @@ import (
 // ArrRescanName is the notifier name, stored in notifications.notifier, of
 // the rescans subsyncd asks Sonarr and Radarr for after it changes a sidecar.
 const ArrRescanName = "arr_rescan"
+
+// ArrRescanDelay is how long a queued rescan waits before it is due, so the
+// changes of episodes installed in quick succession (a season pack, a burst
+// of imports) are leased together and coalesce into one rescan per series.
+// Silo notifications are due at once.
+const ArrRescanDelay = 60 * time.Second
 
 // Skip reasons reported for an Arr rescan that is not sent.
 const (

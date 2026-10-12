@@ -588,10 +588,26 @@ func TestRejectAfterMediaChangeRemoves(t *testing.T) {
 	h.provider.results = []string{"best"}
 	h.provider.mu.Unlock()
 	// The subtitle belongs to the replaced file, so the search removes it
-	// before looking for one; it then finds only the rejected candidate.
+	// before looking for one; it then finds only the rejected candidate, and
+	// the reject reports the removal.
 	result, err := h.app.Reject(ctx, rejectArgs("en", "out_of_sync"))
-	if err != nil || result.Rejected.Outcome != "rejected" {
+	if err != nil || result.Rejected.Outcome != "removed" || result.Rejected.Reason != "rejected" {
 		t.Fatalf("Reject() = %+v/%v", result, err)
+	}
+	entries, err := h.app.Repository.ListHistory(ctx, store.HistoryQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := 0
+	for _, entry := range entries {
+		if entry.Outcome == "removed" {
+			removed++
+		} else if entry.Outcome == "rejected" && !strings.HasPrefix(entry.Reason, "user_") {
+			t.Fatalf("history has a rejected search row besides the removal: %+v", entries)
+		}
+	}
+	if removed != 1 {
+		t.Fatalf("removed history rows = %d in %+v", removed, entries)
 	}
 	if _, err := os.Lstat(h.sidecar); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rejected subtitle remains: %v", err)

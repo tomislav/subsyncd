@@ -43,9 +43,19 @@ func notificationRequests(media domain.Media, installation store.Installation, n
 			installation.Path, installation.MediaPath, installation.MediaFileID,
 			installation.MediaSize, installation.MediaModTimeNS)
 		sum := sha256.Sum256([]byte(raw))
-		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: now})
+		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: notificationDue(name, now)})
 	}
 	return requests, nil
+}
+
+// notificationDue is when a notification queued at now is first due: an Arr
+// rescan after notifier.ArrRescanDelay, so close changes coalesce; any other
+// at once.
+func notificationDue(name string, now time.Time) time.Time {
+	if name == notifier.ArrRescanName {
+		return now.Add(notifier.ArrRescanDelay)
+	}
+	return now
 }
 
 // changeNotifierNames returns the notifiers to queue after a change on disk to
@@ -95,7 +105,7 @@ func changeNotificationRequests(change string, media domain.Media, installation 
 	for _, name := range names {
 		raw := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d", change, name, installation.MediaID, installation.Language, installation.Checksum, installation.Path, now.UnixNano())
 		sum := sha256.Sum256([]byte(raw))
-		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: now})
+		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: notificationDue(name, now)})
 	}
 	return requests, nil
 }

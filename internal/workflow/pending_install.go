@@ -67,8 +67,9 @@ func (i Installer) now() time.Time {
 // left as an untracked sidecar that blocks future installs. Staging and unused
 // rollback copies are removed. A removal (RemoveManaged) whose record was not
 // deleted gets its subtitle back; one whose record was deleted loses the
-// set-aside subtitle and its old rollback copy. It returns how many records
-// it settled.
+// set-aside subtitle and its old rollback copy. A sidecar move after a rename
+// (moveRenamedSidecar) that left the file under both names loses the old
+// one. It returns how many records it settled.
 //
 // Only the rows present when it starts are settled, and it stops before the
 // next filesystem change once ctx ends: startup gives up on a recovery stuck
@@ -116,6 +117,9 @@ func (i Installer) recoverPendingInstall(ctx context.Context, item store.Pending
 	}
 	if isPendingRemoval(item) {
 		return i.recoverPendingRemoval(ctx, item, destination, parent)
+	}
+	if isPendingMove(item) {
+		return i.recoverPendingMove(ctx, item, destination)
 	}
 	installation, found, err := i.Repository.GetInstallation(ctx, item.MediaID, domain.Language(item.Language))
 	if err != nil {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -10,6 +11,8 @@ import (
 	"subsyncd/internal/config"
 	"subsyncd/internal/domain"
 	"subsyncd/internal/notifier"
+	"subsyncd/internal/worker"
+	"subsyncd/internal/workflow"
 )
 
 type recordingRescanner struct{ kind domain.MediaKind }
@@ -99,5 +102,33 @@ func TestBuildArrRescannersHonoursOptOut(t *testing.T) {
 	supplied := map[string]notifier.ArrRescanner{"sonarr-main": recordingRescanner{kind: domain.MediaEpisode}, "radarr-main": recordingRescanner{kind: domain.MediaMovie}}
 	if built, err := buildArrRescanners(cfg, Options{ArrRescanners: supplied}); err != nil || len(built) != 1 || built["sonarr-main"] == nil {
 		t.Fatalf("with supplied rescanners = %#v/%v", built, err)
+	}
+}
+
+// With no instance rescanning, an Arr rescan queued earlier (before
+// rescan_after_changes was turned off, or by a newer build) completes as
+// skipped, not as a failure.
+func TestLeftoverArrRescanIsSkippedWithoutRescanners(t *testing.T) {
+	h := newRejectHarness(t, nil)
+	h.exec(t, `DELETE FROM notifications`)
+	payload, err := json.Marshal(workflow.NotificationPayload{Media: h.media, SubtitlePath: h.sidecar})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.exec(t, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES ('arr_rescan', ?, 0, ?, '', 'leftover')`, payload, h.now.UnixNano())
+	if err := h.app.Worker.(*worker.Worker).RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := sql.Open("sqlite", filepath.Join(h.cfg.DataDir, "subsyncd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inspection.Close()
+	var result string
+	if err := inspection.QueryRow(`SELECT result FROM notifications WHERE notifier='arr_rescan'`).Scan(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result != "skipped" {
+		t.Fatalf("leftover Arr rescan result = %q, want skipped", result)
 	}
 }

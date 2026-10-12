@@ -107,6 +107,12 @@ func (f *reconcileFixture) import_(t *testing.T, kind string, media domain.Media
 // the current media file.
 func (f *reconcileFixture) reconcile(t *testing.T) (bool, error) {
 	t.Helper()
+	result, err := f.reconcileResult(t)
+	return result.Changed, err
+}
+
+func (f *reconcileFixture) reconcileResult(t *testing.T) (Reconciliation, error) {
+	t.Helper()
 	installation := f.installation(t)
 	return f.installer.ReconcileInstallation(f.ctx, RemovalRequest{Installation: installation, Media: f.media})
 }
@@ -573,14 +579,14 @@ type staleRecordInstaller struct {
 	calls      int
 }
 
-func (s *staleRecordInstaller) ReconcileInstallation(_ context.Context, request RemovalRequest) (bool, error) {
+func (s *staleRecordInstaller) ReconcileInstallation(_ context.Context, request RemovalRequest) (Reconciliation, error) {
 	s.calls++
 	if request.Installation.MediaFileID == request.Media.Ref.FileID {
-		return false, nil
+		return Reconciliation{}, nil
 	}
 	s.repository.found = false
 	s.repository.installation = store.Installation{}
-	return true, nil
+	return Reconciliation{Changed: true}, nil
 }
 
 func TestRunSettlesAStaleInstallationBeforeTheInventoryDecides(t *testing.T) {

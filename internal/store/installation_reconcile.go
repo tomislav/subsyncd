@@ -92,6 +92,21 @@ func (r *Repository) RebaseInstallationWithNotifications(ctx context.Context, in
 	return results, nil
 }
 
+// ReattachInstallation records that an installation's media file is the same
+// file under a new Arr file ID (a re-import of identical bytes): it sets
+// media_file_id to fileID and the sidecar path to path, where the workflow
+// found the sidecar. Everything else stays. It fails, changing nothing, when
+// the record is no longer the one read.
+func (r *Repository) ReattachInstallation(ctx context.Context, installation Installation, path string, fileID int64) error {
+	args := append([]any{path, fileID}, installationGuardArgs(installation)...)
+	args = append(args, installation.MediaFileID, installation.MediaSize)
+	result, err := r.store.db.ExecContext(ctx, `UPDATE installations SET path=?, media_file_id=? WHERE `+installationGuard+` AND media_file_id=? AND media_size=?`, args...)
+	if err != nil {
+		return fmt.Errorf("reattach installation: %w", err)
+	}
+	return requireOneRow(result, "installation changed before it was reattached")
+}
+
 // RollbackCopy names an installation's hidden rollback copy and the sidecar
 // it sits beside.
 type RollbackCopy struct {

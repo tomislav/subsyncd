@@ -297,12 +297,22 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 	if reconciler, ok := s.Installer.(InstallationReconciler); ok && installed {
 		// A record left by a replaced or renamed media file is settled first,
 		// so the search sees the current file's subtitles only.
-		changed, err := reconciler.ReconcileInstallation(ctx, RemovalRequest{Installation: existing, Media: request.Media, Manual: request.Manual})
+		reconciled, err := reconciler.ReconcileInstallation(ctx, RemovalRequest{Installation: existing, Media: request.Media, Manual: request.Manual})
 		if err != nil {
 			runErr = fmt.Errorf("reconcile installed subtitle: %w", err)
 			return s.finishProviderResume(request, false, result, runErr), runErr
 		}
-		if changed {
+		if reconciled.Removed && request.ReplaceInstalled {
+			// The rejected subtitle went with the replaced media file (its
+			// removal wrote the history row). A search that installs nothing
+			// reports it removed, as removeRejected does.
+			defer func() {
+				if runErr == nil {
+					reportRemovedBeforeSearch(&result)
+				}
+			}()
+		}
+		if reconciled.Changed {
 			current, err = s.Inventory.Refresh(ctx, request.MediaID, request.Media, false)
 			err = markIfMediaUnreadable(err, request.Media)
 			if err != nil {
@@ -408,6 +418,17 @@ func (s *Service) replaceInstalled(ctx context.Context, request Request, existin
 		return result, fmt.Errorf("rejected subtitle kept because a provider search failed: %w", errors.Join(failures...))
 	}
 	return s.removeRejected(ctx, request, existing, result)
+}
+
+// reportRemovedBeforeSearch reports a ReplaceInstalled search whose subtitle
+// reconciliation already removed as OutcomeRemoved, when it ended without
+// installing (no_result, rejected, or satisfied by another track).
+func reportRemovedBeforeSearch(result *Result) {
+	switch result.Outcome {
+	case OutcomeNoResult, OutcomeRejected, OutcomeSatisfied:
+		result.RemovedAfter, result.Outcome = result.Outcome, OutcomeRemoved
+		result.NextUpgrade = time.Time{}
+	}
 }
 
 // removeRejected removes the rejected managed subtitle and reports

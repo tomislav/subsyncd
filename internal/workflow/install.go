@@ -89,9 +89,17 @@ type Installer struct {
 	UID        *int
 	GID        *int
 	Fault      func(InstallStage) error
-	// Link creates the fresh-install hard link; nil uses os.Link.
-	Link          func(oldname, newname string) error
-	NotifierNames []string
+	// Link creates the fresh-install hard link and the link that moves a
+	// sidecar Arr left behind on a rename; nil uses os.Link.
+	Link func(oldname, newname string) error
+	// RenameNoReplace moves a sidecar where hard links fail, never over an
+	// existing file; nil uses renameat2(RENAME_NOREPLACE) (Linux) or
+	// renamex_np(RENAME_EXCL) (macOS).
+	RenameNoReplace func(oldname, newname string) error
+	// ReplacedRemovals limits deletions of replaced media files' sidecars
+	// (NewReplacedRemovalBudget); nil does not limit.
+	ReplacedRemovals *RemovalBudget
+	NotifierNames    []string
 	// ArrRescanInstances are the Arr instances (rescan_after_changes) asked
 	// to rescan a series or movie after one of its sidecars changes on disk.
 	ArrRescanInstances map[string]bool
@@ -677,6 +685,14 @@ func sameInstallationRecord(a, b store.Installation) bool {
 func fileInode(info os.FileInfo) uint64 {
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
 		return uint64(stat.Ino)
+	}
+	return 0
+}
+
+// linkCount returns the number of names a file has, 0 when unknown.
+func linkCount(info os.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(stat.Nlink)
 	}
 	return 0
 }

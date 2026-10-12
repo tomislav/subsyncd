@@ -437,6 +437,9 @@ func (a *App) runClaimedSearch(ctx context.Context, jobID string, mediaID int64,
 	if err != nil {
 		return workflow.Result{}, err
 	}
+	// The workflow finished and may have changed files: its bookkeeping is
+	// recorded even when a shutdown cancels ctx right after it.
+	ctx = context.WithoutCancel(ctx)
 	if opts.replace {
 		// The replacement completes the queued search as the worker would,
 		// owner-guarded, with its history row and the next schedule.

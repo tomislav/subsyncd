@@ -414,11 +414,11 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 	for name := range rescanners {
 		rescanInstances[name] = true
 	}
-	if len(rescanners) > 0 {
-		notifiers[notifier.ArrRescanName] = notifier.NewArrRescan(rescanners)
-	}
+	// Registered even when no instance rescans, so an intent queued before
+	// rescans were turned off completes as skipped (rescan_disabled).
+	notifiers[notifier.ArrRescanName] = notifier.NewArrRescan(rescanners)
 	inventoryService := inventory.Service{Repository: repository, Probe: inventory.Probe{Path: "ffprobe", Runner: probeRunner, MediaRoots: cfg.MediaRoots}}
-	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, ArrRescanInstances: rescanInstances, Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
+	installer := workflow.Installer{Repository: repository, MediaRoots: cfg.MediaRoots, Mode: cfg.Install.FileMode, UID: cfg.Install.UID, GID: cfg.Install.GID, NotifierNames: notifierNames, ArrRescanInstances: rescanInstances, ReplacedRemovals: workflow.NewReplacedRemovalBudget(), Now: clock.Now, Events: events, StripWatermarks: cfg.Install.StripWatermarks}
 	// Only a mutable assembly gets here (read-only diagnostics returned
 	// above): it holds the mutation lock, so no other process can be
 	// mid-install and any pending install was interrupted by a crash. It runs

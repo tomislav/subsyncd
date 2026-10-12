@@ -619,6 +619,36 @@ func TestManualInstallRestartsQueuedSearchSchedule(t *testing.T) {
 	}
 }
 
+// A shutdown right after the workflow installed still records the
+// completion and the history row: the subtitle is on disk.
+func TestManualInstallIsRecordedWhenShutdownFollowsIt(t *testing.T) {
+	h := newManualHarness(t, 1, false, "en")
+	h.queue(t, 1, "en")
+	h.workflow.deaf = true
+	next := h.app.Clock.Now().Add(7 * 24 * time.Hour).Truncate(time.Second)
+	h.workflow.result = workflow.Result{Outcome: workflow.OutcomeInstalled, NextUpgrade: next, Candidate: domain.Candidate{ProviderID: "english", ResultID: "r1"}}
+	ctx, cancel := context.WithCancel(t.Context())
+	results := make(chan error, 1)
+	go func() {
+		_, err := h.app.runManualSearch(ctx, h.ids[1], h.media[1], "en", manualOptions{})
+		results <- err
+	}()
+	h.workflow.awaitStart(t)
+	cancel()
+	h.workflow.finishOne(t)
+	if err := <-results; err != nil {
+		t.Fatal(err)
+	}
+	status, err := h.app.Repository.GetSearchStatus(t.Context(), h.ids[1], "en")
+	if err != nil || status.LastOutcome != "installed" || !status.NextAttemptAt.Equal(next) {
+		t.Fatalf("search after a manual install and shutdown = %+v/%v", status, err)
+	}
+	entries, err := h.app.Repository.ListHistory(t.Context(), store.HistoryQuery{})
+	if err != nil || len(entries) != 1 || entries[0].Outcome != "installed" {
+		t.Fatalf("history = %+v/%v", entries, err)
+	}
+}
+
 func TestManualInstallKeepsARerunRequestedMeanwhile(t *testing.T) {
 	h := newManualHarness(t, 1, false, "en")
 	h.queue(t, 1, "en")
