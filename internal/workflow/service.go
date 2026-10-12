@@ -92,7 +92,11 @@ type Result struct {
 	ResumeRouteSignature string
 	// RemovedAfter is the search outcome (no_result or rejected) that led a
 	// ReplaceInstalled search to remove the subtitle.
-	RemovedAfter         Outcome
+	RemovedAfter Outcome
+	// RemovalDeferred marks a throttled result that waits for a deletion slot
+	// (MaxReplacedRemovalsPerHour) rather than for a provider; RetryAt is
+	// when one frees.
+	RemovalDeferred      bool
 	cleanEmptyProviders  []string
 	upgradeRecovery      bool
 	retainedInstallation bool
@@ -301,6 +305,17 @@ func (s *Service) Run(ctx context.Context, request Request) (result Result, runE
 		if err != nil {
 			runErr = fmt.Errorf("reconcile installed subtitle: %w", err)
 			return s.finishProviderResume(request, false, result, runErr), runErr
+		}
+		if reconciled.Deferred {
+			// The replaced file's sidecar is still there and still recorded.
+			// Installing now would record the new subtitle over that record
+			// and leave the old sidecar untracked for good, so the search
+			// ends throttled (it keeps its place and its failure count) and
+			// its retry, once a deletion slot is free, removes it first.
+			result.Outcome = OutcomeThrottled
+			result.RetryAt = reconciled.RetryAt
+			result.RemovalDeferred = true
+			return s.finishProviderResume(request, false, result, nil), nil
 		}
 		if reconciled.Removed && request.ReplaceInstalled {
 			// The rejected subtitle went with the replaced media file (its
@@ -850,6 +865,9 @@ func workflowCompletion(result Result, err error) (string, string, slog.Level) {
 	case OutcomeRejected:
 		return string(result.Outcome), "no_eligible_candidate", slog.LevelInfo
 	case OutcomeThrottled:
+		if result.RemovalDeferred {
+			return string(result.Outcome), "removal_deferred", slog.LevelWarn
+		}
 		return string(result.Outcome), "provider_unavailable", slog.LevelWarn
 	case OutcomeRemoved:
 		return string(result.Outcome), "rejected_subtitle_removed", slog.LevelInfo

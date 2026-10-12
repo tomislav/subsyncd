@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"subsyncd/internal/domain"
+	"subsyncd/internal/inventory"
 	"subsyncd/internal/notifier"
+	"subsyncd/internal/provider"
 	"subsyncd/internal/store"
 )
 
@@ -142,8 +144,8 @@ func TestReconcileCapsReplacedRemovalsPerHour(t *testing.T) {
 				continue
 			}
 			deferred++
-			if result.Changed {
-				t.Fatalf("deferred reconciliation reported a change: %+v", result)
+			if result.Changed || !result.Deferred || !result.RetryAt.After(now) || result.RetryAt.After(now.Add(time.Hour+removalRetryMargin)) {
+				t.Fatalf("deferred reconciliation = %+v, want Deferred with a retry within the hour", result)
 			}
 			assertFile(t, m.sidecar, installSRT)
 			if kept, found, err := f.repo.GetInstallation(f.ctx, m.id, "en"); err != nil || !found || kept.MediaFileID != installation.MediaFileID {
@@ -456,5 +458,121 @@ func TestArrRescanIsDueAfterTheCoalescingDelay(t *testing.T) {
 	}
 	if !due["silo"].Equal(now) || !due[notifier.ArrRescanName].Equal(now.Add(notifier.ArrRescanDelay)) || len(due) != 2 {
 		t.Fatalf("due = %v, want Silo at once and the Arr rescan after %s", due, notifier.ArrRescanDelay)
+	}
+}
+
+// A mass upgrade past the removal cap: the searches whose old sidecar could
+// not be deleted yet end throttled until a slot frees, install nothing beside
+// the old sidecar, and their retry deletes it first. No sidecar is left that
+// subsyncd no longer tracks.
+func TestRunWaitsForTheRemovalSlotBeforeInstallingForAReplacedFile(t *testing.T) {
+	const files = 25
+	f := newReconcileFixture(t, "Movie.mkv")
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	f.installer.ReplacedRemovals = NewReplacedRemovalBudget()
+	f.installer.Now = func() time.Time { return now }
+	type movie struct {
+		id       int64
+		folder   string
+		media    domain.Media
+		original string
+	}
+	movies := make([]movie, files)
+	for index := range movies {
+		folder := filepath.Join(f.root, fmt.Sprintf("Movie %03d", index))
+		if err := os.Mkdir(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		entity := int64(100 + index)
+		describe := func(name string, fileID int64, content string) domain.Media {
+			path := writeInstallFile(t, filepath.Join(folder, name), content)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return domain.Media{EntityID: entity, Title: "Movie", Year: 2024, ExternalIDs: domain.ExternalIDs{IMDb: "tt123"}, Ref: domain.MediaRef{Instance: "radarr", Kind: domain.MediaMovie, FileID: fileID}, Fingerprint: domain.MediaFingerprint{Path: path, FileID: fileID, Size: info.Size(), ModTime: info.ModTime()}, Duration: 90 * time.Minute}
+		}
+		original := describe("Movie.WADU.mkv", 1000+entity, "media")
+		f.import_(t, "import", original)
+		source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+		installed, err := f.installer.Install(f.ctx, InstallRequest{MediaID: f.mediaID, Media: original, Language: "en", SourcePath: source, DestinationPath: f.sidecarFor(original), Candidate: domain.Candidate{ProviderID: "provider", ResultID: "candidate"}, Score: domain.Score{Total: 70}, SyncResult: domain.SyncResult{Verdict: "solid"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The upgrade has another name, so an install for it would not
+		// overwrite the old sidecar.
+		upgraded := describe("Movie.FUZEER.mkv", 2000+entity, "upgraded media")
+		f.import_(t, "import", upgraded)
+		movies[index] = movie{id: f.mediaID, folder: folder, media: upgraded, original: installed.Path}
+	}
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("upgrade")}}}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{}, f.installer)
+	service.Repository = f.repo
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	run := func(m movie) Result {
+		t.Helper()
+		result, err := service.Run(f.ctx, Request{MediaID: m.id, Media: m.media, Language: "en"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	assertInstalledForUpgrade := func(m movie, result Result) {
+		t.Helper()
+		if result.Outcome != OutcomeInstalled || result.Installation.Path != f.sidecarFor(m.media) {
+			t.Fatalf("Run() = %+v, want the upgrade's subtitle installed", result)
+		}
+		assertGone(t, m.original)
+	}
+	var deferred []movie
+	for _, m := range movies {
+		searches := searcher.calls
+		result := run(m)
+		if result.Outcome == OutcomeInstalled {
+			assertInstalledForUpgrade(m, result)
+			continue
+		}
+		if result.Outcome != OutcomeThrottled || !result.RemovalDeferred || !result.RetryAt.After(now) || result.RetryAt.After(now.Add(time.Hour+removalRetryMargin)) {
+			t.Fatalf("Run() = %+v, want throttled until the next removal slot within the hour", result)
+		}
+		if searcher.calls != searches {
+			t.Fatal("a deferred removal still searched")
+		}
+		assertFile(t, m.original, installSRT)
+		assertGone(t, f.sidecarFor(m.media))
+		if kept, found, err := f.repo.GetInstallation(f.ctx, m.id, "en"); err != nil || !found || kept.Path != m.original {
+			t.Fatalf("deferred installation = %#v/%v/%v, want the old sidecar still recorded", kept, found, err)
+		}
+		deferred = append(deferred, m)
+	}
+	if len(deferred) != files-MaxReplacedRemovalsPerHour {
+		t.Fatalf("deferred %d, want %d", len(deferred), files-MaxReplacedRemovalsPerHour)
+	}
+	// Still inside the hour: nothing frees, nothing installs.
+	now = now.Add(30 * time.Minute)
+	for _, m := range deferred {
+		if result := run(m); result.Outcome != OutcomeThrottled {
+			t.Fatalf("Run() within the hour = %+v", result)
+		}
+		assertFile(t, m.original, installSRT)
+	}
+	now = now.Add(31 * time.Minute)
+	for _, m := range deferred {
+		assertInstalledForUpgrade(m, run(m))
+	}
+	for _, m := range movies {
+		installation, found, err := f.repo.GetInstallation(f.ctx, m.id, "en")
+		if err != nil || !found {
+			t.Fatalf("GetInstallation() = %v/%v", found, err)
+		}
+		entries, err := os.ReadDir(m.folder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".srt") && filepath.Join(m.folder, entry.Name()) != installation.Path || strings.HasPrefix(entry.Name(), ".subsyncd-") {
+				t.Fatalf("untracked file left: %s", entry.Name())
+			}
+		}
 	}
 }

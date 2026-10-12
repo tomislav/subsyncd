@@ -465,7 +465,7 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 		return err
 	}
 	w.logRerun(jobCtx, completionResult)
-	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result.Outcome), completion.NextAttemptAt, started, completionResult.ResumeProviderCount, nil, w.releaseAttrs(media, completion)...)
+	w.logJobCompleted(jobCtx, slog.LevelInfo, string(result.Outcome), completionReason(result), completion.NextAttemptAt, started, completionResult.ResumeProviderCount, nil, w.releaseAttrs(media, completion)...)
 	return nil
 }
 
@@ -1208,8 +1208,8 @@ func (w *Worker) logJobCompleted(ctx context.Context, level slog.Level, outcome,
 	events.Log(ctx, level, "job.completed", "subtitle job completed", attrs...)
 }
 
-func completionReason(outcome workflow.Outcome) string {
-	switch outcome {
+func completionReason(result workflow.Result) string {
+	switch result.Outcome {
 	case workflow.OutcomeSatisfied:
 		return "satisfied"
 	case workflow.OutcomeInstalled:
@@ -1219,6 +1219,9 @@ func completionReason(outcome workflow.Outcome) string {
 	case workflow.OutcomeRejected:
 		return "candidate_rejected"
 	case workflow.OutcomeThrottled:
+		if result.RemovalDeferred {
+			return "removal_deferred"
+		}
 		return "provider_throttle"
 	case workflow.OutcomeRemoved:
 		return "rejected_subtitle_removed"

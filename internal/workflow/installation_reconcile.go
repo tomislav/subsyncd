@@ -29,6 +29,13 @@ type Reconciliation struct {
 	Changed bool
 	// Removed is set when the sidecar was deleted (RemoveManaged).
 	Removed bool
+	// Deferred is set when a replaced media file's sidecar had to be deleted
+	// but MaxReplacedRemovalsPerHour deletions already happened in the rolling
+	// hour: the sidecar and its record stay, and the search must not install
+	// for the new file yet (its record would replace this one and leave the
+	// old sidecar untracked). RetryAt is when a deletion slot is free again.
+	Deferred bool
+	RetryAt  time.Time
 }
 
 // installationRecordStore changes installation records without a file
@@ -85,8 +92,10 @@ const (
 //     older build cleared: the old file's sidecar, at its recorded path or
 //     renamed after the new media file, is removed through RemoveManaged when
 //     it still has the recorded checksum and lies in the media folder, at
-//     most MaxReplacedRemovalsPerHour per rolling hour (past that it stays
-//     for a later run). Otherwise the record is dropped and the file left
+//     most MaxReplacedRemovalsPerHour per rolling hour (past that it stays,
+//     and the result is Deferred: the search waits for a slot, so it never
+//     installs beside an old sidecar it would stop tracking). Otherwise the
+//     record is dropped and the file left
 //     alone. Only a record of unknown provenance whose unchanged sidecar is
 //     named after the current media file is kept, as before: nothing shows it
 //     belongs to another file.
@@ -213,15 +222,18 @@ func (i Installer) settleReplaced(ctx context.Context, records installationRecor
 		if !i.inMediaFolder(path, installation.MediaPath, media.Path) {
 			continue
 		}
-		release, ok := i.ReplacedRemovals.reserve(i.now())
+		now := i.now()
+		release, ok := i.ReplacedRemovals.reserve(now)
 		if !ok {
 			// Too many this hour: the sidecar and the invalidated record
-			// stay, the search goes on, and a later run deletes it.
+			// stay, and the search waits until a slot frees, when its retry
+			// deletes the sidecar first.
+			retryAt := i.ReplacedRemovals.nextSlot(now).Add(removalRetryMargin)
 			i.Events.For("workflow").Log(ctx, slog.LevelWarn, "install.removal_deferred", "deleting the subtitle of a replaced media file is deferred",
-				slog.String("reason", "cap"), slog.Int("limit_per_hour", MaxReplacedRemovalsPerHour),
+				slog.String("reason", "cap"), slog.Int("limit_per_hour", MaxReplacedRemovalsPerHour), slog.Time("retry_at", retryAt.UTC()),
 				slog.String("provider", observability.SafeText(installation.ProviderID)), slog.String("candidate_id", observability.SafeText(installation.CandidateID)),
 				slog.String("checksum_prefix", checksumPrefix(installation.Checksum)))
-			return Reconciliation{}, nil
+			return Reconciliation{Deferred: true, RetryAt: retryAt}, nil
 		}
 		changed := false
 		if path != installation.Path {

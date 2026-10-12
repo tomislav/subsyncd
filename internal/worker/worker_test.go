@@ -523,6 +523,34 @@ func TestRunOnceSchedulesThrottleAfterResetWithoutAdvancingAttempts(t *testing.T
 	}
 }
 
+// A search waiting for a slot to delete a replaced file's subtitle completes
+// like a throttle: it keeps its place and counters and comes back once the
+// slot frees, logged with its own reason.
+func TestRemovalDeferredSearchWaitsForTheSlotWithoutAdvancingAttempts(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	repository := newWorkerRepository(1, now)
+	slot := now.Add(41 * time.Minute)
+	service := &workerWorkflow{outcome: workflow.Result{Outcome: workflow.OutcomeThrottled, RetryAt: slot, RemovalDeferred: true}}
+	worker := testWorker(repository, service, testutil.NewClock(now))
+	worker.RandomUnit = func() float64 { return 0 }
+	var logs bytes.Buffer
+	var err error
+	worker.Events, err = observability.New(&logs, observability.Options{Level: "info", Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	completion := repository.searchCompletions[0]
+	if !completion.NextAttemptAt.Equal(slot) || !completion.PreserveQueueOrder || completion.AdvanceMissingAttempt || completion.AdvanceFailureAttempt || completion.ClearReplaceInstalled {
+		t.Fatalf("deferred completion = %#v", completion)
+	}
+	if completed := findWorkerEvent(t, workerLogRecords(t, logs.String()), "job.completed"); completed["outcome"] != "throttled" || completed["reason"] != "removal_deferred" {
+		t.Fatalf("job.completed = %#v", completed)
+	}
+}
+
 func TestThrottleWithoutResetStaysPending(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	repository := newWorkerRepository(1, now)
