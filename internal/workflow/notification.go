@@ -42,10 +42,27 @@ func notificationRequests(media domain.Media, installation store.Installation, n
 			name, installation.MediaID, installation.Language, installation.Checksum,
 			installation.Path, installation.MediaPath, installation.MediaFileID,
 			installation.MediaSize, installation.MediaModTimeNS)
-		sum := sha256.Sum256([]byte(raw))
-		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: notificationDue(name, now)})
+		requests = append(requests, notificationRequest(name, media, raw, payload, now))
 	}
 	return requests, nil
+}
+
+// notificationRequest builds the intent for one notifier. Its dedupe key is
+// the hash of the change (raw), so replays of a pending intent collapse,
+// except for an Arr rescan with a known ID: its key names the series or movie
+// (notifier.RescanCoalesceKey) and it coalesces (store.NotificationRequest
+// Coalesce), so a change for a series whose rescan is still queued adds
+// nothing and keeps that rescan's due time.
+func notificationRequest(name string, media domain.Media, raw string, payload []byte, now time.Time) store.NotificationRequest {
+	request := store.NotificationRequest{Notifier: name, PayloadJSON: payload, NextAttemptAt: notificationDue(name, now)}
+	if name == notifier.ArrRescanName {
+		if key, ok := notifier.RescanCoalesceKey(media); ok {
+			raw, request.Coalesce = name+"\x00"+key, true
+		}
+	}
+	sum := sha256.Sum256([]byte(raw))
+	request.DedupeKey = hex.EncodeToString(sum[:])
+	return request
 }
 
 // notificationDue is when a notification queued at now is first due: an Arr
@@ -90,7 +107,8 @@ func arrRescanOnly(names []string) []string {
 // changeNotificationRequests queues one intent per notifier for a sidecar
 // change other than an install (a removal, a move). The dedupe key differs
 // from the install's, which may still be in the outbox, and from any earlier
-// change of the same file.
+// change of the same file; an Arr rescan coalesces per series or movie
+// (notificationRequest).
 func changeNotificationRequests(change string, media domain.Media, installation store.Installation, notifierNames []string, now time.Time) ([]store.NotificationRequest, error) {
 	if len(notifierNames) == 0 {
 		return nil, nil
@@ -104,8 +122,7 @@ func changeNotificationRequests(change string, media domain.Media, installation 
 	requests := make([]store.NotificationRequest, 0, len(names))
 	for _, name := range names {
 		raw := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s\x00%s\x00%d", change, name, installation.MediaID, installation.Language, installation.Checksum, installation.Path, now.UnixNano())
-		sum := sha256.Sum256([]byte(raw))
-		requests = append(requests, store.NotificationRequest{Notifier: name, DedupeKey: hex.EncodeToString(sum[:]), PayloadJSON: payload, NextAttemptAt: notificationDue(name, now)})
+		requests = append(requests, notificationRequest(name, media, raw, payload, now))
 	}
 	return requests, nil
 }

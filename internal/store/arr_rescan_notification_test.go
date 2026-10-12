@@ -143,3 +143,86 @@ func TestRebaseInstallationQueuesNotificationsOnlyWithTheRebase(t *testing.T) {
 		t.Fatalf("backlog = %d/%v", backlog, err)
 	}
 }
+
+// A coalescing intent (an Arr rescan of one series) is absorbed by a queued
+// one with its key, pending or waiting for a retry, which keeps its due time.
+// One already leased may have been sent before the change: the change gets a
+// row of its own, which absorbs later changes in turn.
+func TestCoalescingNotificationJoinsTheQueuedOneUntilItIsLeased(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepository(t)
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	request := func(at time.Time) NotificationRequest {
+		return NotificationRequest{Notifier: "arr_rescan", DedupeKey: "series-5", PayloadJSON: []byte(`{}`), NextAttemptAt: at, Coalesce: true}
+	}
+	queued := func() (rows int, due []int64) {
+		t.Helper()
+		result, err := repo.store.db.Query(`SELECT next_attempt_at_ns FROM notifications WHERE next_attempt_at_ns > 0 ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Close()
+		for result.Next() {
+			var at int64
+			if err := result.Scan(&at); err != nil {
+				t.Fatal(err)
+			}
+			due = append(due, at)
+		}
+		return len(due), due
+	}
+	first := now.Add(time.Minute)
+	if inserted, err := repo.EnqueueNotification(ctx, request(first)); err != nil || !inserted {
+		t.Fatalf("first enqueue = %t, %v", inserted, err)
+	}
+	for minutes := 1; minutes <= 3; minutes++ {
+		if inserted, err := repo.EnqueueNotification(ctx, request(first.Add(time.Duration(minutes)*time.Minute))); err != nil || inserted {
+			t.Fatalf("enqueue while queued = %t, %v", inserted, err)
+		}
+	}
+	if n, due := queued(); n != 1 || due[0] != first.UnixNano() {
+		t.Fatalf("queued = %d %v, want one row due at the first change's time", n, due)
+	}
+	// Leased: the next change is queued separately.
+	jobs, err := repo.LeaseDueNotifications(ctx, first, 10, time.Minute)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("lease = %#v, %v", jobs, err)
+	}
+	second := first.Add(10 * time.Minute)
+	if inserted, err := repo.EnqueueNotification(ctx, request(second)); err != nil || !inserted {
+		t.Fatalf("enqueue while in flight = %t, %v", inserted, err)
+	}
+	if inserted, err := repo.EnqueueNotification(ctx, request(second.Add(time.Minute))); err != nil || inserted {
+		t.Fatalf("enqueue beside the new row = %t, %v", inserted, err)
+	}
+	// The in-flight one fails and waits for a retry; the new row still holds
+	// the key, and nothing collides.
+	if err := repo.CompleteNotification(ctx, NotificationCompletion{JobID: jobs[0].JobID, Result: "retryable_error", NextAttemptAt: first.Add(5 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := queued(); n != 2 {
+		t.Fatalf("queued = %d, want the retry and the later change", n)
+	}
+	// A retry-scheduled row with the key absorbs changes too.
+	jobs, err = repo.LeaseDueNotifications(ctx, second, 10, time.Minute)
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("lease = %#v, %v", jobs, err)
+	}
+	for _, job := range jobs {
+		if err := repo.CompleteNotification(ctx, NotificationCompletion{JobID: job.JobID, Result: "retryable_error", NextAttemptAt: second.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if inserted, err := repo.EnqueueNotification(ctx, request(second.Add(2*time.Minute))); err != nil || inserted {
+		t.Fatalf("enqueue beside a retry = %t, %v", inserted, err)
+	}
+	// Another series is never absorbed.
+	other := request(second)
+	other.DedupeKey = "series-6"
+	if inserted, err := repo.EnqueueNotification(ctx, other); err != nil || !inserted {
+		t.Fatalf("other series = %t, %v", inserted, err)
+	}
+	if n, _ := queued(); n != 3 {
+		t.Fatalf("queued = %d", n)
+	}
+}

@@ -44,13 +44,13 @@ func TestUpgradeAndRejectQueueArrRescans(t *testing.T) {
 	h.exec(t, `DELETE FROM notifications`)
 
 	// An upgrade removes the old file's sidecar and installs one for the new
-	// file: two changes on disk, two rescans of the movie.
+	// file: two changes on disk, which one queued rescan of the movie covers.
 	h.replaceMedia(t, "Movie.FUZEER.mkv", 8, "upgraded media")
 	if outcome := h.search(t); outcome != "installed" {
 		t.Fatalf("search after the upgrade = %s", outcome)
 	}
-	if n := h.arrRescansQueued(t); n != 2 {
-		t.Fatalf("Arr rescans after the upgrade = %d, want 2", n)
+	if n := h.arrRescansQueued(t); n != 1 {
+		t.Fatalf("Arr rescans after the upgrade = %d, want 1", n)
 	}
 	h.exec(t, `DELETE FROM notifications`)
 

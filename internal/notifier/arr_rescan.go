@@ -18,8 +18,9 @@ const ArrRescanName = "arr_rescan"
 
 // ArrRescanDelay is how long a queued rescan waits before it is due, so the
 // changes of episodes installed in quick succession (a season pack, a burst
-// of imports) are leased together and coalesce into one rescan per series.
-// Silo notifications are due at once.
+// of imports) coalesce into one rescan per series: a change for a series
+// whose rescan is still queued adds none (RescanCoalesceKey). Silo
+// notifications are due at once.
 const ArrRescanDelay = 60 * time.Second
 
 // Skip reasons reported for an Arr rescan that is not sent.
@@ -64,14 +65,25 @@ func RescanID(media domain.Media) (int64, bool) {
 	return 0, false
 }
 
-// CoalesceKey is the instance and the series or movie: one rescan covers
-// every sidecar changed for it, such as a season pack's episodes.
-func (a *ArrRescan) CoalesceKey(media domain.Media, _ string) (string, error) {
+// RescanCoalesceKey is the instance, the media kind and the series or movie
+// ID: one rescan covers every sidecar changed for it, such as a season
+// pack's episodes. It reports false when the ID is unknown.
+func RescanCoalesceKey(media domain.Media) (string, bool) {
 	id, ok := RescanID(media)
+	if !ok {
+		return "", false
+	}
+	return media.Ref.Instance + "\x00" + string(media.Ref.Kind) + "\x00" + strconv.FormatInt(id, 10), true
+}
+
+// CoalesceKey coalesces the deliveries of one leased batch on
+// RescanCoalesceKey.
+func (a *ArrRescan) CoalesceKey(media domain.Media, _ string) (string, error) {
+	key, ok := RescanCoalesceKey(media)
 	if !ok {
 		return "", &SkippedError{Reason: SkipUnknownArrID}
 	}
-	return media.Ref.Instance + "\x00" + string(media.Ref.Kind) + "\x00" + strconv.FormatInt(id, 10), nil
+	return key, nil
 }
 
 // DeliveryAttrs names the instance and the series or movie.

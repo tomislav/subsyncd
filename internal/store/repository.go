@@ -156,6 +156,13 @@ type NotificationRequest struct {
 	DedupeKey     string
 	PayloadJSON   []byte
 	NextAttemptAt time.Time
+	// Coalesce marks a DedupeKey that names the target rather than the
+	// change (an Arr rescan of one series or movie). A pending or
+	// retry-scheduled intent with the key absorbs the request and keeps its
+	// due time, so a steady trickle of changes cannot postpone it. A leased
+	// one, which may have been sent before this change, gives its key up and
+	// the request is inserted, so the change is delivered too.
+	Coalesce bool
 }
 
 type NotificationEnqueueResult struct {
@@ -1150,7 +1157,19 @@ func (r *Repository) EnqueueNotification(ctx context.Context, request Notificati
 	if err := validateNotificationRequest(request); err != nil {
 		return false, err
 	}
-	return enqueueNotification(ctx, r.store.db, request)
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin notification enqueue: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	inserted, err := enqueueNotification(ctx, tx, request)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit notification enqueue: %w", err)
+	}
+	return inserted, nil
 }
 
 func validateNotificationRequest(request NotificationRequest) error {
@@ -1160,10 +1179,30 @@ func validateNotificationRequest(request NotificationRequest) error {
 	return nil
 }
 
-func enqueueNotification(ctx context.Context, executor interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, request NotificationRequest) (bool, error) {
-	result, err := executor.ExecContext(ctx, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES (?, ?, 0, ?, '', ?) ON CONFLICT DO NOTHING`, request.Notifier, request.PayloadJSON, request.NextAttemptAt.UnixNano(), request.DedupeKey)
+// enqueueNotification inserts the intent unless a pending one has its dedupe
+// key; see NotificationRequest.Coalesce for a coalescing key. It runs in the
+// caller's transaction, beside the change it announces.
+func enqueueNotification(ctx context.Context, tx *sql.Tx, request NotificationRequest) (bool, error) {
+	if request.Coalesce {
+		var id int64
+		var leased bool
+		err := tx.QueryRowContext(ctx, `SELECT id, lease_owner IS NOT NULL FROM notifications WHERE dedupe_key=?`, request.DedupeKey).Scan(&id, &leased)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return false, fmt.Errorf("find queued notification: %w", err)
+		case !leased:
+			// Not sent yet: it covers this change, at its own due time.
+			return false, nil
+		default:
+			// In flight, maybe already sent: this change needs its own
+			// delivery, which takes the key over.
+			if _, err := tx.ExecContext(ctx, `UPDATE notifications SET dedupe_key=NULL WHERE id=?`, id); err != nil {
+				return false, fmt.Errorf("release in-flight notification key: %w", err)
+			}
+		}
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO notifications(notifier, payload_json, attempt, next_attempt_at_ns, result, dedupe_key) VALUES (?, ?, 0, ?, '', ?) ON CONFLICT DO NOTHING`, request.Notifier, request.PayloadJSON, request.NextAttemptAt.UnixNano(), request.DedupeKey)
 	if err != nil {
 		return false, fmt.Errorf("enqueue notification: %w", err)
 	}

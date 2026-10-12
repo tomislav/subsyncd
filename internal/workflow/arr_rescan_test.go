@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/notifier"
 	"subsyncd/internal/observability"
+	"subsyncd/internal/store"
 )
 
 // newRescanFixture is a reconcile fixture whose Radarr instance has
@@ -178,5 +181,86 @@ func TestArrRescanSkippedForUnknownSeriesID(t *testing.T) {
 	}
 	if got := installer.NotifierNames; !reflect.DeepEqual(got, []string{"silo"}) {
 		t.Fatalf("configured names changed: %q", got)
+	}
+}
+
+// Episodes of one series installed minutes apart while its rescan is still
+// queued add no rescan and do not push it later; a change while the rescan
+// is in flight gets its own; another series always does. Silo is told about
+// every change, as before.
+func TestArrRescansCoalescePerSeriesAcrossChanges(t *testing.T) {
+	f := newReconcileFixture(t, "Movie.mkv")
+	f.installer.ArrRescanInstances = map[string]bool{"sonarr": true}
+	now := time.Date(2026, 10, 12, 20, 0, 0, 0, time.UTC)
+	f.installer.Now = func() time.Time { return now }
+	f.clearOutbox(t)
+	episode := 0
+	install := func(series int64) {
+		t.Helper()
+		episode++
+		path := writeInstallFile(t, filepath.Join(f.root, fmt.Sprintf("Show %d S01E%02d.mkv", series, episode)), "episode")
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		media := domain.Media{EntityID: 1000 + int64(episode), SeriesID: series, Title: "Show", Season: 1, Episode: episode, Ref: domain.MediaRef{Instance: "sonarr", Kind: domain.MediaEpisode, FileID: 2000 + int64(episode)}, Fingerprint: domain.MediaFingerprint{Path: path, FileID: 2000 + int64(episode), Size: info.Size(), ModTime: info.ModTime()}, Duration: 45 * time.Minute}
+		mediaID, _, err := f.repo.UpsertMedia(f.ctx, media)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := writeInstallFile(t, filepath.Join(t.TempDir(), "source.srt"), installSRT)
+		if _, err := f.installer.Install(f.ctx, InstallRequest{MediaID: mediaID, Media: media, Language: "en", SourcePath: source, DestinationPath: strings.TrimSuffix(path, ".mkv") + ".en.srt", Candidate: domain.Candidate{ProviderID: "provider", ResultID: "candidate"}, Score: domain.Score{Total: 80}, SyncResult: domain.SyncResult{Verdict: "solid"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rescans := func() []int64 {
+		t.Helper()
+		rows, err := f.audit.Query(`SELECT next_attempt_at_ns FROM notifications WHERE notifier='arr_rescan' AND next_attempt_at_ns > 0 ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var due []int64
+		for rows.Next() {
+			var at int64
+			if err := rows.Scan(&at); err != nil {
+				t.Fatal(err)
+			}
+			due = append(due, at)
+		}
+		return due
+	}
+	firstDue := now.Add(notifier.ArrRescanDelay).UnixNano()
+	for range 10 {
+		install(5)
+		now = now.Add(3 * time.Minute)
+	}
+	if due := rescans(); len(due) != 1 || due[0] != firstDue {
+		t.Fatalf("rescans after 10 episodes = %v, want one due at %d", due, firstDue)
+	}
+	if n := f.count(t, `SELECT count(*) FROM notifications WHERE notifier='silo'`); n != 10 {
+		t.Fatalf("silo notifications = %d, want one per change", n)
+	}
+	// The rescan is sent; meanwhile another episode is installed.
+	leases, err := f.repo.LeaseDueNotifications(f.ctx, now, 100, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	install(5)
+	if due := rescans(); len(due) != 2 {
+		t.Fatalf("rescans after a change in flight = %v, want a second one", due)
+	}
+	for _, lease := range leases {
+		if err := f.repo.CompleteNotification(f.ctx, store.NotificationCompletion{JobID: lease.JobID, Result: "success"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if due := rescans(); len(due) != 1 || due[0] != now.Add(notifier.ArrRescanDelay).UnixNano() {
+		t.Fatalf("rescans after delivery = %v, want the later change's", due)
+	}
+	install(6)
+	install(5)
+	if due := rescans(); len(due) != 2 {
+		t.Fatalf("rescans with another series = %v, want one per series", due)
 	}
 }
