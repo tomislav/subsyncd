@@ -135,18 +135,25 @@ docker compose logs -f subsyncd
 
 ### 4. Add Sonarr and Radarr webhooks
 
-In each application's **Settings → Connect**, add a webhook using the instance name from `config/config.yaml` and the webhook token subsyncd generates for it:
+Set `server.webhook_base_url` in `config/config.yaml` to the address Sonarr and Radarr use to reach subsyncd, usually `http://subsyncd:8097`, then restart subsyncd. For each instance it creates a webhook connection named `subsyncd (subsyncd:8097)` in **Settings → Connect** with the right events, adopts a matching one that already exists, and keeps it correct. Its changes are limited to that one connection's URL, method and required events.
+
+Sonarr and Radarr test the URL whenever they save a connection with events enabled, so subsyncd must be reachable from them. If Sonarr or Radarr use an HTTP proxy, it must let subsyncd's address through.
+
+To add the webhooks by hand instead, leave `webhook_base_url` unset. In each application's **Settings → Connect**, add a webhook using the URL that subsyncd prints for the instance:
+
+```bash
+docker compose exec subsyncd subsyncd webhook-url --instance sonarr-main
+```
+
+The URL looks like this, where the token is one subsyncd generated for the instance and keeps in its database:
 
 ```text
 http://subsyncd:8097/webhooks/sonarr-main?token=SONARR_WEBHOOK_TOKEN
-http://subsyncd:8097/webhooks/radarr-main?token=RADARR_WEBHOOK_TOKEN
 ```
 
-subsyncd generates a random token per instance and stores it in its database; `webhook_token` in the configuration is no longer accepted.
+Pass `--base http://HOST:PORT` to print the URL for another address. For an instance outside Docker, use your Docker host's address and the published port.
 
-For an instance outside Docker, replace `subsyncd` with your Docker host's address and use the published port.
-
-Enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches, and other event types are accepted and ignored. subsyncd answers a webhook as soon as it has saved it and applies it right after, so Arr never waits on subsyncd's own lookups.
+For a manual webhook, enable import/download, upgrade, rename, and file-delete events where available. Use the connection's **Test** action to check the webhook. Test events do not trigger subtitle searches, and other event types are accepted and ignored. subsyncd answers a webhook as soon as it has saved it and applies it right after, so Arr never waits on subsyncd's own lookups.
 
 After the daemon starts, subsyncd discovers existing movie and episode files in each configured Sonarr/Radarr library once, including files absent from retained history, and queues subtitle checks. It remembers completion across restarts and then follows changes through webhooks and periodic history reconciliation. Run `scan --instance NAME` with the daemon stopped to discover unindexed files again.
 
@@ -161,6 +168,8 @@ docker compose exec subsyncd subsyncd doctor
 ```
 
 To stay on a particular build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. Back up `data/` with the service stopped before upgrading; it holds search history, caches, and records of installed subtitles.
+
+Upgrading from a build that read `webhook_token` from the configuration: remove `webhook_token` from every instance first, because startup refuses the old key. The first start generates a new token for each instance. With `server.webhook_base_url` set, subsyncd updates the connection in Sonarr or Radarr itself. Otherwise run `subsyncd webhook-url --instance NAME` for each instance and put the new URL in its webhook.
 
 ## Logs and troubleshooting
 

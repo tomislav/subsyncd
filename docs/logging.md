@@ -70,6 +70,14 @@ At debug level, `archive.classified` reports archive type, subtitle-member count
 | `reconcile.snapshot_deletions_withheld` | Arr reported a catalog missing all, or most, of the movies or series subsyncd tracks, so those deletions were not applied. |
 | `webhook.inbox_orphaned` | Logged at startup when webhooks are stored for an instance that is no longer in the configuration; `webhook_count` says how many. They are never processed. Run `forget-instance` for that instance to delete them. |
 | `install.recovery_timed_out` | At startup, finishing subtitle installs interrupted by a crash took longer than 30 seconds, usually because a media mount hangs. subsyncd starts anyway and tries again at the next start. |
+| `webhook.connection_sync_failed` | subsyncd could not create or check an instance's Arr webhook connection (only with `server.webhook_base_url` set). `reason` is `arr_unreachable`, `arr_status`, `arr_response_invalid`, `arr_test_rejected`, `arr_test_unreachable`, `name_unavailable`, `schema_missing_webhook` or `internal`; `status` is Arr's HTTP status when there was one. It is retried after 15 minutes, then 1 hour, then every 6 hours. |
+| `webhook.connection_ambiguous` | More than one Arr webhook connection looks like this subsyncd's for the instance (`count`), so none was changed. Delete the extras in Arr. |
+| `webhook.connection_foreign` | Info. Arr has webhook connections (`count`) for the instance name that belong to another subsyncd deployment; they were left unchanged. |
+| `webhook.connection_created` | Info. subsyncd created the instance's Arr webhook connection (`connection_id`). |
+| `webhook.connection_adopted` | Info. subsyncd took over an existing Arr webhook connection that already pointed at it (`connection_id`). |
+| `webhook.connection_repaired` | Info. subsyncd corrected the connection (`connection_id`); `changed` lists which of `url`, `method` and `events` it set. |
+| `webhook.connection_ok` | Debug. The connection was already correct (`connection_id`). |
+| `webhook.token_rotated` | Info. `rotate-webhook-token` replaced the instance's webhook token. The token is never logged. |
 | `instance.forgotten` | `forget-instance --yes` deleted a removed instance's records; carries the instance name and how many of each kind of record were removed. |
 
 `reconcile.failed` (error) is reserved for real reconciliation failures. The [troubleshooting table](operations.md#troubleshooting) says what to do about each warning.

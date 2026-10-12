@@ -42,7 +42,7 @@ Temporary downloads and synchronization files use `/tmp`. Keep it separate from 
 
 ## Sonarr and Radarr setup
 
-Instance settings, path mappings, and webhooks are set up during installation: see [set paths and credentials](../README.md#2-set-paths-and-credentials) and [add Sonarr and Radarr webhooks](../README.md#4-add-sonarr-and-radarr-webhooks). Each instance needs a unique name, reachable URL, API key, webhook secret, and path mapping.
+Instance settings, path mappings, and webhooks are set up during installation: see [set paths and credentials](../README.md#2-set-paths-and-credentials) and [add Sonarr and Radarr webhooks](../README.md#4-add-sonarr-and-radarr-webhooks). Each instance needs a unique name, reachable URL, API key, and path mapping.
 
 Besides import/download, upgrade, rename, and file-delete events, Radarr movie-delete and Sonarr series-delete events are supported. Sonarr per-file imports/upgrades (`episodeFile`) and import-complete batches (`episodeFiles`) are both accepted. Test events do not start searches.
 
@@ -76,6 +76,16 @@ If a webhook updates the catalog while history is being fetched, subsyncd discar
 If Arr reports a current file that subsyncd cannot read, such as a symlink whose target is missing or unavailable, reconciliation applies every other change, keeps its history position, and logs `reconcile.deferred` (warn) naming up to ten affected movies or episodes. Library discovery treats such a file the same way: it indexes every readable file, names the unreadable ones, and stays incomplete so the next check enumerates the library again. It checks again every hour and moves on once the file is readable or Arr has replaced or removed it. Until then the warning repeats, so replace or remove the broken file in Arr. `scan` lists the deferred items in its summary and still completes.
 
 After adding an instance, provider, or language, restart subsyncd. A new language schedules checks for media already indexed under your configured instances. Existing subtitles may satisfy those checks without a download.
+
+### Webhook connections
+
+subsyncd generates a random webhook token for each instance on first start and keeps it in its database. `subsyncd webhook-url --instance NAME` prints the full URL for a manual Arr webhook (add `--base URL` to use another address than `server.webhook_base_url`); it works while the daemon runs. The URL contains the token, so treat the output like a password.
+
+With `server.webhook_base_url` set, the daemon creates and maintains one webhook connection per instance in Sonarr and Radarr, named `subsyncd (<host:port>)`. It checks once at start and then every six hours, retrying a failure after 15 minutes, then 1 hour. Startup and readiness never wait for Arr. Management changes only that connection's URL, method and required events (import, upgrade, rename, and the file and series or movie delete events). It never changes the connection's name, tags or other events, never touches other connections, and never deletes anything. A connection you created by hand at subsyncd's own address is adopted rather than duplicated; one that points at another subsyncd deployment is left alone.
+
+Removing an instance, or unsetting `server.webhook_base_url`, leaves the connection in Arr. Delete it there if you no longer want it.
+
+`rotate-webhook-token --instance NAME` replaces an instance's token. Run it with the daemon stopped, then start the daemon: a managed connection is updated at that start, and a manual one needs the new URL from `webhook-url`. Backups of the data directory contain the webhook tokens, so keep them private.
 
 ## Missing subtitles and upgrades
 
@@ -120,6 +130,8 @@ The container runs `serve` by default. The other commands are run through Compos
 | `search` | Searches one file and language now. | Stop first |
 | `scan` | Discovers unindexed files in one instance's library and reconciles its history. Add `--force-probe` to reread embedded subtitle tracks. | Stop first |
 | `retry` | Clears one provider's saved cooldown and authentication state. | Stop first |
+| `webhook-url` | Prints an instance's webhook URL, including its token, for manual Arr setup. Accepts `--base URL`. | May run |
+| `rotate-webhook-token` | Replaces an instance's webhook token. Update the URL in Arr (automatic with `server.webhook_base_url`) after restarting. | Stop first |
 | `forget-instance` | Shows what subsyncd has saved for a Sonarr or Radarr instance you removed from the configuration. Add `--yes` to delete those records. | May run to preview; stop first with `--yes` |
 
 Run read-only commands with `docker compose exec subsyncd subsyncd COMMAND ...`, and the others with the stop/run/start sequence shown below. File paths given to `analyze-sync` are paths inside the container. Put the subtitle you want to test in the host `data/` folder rather than beside the media, where subsyncd would treat it as your own subtitle and protect it:
@@ -229,6 +241,9 @@ Allow the container to stop fully before starting another process against the sa
 | Silo does not refresh | Check the API address, admin key, path mapping, and notification logs. |
 | `queue.route_paused` warning | Every provider for that language and media kind is in a cooldown, out of quota, or has rejected credentials. Searches resume after `reset_at`; for rejected credentials, fix them and run `retry`. |
 | `reconcile.deferred` warning | Sonarr or Radarr reports a file subsyncd cannot read, such as a broken symlink. Fix or replace the file in Arr; the check repeats hourly. |
+| `webhook.connection_sync_failed` warning | subsyncd could not keep an instance's Arr webhook connection correct; it retries by itself. The `reason` says why. `arr_unreachable`: Arr did not answer; check the instance `url`. `arr_status`: Arr rejected the request (`status`); check the API key. `arr_response_invalid`: Arr answered with something subsyncd does not understand; check that the instance is Sonarr or Radarr v3 or later. `arr_test_rejected`: Arr tested the webhook URL and subsyncd answered with an error; check `server.webhook_base_url` and the `webhook-url` path. `arr_test_unreachable`: Arr could not reach subsyncd at that address; fix `server.webhook_base_url`, and allow subsyncd's address through Arr's HTTP proxy if one is set. `name_unavailable`: nine connection names are taken; delete a stale `subsyncd (...)` connection in Arr. `schema_missing_webhook`: this Arr offers no Webhook connection type. `internal`: a local failure such as an unreadable database; see the logged error and retry after a restart. |
+| `webhook.connection_ambiguous` warning | More than one Arr connection looks like this subsyncd's webhook for an instance, so none was changed. Delete the extras in Arr; the next check picks up the rest. |
+| `webhook.connection_foreign` info | Arr has webhook connections for the same instance name that point at another subsyncd deployment. They are left alone and a connection of your own is created; no action needed. |
 | `reconcile.snapshot_deletions_withheld` warning | Arr reported a library missing most of what subsyncd tracks, so the deletions were not applied. Check the instance URL and the Arr database. |
 
 After fixing credentials, clear the named provider's saved authentication and cooldown state; this also makes searches that were waiting on a provider run again right away:
