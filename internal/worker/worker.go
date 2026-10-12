@@ -78,6 +78,16 @@ type leaseReleaser interface {
 	ReleaseNotificationLease(context.Context, string) error
 }
 
+// notificationPruner deletes finished notification intents past their
+// retention. Repositories without it (test doubles) keep them.
+type notificationPruner interface {
+	PruneFinishedNotifications(context.Context, time.Time, int) (int64, error)
+}
+
+// notificationPruneBatch bounds the finished notifications one maintenance
+// tick deletes, so a backlog goes in short transactions.
+const notificationPruneBatch = 500
+
 // leaseReleaseTimeout bounds the best-effort release after cancellation.
 const leaseReleaseTimeout = 5 * time.Second
 
@@ -244,7 +254,28 @@ func (w *Worker) runMaintenance(dispatchCtx, ctx context.Context) error {
 	} else if err := w.processNotificationsContexts(dispatchCtx, ctx, notifications); err != nil {
 		failures = append(failures, err)
 	}
+	w.pruneNotifications(dispatchCtx)
 	return errors.Join(failures...)
+}
+
+// pruneNotifications deletes up to notificationPruneBatch notification
+// intents that finished more than store.NotificationRetention ago. It is
+// best-effort cleanup: a failure is logged and retried on the next tick.
+func (w *Worker) pruneNotifications(ctx context.Context) {
+	pruner, ok := w.Repository.(notificationPruner)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	deleted, err := pruner.PruneFinishedNotifications(ctx, w.Clock.Now().Add(-store.NotificationRetention), notificationPruneBatch)
+	events := w.Events.For("worker")
+	switch {
+	case errors.Is(err, context.Canceled):
+	case err != nil:
+		events.Log(ctx, slog.LevelWarn, "notification.prune_failed", "finished notification cleanup failed", events.ErrorAttrs("notification_prune", err)...)
+	case deleted > 0:
+		events.Log(ctx, slog.LevelDebug, "notification.pruned", "finished notifications removed",
+			slog.Int64("removed_count", deleted), slog.Int("retention_days", int(store.NotificationRetention/(24*time.Hour))))
+	}
 }
 
 func (w *Worker) RunOnce(ctx context.Context) error {
@@ -765,7 +796,7 @@ func finishFollowers(followers []groupMember) error {
 }
 
 func (w *Worker) completeNotification(jobCtx context.Context, lease store.NotificationLease, deliveryErr error, started time.Time) error {
-	completion := store.NotificationCompletion{JobID: lease.JobID, Result: "success"}
+	completion := store.NotificationCompletion{JobID: lease.JobID, Result: "success", FinishedAt: w.Clock.Now()}
 	skipReason, skipped := notifier.IsSkipped(deliveryErr)
 	switch {
 	case deliveryErr == nil:

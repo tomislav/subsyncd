@@ -184,7 +184,15 @@ type NotificationCompletion struct {
 	JobID         string
 	Result        string
 	NextAttemptAt time.Time
+	// FinishedAt is recorded on a finished intent (zero NextAttemptAt), which
+	// PruneFinishedNotifications deletes NotificationRetention later; zero
+	// uses the current time.
+	FinishedAt time.Time
 }
+
+// NotificationRetention is how long finished notification intents stay in
+// the outbox.
+const NotificationRetention = 30 * 24 * time.Hour
 
 type ProviderState struct {
 	ProviderID     string
@@ -1285,14 +1293,33 @@ func (r *Repository) CompleteNotification(ctx context.Context, completion Notifi
 	if !completion.NextAttemptAt.IsZero() {
 		next = completion.NextAttemptAt.UnixNano()
 	}
+	finishedAt := completion.FinishedAt
+	if finishedAt.IsZero() {
+		finishedAt = time.Now()
+	}
 	// Deduplication collapses replays of a pending intent only. A finished
 	// intent (delivered or abandoned) releases its key, so publishing the same
 	// subtitle again, for example after its sidecar was deleted, is delivered.
-	result, err := r.store.db.ExecContext(ctx, `UPDATE notifications SET attempt=attempt+1, next_attempt_at_ns=?, result=?, lease_owner=NULL, lease_until_ns=NULL, dedupe_key=CASE WHEN ?=0 THEN NULL ELSE dedupe_key END WHERE lease_owner=?`, next, completion.Result, next, completion.JobID)
+	result, err := r.store.db.ExecContext(ctx, `UPDATE notifications SET attempt=attempt+1, next_attempt_at_ns=?1, result=?2, lease_owner=NULL, lease_until_ns=NULL, dedupe_key=CASE WHEN ?1=0 THEN NULL ELSE dedupe_key END, finished_at_ns=CASE WHEN ?1=0 THEN ?3 ELSE NULL END WHERE lease_owner=?4`, next, completion.Result, finishedAt.UnixNano(), completion.JobID)
 	if err != nil {
 		return fmt.Errorf("complete notification: %w", err)
 	}
 	return requireOneRow(result, "notification lease "+completion.JobID+" not found")
+}
+
+// PruneFinishedNotifications deletes at most limit finished intents
+// (delivered, skipped, refused or permanently failed: next_attempt_at_ns 0)
+// that finished before the cutoff, oldest first, and reports how many. It
+// never deletes a pending, retry-scheduled or leased intent.
+func (r *Repository) PruneFinishedNotifications(ctx context.Context, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("notification prune limit must be positive")
+	}
+	result, err := r.store.db.ExecContext(ctx, `DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE next_attempt_at_ns = 0 AND finished_at_ns < ? AND lease_owner IS NULL ORDER BY finished_at_ns LIMIT ?)`, before.UnixNano(), limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune finished notifications: %w", err)
+	}
+	return result.RowsAffected()
 }
 
 func requireOneRow(result sql.Result, message string) error {
