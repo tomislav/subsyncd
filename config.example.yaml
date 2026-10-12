@@ -26,10 +26,8 @@ media_roots:
 server:
   # Address for webhooks and health checks. Default: 0.0.0.0:8097.
   listen: 0.0.0.0:8097
-  # Optional. subsyncd's address as Sonarr and Radarr reach it. When set,
-  # subsyncd creates and maintains each instance's webhook itself.
-  # Without it, add the webhooks by hand: see `subsyncd webhook-url`.
-  # webhook_base_url: http://subsyncd:8097
+  # Address for the webhooks subsyncd adds to Sonarr/Radarr; unset: add by hand.
+  webhook_base_url: http://subsyncd:8097
 
 logging:
   # debug, info, warn or error. Default: info.

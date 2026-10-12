@@ -42,9 +42,9 @@ Temporary downloads and synchronization files use `/tmp`. Keep it separate from 
 
 ## Sonarr and Radarr setup
 
-Instance settings, path mappings, and webhooks are set up during installation: see [set paths and credentials](../README.md#2-set-paths-and-credentials) and [add Sonarr and Radarr webhooks](../README.md#4-add-sonarr-and-radarr-webhooks). Each instance needs a unique name, reachable URL, API key, and path mapping.
+Instance settings, path mappings, and webhooks are set up during installation: see [set paths and credentials](../README.md#2-set-paths-and-credentials) and [Sonarr and Radarr webhooks](../README.md#4-sonarr-and-radarr-webhooks). Each instance needs a unique name, reachable URL, API key, and path mapping.
 
-Besides import/download, upgrade, rename, and file-delete events, Radarr movie-delete and Sonarr series-delete events are supported. Sonarr per-file imports/upgrades (`episodeFile`) and import-complete batches (`episodeFiles`) are both accepted. Test events do not start searches.
+Besides import/download, upgrade, rename, and file-delete events, Radarr movie-delete and Sonarr series-delete events are supported. Sonarr per-file imports/upgrades (`episodeFile`) and import-complete batches (`episodeFiles`) are both accepted.
 
 When Arr upgrades or re-imports a movie or episode with a different file (another size, or another file under another name), the subtitle subsyncd installed for the old file is deleted before it searches for the new one, whether Arr left it under the old name or renamed it for the new file. The language can be without a subtitle until the search finds one. At most 20 such subtitles are deleted per hour; past that (say, after a whole season or library was re-imported at once) the rest stay, logged as `install.removal_deferred`, and their searches wait (outcome `throttled`) until the next deletion is allowed, then delete the old subtitle and search. They keep their place in the queue. A re-import of the very same file (same size, and the same name or a subtitle already named after it), for example after restoring Arr's database, keeps the subtitle. A subtitle you edited, added yourself, or linked with a symlink is never deleted; subsyncd only stops managing it. When Arr renames a file, a subtitle it installed follows: if Arr did not rename the subtitle too, subsyncd moves it to the new name (never over another file), and if it is gone, or cannot be moved safely (the new name is on another filesystem, or the filesystem supports neither hard links nor a rename that refuses to overwrite), subsyncd stops managing it and searches again.
 
@@ -81,11 +81,31 @@ After adding an instance, provider, or language, restart subsyncd. A new languag
 
 ### Webhook connections
 
-subsyncd generates a random webhook token for each instance on first start and keeps it in its database. `subsyncd webhook-url --instance NAME` prints the URL for a manual Arr webhook: complete when `--base URL` is given or `server.webhook_base_url` is set (`--base` wins), otherwise only the `/webhooks/...?token=...` path and query. For a manual webhook, pass the address Arr reaches subsyncd at, for example `--base http://subsyncd:8097`; it works while the daemon runs. The URL contains the token, so treat the output like a password.
+subsyncd generates a random webhook token for each instance on first start and keeps it in its database. Sonarr and Radarr send their events to `/webhooks/<instance>?token=<token>` on subsyncd's address. subsyncd answers a webhook as soon as it has saved it and applies it right after, so Arr never waits on subsyncd's own lookups.
 
-With `server.webhook_base_url` set, the daemon creates and maintains one webhook connection per instance in Sonarr and Radarr, named `subsyncd (<host:port>)`. It checks once at start and then every six hours, retrying a failure after 15 minutes, then 1 hour. Startup and readiness never wait for Arr. Management changes only that connection's URL, method and required events (import, upgrade, rename, and the file and series or movie delete events). It never changes the connection's name, tags or other events, never touches other connections, and never deletes anything. A connection you created by hand at subsyncd's own address is adopted rather than duplicated; one that points at another subsyncd deployment is left alone.
+With `server.webhook_base_url` set (the example configuration sets `http://subsyncd:8097`), the daemon creates and maintains one webhook connection per instance in Sonarr and Radarr, named `subsyncd (<host:port>)`. It checks once at start and then every six hours, retrying a failure after 15 minutes, then 1 hour. Startup and readiness never wait for Arr. Management changes only that connection's URL, method and required events (import, upgrade, rename, and the file and series or movie delete events). It never changes the connection's name, tags or other events, never touches other connections, and never deletes anything. A connection you created by hand at subsyncd's own address is adopted rather than duplicated; one that points at another subsyncd deployment is left alone.
+
+Sonarr and Radarr test the URL whenever they save a connection with events enabled, so they must be able to reach `server.webhook_base_url`. If they use an HTTP proxy, it must let subsyncd's address through.
 
 Removing an instance, or unsetting `server.webhook_base_url`, leaves the connection in Arr. Delete it there if you no longer want it.
+
+#### Manual webhooks
+
+To add the webhooks by hand, leave `server.webhook_base_url` unset. Print each instance's URL; this works while the daemon runs:
+
+```bash
+docker compose exec subsyncd subsyncd webhook-url --instance sonarr-main --base http://subsyncd:8097
+```
+
+The output looks like this, with the instance's real token in place of the placeholder:
+
+```text
+http://subsyncd:8097/webhooks/sonarr-main?token=SONARR_WEBHOOK_TOKEN
+```
+
+Pass the address Sonarr or Radarr reach subsyncd at as `--base`; for an instance outside Docker, that is your Docker host's address and the published port. `--base` wins over `server.webhook_base_url`. With neither, the command prints only the `/webhooks/...?token=...` path and query. The URL contains the token, so treat the output like a password.
+
+In each application's **Settings → Connect**, add a Webhook connection with that URL and the `POST` method, and enable the import (download), upgrade, rename, file-delete, and series-delete (Sonarr) or movie-delete (Radarr) events where available. Use the connection's **Test** action to check it: test events do not start searches. Other event types are accepted and ignored.
 
 `rotate-webhook-token --instance NAME` replaces an instance's token. Run it with the daemon stopped, then start the daemon: a managed connection is updated at that start, and a manual one needs the new URL from `webhook-url --base URL` entered in Arr. Backups of the data directory contain the webhook tokens, so keep them private.
 
@@ -410,7 +430,9 @@ docker compose up -d
 docker compose exec subsyncd subsyncd doctor
 ```
 
-To pin a build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or SHA tag. For rollback, use the matching image and complete stopped-data backup together, and remove config keys the older image does not know (for example `install.strip_watermarks`, added after `sha-25a2eae`), since unknown keys stop it from starting: an older image refuses a database that a newer one has upgraded. Databases from unsupported pre-release builds are rejected at startup and need a fresh data directory.
+To pin a build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. For rollback, use the matching image and complete stopped-data backup together, and remove config keys the older image does not know (for example `install.strip_watermarks`, added after `sha-25a2eae`), since unknown keys stop it from starting: an older image refuses a database that a newer one has upgraded. Databases from unsupported pre-release builds are rejected at startup and need a fresh data directory.
+
+Upgrading from a build that read `webhook_token` from the configuration: remove `webhook_token` from every instance first, because startup refuses the old key. The first start generates a new token for each instance. With `server.webhook_base_url` set, subsyncd updates the connection in Sonarr or Radarr itself; otherwise put the new URL from `webhook-url --instance NAME --base URL` into each [manual webhook](#manual-webhooks).
 
 Allow the container to stop fully before starting another process against the same media. The supplied Compose file allows 75 seconds for shutdown, which covers both fixed 30-second shutdown windows; do not lower it.
 
