@@ -1608,7 +1608,8 @@ func TestServeStartsWebhookSyncWithoutDelayingReadiness(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Instances[0].URL = arr.URL
 	cfg.Server.WebhookBaseURL = "http://" + listener.Addr().String()
-	application := webhookApp(t, cfg, observability.Discard(), &waitingWorker{}, listener)
+	runner := &signalWorker{started: make(chan struct{})}
+	application := webhookApp(t, cfg, observability.Discard(), runner, listener)
 	defer application.Close()
 	if application.WebhookConnections == nil {
 		t.Fatal("maintainer not built")
@@ -1639,6 +1640,14 @@ func TestServeStartsWebhookSyncWithoutDelayingReadiness(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake Arr received no request")
+	}
+	// The fake Arr is still holding the sync request: the worker must
+	// already be running beside it.
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("worker did not start while the webhook sync was in flight")
 	}
 	cancel()
 	select {
