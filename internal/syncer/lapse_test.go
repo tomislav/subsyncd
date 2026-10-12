@@ -176,6 +176,9 @@ func TestSynchronizeClassifiesUndecodableNonzeroExit(t *testing.T) {
 			if message := processExit.Error(); strings.Contains(message, stdoutToken) || strings.Contains(message, stderrToken) || strings.Contains(message, media) || strings.Contains(message, subtitle) {
 				t.Fatalf("ProcessExitError leaked private data: %q", message)
 			}
+			if test.stdoutEmpty && (processExit.Report != "" || processExit.Error() != fmt.Sprintf("LAPSE exited with code %d", test.exitCode)) {
+				t.Fatalf("ProcessExitError without a report = %#v, %q", processExit, processExit.Error())
+			}
 			if !strings.Contains(processExit.Error(), fmt.Sprintf("%d", test.exitCode)) {
 				t.Fatalf("ProcessExitError = %q, want exit code", processExit.Error())
 			}
@@ -420,5 +423,44 @@ func TestTimeoutIsTypedAndParentCancellationIsNot(t *testing.T) {
 	_, err = lapse.Analyze(parent, media, subtitle)
 	if errors.As(err, &timeout) {
 		t.Fatalf("Analyze() with an expired parent = %v, want no TimeoutError", err)
+	}
+}
+
+// LAPSE numbers splits by input cues while "cues" counts them after its
+// merging, so a report from a 203-cue subtitle reads "cues":201 with a split
+// at 202 (Malcolm in the Middle S06E08). It is a verdict, not a crash.
+func TestSynchronizeReadsAVerdictWhoseSplitsFollowInputCues(t *testing.T) {
+	media, subtitle := testFiles(t)
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stdout: fixture(t, "nothing-recut.json"), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+	var verdict *VerdictError
+	if !errors.As(err, &verdict) || verdict.Verdict != "nothing" || verdict.Result.Splits != 2 {
+		t.Fatalf("Synchronize() error = %T %v, want nothing verdict with two splits", err, err)
+	}
+}
+
+func TestRefusedReportNamesTheFailedCheckOnly(t *testing.T) {
+	media, subtitle := testFiles(t)
+	payload := strings.Replace(string(fixture(t, "nothing-recut.json")), `"splits":[107,202]`, `"splits":[202,107]`, 1)
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stdout: []byte(payload), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+	var processExit *ProcessExitError
+	if !errors.As(err, &processExit) || processExit.Report != "LAPSE JSON contains invalid split positions" {
+		t.Fatalf("Synchronize() error = %T %v", err, err)
+	}
+	if message := err.Error(); !strings.Contains(message, "invalid split positions") || strings.Contains(message, "audio does not back") || strings.Contains(message, "/tmp/out") {
+		t.Fatalf("error = %q", message)
+	}
+
+	lapse = newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stdout: []byte(`{"mode":"auto/recut","secret":"Hello"}`), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err = lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+	if !errors.As(err, &processExit) || processExit.Report != "unknown JSON field" || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("unknown field error = %T %v", err, err)
 	}
 }

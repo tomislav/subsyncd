@@ -88,10 +88,36 @@ type ProcessExitError struct {
 	ExitCode    int
 	StdoutEmpty bool
 	StderrEmpty bool
+	// Report says why the JSON report was refused: a fixed description of
+	// the failed check, never process output.
+	Report string
 }
 
 func (e *ProcessExitError) Error() string {
+	if e.Report != "" {
+		return fmt.Sprintf("LAPSE exited with code %d and its report was refused: %s", e.ExitCode, e.Report)
+	}
 	return fmt.Sprintf("LAPSE exited with code %d", e.ExitCode)
+}
+
+// reportCheckError is a failed consistency check of a decoded LAPSE report.
+// Its message is fixed text, safe to log.
+type reportCheckError struct{ message string }
+
+func (e *reportCheckError) Error() string { return e.message }
+
+// reportRefusal describes a decodeReport failure without process output:
+// the failed check, or only the kind of a JSON decoding failure.
+func reportRefusal(err error) string {
+	var check *reportCheckError
+	switch {
+	case errors.As(err, &check):
+		return check.message
+	case strings.Contains(err.Error(), "unknown field"):
+		return "unknown JSON field"
+	default:
+		return "malformed JSON"
+	}
 }
 
 type VerdictError struct {
@@ -281,11 +307,15 @@ func (l *Lapse) interpret(execution Execution) (domain.SyncResult, lapseReport, 
 			return domain.SyncResult{}, lapseReport{}, &NoSpeechError{}
 		}
 		if execution.ExitCode != 0 {
-			return domain.SyncResult{}, lapseReport{}, &ProcessExitError{
+			processExit := &ProcessExitError{
 				ExitCode:    execution.ExitCode,
 				StdoutEmpty: len(execution.Stdout) == 0,
 				StderrEmpty: len(execution.Stderr) == 0,
 			}
+			if len(execution.Stdout) > 0 {
+				processExit.Report = reportRefusal(err)
+			}
+			return domain.SyncResult{}, lapseReport{}, processExit
 		}
 		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE returned invalid JSON protocol data")
 	}
@@ -363,7 +393,7 @@ func decodeReport(payload []byte) (lapseReport, error) {
 		return lapseReport{}, fmt.Errorf("trailing JSON: %w", err)
 	}
 	if raw.Mode == nil || raw.Reference == nil || raw.OffsetMS == nil || raw.Ratio == nil || raw.Confidence == nil || raw.Margin == nil || raw.Sigma == nil || raw.Agreement == nil || raw.Verdict == nil || raw.Coverage == nil || raw.Cues == nil || raw.IgnoredCues == nil || raw.Parts == nil || raw.Snapped == nil || raw.Written == nil || raw.Output == nil || raw.Splits == nil {
-		return lapseReport{}, fmt.Errorf("LAPSE JSON is missing required fields")
+		return lapseReport{}, &reportCheckError{"LAPSE JSON is missing required fields"}
 	}
 	report := lapseReport{Mode: *raw.Mode, Reference: *raw.Reference, OffsetMS: *raw.OffsetMS, Ratio: *raw.Ratio, Confidence: *raw.Confidence, Margin: *raw.Margin, Sigma: *raw.Sigma, Agreement: *raw.Agreement, Verdict: *raw.Verdict, Coverage: *raw.Coverage, Cues: *raw.Cues, IgnoredCues: *raw.IgnoredCues, Parts: *raw.Parts, Snapped: *raw.Snapped, Written: *raw.Written, Output: *raw.Output, Splits: append([]int(nil), (*raw.Splits)...)}
 	if raw.Why != nil {
@@ -378,29 +408,33 @@ func decodeReport(payload []byte) (lapseReport, error) {
 func (r lapseReport) validate() error {
 	validModes := map[string]bool{"ols": true, "nosplit": true, "split": true, "auto/restart": true, "auto/joined": true, "auto/shifted": true, "auto/shifted+split": true, "auto/drifting": true, "auto/drifting+split": true, "auto/recut": true}
 	if !validModes[r.Mode] {
-		return fmt.Errorf("unknown LAPSE mode %q", r.Mode)
+		return &reportCheckError{"unknown LAPSE mode"}
 	}
 	if r.Reference != "vad" && r.Reference != "embedded" && r.Reference != "subtitle" {
-		return fmt.Errorf("unknown LAPSE reference %q", r.Reference)
+		return &reportCheckError{"unknown LAPSE reference"}
 	}
 	if r.Verdict != "solid" && r.Verdict != "unsure" && r.Verdict != "nothing" {
-		return fmt.Errorf("unknown LAPSE verdict %q", r.Verdict)
+		return &reportCheckError{"unknown LAPSE verdict"}
 	}
 	if !finite(r.Ratio) || r.Ratio <= 0 || !unit(r.Confidence) || !unit(r.Margin) || !finite(r.Sigma) || r.Sigma < 0 || !unit(r.Agreement) || !unit(r.Coverage) {
-		return fmt.Errorf("LAPSE JSON contains unsafe metrics")
+		return &reportCheckError{"LAPSE JSON contains unsafe metrics"}
 	}
 	if r.Cues <= 0 || r.IgnoredCues < 0 || r.Parts < 1 || len(r.Splits) != r.Parts-1 || r.Snapped < 0 || r.Snapped > r.Cues {
-		return fmt.Errorf("LAPSE JSON contains inconsistent cue or part counts")
+		return &reportCheckError{"LAPSE JSON contains inconsistent cue or part counts"}
 	}
 	previous := 0
+	// Split positions are ascending cue indexes. LAPSE numbers them by the
+	// input subtitle's cues while "cues" counts them after its own merging
+	// (203 input cues: "cues":201, "splits":[107,202]), so a split may lie
+	// past "cues"; only the number of splits feeds the result.
 	for _, split := range r.Splits {
-		if split <= previous || split >= r.Cues {
-			return fmt.Errorf("LAPSE JSON contains invalid split positions")
+		if split <= previous {
+			return &reportCheckError{"LAPSE JSON contains invalid split positions"}
 		}
 		previous = split
 	}
 	if strings.TrimSpace(r.Output) == "" {
-		return fmt.Errorf("LAPSE JSON has no output path")
+		return &reportCheckError{"LAPSE JSON has no output path"}
 	}
 	return nil
 }
