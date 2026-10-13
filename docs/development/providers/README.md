@@ -28,6 +28,6 @@ How subsyncd finds, scores, times and installs subtitles for one media file and 
 | Member | One subtitle inside an archive; member-scoped rejections name its checksum |
 | Rejection | A retained, non-expiring record that one candidate is unusable for one media fingerprint and language ([Rejections](rejections.md)) |
 | Cooldown | A persisted provider pause for a scope (`all`, `auth`, `search`, `download`, `download_transfer`) until a reset ([Limits](limits.md)) |
-| Throttled | A search outcome: nothing could be asked because providers were cooling down. Never stored as complete |
+| Throttled | A search outcome: providers were cooling down, so the search is unfinished and waits for their reset. That includes a first install where some providers answered but a provider was skipped and no candidate could be downloaded ([Resume progress](limits.md#resume-progress)). Never stored as complete |
 | Provenance | The `installations` row that makes a sidecar managed: path, checksum, provider, candidate, score and sync verdict |
 | Promotion | Replacing a fallback-tier installation with a preferred-tier one |

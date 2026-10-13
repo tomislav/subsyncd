@@ -196,7 +196,9 @@ Before each daemon lease, the worker's route gate (`internal/worker/route_gate.g
 
 ## Resume progress
 
-For a first-install search, a provider skipped because of a known search or download cooldown keeps the work unfinished even when another provider searched successfully and found nothing installable. The search is retried after the earliest applicable reset without advancing the missing or failure counters (see [Scheduling](scheduling.md#throttled-searches)).
+For a first-install search (no installation for the current media file), a provider skipped because of a known search or download cooldown keeps the work unfinished even when other providers searched successfully. That holds when they found nothing, when every candidate they returned was set aside before download (below the minimum score, excluded by policy, or already rejected), and when another provider failed technically. The search is retried after the earliest reset among the skipped providers without advancing the missing or failure counters (see [Scheduling](scheduling.md#throttled-searches)). When every provider failed, the search is a technical failure instead.
+
+Candidates downloaded and rejected in the run itself (by LAPSE, validation or a no-speech verdict) end the search `rejected` even while a provider is skipped. Not every such rejection is retained, so waiting for the reset could download and check the same candidates again at each reset; a retained rejection sets the candidate aside on the next search, which then waits for the skipped provider as above. A `reject` replacement follows the same rule and keeps the rejected subtitle while it waits.
 
 ### What is saved
 

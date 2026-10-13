@@ -623,15 +623,13 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 			result.RetryAt = retry
 			return result, nil
 		}
-		if !activeInstallation {
-			if retry, blocked := unavailableProviderRetry(search.Errors); blocked {
-				result.Outcome = OutcomeThrottled
-				result.RetryAt = retry
-				return result, nil
-			}
-		}
 		if providerCount > 0 && len(search.Errors) >= providerCount {
 			return result, &acquisitionExhaustedError{fmt.Errorf("all %d assigned subtitle providers failed", providerCount)}
+		}
+		if retry, skipped := skippedProviderRetry(search.Errors, activeInstallation && InstallationMatchesMedia(existing, request.Media)); skipped {
+			result.Outcome = OutcomeThrottled
+			result.RetryAt = retry
+			return result, nil
 		}
 		if classified, failureErr, found := classifyCandidateFailures(result, candidateFailures); found {
 			return classified, failureErr
@@ -714,6 +712,13 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 		if sameCandidateAssessed {
 			result.Outcome = OutcomeSatisfied
 			result.Installation = existing
+			return result, nil
+		}
+		// Nothing was downloaded, so waiting for a skipped provider repeats
+		// only searches, which the provider cache answers.
+		if retry, skipped := skippedProviderRetry(search.Errors, activeInstallation && InstallationMatchesMedia(existing, request.Media)); skipped {
+			result.Outcome = OutcomeThrottled
+			result.RetryAt = retry
 			return result, nil
 		}
 		if classified, failureErr, found := classifyCandidateFailures(result, candidateFailures); found {
@@ -1995,13 +2000,24 @@ func allProvidersUnavailable(failures map[string]error, expected int) (time.Time
 	return unavailableErrors(values)
 }
 
-func unavailableProviderRetry(failures map[string]error) (time.Time, bool) {
-	values := make([]error, 0, len(failures))
-	for _, failure := range failures {
-		values = append(values, failure)
+// skippedProviderRetry reports the earliest reset of a provider the search
+// skipped for a cooldown or quota, when the media has no installation of its
+// own: the search is then unfinished and waits for that reset (throttled), so
+// the skipped provider is asked even though others answered, failed
+// technically or returned only candidates that cannot be used. A disabled
+// provider (no reset) does not hold the search.
+func skippedProviderRetry(failures map[string]error, installed bool) (time.Time, bool) {
+	if installed {
+		return time.Time{}, false
 	}
-	retry, unavailable := unavailableErrors(values)
-	return retry, unavailable && !retry.IsZero()
+	var earliest time.Time
+	for _, failure := range failures {
+		reset, unavailable := unavailableReset(failure)
+		if unavailable && !reset.IsZero() && (earliest.IsZero() || reset.Before(earliest)) {
+			earliest = reset
+		}
+	}
+	return earliest, !earliest.IsZero()
 }
 
 func unavailableErrors(failures []error) (time.Time, bool) {

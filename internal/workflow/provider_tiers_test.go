@@ -433,3 +433,29 @@ func TestProviderTierDisabledPreferredKeepsFallbackReset(t *testing.T) {
 		t.Fatalf("result=%+v err=%v; want throttled without a reset", result, err)
 	}
 }
+
+// Midsommar's route, 2026-10-13: the preferred tier (titlovi) returned a
+// candidate that could not be used, and so did one fallback provider
+// (SubSource) while another (OpenSubtitles) was skipped for its download
+// quota. The search waits for the quota reset instead of ending rejected.
+func TestProviderTierRejectedPreferredWaitsForAFallbackSkippedForQuota(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	preferred := &fakeSearcher{result: provider.SearchResult{
+		ApplicableProviders: []string{"provider"},
+		Candidates:          []domain.Candidate{providerCandidate("provider", "titlovi", false)},
+		Errors:              map[string]error{},
+	}}
+	fallback := &fakeSearcher{result: provider.SearchResult{
+		ApplicableProviders: []string{"fallback", "quota"},
+		Candidates:          []domain.Candidate{fallbackCandidate("subsource", false)},
+		Errors:              map[string]error{"quota": &provider.CooldownError{ProviderID: "quota", Scope: provider.OperationDownload, ResetAt: reset}},
+	}}
+	s, installer := tierService(t, preferred, fallback)
+	s.FallbackProviderOrder = []string{"fallback", "quota"}
+	s.Providers["quota"] = &fakeProvider{id: "quota"}
+	s.MinimumScore = 1000
+	result, err := s.Run(t.Context(), serviceRequest(t))
+	if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) || installer.calls != 0 {
+		t.Fatalf("Run() = outcome %q retry %v, %v", result.Outcome, result.RetryAt, err)
+	}
+}

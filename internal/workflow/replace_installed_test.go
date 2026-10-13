@@ -92,6 +92,25 @@ func TestReplaceInstalledKeepsSubtitleWhenTheSearchDidNotFinish(t *testing.T) {
 	}
 }
 
+// A reject-queued replacement whose candidates were all set aside while a
+// provider was skipped for its quota has not seen every candidate: it keeps
+// the rejected subtitle and the queued replacement, and retries at the quota
+// reset (throttled) rather than failing on the failure schedule.
+func TestReplaceInstalledWaitsForAProviderSkippedForQuota(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	searcher := &fakeSearcher{result: provider.SearchResult{
+		Candidates: []domain.Candidate{broadCandidate("unusable")},
+		Errors:     map[string]error{"down": &provider.CooldownError{ProviderID: "down", Scope: provider.OperationDownload, ResetAt: reset}},
+	}}
+	service, installer, request, _ := replaceFixture(t, searcher)
+	service.ProviderOrder = []string{"provider", "down"}
+	service.MinimumScore = 1000
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) || len(installer.removals) != 0 || installer.calls != 0 {
+		t.Fatalf("Run() = %#v, %v; removals=%d", result, err, len(installer.removals))
+	}
+}
+
 func TestReplaceInstalledLeavesAnEditedSubtitleAlone(t *testing.T) {
 	service, installer, request, existing := replaceFixture(t, &fakeSearcher{})
 	edited := managedSidecarInventory(existing)

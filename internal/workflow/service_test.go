@@ -1542,6 +1542,68 @@ func providerCandidate(providerID, resultID string, exact bool) domain.Candidate
 	return candidate
 }
 
+// Midsommar, 2026-10-13: titlovi and SubSource each returned a candidate
+// that could not be used, while OpenSubtitles and SubDL were skipped for
+// their download quota. Nothing was downloaded, so the search waits for the
+// quota reset (throttled) and asks the skipped providers then, instead of
+// ending rejected and backing off for days. Candidates downloaded and
+// rejected in this run still end rejected, so a reset never repeats their
+// downloads and LAPSE runs.
+func TestServiceThrottlesRejectedCandidatesWhileAProviderIsSkippedForQuota(t *testing.T) {
+	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	quota := func() error {
+		return &provider.CooldownError{ProviderID: "down", Scope: provider.OperationDownload, ResetAt: reset}
+	}
+	for _, test := range []struct {
+		name         string
+		errors       map[string]error
+		ineligible   bool
+		installation string // "", "matching" or "replaced"
+		wantOutcome  Outcome
+		wantRetryAt  time.Time
+	}{
+		{name: "every candidate set aside, a provider skipped", errors: map[string]error{"down": quota()}, ineligible: true, wantOutcome: OutcomeThrottled, wantRetryAt: reset},
+		{name: "another provider also failed technically", errors: map[string]error{"down": quota(), "broken": errors.New("bad gateway")}, ineligible: true, wantOutcome: OutcomeThrottled, wantRetryAt: reset},
+		{name: "every candidate set aside, nothing skipped", errors: map[string]error{}, ineligible: true, wantOutcome: OutcomeRejected},
+		{name: "downloaded and rejected, a provider skipped", errors: map[string]error{"down": quota()}, wantOutcome: OutcomeRejected},
+		{name: "downloaded and rejected, nothing skipped", errors: map[string]error{}, wantOutcome: OutcomeRejected},
+		{name: "a subtitle installed for this media", errors: map[string]error{"down": quota()}, ineligible: true, installation: "matching", wantOutcome: OutcomeSatisfied},
+		{name: "a subtitle installed for a replaced media file", errors: map[string]error{"down": quota()}, ineligible: true, installation: "replaced", wantOutcome: OutcomeThrottled, wantRetryAt: reset},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			searcher := &fakeSearcher{result: provider.SearchResult{
+				ApplicableProviders: []string{"candidate", "down", "broken"},
+				Candidates:          []domain.Candidate{providerCandidate("candidate", "unusable", false)},
+				Errors:              test.errors,
+			}}
+			candidateProvider := &fakeProvider{id: "candidate", payloads: map[string][]byte{"unusable": []byte("not a subtitle")}}
+			request := serviceRequest(t)
+			current := inventory.Inventory{}
+			repository := &workflowRepository{}
+			if test.installation != "" {
+				existing := matchingInstallation(request, broadCandidate("installed"), []byte(`{"total":35}`))
+				if test.installation == "replaced" {
+					existing.MediaModTimeNS--
+				}
+				current = managedSidecarInventory(existing)
+				repository = &workflowRepository{found: true, installation: existing}
+			}
+			installer := &fakeInstaller{}
+			service := testService(t, current, searcher, nil, &fakeSynchronizer{}, installer)
+			service.Repository = repository
+			service.ProviderOrder = []string{"candidate", "down", "broken"}
+			service.Providers = map[string]provider.Provider{"candidate": candidateProvider, "down": &fakeProvider{id: "down"}, "broken": &fakeProvider{id: "broken"}}
+			if test.ineligible {
+				service.MinimumScore = 1000
+			}
+			result, err := service.Run(t.Context(), request)
+			if err != nil || result.Outcome != test.wantOutcome || !result.RetryAt.Equal(test.wantRetryAt) || installer.calls != 0 {
+				t.Fatalf("Run() = outcome %q retry %v installs %d, %v; want %q retry %v", result.Outcome, result.RetryAt, installer.calls, err, test.wantOutcome, test.wantRetryAt)
+			}
+		})
+	}
+}
+
 func TestServiceDoesNotAccelerateUpgradeAfterPartialProviderThrottle(t *testing.T) {
 	reset := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
 	request := serviceRequest(t)

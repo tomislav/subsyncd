@@ -53,7 +53,7 @@ Media-unavailable failures use the same delays but keep the search's queue posit
 
 ## Throttled searches
 
-A search that could not ask its providers because of cooldowns completes as `throttled`. It is never stored as complete.
+A search that could not ask its providers because of cooldowns completes as `throttled`, and so does a first install that asked some providers but skipped one for a cooldown with a known reset and found nothing it could download (see [Resume progress](limits.md#resume-progress)). It is never stored as complete.
 
 - The worker never sleeps through a cooldown. It releases the lease and schedules the search at or after the reset, plus fresh random positive jitter of up to 10% of the remaining cooldown.
 - A reset less than a minute away, already past, or `Retry-After: 0` waits one minute (`minimumThrottleDelay`), so a provider is never asked in a loop.

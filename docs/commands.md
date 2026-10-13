@@ -191,7 +191,7 @@ Each row has the title, language, outcome, provider and release when there was o
 | `satisfied` | Nothing needed doing. |
 | `no_result` | Providers returned nothing usable. |
 | `rejected` | Every candidate was rejected. A `reason` starting with `user_` is a rejection you made with `reject`; its replacement gets a row of its own. |
-| `throttled` | Providers were rate limited, or the old subtitle of a replaced file is waiting for a deletion slot. |
+| `throttled` | Providers were rate limited or out of quota, so the search waits for their reset. That includes a search where other providers answered but nothing usable came back while one was skipped. Also used when the old subtitle of a replaced file is waiting for a deletion slot. |
 | `removed` | A subtitle was removed: after `reject` found no replacement, or because Arr replaced or renamed the media file (`media_replaced`, `media_renamed`). |
 | `workflow_error` | The search failed technically, for example on unreadable media. It retries by itself. |
 
