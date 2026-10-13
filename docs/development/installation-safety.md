@@ -128,6 +128,7 @@ The media row follows the stable Arr entity, so an upgrade, re-import or replace
 | Case | Action | Event |
 | --- | --- | --- |
 | New Arr file ID, known unchanged size, and an unchanged media path or an unchanged sidecar named after the current file (a re-import of identical bytes, an Arr database restore) | `Repository.ReattachInstallation` sets the new file ID and sidecar path; then settled as the same file | `install.reattached` |
+| New Arr file ID, known unchanged size and unchanged media path, sidecar gone (Arr deleted the old file's extra files on the re-import) | Drop the record without reattaching it; the search runs as for a missing subtitle | `install.record_dropped` (`sidecar_missing`) |
 | Same file renamed, sidecar already at the new name with the recorded checksum (Arr moved it) | `Repository.RebaseInstallation` sets `media_path`; a hard link left at the old name is removed | `install.renamed` (`moved=false`) |
 | Same file renamed, sidecar left at the old name | Hard-link it to the new name (never over an existing file; where hard links fail, `renameat2(RENAME_NOREPLACE)` on Linux or `renamex_np(RENAME_EXCL)` on macOS), record it there, unlink the old name | `install.renamed` (`moved=true`) |
 | Same file renamed, the move fails with `EXDEV` or the exclusive rename is unsupported | Drop the record, leave the file at the old name, so the search runs instead of failing each pass | `install.record_dropped` (`sidecar_unmovable`) |

@@ -44,6 +44,29 @@ func TestReconcileKeepsTheSidecarOfAByteIdenticalFileUnderANewFileID(t *testing.
 	}
 }
 
+// Sonarr re-imports the same bytes at the same path under a new file ID and
+// deletes the old file's extra files, the sidecar among them. Nothing is
+// kept, so nothing is reattached: the record is dropped as sidecar_missing
+// and the search runs as for a missing subtitle.
+func TestReconcileDropsTheRecordOfAByteIdenticalFileWhoseSidecarArrDeleted(t *testing.T) {
+	f := newReconcileFixture(t, "Movie.WADU.mkv")
+	same := f.mediaFile(t, "Movie.WADU.mkv", 99, "media")
+	f.import_(t, "import", same)
+	if err := os.Remove(f.sidecar); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := f.reconcile(t); err != nil || !changed {
+		t.Fatalf("ReconcileInstallation() = %v/%v, want the record dropped", changed, err)
+	}
+	f.assertNoInstallation(t)
+	if strings.Contains(f.logs.String(), `"install.reattached"`) {
+		t.Fatalf("logged install.reattached for a deleted sidecar:\n%s", f.logs.String())
+	}
+	if record := f.event(t, "install.record_dropped"); record["reason"] != "sidecar_missing" {
+		t.Fatalf("install.record_dropped = %#v", record)
+	}
+}
+
 func TestReconcileKeepsAByteIdenticalFileArrRenamedUnderANewFileID(t *testing.T) {
 	// Same size, new path and new file ID, and Arr renamed the sidecar after
 	// it: the same file, so the record follows it.

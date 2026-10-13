@@ -77,7 +77,9 @@ const (
 //     and either the media path is unchanged or the sidecar with the
 //     recorded checksum is named after the current media file. The record
 //     takes the new file ID and the sidecar stays; it is then settled as the
-//     same file below.
+//     same file below. With the path unchanged and the sidecar gone (Arr
+//     deletes the old file's extra files on a re-import), the record is
+//     dropped instead and the search runs as for a missing subtitle.
 //   - The same file under a new path (an Arr rename): the store already
 //     renamed the sidecar record. If the sidecar is there with the recorded
 //     checksum, the record now follows the new media path. If Arr left it at
@@ -108,9 +110,12 @@ func (i Installer) ReconcileInstallation(ctx context.Context, request RemovalReq
 	if !ok {
 		return Reconciliation{}, nil
 	}
-	reattached, err := i.reattachIdenticalFile(ctx, records, &request)
+	reattached, missing, err := i.reattachIdenticalFile(ctx, records, &request)
 	if err != nil {
 		return Reconciliation{}, err
+	}
+	if missing {
+		return Reconciliation{Changed: true}, i.dropInstallation(ctx, records, request.Installation, reconcileMissing)
 	}
 	installation := request.Installation
 	media := request.Media.Fingerprint
@@ -142,16 +147,26 @@ func (i Installer) ReconcileInstallation(ctx context.Context, request RemovalReq
 // size is known and unchanged, and the media path is unchanged or the
 // unchanged sidecar is named after the current media file (at the recorded
 // path, or renamed there by Arr). It updates request.Installation and
-// reports whether it changed the record.
-func (i Installer) reattachIdenticalFile(ctx context.Context, records installationRecordStore, request *RemovalRequest) (bool, error) {
+// reports whether it changed the record. When the media path is unchanged but
+// the sidecar is gone (Arr deletes the old file's extra files on a
+// re-import), nothing is reattached and missing is true: the caller drops the
+// record.
+func (i Installer) reattachIdenticalFile(ctx context.Context, records installationRecordStore, request *RemovalRequest) (reattached, missing bool, err error) {
 	installation := request.Installation
 	media := request.Media.Fingerprint
 	fileID := request.Media.Ref.FileID
 	if installation.MediaFileID <= 0 || installation.MediaFileID == fileID || installation.MediaSize <= 0 || installation.MediaSize != media.Size {
-		return false, nil
+		return false, false, nil
 	}
 	path := ""
 	if installation.MediaPath != "" && filepath.Clean(installation.MediaPath) == filepath.Clean(media.Path) {
+		state, err := inspectSidecar(installation.Path, installation.Checksum)
+		if err != nil {
+			return false, false, err
+		}
+		if state == sidecarMissing {
+			return false, true, nil
+		}
 		path = installation.Path
 	} else {
 		candidates := []string{installation.Path}
@@ -164,7 +179,7 @@ func (i Installer) reattachIdenticalFile(ctx context.Context, records installati
 			}
 			state, err := inspectSidecar(candidate, installation.Checksum)
 			if err != nil {
-				return false, err
+				return false, false, err
 			}
 			if state == sidecarMatches {
 				path = candidate
@@ -173,20 +188,20 @@ func (i Installer) reattachIdenticalFile(ctx context.Context, records installati
 		}
 	}
 	if path == "" {
-		return false, nil
+		return false, false, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := records.ReattachInstallation(ctx, installation, path, fileID); err != nil {
-		return false, err
+		return false, false, err
 	}
 	installation.Path, installation.MediaFileID = path, fileID
 	request.Installation = installation
 	i.Events.For("workflow").Log(ctx, slog.LevelInfo, "install.reattached", "managed subtitle kept: the media file is the same under a new Arr file ID",
 		slog.String("provider", observability.SafeText(installation.ProviderID)), slog.String("candidate_id", observability.SafeText(installation.CandidateID)),
 		slog.String("checksum_prefix", checksumPrefix(installation.Checksum)))
-	return true, nil
+	return true, false, nil
 }
 
 // settleReplaced removes or forgets the sidecar of a file that is no longer
