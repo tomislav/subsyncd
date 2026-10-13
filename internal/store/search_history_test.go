@@ -147,6 +147,9 @@ func TestListHistoryFiltersAndOrders(t *testing.T) {
 	if got, err := repo.ListHistory(ctx, HistoryQuery{Limit: 1}); err != nil || len(got) != 1 || got[0].Outcome != "rejected" {
 		t.Fatalf("limit = %+v/%v", got, err)
 	}
+	if got, err := repo.ListHistory(ctx, HistoryQuery{Outcomes: []string{"installed", "no_result"}, Limit: 1}); err != nil || len(got) != 1 || got[0].Outcome != "installed" {
+		t.Fatalf("outcomes = %+v/%v", got, err)
+	}
 }
 
 func TestProviderHistoryCounts(t *testing.T) {

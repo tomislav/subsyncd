@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -709,12 +710,23 @@ func (r ProvidersResult) Text() string {
 	return strings.Join(lines, "\n")
 }
 
+// RecentOutcomes are the outcomes the search history records, which recent
+// --outcome accepts.
+var RecentOutcomes = []string{"installed", "satisfied", "no_result", "rejected", "throttled", "removed", "workflow_error"}
+
+// ValidRecentOutcome reports whether outcome is one of RecentOutcomes.
+func ValidRecentOutcome(outcome string) bool {
+	return slices.Contains(RecentOutcomes, outcome)
+}
+
 // RecentArgs are the arguments of the recent command. Since zero means the
-// last 24 hours; Limit zero means 50.
+// last 24 hours; Limit zero means 50. Outcomes, when set, keeps only those
+// outcomes, before Limit applies.
 type RecentArgs struct {
 	Since    time.Duration `json:"since,omitempty"`
 	Instance string        `json:"instance,omitempty"`
 	Language string        `json:"language,omitempty"`
+	Outcomes []string      `json:"outcomes,omitempty"`
 	Limit    int           `json:"limit,omitempty"`
 }
 

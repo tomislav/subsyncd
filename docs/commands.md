@@ -178,9 +178,10 @@ Each row has a `reason` and an `action`. The action is a complete command with t
 ```bash
 subsyncd recent
 subsyncd recent --since 72h --language hr --limit 20
+subsyncd recent --outcome installed
 ```
 
-`recent` lists finished searches and rejections, newest first, from the last 24 hours. `--since` takes a duration such as `90m` or `72h`; `--instance` and `--language` narrow the list, and `--limit` (default 50) cuts it. History is kept for 30 days.
+`recent` lists finished searches and rejections, newest first, from the last 24 hours. `--since` takes a duration such as `90m` or `72h`; `--instance`, `--language` and `--outcome` narrow the list, and `--limit` (default 50) cuts it. `--outcome` takes one or more outcomes from the table below, comma-separated, such as `installed` or `installed,removed`. The limit counts only the rows the filters keep, so on a night with hundreds of `throttled` searches, `--outcome installed` still lists every install. History is kept for 30 days.
 
 Each row has the title, language, outcome, provider and release when there was one, a `reason`, whether the search was `manual`, and when it finished. It also shows `instance` and `kind`; `file_id` is in the `--json` output only.
 
@@ -192,6 +193,7 @@ Each row has the title, language, outcome, provider and release when there was o
 | `rejected` | Every candidate was rejected. A `reason` starting with `user_` is a rejection you made with `reject`; its replacement gets a row of its own. |
 | `throttled` | Providers were rate limited, or the old subtitle of a replaced file is waiting for a deletion slot. |
 | `removed` | A subtitle was removed: after `reject` found no replacement, or because Arr replaced or renamed the media file (`media_replaced`, `media_renamed`). |
+| `workflow_error` | The search failed technically, for example on unreadable media. It retries by itself. |
 
 A file removed in Arr still appears under its stored title. `forget-instance --yes` deletes an instance's history.
 

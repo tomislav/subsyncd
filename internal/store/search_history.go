@@ -38,10 +38,13 @@ type HistoryEntry struct {
 	FinishedAt  time.Time
 }
 
+// HistoryQuery selects finished searches. Outcomes, when set, keeps only
+// those outcomes; Limit applies after every filter.
 type HistoryQuery struct {
 	Since    time.Time
 	Instance string
 	Language domain.Language
+	Outcomes []string
 	Limit    int
 }
 
@@ -86,6 +89,12 @@ func (r *Repository) ListHistory(ctx context.Context, q HistoryQuery) ([]History
 	if q.Language != "" {
 		where = append(where, "language = ?")
 		args = append(args, q.Language.String())
+	}
+	if len(q.Outcomes) > 0 {
+		where = append(where, "outcome IN ("+strings.TrimSuffix(strings.Repeat("?,", len(q.Outcomes)), ",")+")")
+		for _, outcome := range q.Outcomes {
+			args = append(args, outcome)
+		}
 	}
 	query := `SELECT media_id, instance, kind, file_id, media_title, language, outcome, provider_id, release_name, reason, manual, finished_at_ns FROM search_history`
 	if len(where) > 0 {

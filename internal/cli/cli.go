@@ -144,6 +144,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	language := flags.String("language", "", "subtitle language tag")
 	limit := flags.Int("limit", 0, "most rows to list (default 50)")
 	since := flags.Duration("since", 0, "how far back to look, such as 90m or 72h (default 24h)")
+	outcome := flags.String("outcome", "", "only these outcomes, comma-separated, such as installed")
 	provider := flags.String("provider", "", "provider instance name")
 	forceProbe := flags.Bool("force-probe", false, "refresh embedded subtitle tracks")
 	retryRejected := flags.Bool("retry-rejected", false, "retry the candidates subsyncd rejected (not yours)")
@@ -182,6 +183,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	}
 
 	var validateErr error
+	var outcomes []string
 	switch command {
 	case "serve", "doctor", "status", "providers":
 	case "scan", "forget-instance", "webhook-url", "rotate-webhook-token":
@@ -204,13 +206,18 @@ func (c Command) Run(ctx context.Context, args []string) int {
 			validateErr = fmt.Errorf("--limit must not be negative")
 		}
 	case "recent":
-		sinceGiven := false
-		flags.Visit(func(item *flag.Flag) { sinceGiven = sinceGiven || item.Name == "since" })
+		sinceGiven, outcomeGiven := false, false
+		flags.Visit(func(item *flag.Flag) {
+			sinceGiven = sinceGiven || item.Name == "since"
+			outcomeGiven = outcomeGiven || item.Name == "outcome"
+		})
 		switch {
 		case sinceGiven && *since <= 0:
 			validateErr = fmt.Errorf("--since must be positive")
 		case *limit < 0:
 			validateErr = fmt.Errorf("--limit must not be negative")
+		case outcomeGiven:
+			outcomes, validateErr = parseOutcomes(*outcome)
 		}
 	case "retry":
 		validateErr = require("--provider", *provider)
@@ -314,7 +321,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "missing":
 		result, err = wrap(backend.Missing(ctx, control.MissingArgs{Instance: *instance, Language: *language, Title: *title, Limit: *limit}))
 	case "recent":
-		result, err = wrap(backend.Recent(ctx, control.RecentArgs{Since: *since, Instance: *instance, Language: *language, Limit: *limit}))
+		result, err = wrap(backend.Recent(ctx, control.RecentArgs{Since: *since, Instance: *instance, Language: *language, Outcomes: outcomes, Limit: *limit}))
 	case "status":
 		var status control.StatusResult
 		if status, err = backend.Status(ctx); err == nil {
@@ -450,7 +457,7 @@ func commandFlags(command string) map[string]bool {
 	case "missing":
 		names = []string{"instance", "language", "title", "limit"}
 	case "recent":
-		names = []string{"since", "instance", "language", "limit"}
+		names = []string{"since", "instance", "language", "outcome", "limit"}
 	case "retry":
 		names = []string{"provider"}
 	case "analyze-sync":
@@ -661,8 +668,8 @@ Result fields: total (all rows before --limit), items[] (instance, kind, file_id
 Error codes: usage, unknown_instance, unknown_language, internal.`,
 	"recent": `List what happened in a time window, newest first.
 That is subtitles installed (and replaced), searches that ended with no result or only rejected candidates, subtitles you rejected, subtitles removed, and searches that gave up on upgrade checks. Reads the search history beside the daemon; the history is kept for 30 days.
-Filters: --since (such as 90m or 72h; default 24h), --instance, --language, --limit (default 50).
-Outcomes: installed (a subtitle was installed or replaced), satisfied (nothing needed doing), no_result (providers returned nothing usable), rejected (every candidate was rejected; a reason starting with user_ is a rejection you made with reject, such as user_out_of_sync; its replacement's result is a separate row; reject --undo does not remove rows), throttled (providers were rate limited, or the subtitle of a replaced media file waits for its hourly deletion slot), removed (a rejected subtitle was taken out and nothing acceptable replaced it). manual is true for searches you started.
+Filters: --since (such as 90m or 72h; default 24h), --instance, --language, --outcome (one or more outcomes, comma-separated, such as installed or installed,removed), --limit (default 50). --limit counts only the rows the filters keep, so --outcome installed is not crowded out by throttled searches.
+Outcomes: installed (a subtitle was installed or replaced), satisfied (nothing needed doing), no_result (providers returned nothing usable), rejected (every candidate was rejected; a reason starting with user_ is a rejection you made with reject, such as user_out_of_sync; its replacement's result is a separate row; reject --undo does not remove rows), throttled (providers were rate limited, or the subtitle of a replaced media file waits for its hourly deletion slot), removed (a rejected subtitle was taken out and nothing acceptable replaced it), workflow_error (the search failed technically, for example unreadable media; it retries by itself). manual is true for searches you started.
 Result fields: since, items[] (instance, kind, file_id, title, language, outcome, provider, release, reason, manual, finished_at). The title is the name the log shows (episodes include season and episode); a file subsyncd has since forgotten still appears.
 Error codes: usage, unknown_instance, unknown_language, internal.`,
 	"status": `Show an overview to read before acting.
@@ -792,4 +799,18 @@ func wrapText(text string, width int) string {
 		out.WriteString("\n")
 	}
 	return out.String()
+}
+
+// parseOutcomes splits recent's comma-separated --outcome value and checks
+// each outcome.
+func parseOutcomes(value string) ([]string, error) {
+	var outcomes []string
+	for part := range strings.SplitSeq(value, ",") {
+		outcome := strings.TrimSpace(part)
+		if !control.ValidRecentOutcome(outcome) {
+			return nil, fmt.Errorf("--outcome: unknown outcome %q; use %s", outcome, strings.Join(control.RecentOutcomes, ", "))
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, nil
 }

@@ -79,3 +79,38 @@ func TestRecentInvalidSinceIsUsage(t *testing.T) {
 		}
 	}
 }
+
+// Last night: 26 installs, then about 950 throttled searches that filled
+// --limit and hid every install. --outcome installed filters before the
+// limit, so the installs come back.
+func TestRecentOutcomeFilterAppliesBeforeTheLimit(t *testing.T) {
+	application, root := newMissingApp(t)
+	id := storeEpisode(t, application, 7, "Show", 2020, filepath.Join(root, "a.mkv"))
+	recordRecent(t, application, id, "hr", "installed", store.SearchHistoryDetail{MediaTitle: "Show S01E01", ProviderID: "opensubtitles"}, 10*time.Hour)
+	recordRecent(t, application, id, "hr", "installed", store.SearchHistoryDetail{MediaTitle: "Show S01E01", ProviderID: "titlovi"}, 9*time.Hour)
+	for minutes := 1; minutes <= 5; minutes++ {
+		recordRecent(t, application, id, "hr", "throttled", store.SearchHistoryDetail{MediaTitle: "Show S01E01"}, time.Duration(minutes)*time.Minute)
+	}
+	if result, err := application.Recent(t.Context(), control.RecentArgs{Limit: 3}); err != nil || len(result.Items) != 3 || result.Items[0].Outcome != "throttled" {
+		t.Fatalf("unfiltered = %+v, %v", result, err)
+	}
+	result, err := application.Recent(t.Context(), control.RecentArgs{Limit: 3, Outcomes: []string{"installed"}})
+	if err != nil || len(result.Items) != 2 || result.Items[0].Provider != "titlovi" || result.Items[1].Provider != "opensubtitles" {
+		t.Fatalf("installed = %+v, %v", result, err)
+	}
+	both, err := application.Recent(t.Context(), control.RecentArgs{Outcomes: []string{"installed", "throttled"}})
+	if err != nil || len(both.Items) != 7 {
+		t.Fatalf("installed,throttled = %+v, %v", both, err)
+	}
+}
+
+func TestRecentUnknownOutcomeIsUsage(t *testing.T) {
+	application, _ := newMissingApp(t)
+	for _, outcomes := range [][]string{{"instaled"}, {"installed", ""}} {
+		_, err := application.Recent(t.Context(), control.RecentArgs{Outcomes: outcomes})
+		var coded *control.Error
+		if !errors.As(err, &coded) || coded.Code != control.CodeUsage {
+			t.Errorf("%q: err = %v", outcomes, err)
+		}
+	}
+}

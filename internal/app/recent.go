@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"subsyncd/internal/control"
@@ -27,6 +29,11 @@ func (a *App) Recent(ctx context.Context, args control.RecentArgs) (control.Rece
 	if args.Instance != "" && a.Catalogs[args.Instance] == nil {
 		return control.RecentResult{}, unknownInstance(args.Instance)
 	}
+	for _, outcome := range args.Outcomes {
+		if !control.ValidRecentOutcome(outcome) {
+			return control.RecentResult{}, selectionUsage(fmt.Sprintf("unknown outcome %q; use %s", outcome, strings.Join(control.RecentOutcomes, ", ")))
+		}
+	}
 	window, limit := args.Since, args.Limit
 	if window == 0 {
 		window = defaultRecentWindow
@@ -34,7 +41,7 @@ func (a *App) Recent(ctx context.Context, args control.RecentArgs) (control.Rece
 	if limit == 0 {
 		limit = defaultRecentLimit
 	}
-	query := store.HistoryQuery{Since: a.Clock.Now().Add(-window), Instance: args.Instance, Limit: limit}
+	query := store.HistoryQuery{Since: a.Clock.Now().Add(-window), Instance: args.Instance, Outcomes: args.Outcomes, Limit: limit}
 	if args.Language != "" {
 		language, err := domain.ParseLanguage(args.Language)
 		if err != nil {
