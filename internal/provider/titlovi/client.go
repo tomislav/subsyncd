@@ -78,7 +78,7 @@ func (c *Client) RecordDownloadRefusal(ctx context.Context, kind baseprovider.Co
 	return c.transport.RecordDownloadRefusal(ctx, kind)
 }
 
-func (c *Client) SearchCacheVersion() string { return "titlovi-evidence-v3" }
+func (c *Client) SearchCacheVersion() string { return "titlovi-evidence-v4" }
 
 // CanReuseCachedCandidate refuses all-seasons uploads that an earlier version
 // cached as season 0 (specials) packs.
@@ -167,7 +167,8 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 	if !ok {
 		return nil, fmt.Errorf("Titlovi does not support language %s", query.Language)
 	}
-	parameters := url.Values{"query": {query.Media.Title}, "lang": {language}, "json": {"true"}}
+	// Titlovi ignores lang and episode unless ignoreLangAndEpisode is false.
+	parameters := url.Values{"query": {query.Media.Title}, "lang": {language}, "type": {strconv.Itoa(titloviType(query.Media.Ref.Kind))}, "ignoreLangAndEpisode": {"false"}, "json": {"true"}}
 	if query.Media.Year > 0 {
 		parameters.Set("year", strconv.Itoa(query.Media.Year))
 	}
@@ -176,7 +177,12 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 	}
 	if query.Media.Ref.Kind == domain.MediaEpisode {
 		parameters.Set("season", strconv.Itoa(query.Media.Season))
-		parameters.Set("episode", strconv.Itoa(query.Media.Episode))
+		// The episode filter is exact, so episode 0 keeps season packs. In
+		// season 0 it would only match all-seasons uploads, which are dropped.
+		parameters["episode"] = []string{strconv.Itoa(query.Media.Episode)}
+		if query.Media.Season != 0 {
+			parameters["episode"] = []string{"0", strconv.Itoa(query.Media.Episode)}
+		}
 	}
 	return c.search(ctx, query, parameters, true)
 }
@@ -263,14 +269,26 @@ type searchItem struct {
 
 var akaPattern = regexp.MustCompile(`(?i)\s+aka\s+`)
 
-// titloviOtherType is the search result Type of the media kind not searched
-// for: Titlovi uses 1 for movies and 2 for series. Results without a Type or
-// with another value stay usable.
+const (
+	titloviMovieType  = 1
+	titloviSeriesType = 2
+)
+
+// titloviType is the search result Type Titlovi uses for a media kind.
+func titloviType(kind domain.MediaKind) int {
+	if kind == domain.MediaEpisode {
+		return titloviSeriesType
+	}
+	return titloviMovieType
+}
+
+// titloviOtherType is the Type of the media kind not searched for. Results
+// without a Type or with another value stay usable.
 func titloviOtherType(kind domain.MediaKind) int {
 	if kind == domain.MediaEpisode {
-		return 1
+		return titloviMovieType
 	}
-	return 2
+	return titloviSeriesType
 }
 
 func allSeasonsUpload(season, episode int) bool {

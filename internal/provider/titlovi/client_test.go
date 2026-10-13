@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -59,7 +60,7 @@ func TestSearchAuthenticatesPaginatesAndNormalizesEpisodeAndSeasonPack(t *testin
 		case "/api/subtitles/search":
 			searchCalls++
 			query := r.URL.Query()
-			if query.Get("query") != "Example Show" || query.Get("season") != "1" || query.Get("episode") != "2" || query.Get("lang") != "Hrvatski" || query.Get("token") != "titlovi-token" || query.Get("userid") != "42" {
+			if query.Get("query") != "Example Show" || query.Get("season") != "1" || !reflect.DeepEqual(query["episode"], []string{"0", "2"}) || query.Get("lang") != "Hrvatski" || query.Get("token") != "titlovi-token" || query.Get("userid") != "42" {
 				t.Errorf("search query = %s", r.URL.RawQuery)
 			}
 			if query.Get("pg") == "2" {
@@ -329,6 +330,54 @@ func TestCachedAllSeasonsUploadIsNotReusedAsASpecialsPack(t *testing.T) {
 	} {
 		if !client.CanReuseCachedCandidate(candidate) {
 			t.Errorf("cached candidate %s S%dE%d refused", candidate.ResultID, candidate.Season, candidate.Episode)
+		}
+	}
+}
+
+func TestSearchAsksTitloviToFilterByLanguageKindAndEpisode(t *testing.T) {
+	// Without ignoreLangAndEpisode=false Titlovi ignores lang and episode and
+	// returns every language and every episode of the season. With it, only
+	// the listed episodes come back, so episode 0 keeps season packs.
+	login := readFixture(t, "login.json")
+	var searched []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/subtitles/gettoken":
+			w.Write(login)
+		case "/api/subtitles/search":
+			searched = append(searched, r.URL.Query())
+			w.Write([]byte(`{"PagesAvailable":1,"SubtitleResults":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	movie := domain.Media{Ref: domain.MediaRef{Instance: "radarr", Kind: domain.MediaMovie, FileID: 7}, Title: "Example Movie", Year: 1999, ExternalIDs: domain.ExternalIDs{IMDb: "tt7654321"}}
+	special := episodeMedia()
+	special.Season, special.Episode = 0, 5
+	for _, media := range []domain.Media{episodeMedia(), movie, special} {
+		if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: media, Language: "hr", Mode: baseprovider.SearchBroad}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(searched) != 3 {
+		t.Fatalf("searches = %d, want 3", len(searched))
+	}
+	for _, test := range []struct {
+		name  string
+		query url.Values
+		want  map[string][]string
+	}{
+		{"episode", searched[0], map[string][]string{"ignoreLangAndEpisode": {"false"}, "lang": {"Hrvatski"}, "type": {"2"}, "season": {"1"}, "episode": {"0", "2"}, "imdbID": {"tt1234567"}}},
+		{"movie", searched[1], map[string][]string{"ignoreLangAndEpisode": {"false"}, "lang": {"Hrvatski"}, "type": {"1"}, "season": nil, "episode": nil, "imdbID": {"tt7654321"}}},
+		// Season 0 episode 0 is an all-seasons upload, which is always dropped.
+		{"special", searched[2], map[string][]string{"ignoreLangAndEpisode": {"false"}, "type": {"2"}, "season": {"0"}, "episode": {"5"}}},
+	} {
+		for key, want := range test.want {
+			if got := test.query[key]; !reflect.DeepEqual(got, want) {
+				t.Errorf("%s search %s = %q, want %q", test.name, key, got, want)
+			}
 		}
 	}
 }

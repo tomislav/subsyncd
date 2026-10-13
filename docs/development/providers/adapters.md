@@ -32,7 +32,7 @@ Every adapter is built by a `provider.Factory`, registered by type in `buildProv
 
 | Type | Capabilities | Phases | Search cache version |
 | --- | --- | --- | --- |
-| `titlovi` | Season packs | Broad | `titlovi-evidence-v3` |
+| `titlovi` | Season packs | Broad | `titlovi-evidence-v4` |
 | `opensubtitles` | Exact file hash | Exact, broad | `opensubtitles-evidence-v2` |
 | `subdl` | Season packs, direct pack members | Broad | `subdl-no-hi-filter-v3` |
 | `subsource` | Season packs | Broad | `subsource-v1` |
@@ -43,9 +43,10 @@ Every adapter is built by a `provider.Factory`, registered by type in `buildProv
 Titlovi uses the Kodi API with an API-enabled account. It supports `bs`, `en`, `hr`, `mk`, `sr`, `sr-Cyrl` and `sl`.
 
 - Search is broad-only and paginated (`max_pages`, default 5). Token refresh keeps earlier result pages.
+- Every search sends `ignoreLangAndEpisode=false`, without which Titlovi ignores `lang` and `episode` and returns every language and every episode of the season. It also sends `type` (1 movie, 2 series) and, for episodes, `season=N` with `episode=0` and `episode=N`: the episode filter is exact, so episode 0 keeps season packs. Season 0 is not added as an extra season, because all-seasons uploads are unsupported, and a special (season 0) is searched without episode 0, which would only match them. The adapter still filters language, kind, season and episode itself.
 - The requested IMDb ID is a search filter only; it is never copied into candidate identity or awarded external-ID points.
 - Returned AKA titles are kept as alternate identity evidence.
-- `Type` is 1 for movies and 2 for series. A result of the other kind is dropped; a result without a `Type` or with another value stays usable. The search returns both kinds whenever the title matches loosely, which happens when no IMDb ID is sent.
+- `Type` is 1 for movies and 2 for series. A result of the other kind is dropped; a result without a `Type` or with another value stays usable. This backs up the `type` search filter, since a loose title match without an IMDb ID can return both kinds.
 - Episode-zero results become season-pack evidence only when the returned season matches; they are never treated as the requested episode. Season 0 with episode 0 or -1 is how Titlovi marks an all-seasons upload, so it never becomes a specials pack, and `CanReuseCachedCandidate` refuses any that older versions cached as one. Series-wide packs are not supported.
 - Downloaded episode archives are checked independently of the search metadata: an explicit wrong-episode filename rejects that candidate, even in a one-subtitle archive, while one generic filename stays usable for an exact episode result.
 - Absolute download links keep their origin; relative links resolve against the configured base. Query-bearing links require a fresh search after cache sanitization.
