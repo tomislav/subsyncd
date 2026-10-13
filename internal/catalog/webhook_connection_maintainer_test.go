@@ -96,6 +96,21 @@ func startMaintainer(t *testing.T, m *WebhookConnectionMaintainer) (cancel func(
 	return cancelCtx, done
 }
 
+// stopMaintainer cancels Run and waits for it to return, so its log writes
+// are finished before the test reads them.
+func stopMaintainer(t *testing.T, cancel func(), done chan error) {
+	t.Helper()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+}
+
 func waitCalls(t *testing.T, f *fakeSyncer, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -138,13 +153,15 @@ func TestMaintainerBackoffSequence(t *testing.T) {
 	after := newAfterRecorder()
 	clock := &fakeMaintainerClock{now: time.Unix(1000, 0)}
 	m := &WebhookConnectionMaintainer{Syncs: map[string]webhookSyncer{"tv": failing}, Events: events, After: after.After, Now: clock.Now}
-	startMaintainer(t, m)
+	cancel, done := startMaintainer(t, m)
 	for i, want := range []time.Duration{15 * time.Minute, time.Hour, 6 * time.Hour, 6 * time.Hour} {
 		if d := after.nextDelay(t); d != want {
 			t.Fatalf("delay %d = %s, want %s", i, d, want)
 		}
 		after.advance(t, clock, want)
 	}
+	// The last advance starts another sync that logs; let it finish.
+	stopMaintainer(t, cancel, done)
 	out := logs.String()
 	if !strings.Contains(out, `"event":"webhook.connection_sync_failed"`) || !strings.Contains(out, `"reason":"arr_unreachable"`) || !strings.Contains(out, `"instance":"tv"`) {
 		t.Fatalf("missing sync_failed log: %s", out)
@@ -245,15 +262,7 @@ func TestMaintainerStopsOnCancel(t *testing.T) {
 		} else {
 			after.nextDelay(t)
 		}
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Run() = %v, want nil", err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("Run did not stop")
-		}
+		stopMaintainer(t, cancel, done)
 		if strings.Contains(logs.String(), "sync_failed") {
 			t.Fatalf("cancellation logged as failure: %s", logs.String())
 		}
