@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -260,5 +261,74 @@ func TestDownloadRedirectLoopStopsWithoutProviderCooldown(t *testing.T) {
 	}
 	if err := client.CheckDownloadAvailability(context.Background()); err != nil {
 		t.Fatalf("download availability = %v; a refused redirect is not a provider outage", err)
+	}
+}
+
+func TestNormalizeDropsResultsWhoseTypeContradictsTheSearchedKind(t *testing.T) {
+	client := &Client{id: "titlovi"}
+	movie := baseprovider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaMovie}, Title: "Example", Year: 1999}, Language: "hr"}
+	episode := baseprovider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Title: "Example", Season: 1, Episode: 2}, Language: "hr"}
+	items := []searchItem{
+		{ID: 1, Type: 1, Language: "Hrvatski", Link: "/download/1", Title: "Example Movie", Season: -1, Episode: -1},
+		{ID: 2, Type: 2, Language: "Hrvatski", Link: "/download/2", Title: "Example Series", Season: 1, Episode: 2},
+		{ID: 3, Type: 2, Language: "Hrvatski", Link: "/download/3", Title: "Example Series", Season: 1, Episode: 0},
+		{ID: 4, Language: "Hrvatski", Link: "/download/4", Title: "Untyped", Season: 1, Episode: 2},
+		{ID: 5, Type: 3, Language: "Hrvatski", Link: "/download/5", Title: "Unknown Type", Season: 1, Episode: 2},
+	}
+	for _, test := range []struct {
+		name  string
+		query baseprovider.SearchQuery
+		want  []string
+	}{
+		{"movie search keeps movies, untyped and unknown types", movie, []string{"1", "4", "5"}},
+		{"episode search keeps series, untyped and unknown types", episode, []string{"2", "3", "4", "5"}},
+	} {
+		var got []string
+		for _, candidate := range client.normalize(test.query, items) {
+			got = append(got, candidate.ResultID)
+		}
+		if !reflect.DeepEqual(got, test.want) {
+			t.Errorf("%s: got %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+func TestNormalizeDoesNotTreatSeasonZeroEpisodeZeroAsASpecialsPack(t *testing.T) {
+	// Titlovi marks an all-seasons upload as season 0 with episode 0 or -1,
+	// the same season number Sonarr uses for specials.
+	client := &Client{id: "titlovi"}
+	special := baseprovider.SearchQuery{Media: domain.Media{Ref: domain.MediaRef{Kind: domain.MediaEpisode}, Title: "Example", Season: 0, Episode: 5}, Language: "hr"}
+	items := []searchItem{
+		{ID: 1, Type: 2, Language: "Hrvatski", Link: "/download/1", Title: "Example", Season: 0, Episode: 0},
+		{ID: 2, Type: 2, Language: "Hrvatski", Link: "/download/2", Title: "Example", Season: 0, Episode: -1},
+		{ID: 3, Type: 2, Language: "Hrvatski", Link: "/download/3", Title: "Example", Season: 0, Episode: 5},
+		{ID: 5, Language: "Hrvatski", Link: "/download/5", Title: "Example", Season: 0, Episode: 0},
+	}
+	got := client.normalize(special, items)
+	if len(got) != 1 || got[0].ResultID != "3" || got[0].Pack != nil {
+		t.Fatalf("special search candidates = %+v, want only the S00E05 episode result", got)
+	}
+	season := special
+	season.Media.Season, season.Media.Episode = 1, 2
+	if got := client.normalize(season, []searchItem{{ID: 4, Type: 2, Language: "Hrvatski", Link: "/download/4", Title: "Example", Season: 1, Episode: 0}}); len(got) != 1 || got[0].Pack == nil || got[0].Pack.Season != 1 {
+		t.Fatalf("regular season pack = %+v, want a season 1 pack", got)
+	}
+}
+
+func TestCachedAllSeasonsUploadIsNotReusedAsASpecialsPack(t *testing.T) {
+	// Packs cached before season 0 episode 0 was recognised as an all-seasons
+	// upload must not keep serving specials.
+	client := &Client{id: "titlovi"}
+	allSeasons := domain.Candidate{ProviderID: "titlovi", ResultID: "1", Kind: domain.MediaEpisode, Season: 0, Episode: 0, Pack: &domain.PackInfo{Scope: domain.PackSeason, Season: 0}}
+	if client.CanReuseCachedCandidate(allSeasons) {
+		t.Fatal("cached all-seasons upload reused as a season 0 pack")
+	}
+	for _, candidate := range []domain.Candidate{
+		{ProviderID: "titlovi", ResultID: "2", Kind: domain.MediaEpisode, Season: 1, Episode: 0, Pack: &domain.PackInfo{Scope: domain.PackSeason, Season: 1}},
+		{ProviderID: "titlovi", ResultID: "3", Kind: domain.MediaEpisode, Season: 0, Episode: 5},
+	} {
+		if !client.CanReuseCachedCandidate(candidate) {
+			t.Errorf("cached candidate %s S%dE%d refused", candidate.ResultID, candidate.Season, candidate.Episode)
+		}
 	}
 }

@@ -78,7 +78,13 @@ func (c *Client) RecordDownloadRefusal(ctx context.Context, kind baseprovider.Co
 	return c.transport.RecordDownloadRefusal(ctx, kind)
 }
 
-func (c *Client) SearchCacheVersion() string { return "titlovi-evidence-v2" }
+func (c *Client) SearchCacheVersion() string { return "titlovi-evidence-v3" }
+
+// CanReuseCachedCandidate refuses all-seasons uploads that an earlier version
+// cached as season 0 (specials) packs.
+func (c *Client) CanReuseCachedCandidate(candidate domain.Candidate) bool {
+	return candidate.Kind != domain.MediaEpisode || !allSeasonsUpload(candidate.Season, candidate.Episode)
+}
 
 func (c *Client) Capabilities() baseprovider.Capabilities {
 	return baseprovider.Capabilities{SeasonPacks: true}
@@ -243,6 +249,7 @@ type searchResponse struct {
 
 type searchItem struct {
 	ID            int64   `json:"Id"`
+	Type          int     `json:"Type"`
 	Language      string  `json:"Lang"`
 	Link          string  `json:"Link"`
 	Release       string  `json:"Release"`
@@ -256,6 +263,20 @@ type searchItem struct {
 
 var akaPattern = regexp.MustCompile(`(?i)\s+aka\s+`)
 
+// titloviOtherType is the search result Type of the media kind not searched
+// for: Titlovi uses 1 for movies and 2 for series. Results without a Type or
+// with another value stay usable.
+func titloviOtherType(kind domain.MediaKind) int {
+	if kind == domain.MediaEpisode {
+		return 1
+	}
+	return 2
+}
+
+func allSeasonsUpload(season, episode int) bool {
+	return season == 0 && episode <= 0
+}
+
 func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) []domain.Candidate {
 	var candidates []domain.Candidate
 	for _, item := range items {
@@ -263,8 +284,17 @@ func (c *Client) normalize(query baseprovider.SearchQuery, items []searchItem) [
 		if err != nil || !domain.EquivalentLanguage(language, query.Language) || item.ID <= 0 {
 			continue
 		}
+		if item.Type == titloviOtherType(query.Media.Ref.Kind) {
+			continue
+		}
 		if query.Media.Ref.Kind == domain.MediaEpisode {
 			if item.Season != query.Media.Season || (item.Episode != 0 && item.Episode != query.Media.Episode) {
+				continue
+			}
+			// Season 0 with episode 0 or -1 is how Titlovi marks an
+			// all-seasons upload, not a pack of specials; -1 is already
+			// dropped above.
+			if allSeasonsUpload(item.Season, item.Episode) {
 				continue
 			}
 		}
