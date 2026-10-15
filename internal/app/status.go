@@ -30,15 +30,30 @@ func (a *App) statusLive() control.StatusResult {
 // from the daemon when one answers.
 func (a *App) Status(ctx context.Context) (control.StatusResult, error) {
 	now := a.Clock.Now()
-	result := control.StatusResult{Running: []control.RunningSearch{}, Providers: []control.ProviderState{}, Instances: []control.InstanceState{}}
+	result := control.StatusResult{QueueByLibrary: []control.QueueGroup{}, Running: []control.RunningSearch{}, Providers: []control.ProviderState{}, Instances: []control.InstanceState{}}
 	counts, err := a.Repository.QueueCounts(ctx, now)
 	if err != nil {
 		return result, err
 	}
-	result.Queue = control.QueueCounts{
-		New:     queueClass(counts[store.SearchPriorityImport]),
-		Missing: queueClass(counts[store.SearchPriorityMissing]),
-		Upgrade: queueClass(counts[store.SearchPriorityUpgrade]),
+	// The store orders the counts by instance and language, so each group's
+	// counts are adjacent. A priority outside the three classes is not
+	// counted, as before the split, and opens no group.
+	for _, count := range counts {
+		if queueClass(&control.QueueCounts{}, count.Priority) == nil {
+			continue
+		}
+		last := len(result.QueueByLibrary) - 1
+		if last < 0 || result.QueueByLibrary[last].Instance != count.Instance || result.QueueByLibrary[last].Language != count.Language {
+			result.QueueByLibrary = append(result.QueueByLibrary, control.QueueGroup{Instance: count.Instance, Language: count.Language})
+			last++
+		}
+		class := queueClass(&result.QueueByLibrary[last].QueueCounts, count.Priority)
+		*class = class.Add(control.QueueClass{Total: count.Total, Due: count.Due, NextAt: count.NextAt})
+	}
+	for _, group := range result.QueueByLibrary {
+		result.Queue.New = result.Queue.New.Add(group.New)
+		result.Queue.Missing = result.Queue.Missing.Add(group.Missing)
+		result.Queue.Upgrade = result.Queue.Upgrade.Add(group.Upgrade)
 	}
 	running, err := a.Repository.RunningSearches(ctx, now)
 	if err != nil {
@@ -90,8 +105,18 @@ func (a *App) Status(ctx context.Context) (control.StatusResult, error) {
 	return result, err
 }
 
-func queueClass(count store.QueueClassCount) control.QueueClass {
-	return control.QueueClass{Total: count.Total, Due: count.Due}
+// queueClass is the class of counts that holds searches of priority, nil for
+// a priority outside new, missing and upgrade.
+func queueClass(counts *control.QueueCounts, priority store.SearchPriority) *control.QueueClass {
+	switch priority {
+	case store.SearchPriorityImport:
+		return &counts.New
+	case store.SearchPriorityMissing:
+		return &counts.Missing
+	case store.SearchPriorityUpgrade:
+		return &counts.Upgrade
+	}
+	return nil
 }
 
 // ListProviders shows every configured provider: its routes, its state now, and

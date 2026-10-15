@@ -136,6 +136,7 @@ subsyncd creates and maintains its own webhook connection in each instance under
 subsyncd runs on its own. To check on it or step in, run commands beside the running service:
 
 ```bash
+docker compose exec subsyncd subsyncd coverage                     # subtitles per library and language
 docker compose exec subsyncd subsyncd missing                      # what has no subtitle yet, and why
 docker compose exec subsyncd subsyncd find --title "Show S01E02"   # one file's state per language
 docker compose exec subsyncd subsyncd search --title "Movie (2019)"

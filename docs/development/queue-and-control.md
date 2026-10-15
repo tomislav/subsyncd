@@ -125,7 +125,7 @@ A running daemon serves `<data_dir>/subsyncd.sock` (`internal/control`).
 | Kind | Commands | How they run |
 | --- | --- | --- |
 | Routed | `retry`, `search`, `reject`, `scan` (`control.Routed`) | The CLI dials the socket after loading the configuration for `data_dir`. With no daemon (`control.ErrNoDaemon`: no socket or nothing accepting) or an unloadable configuration, it opens the backend locally and takes the lock. Any other dial error fails the command |
-| Read-only | `explain`, `find`, `missing`, `recent`, `status`, `providers`, `doctor`, `analyze-sync`, `webhook-url`, `forget-instance` without `--yes` (`forget-instance-preview`) (`readOnlyCommand` in `internal/app/app.go`) | Open the database read-only, without the lock, migrations or startup writes; they run beside the daemon |
+| Read-only | `explain`, `find`, `missing`, `coverage`, `recent`, `status`, `providers`, `doctor`, `analyze-sync`, `webhook-url`, `forget-instance` without `--yes` (`forget-instance-preview`) (`readOnlyCommand` in `internal/app/app.go`) | Open the database read-only, without the lock, migrations or startup writes; they run beside the daemon |
 | Stop-first | `serve`, `rotate-webhook-token`, `forget-instance --yes` | Take the lock and fail with `busy` while the daemon runs |
 
 Notes:

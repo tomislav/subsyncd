@@ -257,7 +257,7 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 // without the process lock, migrations or startup writes.
 func readOnlyCommand(command string) bool {
 	switch command {
-	case "explain", "find", "missing", "recent", "status", "providers", "doctor", "analyze-sync", "forget-instance-preview", "webhook-url":
+	case "explain", "find", "missing", "coverage", "recent", "status", "providers", "doctor", "analyze-sync", "forget-instance-preview", "webhook-url":
 		return true
 	}
 	return false
@@ -1045,12 +1045,9 @@ func (a *App) Retry(ctx context.Context, providerID string) (control.RetryResult
 func (a *App) Explain(ctx context.Context, args control.ExplainArgs) (control.ExplainResult, error) {
 	languages := sortedLanguages(a.Config)
 	if args.Language != "" {
-		language, err := domain.ParseLanguage(args.Language)
+		language, err := a.configuredLanguage(args.Language)
 		if err != nil {
-			return control.ExplainResult{}, &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
-		}
-		if _, ok := a.Config.Languages[language]; !ok {
-			return control.ExplainResult{}, languageNotConfigured(language)
+			return control.ExplainResult{}, err
 		}
 		languages = []domain.Language{language}
 	}
@@ -1268,6 +1265,19 @@ func withinRoots(path string, roots []string) bool {
 
 func unknownInstance(instance string) error {
 	return &control.Error{Code: control.CodeUnknownInstance, Message: fmt.Sprintf("unknown instance %q", instance)}
+}
+
+// configuredLanguage parses a --language tag and checks that it is
+// configured.
+func (a *App) configuredLanguage(tag string) (domain.Language, error) {
+	language, err := domain.ParseLanguage(tag)
+	if err != nil {
+		return "", &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
+	}
+	if _, ok := a.Config.Languages[language]; !ok {
+		return "", languageNotConfigured(language)
+	}
+	return language, nil
 }
 
 func languageNotConfigured(language domain.Language) error {

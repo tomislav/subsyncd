@@ -1,8 +1,11 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
+	"time"
 
 	"subsyncd/internal/control"
 	"subsyncd/internal/domain"
@@ -30,12 +33,9 @@ func (a *App) Missing(ctx context.Context, args control.MissingArgs) (control.Mi
 		query.Limit = defaultMissingLimit
 	}
 	if args.Language != "" {
-		language, err := domain.ParseLanguage(args.Language)
+		language, err := a.configuredLanguage(args.Language)
 		if err != nil {
-			return control.MissingResult{}, &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
-		}
-		if _, ok := a.Config.Languages[language]; !ok {
-			return control.MissingResult{}, languageNotConfigured(language)
+			return control.MissingResult{}, err
 		}
 		query.Language = language
 	}
@@ -46,24 +46,43 @@ func (a *App) Missing(ctx context.Context, args control.MissingArgs) (control.Mi
 		}
 		query.Title = title
 	}
+	if args.Summary {
+		if args.Limit != 0 {
+			return control.MissingResult{}, selectionUsage("--summary counts every row and takes no --limit")
+		}
+		query.Limit = 0
+	}
 	rows, total, err := a.Repository.ListMissing(ctx, query)
 	if err != nil {
 		return control.MissingResult{}, err
 	}
+	items, err := a.classifyMissing(ctx, rows, query.Now)
+	if err != nil {
+		return control.MissingResult{}, err
+	}
+	if args.Summary {
+		return control.MissingResult{Total: total, Items: []control.MissingItem{}, Summary: summarizeMissing(items)}, nil
+	}
+	return control.MissingResult{Total: total, Items: items}, nil
+}
+
+// classifyMissing gives each row its reason, the providers behind a cooldown
+// and the action, reading each provider's health once.
+func (a *App) classifyMissing(ctx context.Context, rows []store.MissingRow, now time.Time) ([]control.MissingItem, error) {
 	health := map[string]string{}
 	for _, row := range rows {
 		for _, providerID := range a.Config.Languages[domain.Language(row.Language)].AllProviders() {
 			if _, known := health[providerID]; known {
 				continue
 			}
-			state, err := a.providerHealth(ctx, providerID, query.Now)
+			state, err := a.providerHealth(ctx, providerID, now)
 			if err != nil {
-				return control.MissingResult{}, err
+				return nil, err
 			}
 			health[providerID] = state.State
 		}
 	}
-	result := control.MissingResult{Total: total, Items: make([]control.MissingItem, 0, len(rows))}
+	items := make([]control.MissingItem, 0, len(rows))
 	for _, row := range rows {
 		item := control.MissingItem{MediaMatch: row.MediaMatch, Language: row.Language}
 		if !row.Running {
@@ -71,9 +90,30 @@ func (a *App) Missing(ctx context.Context, args control.MissingArgs) (control.Mi
 		}
 		item.Reason, item.Providers = missingReason(row, a.Config.Languages[domain.Language(row.Language)].AllProviders(), health)
 		item.Action = missingAction(item, health)
-		result.Items = append(result.Items, item)
+		items = append(items, item)
 	}
-	return result, nil
+	return items, nil
+}
+
+// summarizeMissing counts the items by instance, language and reason, ordered
+// by instance and language, then the largest count first.
+func summarizeMissing(items []control.MissingItem) []control.MissingGroup {
+	index := map[control.MissingGroup]int{}
+	groups := []control.MissingGroup{}
+	for _, item := range items {
+		key := control.MissingGroup{Instance: item.Instance, Language: item.Language, Reason: item.Reason}
+		position, ok := index[key]
+		if !ok {
+			position = len(groups)
+			index[key] = position
+			groups = append(groups, key)
+		}
+		groups[position].Count++
+	}
+	slices.SortFunc(groups, func(a, b control.MissingGroup) int {
+		return cmp.Or(cmp.Compare(a.Instance, b.Instance), cmp.Compare(a.Language, b.Language), cmp.Compare(b.Count, a.Count), cmp.Compare(a.Reason, b.Reason))
+	})
+	return groups
 }
 
 // missingReason classifies a row. Unsupported media wins; then a search whose

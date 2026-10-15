@@ -15,6 +15,7 @@ The rest of this page writes commands as `subsyncd COMMAND`; add the `docker com
 - [find and explain](#find-and-explain)
 - [search](#search)
 - [scan](#scan)
+- [coverage](#coverage)
 - [missing](#missing)
 - [recent](#recent)
 - [Status and providers](#status-and-providers)
@@ -35,6 +36,7 @@ The rest of this page writes commands as `subsyncd COMMAND`; add the `docker com
 
 | You want to | Run |
 | --- | --- |
+| See how many subtitles each library has | `subsyncd coverage` |
 | See why a file has no subtitle | `subsyncd missing`, then `subsyncd explain --title "Show S01E02"` |
 | Look up a file | `subsyncd find --title "Dune (2021)"` |
 | Search for a subtitle now | `subsyncd search --title "Movie (2019)"` |
@@ -47,6 +49,7 @@ The rest of this page writes commands as `subsyncd COMMAND`; add the `docker com
 | `doctor` | Checks configuration, database, media folders, LAPSE and FFprobe. | Runs beside it |
 | `status` | Overview of the daemon, queue, unusable providers and Arr instances. | Runs beside it |
 | `providers` | Every provider with its languages, state and last 24 hours. | Runs beside it |
+| `coverage` | Per library and language: files, subtitles installed or already present, and missing ones by reason. | Runs beside it |
 | `missing` | Files and languages without a subtitle, with a reason and a fix. | Runs beside it |
 | `recent` | Searches and rejections that finished in a time window. | Runs beside it |
 | `find` | Files matching a title or path, with each language's state. | Runs beside it |
@@ -149,16 +152,40 @@ The summary reports:
 
 When a scan reports `running`, its result arrives later in the [logs](logging.md) as `scan.completed` (with `media`, `deferred` and `probe_skipped`) or `scan.failed`. Running `scan` again starts a new scan.
 
+## coverage
+
+```bash
+subsyncd coverage
+subsyncd coverage --instance sonarr --language hr
+```
+
+`coverage` gives one row for each instance and configured language:
+
+- `media`: the instance's active files.
+- `covered`: files that have the language, split into `installed` (subsyncd installed the subtitle) and `existing` (an embedded track or sidecar already covers it, or the last search found it `satisfied`).
+- `missing`: exactly the rows `missing` lists, with `missing_by_reason` counting them by the reasons in the [missing](#missing) table, the largest first.
+
+`media` is always `installed + existing + missing`: all the counts come from one database snapshot, so they agree even while the daemon is importing or installing. `--instance` (a configured instance) and `--language` narrow the rows. Like `missing`, it reads only the database.
+
+An instance removed from the configuration keeps its records until [`forget-instance`](#remove-an-instance-for-good) deletes them, and `missing` still lists its files. `coverage` shows it after the configured instances, with `configured: false` and "not configured" in the text.
+
+```text
+sonarr hr: 500 files, 380 covered (300 installed, 80 existing), 120 missing
+  missing: providers_cooling_down 90, no_candidates 20, all_rejected 10
+```
+
 ## missing
 
 ```bash
 subsyncd missing
 subsyncd missing --language hr --title "Show" --limit 20
+subsyncd missing --summary
 ```
 
 `missing` lists every active file and language without a subtitle: no installation and no track or sidecar that covers the language. A forced-only track never counts; a hearing-impaired one counts only with `allow_hearing_impaired`.
 
 - `--instance`, `--language` and `--title` narrow the list; `--limit` (default 50) cuts it, and `total` gives the full count.
+- `--summary` lists no rows. It counts all of them by instance, language and reason in `summary[]` and takes no `--limit`. [coverage](#coverage) shows the same counts beside each library's totals.
 - Rows follow the queue: what would run next comes first, languages never searched come last. A search running now is listed without a next attempt time.
 - It reads no media file, only the database. Like every command, it first checks that each media root exists, so a missing root fails it and a hung mount can stall it.
 
@@ -207,7 +234,8 @@ subsyncd providers
 `status` works with or without the daemon. It asks the daemon for up to 2 seconds, and otherwise reports it as not running. It shows:
 
 - `daemon`: whether it runs. Only a running daemon adds its `version`, `started_at` and any `media_pause`; `daemon.error` says why one that answered could not be asked.
-- `queue`: pending searches as `new` (just imported or renamed, or queued by `reject`), `missing` and `upgrade`, each with a `total` and how many are `due`.
+- `queue`: pending searches as `new` (just imported or renamed, or queued by `reject`), `missing` and `upgrade`, each with a `total`, how many are `due`, and `next_at`, the earliest scheduled attempt of those not running (in the past while some are due). The text shows `next` only when none is due.
+- `queue_by_library`: the same counts for each instance and language.
 - `running`: searches in progress, with `lease_until` (when the search's claim expires; its start time is not kept).
 - `providers`: only the providers that cannot be used now.
 - `instances`: each Arr instance's last reconciliation (`reconcile_failures` is 0 when it succeeded), whether library discovery is complete, and its webhook state.

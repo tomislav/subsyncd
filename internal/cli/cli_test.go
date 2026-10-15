@@ -73,8 +73,12 @@ func (f *fakeBackend) Find(_ context.Context, sel control.Selection) (control.Fi
 	return control.FindResult{Matches: []control.FindMatch{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}, Languages: []control.LanguageState{{Language: "en", State: "missing"}}}}}, f.err
 }
 func (f *fakeBackend) Missing(_ context.Context, args control.MissingArgs) (control.MissingResult, error) {
-	f.call = fmt.Sprintf("missing:%s:%s:%s:%d", args.Instance, args.Language, args.Title, args.Limit)
+	f.call = fmt.Sprintf("missing:%s:%s:%s:%d:%t", args.Instance, args.Language, args.Title, args.Limit, args.Summary)
 	return control.MissingResult{Total: 1, Items: []control.MissingItem{{MediaMatch: control.MediaMatch{Instance: "radarr-main", Kind: "movie", FileID: 42, Title: "Dune", Year: 2021}, Language: "en", Reason: "no_candidates", Action: "subsyncd search --instance radarr-main --kind movie --file-id 42 --language en"}}}, f.err
+}
+func (f *fakeBackend) Coverage(_ context.Context, args control.CoverageArgs) (control.CoverageResult, error) {
+	f.call = fmt.Sprintf("coverage:%s:%s", args.Instance, args.Language)
+	return control.CoverageResult{Rows: []control.CoverageRow{{Instance: "sonarr", Language: "hr", Media: 10, Covered: 7, Installed: 5, Existing: 2, Missing: 3, Configured: true, MissingByReason: []control.ReasonCount{{Reason: "providers_cooling_down", Count: 2}, {Reason: "no_candidates", Count: 1}}}}}, f.err
 }
 func (f *fakeBackend) Recent(_ context.Context, args control.RecentArgs) (control.RecentResult, error) {
 	f.call = fmt.Sprintf("recent:%s:%s:%s:%d:%s", args.Instance, args.Language, args.Since, args.Limit, strings.Join(args.Outcomes, ","))
@@ -125,8 +129,11 @@ func TestCommandSurface(t *testing.T) {
 		{"explain by path", []string{"explain", "--path", "/tv/Show/S01E01.mkv"}, "explain:::::/tv/Show/S01E01.mkv", "media: id=1 instance= kind= file_id=0 title=\"T\"\ninventory: tracks=0 probe=unprobed fingerprint_size=0 fingerprint_mtime=0001-01-01T00:00:00Z\nsearch: not scheduled\ncandidates: 0\ncandidate_rejections: 0\ninstallation: none\npack_cache: reusable=0\n"},
 		{"find by title", []string{"find", "--title", "Dune", "--instance", "radarr-main"}, "find:radarr-main::0:Dune:", "radarr-main movie 42 \"Dune\" (2021)\n  en: missing\n"},
 		{"find by file id", []string{"find", "--instance", "radarr-main", "--kind", "movie", "--file-id", "42"}, "find:radarr-main:movie:42::", "radarr-main movie 42 \"Dune\" (2021)\n  en: missing\n"},
-		{"missing", []string{"missing", "--instance", "radarr-main", "--language", "en", "--title", "Dune", "--limit", "5"}, "missing:radarr-main:en:Dune:5", "1 missing (showing 1)\nradarr-main movie 42 \"Dune\" (2021) en: no_candidates\n  action: subsyncd search --instance radarr-main --kind movie --file-id 42 --language en\n"},
-		{"missing defaults", []string{"missing"}, "missing::::0", "1 missing (showing 1)\nradarr-main movie 42 \"Dune\" (2021) en: no_candidates\n  action: subsyncd search --instance radarr-main --kind movie --file-id 42 --language en\n"},
+		{"missing", []string{"missing", "--instance", "radarr-main", "--language", "en", "--title", "Dune", "--limit", "5"}, "missing:radarr-main:en:Dune:5:false", "1 missing (showing 1)\nradarr-main movie 42 \"Dune\" (2021) en: no_candidates\n  action: subsyncd search --instance radarr-main --kind movie --file-id 42 --language en\n"},
+		{"missing defaults", []string{"missing"}, "missing::::0:false", "1 missing (showing 1)\nradarr-main movie 42 \"Dune\" (2021) en: no_candidates\n  action: subsyncd search --instance radarr-main --kind movie --file-id 42 --language en\n"},
+		{"missing summary", []string{"missing", "--summary", "--language", "hr"}, "missing::hr::0:true", "1 missing (showing 1)\nradarr-main movie 42 \"Dune\" (2021) en: no_candidates\n  action: subsyncd search --instance radarr-main --kind movie --file-id 42 --language en\n"},
+		{"coverage", []string{"coverage", "--instance", "sonarr", "--language", "hr"}, "coverage:sonarr:hr", "sonarr hr: 10 files, 7 covered (5 installed, 2 existing), 3 missing\n  missing: providers_cooling_down 2, no_candidates 1\n"},
+		{"coverage defaults", []string{"coverage"}, "coverage::", "sonarr hr: 10 files, 7 covered (5 installed, 2 existing), 3 missing\n  missing: providers_cooling_down 2, no_candidates 1\n"},
 		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nmedia roots: ok (1)\nLAPSE: compatible\nffprobe: available\nwebhooks: manual\n"},
 		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance complete: instance=old media=0 searches=0 installations=0 rollback_copies=0 candidates=0 rejections=0 notifications=0 events=0 replays=0 history=0\nsubtitle files installed for this instance stay on disk and will no longer be managed\n"},
 		{"webhook-url", []string{"webhook-url", "--instance", "tv", "--base", "http://x"}, "webhook-url:tv:http://x", "http://h/webhooks/tv?token=t\n"},
@@ -906,6 +913,10 @@ func TestMissingRejectsBadFlags(t *testing.T) {
 		{"missing", "--limit", "-1"},
 		{"missing", "--file-id", "4"},
 		{"missing", "--path", "/m/a.mkv"},
+		{"missing", "--summary", "--limit", "5"},
+		{"coverage", "--title", "Dune"},
+		{"coverage", "--limit", "5"},
+		{"coverage", "--summary"},
 	} {
 		var stderr bytes.Buffer
 		backend := &fakeBackend{}
@@ -913,6 +924,21 @@ func TestMissingRejectsBadFlags(t *testing.T) {
 		if code != ExitUsage || backend.call != "" {
 			t.Fatalf("%v: exit = %d call = %q stderr = %q", args, code, backend.call, stderr.String())
 		}
+	}
+}
+
+func TestCoverageHelpListsFields(t *testing.T) {
+	help := commandHelpText(t, "coverage", "--help")
+	for _, want := range []string{"rows[]", "configured", "media", "covered", "installed", "existing", "missing_by_reason[] (reason, count)", "one database snapshot", "media = installed + existing + missing", "unknown_instance", "unknown_language", "--instance", "--language"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help lacks %q: %s", want, help)
+		}
+	}
+	if help := commandHelpText(t, "missing", "--help"); !strings.Contains(help, "--summary") || !strings.Contains(help, "summary[] (instance, language, reason, count)") {
+		t.Errorf("missing help lacks --summary: %s", help)
+	}
+	if help := commandHelpText(t, "status", "--help"); !strings.Contains(help, "queue_by_library[]") || !strings.Contains(help, "next_at") {
+		t.Errorf("status help lacks the queue breakdown: %s", help)
 	}
 }
 

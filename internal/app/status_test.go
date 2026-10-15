@@ -68,9 +68,14 @@ func TestStatusWithoutDaemon(t *testing.T) {
 	if status.Daemon.Running {
 		t.Fatalf("daemon = %+v", status.Daemon)
 	}
-	want := control.QueueCounts{New: control.QueueClass{Total: 1, Due: 1}, Missing: control.QueueClass{Total: 2, Due: 1}, Upgrade: control.QueueClass{Total: 1}}
-	if status.Queue != want {
+	// next_at is the earliest scheduled attempt, in the past while one is due.
+	due, later := now.Add(-time.Minute).UTC(), now.Add(time.Hour).UTC()
+	want := control.QueueCounts{New: control.QueueClass{Total: 1, Due: 1, NextAt: due}, Missing: control.QueueClass{Total: 2, Due: 1, NextAt: due}, Upgrade: control.QueueClass{Total: 1, NextAt: later}}
+	if !queueEqual(status.Queue, want) {
 		t.Fatalf("queue = %+v, want %+v", status.Queue, want)
+	}
+	if len(status.QueueByLibrary) != 1 || status.QueueByLibrary[0].Instance != "tv" || status.QueueByLibrary[0].Language != "en" || !queueEqual(status.QueueByLibrary[0].QueueCounts, want) {
+		t.Fatalf("queue by library = %+v", status.QueueByLibrary)
 	}
 	if len(status.Running) != 0 || status.MediaPause != nil || len(status.Providers) != 0 {
 		t.Fatalf("status = %+v", status)
@@ -133,9 +138,80 @@ func TestStatusListsRunningSearches(t *testing.T) {
 	if run.Title != "Running Show" || run.Language != "en" || run.Instance != "tv" || run.LeaseUntil.IsZero() {
 		t.Fatalf("running = %+v", run)
 	}
-	// A leased search is not pending-and-due.
-	if status.Queue.Missing != (control.QueueClass{Total: 2, Due: 0}) {
+	// A leased search is not pending-and-due, and its scheduled time is not
+	// the next attempt.
+	if missing := status.Queue.Missing; missing.Total != 2 || missing.Due != 0 || !missing.NextAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("queue = %+v", status.Queue)
+	}
+}
+
+func queueEqual(a, b control.QueueCounts) bool {
+	classEqual := func(x, y control.QueueClass) bool {
+		return x.Total == y.Total && x.Due == y.Due && x.NextAt.Equal(y.NextAt)
+	}
+	return classEqual(a.New, b.New) && classEqual(a.Missing, b.Missing) && classEqual(a.Upgrade, b.Upgrade)
+}
+
+func TestStatusQueueByLibrary(t *testing.T) {
+	application := newStatusApp(t, func(cfg *config.Config) {
+		cfg.Languages["hr"] = config.LanguageConfig{Providers: []string{"english"}}
+	})
+	now := application.Clock.Now()
+	ctx := t.Context()
+	tvOne := queueEpisode(t, application, 1, "Show One", store.SearchPriorityMissing, now.Add(2*time.Hour))
+	queueEpisode(t, application, 2, "Show Two", store.SearchPriorityUpgrade, now.Add(3*time.Hour))
+	if err := application.Repository.UpsertSearchStateWithPriority(ctx, tvOne, "hr", now.Add(-time.Minute), store.SearchPriorityImport); err != nil {
+		t.Fatal(err)
+	}
+	movie := domain.Media{EntityID: 5, Ref: domain.MediaRef{Instance: "films", Kind: domain.MediaMovie, FileID: 5},
+		Fingerprint: domain.MediaFingerprint{Path: filepath.Join(application.Config.MediaRoots[0], "Film.mkv"), FileID: 5, Size: 100, ModTime: time.Unix(1700000000, 0).UTC()},
+		Title:       "Film", Year: 2020}
+	movieID, _, err := application.Repository.UpsertMedia(ctx, movie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Repository.UpsertSearchStateWithPriority(ctx, movieID, "en", now.Add(time.Hour), store.SearchPriorityMissing); err != nil {
+		t.Fatal(err)
+	}
+	status, err := application.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(d time.Duration) time.Time { return now.Add(d).UTC() }
+	want := []control.QueueGroup{
+		{Instance: "films", Language: "en", QueueCounts: control.QueueCounts{Missing: control.QueueClass{Total: 1, NextAt: at(time.Hour)}}},
+		{Instance: "tv", Language: "en", QueueCounts: control.QueueCounts{Missing: control.QueueClass{Total: 1, NextAt: at(2 * time.Hour)}, Upgrade: control.QueueClass{Total: 1, NextAt: at(3 * time.Hour)}}},
+		{Instance: "tv", Language: "hr", QueueCounts: control.QueueCounts{New: control.QueueClass{Total: 1, Due: 1, NextAt: at(-time.Minute)}}},
+	}
+	if len(status.QueueByLibrary) != len(want) {
+		t.Fatalf("queue by library = %+v", status.QueueByLibrary)
+	}
+	for i, group := range status.QueueByLibrary {
+		if group.Instance != want[i].Instance || group.Language != want[i].Language || !queueEqual(group.QueueCounts, want[i].QueueCounts) {
+			t.Fatalf("group %d = %+v, want %+v", i, group, want[i])
+		}
+	}
+	// A priority outside new, missing and upgrade has no class, so Status
+	// counts it nowhere and opens no group for it. The store refuses to
+	// write one, so the guard is tested directly.
+	if class := queueClass(&control.QueueCounts{}, store.SearchPriority(150)); class != nil {
+		t.Fatalf("class = %+v", class)
+	}
+	// The totals fold the groups, keeping the earliest next attempt.
+	total := control.QueueCounts{New: control.QueueClass{Total: 1, Due: 1, NextAt: at(-time.Minute)}, Missing: control.QueueClass{Total: 2, NextAt: at(time.Hour)}, Upgrade: control.QueueClass{Total: 1, NextAt: at(3 * time.Hour)}}
+	if !queueEqual(status.Queue, total) {
+		t.Fatalf("queue = %+v, want %+v", status.Queue, total)
+	}
+	text := status.Text()
+	for _, line := range []string{
+		"queue missing: 2 pending, 0 due, next " + at(time.Hour).Format(time.RFC3339),
+		"queue new: 1 pending, 1 due",
+		"queue tv en: 0 new, 1 missing, 1 upgrade; 0 due, next " + at(2*time.Hour).Format(time.RFC3339),
+		"queue tv hr: 1 new, 0 missing, 0 upgrade; 1 due",
+	} {
+		if !strings.Contains(text, line+"\n") {
+			t.Errorf("text lacks %q:\n%s", line, text)
+		}
 	}
 }
 

@@ -27,7 +27,7 @@ Each package's responsibility is listed in the [package map](development/README.
 | --- | --- |
 | `subsyncd serve` | The daemon: HTTP server (`/healthz`, `/readyz`, webhooks), webhook inbox processors, the worker, the managed webhook connection, and the control socket |
 | Routed commands (`search`, `reject`, `scan`, `retry`) | Sent to the daemon over `<data_dir>/subsyncd.sock`; run in process with the lock when no daemon runs |
-| Read-only commands (`explain`, `find`, `missing`, `recent`, `status`, `providers`, `doctor`, `analyze-sync`, `webhook-url`, the `forget-instance` preview) | Open the database read-only beside the daemon |
+| Read-only commands (`explain`, `find`, `missing`, `coverage`, `recent`, `status`, `providers`, `doctor`, `analyze-sync`, `webhook-url`, the `forget-instance` preview) | Open the database read-only beside the daemon |
 | Stop-first commands (`rotate-webhook-token`, `forget-instance --yes`) | Take the process lock, so the daemon must be stopped |
 
 See [Queue and control](development/queue-and-control.md#routed-and-read-only-commands).

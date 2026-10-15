@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"subsyncd/internal/control"
-	"subsyncd/internal/domain"
 	"subsyncd/internal/store"
 )
 
@@ -43,12 +42,9 @@ func (a *App) Recent(ctx context.Context, args control.RecentArgs) (control.Rece
 	}
 	query := store.HistoryQuery{Since: a.Clock.Now().Add(-window), Instance: args.Instance, Outcomes: args.Outcomes, Limit: limit}
 	if args.Language != "" {
-		language, err := domain.ParseLanguage(args.Language)
+		language, err := a.configuredLanguage(args.Language)
 		if err != nil {
-			return control.RecentResult{}, &control.Error{Code: control.CodeUnknownLanguage, Message: err.Error()}
-		}
-		if _, ok := a.Config.Languages[language]; !ok {
-			return control.RecentResult{}, languageNotConfigured(language)
+			return control.RecentResult{}, err
 		}
 		query.Language = language
 	}

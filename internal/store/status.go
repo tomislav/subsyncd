@@ -8,26 +8,40 @@ import (
 	"subsyncd/internal/control"
 )
 
-// QueueClassCount counts pending searches of one priority class.
-type QueueClassCount struct{ Total, Due int }
+// QueueCount counts the pending searches of active media for one instance,
+// language and priority: all of them, how many are due at now (scheduled and
+// not held by a live lease), and the earliest scheduled attempt of those not
+// held by a live lease (zero when every one is running).
+type QueueCount struct {
+	Instance string
+	Language string
+	Priority SearchPriority
+	Total    int
+	Due      int
+	NextAt   time.Time
+}
 
-// QueueCounts counts the pending searches of active media by priority, and
-// how many are due at now: pending, scheduled, and not held by a live lease.
-func (r *Repository) QueueCounts(ctx context.Context, now time.Time) (map[SearchPriority]QueueClassCount, error) {
-	rows, err := r.store.db.QueryContext(ctx, `SELECT s.priority, count(*), COALESCE(sum(s.next_attempt_at_ns <= ?1 AND (s.lease_until_ns IS NULL OR s.lease_until_ns <= ?1)), 0)
-FROM search_states s JOIN media m ON m.id=s.media_id WHERE m.deleted=0 AND s.state='pending' GROUP BY s.priority`, now.UnixNano())
+// QueueCounts counts the pending searches of active media per instance,
+// language and priority, ordered by instance, language and priority.
+func (r *Repository) QueueCounts(ctx context.Context, now time.Time) ([]QueueCount, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT m.instance, s.language, s.priority, count(*),
+  COALESCE(sum(s.next_attempt_at_ns <= ?1 AND (s.lease_until_ns IS NULL OR s.lease_until_ns <= ?1)), 0),
+  COALESCE(min(CASE WHEN s.lease_until_ns IS NULL OR s.lease_until_ns <= ?1 THEN s.next_attempt_at_ns END), 0)
+FROM search_states s JOIN media m ON m.id=s.media_id WHERE m.deleted=0 AND s.state='pending'
+GROUP BY m.instance, s.language, s.priority ORDER BY m.instance, s.language, s.priority`, now.UnixNano())
 	if err != nil {
 		return nil, fmt.Errorf("count queue: %w", err)
 	}
 	defer rows.Close()
-	counts := map[SearchPriority]QueueClassCount{}
+	var counts []QueueCount
 	for rows.Next() {
-		var priority SearchPriority
-		var count QueueClassCount
-		if err := rows.Scan(&priority, &count.Total, &count.Due); err != nil {
+		var count QueueCount
+		var next int64
+		if err := rows.Scan(&count.Instance, &count.Language, &count.Priority, &count.Total, &count.Due, &next); err != nil {
 			return nil, fmt.Errorf("scan queue count: %w", err)
 		}
-		counts[priority] = count
+		count.NextAt = fromUnixNano(next)
+		counts = append(counts, count)
 	}
 	return counts, rows.Err()
 }

@@ -32,6 +32,7 @@ type Backend interface {
 	Explain(context.Context, control.ExplainArgs) (control.ExplainResult, error)
 	Find(context.Context, control.Selection) (control.FindResult, error)
 	Missing(context.Context, control.MissingArgs) (control.MissingResult, error)
+	Coverage(context.Context, control.CoverageArgs) (control.CoverageResult, error)
 	Recent(context.Context, control.RecentArgs) (control.RecentResult, error)
 	Status(context.Context) (control.StatusResult, error)
 	ListProviders(context.Context) (control.ProvidersResult, error)
@@ -143,6 +144,7 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	path := flags.String("path", "", "media file path, in this container or as Sonarr or Radarr reports it")
 	language := flags.String("language", "", "subtitle language tag")
 	limit := flags.Int("limit", 0, "most rows to list (default 50)")
+	summary := flags.Bool("summary", false, "count the rows by instance, language and reason instead")
 	since := flags.Duration("since", 0, "how far back to look, such as 90m or 72h (default 24h)")
 	outcome := flags.String("outcome", "", "only these outcomes, comma-separated, such as installed")
 	provider := flags.String("provider", "", "provider instance name")
@@ -202,9 +204,13 @@ func (c Command) Run(ctx context.Context, args []string) int {
 			validateErr = validateReject(flags, *reason, *undo, *timeout, *noWait)
 		}
 	case "missing":
-		if *limit < 0 {
+		switch {
+		case *limit < 0:
 			validateErr = fmt.Errorf("--limit must not be negative")
+		case *summary && *limit != 0:
+			validateErr = fmt.Errorf("--summary counts every row and takes no --limit")
 		}
+	case "coverage":
 	case "recent":
 		sinceGiven, outcomeGiven := false, false
 		flags.Visit(func(item *flag.Flag) {
@@ -319,7 +325,9 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	case "find":
 		result, err = wrap(backend.Find(ctx, control.Selection{Instance: *instance, Kind: *kind, FileID: *fileID, Title: *title, Path: *path}))
 	case "missing":
-		result, err = wrap(backend.Missing(ctx, control.MissingArgs{Instance: *instance, Language: *language, Title: *title, Limit: *limit}))
+		result, err = wrap(backend.Missing(ctx, control.MissingArgs{Instance: *instance, Language: *language, Title: *title, Limit: *limit, Summary: *summary}))
+	case "coverage":
+		result, err = wrap(backend.Coverage(ctx, control.CoverageArgs{Instance: *instance, Language: *language}))
 	case "recent":
 		result, err = wrap(backend.Recent(ctx, control.RecentArgs{Since: *since, Instance: *instance, Language: *language, Outcomes: outcomes, Limit: *limit}))
 	case "status":
@@ -455,7 +463,9 @@ func commandFlags(command string) map[string]bool {
 	case "find":
 		names = []string{"instance", "kind", "file-id", "title", "path"}
 	case "missing":
-		names = []string{"instance", "language", "title", "limit"}
+		names = []string{"instance", "language", "title", "limit", "summary"}
+	case "coverage":
+		names = []string{"instance", "language"}
 	case "recent":
 		names = []string{"since", "instance", "language", "outcome", "limit"}
 	case "retry":
@@ -661,10 +671,15 @@ Result fields: matches[] (instance, kind, file_id, title, year, season, episode,
 Error codes: usage, unknown_instance, media_not_found (only for --file-id), internal.`,
 	"missing": `List what subsyncd has no subtitle for yet.
 Each row is an active media file and configured language with no installation and no track that covers it (a forced-only track does not count; a hearing-impaired one only with allow_hearing_impaired). Runs beside the daemon.
-Filters: --instance, --language, --title ("Dune", "Show S01E02"; an exact title beats a partial one), --limit (default 50). Rows follow the queue: what would run next comes first, then languages with no search yet. A search running now is listed too, with no next_attempt_at.
+Filters: --instance, --language, --title ("Dune", "Show S01E02"; an exact title beats a partial one), --limit (default 50). --summary counts every row by instance, language and reason instead of listing them, and takes no --limit; coverage puts those counts beside each library's totals. Rows follow the queue: what would run next comes first, then languages with no search yet. A search running now is listed too, with no next_attempt_at.
 Reasons: not_searched (no search has run yet), no_candidates (providers returned nothing usable), all_rejected (every candidate was rejected), providers_cooling_down (the last search was throttled, or every provider of the language's route is cooling down; providers names them), search_failing (the last search failed technically, for example a network, LAPSE or media-storage problem; it retries by itself at next_attempt_at, and explain or the logs show the cause), unsupported (for example a multi-episode file subsyncd does not search).
 action is a complete command to run (search ..., search ... --retry-rejected); for providers_cooling_down it is providers, which shows when the cooldown or quota resets (searches resume by themselves), or retry --provider ... when a provider rejected its credentials; for search_failing it is the explain command to see the cause, and for unsupported a short instruction instead.
-Result fields: total (all rows before --limit), items[] (instance, kind, file_id, title, year, season, episode, episode_end, language, reason, providers, next_attempt_at, action).
+Result fields: total (all rows before --limit), items[] (instance, kind, file_id, title, year, season, episode, episode_end, language, reason, providers, next_attempt_at, action), and with --summary summary[] (instance, language, reason, count) and an empty items[].
+Error codes: usage, unknown_instance, unknown_language, internal.`,
+	"coverage": `Count each library's subtitles per language.
+For every instance and configured language: media (the instance's active files), covered, split into installed (subsyncd installed a subtitle) and existing (a track or sidecar covers the language, or the last search found it satisfied), and missing, split by reason, the largest first. missing is exactly what the missing command lists, with the same reasons, so media = installed + existing + missing; all of it comes from one database snapshot. Configured instances come first; an instance removed from the configuration but still in the database (until forget-instance) follows with configured false, since missing lists it too. Runs beside the daemon and reads only the database.
+Filters: --instance (a configured one), --language.
+Result fields: rows[] (instance, configured, language, media, covered, installed, existing, missing, missing_by_reason[] (reason, count)).
 Error codes: usage, unknown_instance, unknown_language, internal.`,
 	"recent": `List what happened in a time window, newest first.
 That is subtitles installed (and replaced), searches that ended with no result or only rejected candidates, subtitles you rejected, subtitles removed, and searches that gave up on upgrade checks. Reads the search history beside the daemon; the history is kept for 30 days.
@@ -674,9 +689,9 @@ Result fields: since, items[] (instance, kind, file_id, title, language, outcome
 Error codes: usage, unknown_instance, unknown_language, internal.`,
 	"status": `Show an overview to read before acting.
 It covers the daemon, the queue, running searches, providers that cannot be used, the media pause, each Arr instance and the backlogs. Runs beside the daemon, and still answers without one.
-Result fields: daemon (running, version, started_at, error), queue (new, missing, upgrade; each total and due), running[] (the media fields, language, lease_until), providers[] (id, state, until, last_failure), media_pause (until), instances[] (name, last_reconcile_at, reconcile_failures, discovery_complete, webhook, webhook_checked_at), backlog (webhook_inbox, notification_outbox).
+Result fields: daemon (running, version, started_at, error), queue (new, missing, upgrade; each total, due and next_at), queue_by_library[] (instance, language, new, missing, upgrade), running[] (the media fields, language, lease_until), providers[] (id, state, until, last_failure), media_pause (until), instances[] (name, last_reconcile_at, reconcile_failures, discovery_complete, webhook, webhook_checked_at), backlog (webhook_inbox, notification_outbox).
 daemon.running is false when no daemon answers, with daemon.error set (a code, or "daemon unreachable") when something did but failed. version, started_at and media_pause come from the daemon only. A pause is reported only while it lasts.
-queue counts pending searches: new (just imported or renamed, or queued by reject), missing, and upgrade checks. due counts those scheduled now and not running. running[] are searches holding a live lease (the worker's, or a manual search); the database records when the lease ends (lease_until), not when the search began.
+queue counts pending searches: new (just imported or renamed, or queued by reject), missing, and upgrade checks. due counts those scheduled now and not running; next_at is the earliest scheduled attempt of those not running (in the past while some are due). queue_by_library[] splits the queue by instance and language. running[] are searches holding a live lease (the worker's, or a manual search); the database records when the lease ends (lease_until), not when the search began.
 providers[] lists only providers that cannot be used now; providers shows them all. State is cooling_down (a rate limit, busy service, blocked client or transient failure until the reset time in until), quota_exhausted (a quota is used up until the time in until), or auth_failed (credentials were rejected; until is empty and the provider stays off until you fix them and run retry --provider ID).
 instances[]: last_reconcile_at is the last attempt and succeeded when reconcile_failures is 0; discovery_complete is whether the first library discovery finished; webhook is connected (subsyncd manages the Arr connection and checked it at webhook_checked_at), pending (managed, not yet connected) or unmanaged (no server.webhook_base_url).
 Error codes: usage, internal.`,
@@ -715,7 +730,7 @@ var commandGroups = []struct {
 	commands []string
 }{
 	{"Daemon", []string{"serve"}},
-	{"Inspect", []string{"status", "providers", "missing", "recent", "find", "explain", "doctor", "analyze-sync"}},
+	{"Inspect", []string{"status", "providers", "coverage", "missing", "recent", "find", "explain", "doctor", "analyze-sync"}},
 	{"Act", []string{"search", "reject", "retry", "scan"}},
 	{"Set up", []string{"webhook-url", "rotate-webhook-token", "forget-instance"}},
 }

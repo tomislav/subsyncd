@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -52,10 +53,7 @@ type MissingRow struct {
 // it satisfied, or a track covers it (domain.TrackCoversLanguage). The title
 // filter is MatchMedia's.
 func (r *Repository) ListMissing(ctx context.Context, q MissingQuery) ([]MissingRow, int, error) {
-	languages := q.Languages
-	if q.Language != "" {
-		languages = []domain.Language{q.Language}
-	}
+	languages := q.languages()
 	if len(languages) == 0 {
 		return nil, 0, nil
 	}
@@ -73,6 +71,26 @@ func (r *Repository) ListMissing(ctx context.Context, q MissingQuery) ([]Missing
 			allowed[match] = true
 		}
 	}
+	return listMissing(ctx, r.store.db, q, languages, allowed)
+}
+
+// languages is Language when set, else every configured language.
+func (q MissingQuery) languages() []domain.Language {
+	if q.Language != "" {
+		return []domain.Language{q.Language}
+	}
+	return q.Languages
+}
+
+// querier is what the missing and coverage reads need from a database handle
+// or a transaction.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// listMissing is ListMissing on db for the given languages, keeping only the
+// media in allowed when it is not nil.
+func listMissing(ctx context.Context, db querier, q MissingQuery, languages []domain.Language, allowed map[control.MediaMatch]bool) ([]MissingRow, int, error) {
 	args := make([]any, 0, len(languages)+1)
 	for _, language := range languages {
 		args = append(args, language.String())
@@ -82,7 +100,7 @@ func (r *Repository) ListMissing(ctx context.Context, q MissingQuery) ([]Missing
 		where = " AND m.instance=?"
 		args = append(args, q.Instance)
 	}
-	rows, err := r.store.db.QueryContext(ctx, `WITH wanted(language) AS (VALUES `+strings.TrimSuffix(strings.Repeat("(?),", len(languages)), ",")+`)
+	rows, err := db.QueryContext(ctx, `WITH wanted(language) AS (VALUES `+strings.TrimSuffix(strings.Repeat("(?),", len(languages)), ",")+`)
 SELECT m.id, m.instance, m.kind, m.file_id, m.title, m.year, m.season, m.episode, m.episode_end, m.unsupported_reason,
   w.language, s.id IS NULL, COALESCE(s.state, ''), COALESCE(s.attempt, 0), COALESCE(s.failure_attempt, 0), COALESCE(s.last_outcome, ''), COALESCE(s.next_attempt_at_ns, 0), COALESCE(s.lease_until_ns, 0)
 FROM media m CROSS JOIN wanted w
@@ -117,7 +135,7 @@ ORDER BY s.id IS NULL, COALESCE(s.state, '')<>'pending', s.priority DESC, s.inst
 	if err := rows.Close(); err != nil {
 		return nil, 0, fmt.Errorf("close missing: %w", err)
 	}
-	tracks, err := r.candidateTracks(ctx)
+	tracks, err := candidateTracks(ctx, db)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -150,8 +168,8 @@ func covered(tracks []trackKind, language domain.Language, allowHearingImpaired 
 
 // candidateTracks lists, per media file, the language, forced and
 // hearing-impaired flags of every track.
-func (r *Repository) candidateTracks(ctx context.Context) (map[int64][]trackKind, error) {
-	rows, err := r.store.db.QueryContext(ctx, `SELECT media_id, language, forced, sdh FROM tracks WHERE language<>''`)
+func candidateTracks(ctx context.Context, db querier) (map[int64][]trackKind, error) {
+	rows, err := db.QueryContext(ctx, `SELECT media_id, language, forced, sdh FROM tracks WHERE language<>''`)
 	if err != nil {
 		return nil, fmt.Errorf("list tracks: %w", err)
 	}

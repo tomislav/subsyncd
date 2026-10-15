@@ -471,12 +471,14 @@ func (r RotateTokenResult) Text() string {
 }
 
 // MissingArgs are the arguments of the missing command. Limit zero means the
-// default of 50.
+// default of 50. Summary counts the rows by instance, language and reason
+// instead of listing them.
 type MissingArgs struct {
 	Instance string `json:"instance,omitempty"`
 	Language string `json:"language,omitempty"`
 	Title    string `json:"title,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
+	Summary  bool   `json:"summary,omitempty"`
 }
 
 // MissingItem is one media file and configured language that has no
@@ -493,16 +495,35 @@ type MissingItem struct {
 	Action        string    `json:"action"`
 }
 
+// MissingGroup counts the missing subtitles of one instance, language and
+// reason.
+type MissingGroup struct {
+	Instance string `json:"instance"`
+	Language string `json:"language"`
+	Reason   string `json:"reason"`
+	Count    int    `json:"count"`
+}
+
 // MissingResult lists the missing subtitles in queue order. Total counts every
-// one before the limit cut Items.
+// one before the limit cut Items. With --summary, Items is empty and Summary
+// counts every missing subtitle by instance, language and reason; it is an
+// empty list, not absent, when nothing is missing.
 type MissingResult struct {
-	Total int           `json:"total"`
-	Items []MissingItem `json:"items"`
+	Total   int            `json:"total"`
+	Items   []MissingItem  `json:"items"`
+	Summary []MissingGroup `json:"summary,omitzero"`
 }
 
 func (r MissingResult) Text() string {
 	if r.Total == 0 {
 		return "nothing is missing"
+	}
+	if len(r.Summary) > 0 {
+		lines := []string{fmt.Sprintf("%d missing", r.Total)}
+		for _, group := range r.Summary {
+			lines = append(lines, fmt.Sprintf("%s %s %s: %d", group.Instance, group.Language, group.Reason, group.Count))
+		}
+		return strings.Join(lines, "\n")
 	}
 	lines := []string{fmt.Sprintf("%d missing (showing %d)", r.Total, len(r.Items))}
 	for _, item := range r.Items {
@@ -528,10 +549,36 @@ type DaemonState struct {
 }
 
 // QueueClass counts the pending searches of one class: all of them, and those
-// due now (scheduled, and not running).
+// due now (scheduled, and not running). NextAt is the earliest scheduled
+// attempt of those not running, in the past when some are due, and zero when
+// there are none.
 type QueueClass struct {
-	Total int `json:"total"`
-	Due   int `json:"due"`
+	Total  int       `json:"total"`
+	Due    int       `json:"due"`
+	NextAt time.Time `json:"next_at,omitzero"`
+}
+
+// Add folds another count into the class, keeping the earlier NextAt.
+func (c QueueClass) Add(other QueueClass) QueueClass {
+	c.Total += other.Total
+	c.Due += other.Due
+	if !other.NextAt.IsZero() && (c.NextAt.IsZero() || other.NextAt.Before(c.NextAt)) {
+		c.NextAt = other.NextAt
+	}
+	return c
+}
+
+func (c QueueClass) text() string {
+	return fmt.Sprintf("%d pending, %s", c.Total, c.dueText())
+}
+
+// dueText is how many are due, and when none is, when the next one is.
+func (c QueueClass) dueText() string {
+	text := fmt.Sprintf("%d due", c.Due)
+	if c.Due == 0 && !c.NextAt.IsZero() {
+		text += ", next " + c.NextAt.UTC().Format(time.RFC3339)
+	}
+	return text
 }
 
 // QueueCounts counts pending searches by class: new (just imported or
@@ -540,6 +587,13 @@ type QueueCounts struct {
 	New     QueueClass `json:"new"`
 	Missing QueueClass `json:"missing"`
 	Upgrade QueueClass `json:"upgrade"`
+}
+
+// QueueGroup is the pending searches of one instance and language, by class.
+type QueueGroup struct {
+	Instance string `json:"instance"`
+	Language string `json:"language"`
+	QueueCounts
 }
 
 // RunningSearch is a search holding a live lease. The database records when
@@ -590,13 +644,15 @@ type Backlog struct {
 // StatusResult is the overview to read before acting. Daemon and
 // MediaPause come from the running daemon; everything else from the database.
 type StatusResult struct {
-	Daemon     DaemonState     `json:"daemon"`
-	Queue      QueueCounts     `json:"queue"`
-	Running    []RunningSearch `json:"running"`
-	Providers  []ProviderState `json:"providers"`
-	MediaPause *MediaPause     `json:"media_pause,omitempty"`
-	Instances  []InstanceState `json:"instances"`
-	Backlog    Backlog         `json:"backlog"`
+	Daemon DaemonState `json:"daemon"`
+	Queue  QueueCounts `json:"queue"`
+	// QueueByLibrary splits Queue by instance and language.
+	QueueByLibrary []QueueGroup    `json:"queue_by_library"`
+	Running        []RunningSearch `json:"running"`
+	Providers      []ProviderState `json:"providers"`
+	MediaPause     *MediaPause     `json:"media_pause,omitempty"`
+	Instances      []InstanceState `json:"instances"`
+	Backlog        Backlog         `json:"backlog"`
 }
 
 func (r StatusResult) Text() string {
@@ -620,7 +676,11 @@ func (r StatusResult) Text() string {
 		name  string
 		count QueueClass
 	}{{"new", r.Queue.New}, {"missing", r.Queue.Missing}, {"upgrade", r.Queue.Upgrade}} {
-		lines = append(lines, fmt.Sprintf("queue %s: %d pending, %d due", class.name, class.count.Total, class.count.Due))
+		lines = append(lines, fmt.Sprintf("queue %s: %s", class.name, class.count.text()))
+	}
+	for _, group := range r.QueueByLibrary {
+		all := group.New.Add(group.Missing).Add(group.Upgrade)
+		lines = append(lines, fmt.Sprintf("queue %s %s: %d new, %d missing, %d upgrade; %s", group.Instance, group.Language, group.New.Total, group.Missing.Total, group.Upgrade.Total, all.dueText()))
 	}
 	if r.MediaPause != nil {
 		lines = append(lines, "media unavailable: searches paused until "+r.MediaPause.Until.UTC().Format(time.RFC3339))
@@ -771,6 +831,65 @@ func (r RecentResult) Text() string {
 			line += " [manual]"
 		}
 		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// CoverageArgs are the arguments of the coverage command.
+type CoverageArgs struct {
+	Instance string `json:"instance,omitempty"`
+	Language string `json:"language,omitempty"`
+}
+
+// ReasonCount is how many missing subtitles have one reason.
+type ReasonCount struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
+}
+
+// CoverageRow is where one instance and configured language stand. Media
+// counts the instance's active files; each is installed (subsyncd installed a
+// subtitle), existing (a track or sidecar already covers the language, or the
+// last search found it satisfied) or missing, the rows missing lists.
+// MissingByReason splits Missing by missing's reasons, the largest first.
+// Configured is false for an instance still in the database but no longer in
+// the configuration.
+type CoverageRow struct {
+	Instance        string        `json:"instance"`
+	Configured      bool          `json:"configured"`
+	Language        string        `json:"language"`
+	Media           int           `json:"media"`
+	Covered         int           `json:"covered"`
+	Installed       int           `json:"installed"`
+	Existing        int           `json:"existing"`
+	Missing         int           `json:"missing"`
+	MissingByReason []ReasonCount `json:"missing_by_reason"`
+}
+
+// CoverageResult has one row per instance and configured language.
+type CoverageResult struct {
+	Rows []CoverageRow `json:"rows"`
+}
+
+func (r CoverageResult) Text() string {
+	if len(r.Rows) == 0 {
+		return "no instances"
+	}
+	var lines []string
+	for _, row := range r.Rows {
+		line := fmt.Sprintf("%s %s: %d files, %d covered (%d installed, %d existing), %d missing", row.Instance, row.Language, row.Media, row.Covered, row.Installed, row.Existing, row.Missing)
+		if !row.Configured {
+			line += " (not configured; forget-instance removes it)"
+		}
+		lines = append(lines, line)
+		if len(row.MissingByReason) == 0 {
+			continue
+		}
+		parts := make([]string, len(row.MissingByReason))
+		for i, reason := range row.MissingByReason {
+			parts[i] = fmt.Sprintf("%s %d", reason.Reason, reason.Count)
+		}
+		lines = append(lines, "  missing: "+strings.Join(parts, ", "))
 	}
 	return strings.Join(lines, "\n")
 }
