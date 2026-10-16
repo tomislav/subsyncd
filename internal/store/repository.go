@@ -110,9 +110,10 @@ type SearchLease struct {
 	ReplaceInstalled bool
 }
 
-// ResumeProvidersTTL is how long a saved clean-empty provider stays skipped:
-// the provider search-result cache TTL. Past it the provider is asked again.
-const ResumeProvidersTTL = 6 * time.Hour
+// ResumeProvidersMaxAge caps how long a saved clean-empty provider list is
+// kept: the longest missing-search interval. The worker decides when a list
+// expires sooner (schedule.ResumeTTL); this only drops forgotten lists.
+const ResumeProvidersMaxAge = 14 * 24 * time.Hour
 
 type SearchCompletion struct {
 	JobID                 string
@@ -993,9 +994,9 @@ func (r *Repository) LeaseDueSearchesExcept(ctx context.Context, now time.Time, 
 			return nil, fmt.Errorf("scan due search: %w", err)
 		}
 		fingerprint.ModTime = time.Unix(0, modTime).UTC()
-		// A list older than the search-result cache would skip providers whose
-		// answer the cache itself no longer trusts.
-		expired := savedAt == 0 || now.Sub(time.Unix(0, savedAt)) >= ResumeProvidersTTL
+		// A list without a date, or older than the safety cap, is dropped here;
+		// the worker drops lists the missing schedule has outlasted.
+		expired := savedAt == 0 || now.Sub(time.Unix(0, savedAt)) >= ResumeProvidersMaxAge
 		if expired || !r.currentResumeScope(item.language, fingerprint, item.resumeSignature) {
 			encodedProviders, item.resumeSignature = "[]", ""
 		} else {

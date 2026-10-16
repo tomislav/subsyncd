@@ -59,6 +59,7 @@ A search that could not ask its providers because of cooldowns completes as `thr
 - A reset less than a minute away, already past, or `Retry-After: 0` waits one minute (`minimumThrottleDelay`), so a provider is never asked in a loop.
 - When two tiers are throttled, the earliest non-zero reset wins, so a disabled tier (which has no reset) cannot hide the other tier's reset.
 - With no known reset at all (only disabled providers), the search waits 6 hours (`unknownThrottleDelay`) plus the jitter. The [route gate](limits.md#route-gate) keeps such a route paused until `retry --provider`.
+- A retry after a quota reset skips providers that already found nothing within the missing schedule's next interval ([What is saved](limits.md#what-is-saved)); only older answers are asked again.
 - A throttled completion keeps `queue_order_ns`, so jitter delays eligibility without changing queue position. It advances neither the missing nor the failure counter, and keeps the job's class.
 - A replaced file's sidecar removal past the hourly cap also completes as `throttled` (reason `removal_deferred`; see [Removal cap](../installation-safety.md#removal-cap)).
 

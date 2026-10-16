@@ -324,3 +324,45 @@ func TestHungOrFailingReadsPauseTheQueueEvenWhenTheMountLists(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerDropsExpiredResume(t *testing.T) {
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	throttled := workflow.Result{Outcome: workflow.OutcomeThrottled, RetryAt: now.Add(time.Hour), ResumeProviders: []string{"a"}, ResumeRouteSignature: "route"}
+	for name, test := range map[string]struct {
+		saved    time.Time
+		released time.Time
+		priority store.SearchPriority
+		want     []string
+	}{
+		"recent, 7 h old":  {now.Add(-7 * time.Hour), now.Add(-24 * time.Hour), store.SearchPriorityMissing, nil},
+		"recent, 5 h old":  {now.Add(-5 * time.Hour), now.Add(-24 * time.Hour), store.SearchPriorityMissing, []string{"a"}},
+		"aged, 30 h old":   {now.Add(-30 * time.Hour), now.Add(-400 * 24 * time.Hour), store.SearchPriorityMissing, []string{"a"}},
+		"aged, 8 days old": {now.Add(-8 * 24 * time.Hour), now.Add(-400 * 24 * time.Hour), store.SearchPriorityMissing, nil},
+		"upgrade":          {now.Add(-time.Hour), now.Add(-24 * time.Hour), store.SearchPriorityUpgrade, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := newWorkerRepository(1, now)
+			repository.searches[0].ResumeProviders = []string{"a"}
+			repository.searches[0].ResumeRouteSignature = "route"
+			repository.searches[0].ResumeSavedAt = test.saved
+			repository.searches[0].Priority = test.priority
+			media := repository.media[1]
+			media.ReleasedAt = test.released
+			repository.media[1] = media
+			service := &workerWorkflow{outcome: throttled}
+			worker := testWorker(repository, service, testutil.NewClock(now))
+			worker.AgedAfter = 90 * 24 * time.Hour
+			if err := worker.RunOnce(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := service.requests[0].ResumeProviders; len(got) != len(test.want) || (len(got) > 0 && got[0] != test.want[0]) {
+				t.Fatalf("request resume providers = %v, want %v", got, test.want)
+			}
+			if len(test.want) == 0 && test.priority == store.SearchPriorityMissing {
+				if got := repository.searchCompletions[0].ResumeSavedAt; !got.Equal(now) {
+					t.Fatalf("completion resume saved at %s, want a fresh date %s", got, now)
+				}
+			}
+		})
+	}
+}

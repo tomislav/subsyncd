@@ -19,7 +19,7 @@ func leaseOne(t *testing.T, repo *Repository, now time.Time) SearchLease {
 	return leases[0]
 }
 
-func TestSearchResumeExpiresWithSearchCache(t *testing.T) {
+func TestSearchResumeExpiresAtTheSafetyCap(t *testing.T) {
 	repo := openTestRepository(t)
 	ctx := t.Context()
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -35,15 +35,15 @@ func TestSearchResumeExpiresWithSearchCache(t *testing.T) {
 	if _, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: lease.JobID, Outcome: "throttled", NextAttemptAt: now.Add(time.Hour), ResumeProviders: []string{"p"}, ResumeRouteSignature: "route", PreserveResume: true, ResumeSavedAt: saved}); err != nil {
 		t.Fatal(err)
 	}
-	lease = leaseOne(t, repo, now.Add(time.Hour))
+	lease = leaseOne(t, repo, saved.Add(30*time.Hour))
 	if !reflect.DeepEqual(lease.ResumeProviders, []string{"p"}) || !lease.ResumeSavedAt.Equal(saved) {
 		t.Fatalf("fresh resume = %+v", lease)
 	}
-	// Throttled again past the cache TTL counted from the first answer.
-	if _, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: lease.JobID, Outcome: "throttled", NextAttemptAt: saved.Add(ResumeProvidersTTL), ResumeProviders: []string{"p"}, ResumeRouteSignature: "route", PreserveResume: true, ResumeSavedAt: lease.ResumeSavedAt}); err != nil {
+	// Throttled again past the safety cap counted from the first answer.
+	if _, err := repo.CompleteSearch(ctx, SearchCompletion{JobID: lease.JobID, Outcome: "throttled", NextAttemptAt: saved.Add(ResumeProvidersMaxAge), ResumeProviders: []string{"p"}, ResumeRouteSignature: "route", PreserveResume: true, ResumeSavedAt: lease.ResumeSavedAt}); err != nil {
 		t.Fatal(err)
 	}
-	lease = leaseOne(t, repo, saved.Add(ResumeProvidersTTL))
+	lease = leaseOne(t, repo, saved.Add(ResumeProvidersMaxAge))
 	if len(lease.ResumeProviders) != 0 || lease.ResumeRouteSignature != "" || !lease.ResumeSavedAt.IsZero() {
 		t.Fatalf("expired resume list still skipped providers: %+v", lease)
 	}

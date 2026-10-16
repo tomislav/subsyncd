@@ -407,6 +407,12 @@ func (w *Worker) runSearchLease(ctx context.Context, lease store.SearchLease) er
 			w.logJobCompleted(jobCtx, slog.LevelInfo, string(media.UnsupportedReason), string(media.UnsupportedReason), time.Time{}, started, 0, nil)
 			return nil
 		}
+		// A clean-empty list lives as long as the missing schedule would wait
+		// after this search. Clearing it on the lease also gives the completion
+		// a fresh date (preserveProviderResume reads this same lease).
+		if !lease.ResumeSavedAt.IsZero() && w.Clock.Now().Sub(lease.ResumeSavedAt) >= w.scheduler().ResumeTTL(lease.Attempt, media.ReleasedAt) {
+			lease.ResumeProviders, lease.ResumeRouteSignature, lease.ResumeSavedAt = nil, "", time.Time{}
+		}
 		// A queued reject treats the rejected subtitle as replaceable or
 		// removable, also after a restart.
 		request := workflow.Request{MediaID: lease.MediaID, Media: media, Language: domain.Language(lease.Language), ReplaceInstalled: lease.ReplaceInstalled}

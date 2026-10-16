@@ -101,3 +101,32 @@ func TestAgedMissingAttemptIsTheWeeklyStep(t *testing.T) {
 		t.Fatalf("step after the aged step = %s, want 14 days", got)
 	}
 }
+
+func TestResumeTTLFollowsTheMissingSchedule(t *testing.T) {
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	scheduler := Scheduler{Clock: fixedClock{now: now}, AgedAfter: 90 * 24 * time.Hour}
+	recent, aged := now.Add(-24*time.Hour), now.Add(-400*24*time.Hour)
+	for name, test := range map[string]struct {
+		attempt int
+		release time.Time
+		want    time.Duration
+	}{
+		"new import":           {0, recent, 6 * time.Hour},
+		"second retry":         {2, recent, 12 * time.Hour},
+		"third retry":          {3, recent, 48 * time.Hour},
+		"aged first":           {0, aged, 168 * time.Hour},
+		"aged late":            {6, aged, 336 * time.Hour},
+		"far past the table":   {20, recent, 336 * time.Hour},
+		"unknown release date": {0, time.Time{}, 6 * time.Hour},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := scheduler.ResumeTTL(test.attempt, test.release)
+			if got != test.want {
+				t.Fatalf("ResumeTTL(%d) = %s, want %s", test.attempt, got, test.want)
+			}
+			if got > store.ResumeProvidersMaxAge {
+				t.Fatalf("ResumeTTL %s exceeds the store cap %s", got, store.ResumeProvidersMaxAge)
+			}
+		})
+	}
+}

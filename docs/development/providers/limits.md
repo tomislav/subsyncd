@@ -207,7 +207,7 @@ During that unfinished cycle the search row holds a configured-order list of cle
 
 - A provider is clean-empty only after its broad search completed without candidates and, when applicable, its exact search did too. Candidate-bearing, disabled, throttled, canceled and failed providers stay pending.
 - On the retry only the clean-empty providers are skipped; unfinished providers and any required fallback tier still run in order.
-- The list is dated by its oldest answer (`resume_saved_at_ns`, migration 020). A list six hours old or more (`store.ResumeProvidersTTL`, the search-cache lifetime) is dropped when the search is leased, so a cooldown that outlasts the cache asks those providers again. A list without a date is dropped.
+- The list is dated by its oldest answer (`resume_saved_at_ns`, migration 020). It holds as long as the missing schedule would wait after the search (`Scheduler.ResumeTTL`): 6 hours for a new import, 12 hours and then 48 hours as attempts grow, 7 days for media released long ago, then 14 days, and never less than the 6-hour search cache. The worker drops an older list before the search runs, and the completion then starts a fresh date. A quota wait of about a day therefore does not ask providers that found nothing again. A list without a date, or older than the 14-day safety cap (`store.ResumeProvidersMaxAge`), is dropped when the search is leased.
 - A list that fails validation when leased (malformed JSON, duplicate or unknown IDs) does not fail the lease batch: that search runs the full route, its progress is reset, and `search.resume_reset` (warn, `component=store`) is logged.
 
 ### Binding and clearing

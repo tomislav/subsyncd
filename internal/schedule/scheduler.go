@@ -53,6 +53,21 @@ func (s Scheduler) aged(releasedAt, now time.Time) bool {
 	return s.AgedAfter > 0 && !releasedAt.IsZero() && !releasedAt.After(now) && now.Sub(releasedAt) >= s.AgedAfter
 }
 
+// ResumeTTL is how long a provider's clean-empty answer may be reused for a
+// search at the given missing attempt. It is the gap the missing schedule
+// waits after this search (the next attempt's interval, without jitter), so a
+// retry at that time skips providers that already found nothing; a shorter
+// limit would ask them again on every retry. It is never less than the six-hour
+// search cache.
+func (s Scheduler) ResumeTTL(attempt int, releasedAt time.Time) time.Duration {
+	next := attempt + 1
+	if s.aged(releasedAt, s.Clock.Now()) && next < AgedMissingAttempt {
+		next = AgedMissingAttempt
+	}
+	next = min(next, len(missingIntervals)-1)
+	return max(missingIntervals[next], 6*time.Hour)
+}
+
 func (s Scheduler) Failure(jobID string, failureAttempt int, outcome string) store.SearchCompletion {
 	return store.SearchCompletion{
 		JobID:                 jobID,
