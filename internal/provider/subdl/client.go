@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +33,15 @@ type Client struct {
 	// events receives warnings about SubDL answers the client doesn't recognise;
 	// nil discards them.
 	events *observability.Emitter
+	// searches keeps SubDL's search answers so a season's episodes share the
+	// season-wide and title-only queries. Keys never contain the API key.
+	searches *baseprovider.TTLCache[[]searchItem]
 }
+
+const (
+	searchCacheTTL   = 6 * time.Hour
+	searchCacheLimit = 512
+)
 
 func New(config Config, transport baseprovider.Client, clock baseprovider.Clock) (*Client, error) {
 	config.applyDefaults()
@@ -42,7 +51,7 @@ func New(config Config, transport baseprovider.Client, clock baseprovider.Clock)
 	if clock == nil {
 		clock = baseprovider.SystemClock{}
 	}
-	return &Client{id: transport.ProviderID, config: config, transport: transport, clock: clock}, nil
+	return &Client{id: transport.ProviderID, config: config, transport: transport, clock: clock, searches: baseprovider.NewTTLCache[[]searchItem](clock, searchCacheTTL, searchCacheLimit)}, nil
 }
 
 func Factory(id string, node yaml.Node, dependencies baseprovider.Dependencies) (baseprovider.Provider, error) {
@@ -126,7 +135,13 @@ func (c *Client) Search(ctx context.Context, query baseprovider.SearchQuery) ([]
 			absolute.Set("episode_number", strconv.Itoa(query.Media.AbsoluteEpisode))
 			searches = append(searches, absolute)
 		}
+		// The season-wide query carries no episode's file name, so all of a
+		// season's episodes send the same query and share its cached answer.
 		season := cloneValues(base)
+		season.Del("file_name")
+		if !season.Has("imdb_id") && !season.Has("tmdb_id") && query.Media.Title != "" {
+			season.Set("film_name", query.Media.Title)
+		}
 		season.Set("season_number", strconv.Itoa(query.Media.Season))
 		searches = append(searches, season)
 	} else {
@@ -243,38 +258,51 @@ type unpackFile struct {
 	Hearing     bool   `json:"hi"`
 }
 
+// searchOnce returns SubDL's answer to one search, from the cache when the same
+// parameters were searched within searchCacheTTL. Only successful answers and
+// recognised not-found answers are cached; the key leaves out the API key.
 func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searchItem, error) {
+	keyed := cloneValues(parameters)
+	keyed.Del("api_key")
+	items, err := c.searches.Load(ctx, keyed.Encode(), func() ([]searchItem, bool, error) {
+		return c.fetchSearch(ctx, parameters)
+	})
+	return slices.Clone(items), err
+}
+
+// fetchSearch sends one search and reports whether its answer may be cached.
+func (c *Client) fetchSearch(ctx context.Context, parameters url.Values) ([]searchItem, bool, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.BaseURL+"?"+parameters.Encode(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("create SubDL search request")
+		return nil, false, fmt.Errorf("create SubDL search request")
 	}
 	response, err := c.transport.Do(ctx, baseprovider.OperationSearch, request)
 	if err != nil {
 		if response != nil {
 			defer response.Body.Close()
 			if response.StatusCode == http.StatusTooManyRequests {
-				return nil, c.decodeLimit(ctx, baseprovider.OperationSearch, response.Body, response.Header, err)
+				return nil, false, c.decodeLimit(ctx, baseprovider.OperationSearch, response.Body, response.Header, err)
 			}
 		}
-		return nil, c.rejectedCredentials(ctx, baseprovider.OperationSearch, response, err)
+		return nil, false, c.rejectedCredentials(ctx, baseprovider.OperationSearch, response, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if err := c.refusal(ctx, baseprovider.OperationSearch, response); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return nil, fmt.Errorf("SubDL search returned HTTP %d", response.StatusCode)
+		return nil, false, fmt.Errorf("SubDL search returned HTTP %d", response.StatusCode)
 	}
 	var decoded searchResponse
 	if err := baseprovider.DecodeJSON(response.Body, &decoded, 4<<20, "SubDL search response is not valid JSON"); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if (decoded.Status != nil && !*decoded.Status) || (decoded.Success != nil && !*decoded.Success) {
 		if isNoResult(decoded.Error) {
-			return nil, nil
+			return nil, true, nil
 		}
 		if limitErr := c.payloadLimit(ctx, baseprovider.OperationSearch, decoded.Error, time.Time{}); limitErr != nil {
-			return nil, limitErr
+			return nil, false, limitErr
 		}
 		// Any other status-false answer is treated as an empty result rather than a
 		// failed search: SubDL rewords its not-found message from time to time, and
@@ -288,10 +316,21 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 		if isCredentialProblem(decoded.Error) {
 			// A bad or missing key must stay a visible failure, not an empty library.
 			c.events.Log(ctx, slog.LevelWarn, "provider.response_unrecognized", "SubDL rejected the search with a credential message", attrs...)
-			return nil, fmt.Errorf("SubDL search was rejected")
+			return nil, false, fmt.Errorf("SubDL search was rejected")
 		}
 		c.events.Log(ctx, slog.LevelWarn, "provider.response_unrecognized", "SubDL answered with an unrecognised message; treating it as no result", attrs...)
-		return nil, nil
+		// Not cached: a new wording may be a transient refusal.
+		return nil, false, nil
+	}
+	// SubDL may return download URLs carrying credentials. The answer is cached,
+	// so keep only each URL's credential-free download reference; an unusable URL
+	// becomes empty, which normalize skips as before.
+	for index := range decoded.Subtitles {
+		item := &decoded.Subtitles[index]
+		item.URL, _ = c.downloadReference(item.URL)
+		for member := range item.UnpackFiles {
+			item.UnpackFiles[member].URL, _ = c.downloadReference(item.UnpackFiles[member].URL)
+		}
 	}
 	// A search that matched several titles lists subtitles of all of them, so
 	// no one title is the subtitles' identity.
@@ -300,7 +339,10 @@ func (c *Client) searchOnce(ctx context.Context, parameters url.Values) ([]searc
 			decoded.Subtitles[index].Identity = identity
 		}
 	}
-	return decoded.Subtitles, nil
+	// Only an answer that says it succeeded is kept; one without a status flag
+	// is used once but not cached.
+	succeeded := decoded.Status != nil && *decoded.Status || decoded.Success != nil && *decoded.Success
+	return decoded.Subtitles, succeeded, nil
 }
 
 // singleTitle returns the title a search matched when it matched exactly one

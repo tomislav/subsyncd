@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -117,6 +119,11 @@ func TestEpisodeSearchRunsFallbacksDeduplicatesAndPrefersDirectMember(t *testing
 		if queries[0].Get(key) == "" {
 			t.Errorf("standard query missing %s: %s", key, queries[0].Encode())
 		}
+	}
+	// The season-wide query is shared by the season's episodes, so it carries
+	// no episode's file name.
+	if queries[2].Has("file_name") {
+		t.Errorf("season query has file_name: %s", queries[2].Encode())
 	}
 	// SubDL's hi=1 filters to hearing-impaired subtitles only; the hi flag is
 	// returned on every result without it.
@@ -788,5 +795,198 @@ func TestDailyLimitOnSearchIsSearchQuota(t *testing.T) {
 				t.Fatalf("saved state = %#v, %v; want reason %s until %v", state, err, tt.reason, reset)
 			}
 		})
+	}
+}
+
+func TestSeasonQueriesAreSharedAcrossEpisodes(t *testing.T) {
+	var mu sync.Mutex
+	var queries []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.Query())
+		mu.Unlock()
+		io.WriteString(w, `{"status":true,"subtitles":[]}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+
+	first := episodeMedia()
+	first.Episode, first.OriginalFilename = 1, "Example.Show.S01E01.mkv"
+	second := episodeMedia()
+	second.Episode, second.OriginalFilename = 2, "Example.Show.S01E02.mkv"
+	if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: first, Language: "en", Mode: baseprovider.SearchBroad}); err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) != 3 {
+		t.Fatalf("first episode sent %d requests, want episode, season and title-only", len(queries))
+	}
+	if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: second, Language: "en", Mode: baseprovider.SearchBroad}); err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) != 4 {
+		t.Fatalf("second episode sent %d new requests, want only its episode query: %v", len(queries)-3, queries[3:])
+	}
+	perEpisode := []url.Values{queries[0], queries[3]}
+	for index, want := range []string{first.OriginalFilename, second.OriginalFilename} {
+		if perEpisode[index].Get("episode_number") != strconv.Itoa(index+1) || perEpisode[index].Get("file_name") != want {
+			t.Errorf("episode query %d = %s, want episode %d with file_name %s", index+1, perEpisode[index].Encode(), index+1, want)
+		}
+	}
+	for _, query := range queries {
+		if query.Has("season_number") && !query.Has("episode_number") && query.Has("file_name") {
+			t.Errorf("season query has file_name: %s", query.Encode())
+		}
+	}
+	if !queries[1].Has("season_number") || queries[1].Has("episode_number") {
+		t.Errorf("second request = %s, want the season query", queries[1].Encode())
+	}
+	if queries[2].Get("film_name") != "Example Show" || queries[2].Has("imdb_id") {
+		t.Errorf("third request = %s, want the title-only fallback", queries[2].Encode())
+	}
+}
+
+func TestSearchCacheKeyHasNoAPIKey(t *testing.T) {
+	var queries []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		io.WriteString(w, `{"status":true,"subtitles":[{"name":"one.zip","url":"/subtitle/one.zip","language":"EN","season":1,"episode":2}]}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}); err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) == 0 {
+		t.Fatal("no request reached the server")
+	}
+	for _, query := range queries {
+		if query.Get("api_key") != "api-key" {
+			t.Fatalf("request lacks the configured key: %s", query.Encode())
+		}
+		expected := cloneValues(query)
+		expected.Del("api_key")
+		key := expected.Encode()
+		if _, ok := client.searches.Get(key); !ok {
+			t.Errorf("no cache entry for %s", key)
+		}
+		if strings.Contains(key, "api-key") {
+			t.Errorf("cache key contains the API key: %s", key)
+		}
+	}
+}
+
+func TestSearchCacheSkipsLimitsAndFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		status            int
+		body              string
+		requestsPerSearch int
+		freshGate         bool
+	}{
+		{name: "daily_limit", status: http.StatusOK, body: `{"status":false,"error":"daily_limit"}`},
+		{name: "http_500", status: http.StatusInternalServerError, body: `{}`, requestsPerSearch: 1, freshGate: true},
+		{name: "invalid_json", status: http.StatusOK, body: `{not json`, requestsPerSearch: 1},
+		{name: "unrecognised_status_false", status: http.StatusOK, body: `{"status":false,"error":"something new"}`, requestsPerSearch: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var queries []url.Values
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				queries = append(queries, r.URL.Query())
+				mu.Unlock()
+				w.WriteHeader(tt.status)
+				io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			query := baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad}
+			if tt.name == "daily_limit" {
+				// The persisted search quota may let the gate refuse a second
+				// request, so check the cache itself rather than the request count.
+				client := newTestClient(t, server, 1<<20)
+				if _, err := client.Search(context.Background(), query); err == nil {
+					t.Fatal("daily limit search succeeded")
+				}
+				if len(queries) == 0 {
+					t.Fatal("no request reached the server")
+				}
+				expected := cloneValues(queries[0])
+				expected.Del("api_key")
+				if _, ok := client.searches.Get(expected.Encode()); ok {
+					t.Fatal("daily limit answer was cached")
+				}
+				return
+			}
+			client := newTestClient(t, server, 1<<20)
+			client.Search(context.Background(), query)
+			if tt.freshGate {
+				// A 5xx persists a transient cooldown that would make the gate refuse
+				// the second request; a fresh client sharing the first one's cache
+				// keeps the gate out of the count.
+				cache := client.searches
+				client = newTestClient(t, server, 1<<20)
+				client.searches = cache
+			}
+			client.Search(context.Background(), query)
+			if len(queries) != 2*tt.requestsPerSearch {
+				t.Fatalf("server saw %d requests, want %d (nothing cached)", len(queries), 2*tt.requestsPerSearch)
+			}
+		})
+	}
+}
+
+func TestSeasonQueryWithoutIDsKeepsFilmName(t *testing.T) {
+	var queries []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		io.WriteString(w, `{"status":true,"subtitles":[]}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	media := episodeMedia()
+	media.ExternalIDs = domain.ExternalIDs{}
+	media.Title = "Show"
+	if _, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: media, Language: "en", Mode: baseprovider.SearchBroad}); err != nil {
+		t.Fatal(err)
+	}
+	var season url.Values
+	for _, query := range queries {
+		if query.Has("season_number") && !query.Has("episode_number") {
+			season = query
+		}
+	}
+	if season == nil {
+		t.Fatalf("no season query among %v", queries)
+	}
+	if season.Get("film_name") != "Show" || season.Has("file_name") {
+		t.Fatalf("season query = %s, want film_name=Show and no file_name", season.Encode())
+	}
+}
+
+func TestSearchCacheHoldsNoReturnedCredentials(t *testing.T) {
+	var queries []url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		io.WriteString(w, `{"status":true,"subtitles":[{"name":"pack.zip","url":"/subtitle/pack.zip?api_key=api-key","language":"EN","season":1,"episode_from":1,"episode_end":10,"unpack_files":[{"file_n_id":"file-2","name":"Show.S01E02.srt","season":1,"episode":2,"language":"EN","url":"/subtitle/pack/file-2?token=returned-secret"}]}]}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, 1<<20)
+	candidates, err := client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ResultID != "/subtitle/pack.zip:file-2" || candidates[0].DownloadRef != "/subtitle/pack/file-2" {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+	for _, query := range queries {
+		expected := cloneValues(query)
+		expected.Del("api_key")
+		items, ok := client.searches.Get(expected.Encode())
+		if !ok {
+			t.Fatalf("no cache entry for %s", expected.Encode())
+		}
+		if dump := fmt.Sprintf("%#v", items); strings.Contains(dump, "api-key") || strings.Contains(dump, "returned-secret") {
+			t.Fatalf("cached items carry a credential: %s", dump)
+		}
 	}
 }

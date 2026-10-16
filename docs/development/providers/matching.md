@@ -40,6 +40,7 @@ Candidate downloads, extraction and LAPSE scratch use the system temporary direc
 | Search results (`provider_cache`) | Provider, phase, language, file fingerprint, release name, and every identity searched by: kind, title, year, IMDb/TMDB/TVDB IDs, season, episode and range, absolute numbering, and the adapter's cache version | 6 hours, including empty results |
 | Season packs (`pack_cache`, `pack-cache/`) | Content address | `pack_cache.ttl` (24 hours) within a total `pack_cache.max_bytes` (512 MiB) LRU ceiling |
 | SubSource titles and listings | In memory | 6 hours, lost on restart |
+| SubDL search answers | In memory | 6 hours, lost on restart |
 
 - A corrected Arr identity is searched afresh rather than served results for the old one.
 - Cache selection filters provider membership before accepting or touching an entry.
