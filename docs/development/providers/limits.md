@@ -17,7 +17,7 @@ Rate limits, cooldowns, quotas, circuits, disabled credentials, download refusal
 
 ## State and scopes
 
-`provider_states` holds one row per provider instance and scope: `all`, `auth`, `search`, `download` and OpenSubtitles' `download_transfer`. A row has a reason (`rate_limit`, `download_quota`, `service_busy`, `client_blocked`, a transient-failure reason, or disabled authentication), remaining capacity and a reset.
+`provider_states` holds one row per provider instance and scope: `all`, `auth`, `search`, `download` and OpenSubtitles' `download_transfer`. A row has a reason (`rate_limit`, `download_quota`, `search_quota`, `service_busy`, `client_blocked`, a transient-failure reason, or disabled authentication), remaining capacity and a reset.
 
 - The state survives restart and is shared by every queued media item, so a provider outage produces one request, not one per file.
 - Every persisted reset, whatever its source (headers, JSON bodies, fallbacks), is clamped to at most 48 hours ahead, and workflow cooldown and quota errors carry the clamped value.
@@ -207,7 +207,7 @@ During that unfinished cycle the search row holds a configured-order list of cle
 
 - A provider is clean-empty only after its broad search completed without candidates and, when applicable, its exact search did too. Candidate-bearing, disabled, throttled, canceled and failed providers stay pending.
 - On the retry only the clean-empty providers are skipped; unfinished providers and any required fallback tier still run in order.
-- The list is dated by its oldest answer (`resume_saved_at_ns`, migration 020). It holds as long as the missing schedule would wait after the search (`Scheduler.ResumeTTL`): 6 hours for a new import, 12 hours and then 48 hours as attempts grow, 7 days for media released long ago, then 14 days, and never less than the 6-hour search cache. The worker drops an older list before the search runs, and the completion then starts a fresh date. A quota wait of about a day therefore does not ask providers that found nothing again. A list without a date, or older than the 14-day safety cap (`store.ResumeProvidersMaxAge`), is dropped when the search is leased.
+- The list is dated by its oldest answer (`resume_saved_at_ns`, migration 020). It holds as long as the missing schedule would wait after the search (`Scheduler.ResumeTTL`): 6 hours, then 12 hours, 48 hours, 4 days, 7 days and 14 days as attempts grow (the gap the missing schedule waits after this search, never less than the 6-hour search cache); media released long ago starts at 7 days. The worker drops an older list before the search runs, and the completion then starts a fresh date. A quota wait of about a day therefore does not ask providers that found nothing again. A list without a date, or older than the 14-day safety cap (`store.ResumeProvidersMaxAge`), is dropped when the search is leased.
 - A list that fails validation when leased (malformed JSON, duplicate or unknown IDs) does not fail the lease batch: that search runs the full route, its progress is reset, and `search.resume_reset` (warn, `component=store`) is logged.
 
 ### Binding and clearing
@@ -226,7 +226,7 @@ During that unfinished cycle the search row holds a configured-order list of cle
 | State | Meaning |
 | --- | --- |
 | `auth_failed` | Disabled authentication; lasts until `retry --provider`, so it has no `until` |
-| `quota_exhausted` | An exhausted state with reason `download_quota` and a future reset: the provider's download quota |
+| `quota_exhausted` | An exhausted state with reason `download_quota` or `search_quota` and a future reset: the provider's download or search quota (SubDL reports a daily search limit as `search_quota`) |
 | `cooling_down` | Any other exhausted state with a future reset: rate limits (including daily 429 request limits), service busy, a client block, a transient circuit |
 | `available` | Nothing above |
 

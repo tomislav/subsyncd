@@ -141,7 +141,7 @@ subsyncd remembers provider limits across restarts. How they show in `subsyncd p
 | State | Cause | Ends |
 | --- | --- | --- |
 | `cooling_down` | A rate limit (even a daily request limit), a busy service, a blocked client, or repeated failures. | At `until`, by itself. |
-| `quota_exhausted` | The provider's download quota is used up. | At `until`, by itself. |
+| `quota_exhausted` | The provider's search or download quota is used up. | At `until`, by itself. |
 | `auth_failed` | The provider rejected the credentials. | Only after you fix them, restart and run `subsyncd retry --provider NAME`. |
 
 - **Other providers keep working**, including fallbacks and cached season packs.

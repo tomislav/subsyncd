@@ -75,7 +75,7 @@ Search states are the queue. Dispatch order is class (import, missing, upgrade),
 - The worker leases nothing for a language and media kind while every provider on that route is unable to download.
 - Advisory wakes reduce latency but carry no correctness: polling always rediscovers due work.
 - A change arriving during a lease keeps the owner, coalesces one rerun, and prevents a stale completion from restoring old progress.
-- After a cooldown, providers that already answered cleanly are skipped while their answers are within the six-hour cache.
+- After a cooldown, providers that already answered cleanly are skipped while their answers are younger than the missing schedule's next gap (6 hours for a new import, longer as attempts grow; see [Resume progress](development/providers/limits.md#resume-progress)).
 
 ## Leases, shutdown and locking
 

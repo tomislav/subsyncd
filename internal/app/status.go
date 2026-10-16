@@ -193,8 +193,8 @@ type providerHealthState struct {
 // quota_exhausted for the download_quota and search_quota reasons, the only
 // quotas the provider layer records (a 429 keeps the header limit with
 // nothing remaining, so limit and remaining cannot tell a quota from a rate
-// limit); cooling_down for any other reset (rate limit headers, service busy, a blocked client, a
-// transient failure). The worst state wins in that order,
+// limit); cooling_down for any other reset (rate limit headers, service busy,
+// a blocked client, a transient failure). The worst state wins in that order,
 // and Until is the latest reset among the states of that kind.
 func (a *App) providerHealth(ctx context.Context, providerID string, now time.Time) (providerHealthState, error) {
 	states, err := a.Repository.ListProviderStates(ctx, providerID)

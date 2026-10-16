@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// TTLCache keeps successful provider answers in memory so the episodes of one
-// season share a single title search and subtitle listing. It is shared by
-// adapters and holds provider metadata only, never credentials or URLs, and is
-// deliberately lost on restart.
+// TTLCache keeps successful provider answers in memory so repeated searches,
+// such as the episodes of one season, share a single title search and
+// subtitle listing. Adapters share it. It holds provider metadata only, never
+// credentials, and is deliberately lost on restart.
 type TTLCache[V any] struct {
 	mu       sync.Mutex
 	clock    Clock

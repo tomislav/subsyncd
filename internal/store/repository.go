@@ -112,7 +112,7 @@ type SearchLease struct {
 
 // ResumeProvidersMaxAge caps how long a saved clean-empty provider list is
 // kept: the longest missing-search interval. The worker decides when a list
-// expires sooner (schedule.ResumeTTL); this only drops forgotten lists.
+// expires sooner (Scheduler.ResumeTTL); this only drops forgotten lists.
 const ResumeProvidersMaxAge = 14 * 24 * time.Hour
 
 type SearchCompletion struct {

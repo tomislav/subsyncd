@@ -247,7 +247,7 @@ subsyncd providers
 | --- | --- | --- |
 | `available` | Usable now. | Nothing. |
 | `cooling_down` | Paused after a rate limit (even a daily one), a busy service, a blocked client or repeated failures, until `until`. | Wait; searches resume by themselves. |
-| `quota_exhausted` | Its download quota is used up until `until`. | Wait; `retry` cannot refill a quota. |
+| `quota_exhausted` | A search or download quota is used up until `until`. | Wait; `retry` cannot refill a quota. |
 | `auth_failed` | It rejected the credentials. It stays off until you act. | Fix the credentials, restart, then run `subsyncd retry --provider NAME`. |
 
 `retry --provider NAME` clears the provider's saved cooldown and credential state and makes waiting searches due. Use it after fixing credentials or when a cooldown looks wrong.
