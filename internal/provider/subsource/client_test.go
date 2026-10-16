@@ -434,12 +434,12 @@ func TestConcurrentSearchesOfOneSeasonShareRequests(t *testing.T) {
 	}
 }
 
-func waitForWaiters[V any](t *testing.T, cache *ttlCache[V], want int) {
+func waitForWaiters[V any](t *testing.T, cache *base.TTLCache[V], want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for cache.waiting() < want {
+	for cache.Waiting() < want {
 		if time.Now().After(deadline) {
-			t.Fatalf("waiters = %d; want %d", cache.waiting(), want)
+			t.Fatalf("waiters = %d; want %d", cache.Waiting(), want)
 		}
 		time.Sleep(time.Millisecond)
 	}

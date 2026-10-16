@@ -28,8 +28,8 @@ type Client struct {
 	config    Config
 	transport baseprovider.Client
 	clock     baseprovider.Clock
-	titles    *ttlCache[[]titleEntry]
-	listings  *ttlCache[[]subtitleRow]
+	titles    *baseprovider.TTLCache[[]titleEntry]
+	listings  *baseprovider.TTLCache[[]subtitleRow]
 }
 
 func New(config Config, transport baseprovider.Client, clock baseprovider.Clock) (*Client, error) {
@@ -52,8 +52,8 @@ func New(config Config, transport baseprovider.Client, clock baseprovider.Clock)
 		config:    config,
 		transport: transport,
 		clock:     clock,
-		titles:    newTTLCache[[]titleEntry](clock, catalogTTL, catalogLimit),
-		listings:  newTTLCache[[]subtitleRow](clock, catalogTTL, catalogLimit),
+		titles:    baseprovider.NewTTLCache[[]titleEntry](clock, catalogTTL, catalogLimit),
+		listings:  baseprovider.NewTTLCache[[]subtitleRow](clock, catalogTTL, catalogLimit),
 	}, nil
 }
 
@@ -186,7 +186,7 @@ func (c *Client) resolve(ctx context.Context, media domain.Media) (titleEntry, b
 }
 
 func (c *Client) searchTitles(ctx context.Context, parameters url.Values) ([]titleEntry, error) {
-	return c.titles.load(ctx, parameters.Encode(), func() ([]titleEntry, bool, error) {
+	return c.titles.Load(ctx, parameters.Encode(), func() ([]titleEntry, bool, error) {
 		var decoded struct {
 			Success *bool        `json:"success"`
 			Data    []titleEntry `json:"data"`
@@ -206,7 +206,7 @@ func (c *Client) searchTitles(ctx context.Context, parameters url.Values) ([]tit
 // empty answer but is not cached, since it may come from a transient gateway
 // fault rather than a missing title.
 func (c *Client) list(ctx context.Context, movieID int64, slug string) ([]subtitleRow, error) {
-	return c.listings.load(ctx, strconv.FormatInt(movieID, 10)+"\x00"+slug, func() ([]subtitleRow, bool, error) {
+	return c.listings.Load(ctx, strconv.FormatInt(movieID, 10)+"\x00"+slug, func() ([]subtitleRow, bool, error) {
 		var rows []subtitleRow
 		for page := 1; page <= c.config.MaxPages; page++ {
 			var decoded struct {
