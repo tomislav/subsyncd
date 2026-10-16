@@ -48,7 +48,17 @@ type resumeTestApp struct {
 
 func newResumeTestApp(t *testing.T, count int, languages ...domain.Language) resumeTestApp {
 	t.Helper()
+	return newResumeTestAppReleased(t, time.Time{}, count, languages...)
+}
+
+// newResumeTestAppReleased is newResumeTestApp for media released at
+// releasedAt; the zero time is a new import.
+func newResumeTestAppReleased(t *testing.T, releasedAt time.Time, count int, languages ...domain.Language) resumeTestApp {
+	t.Helper()
 	cfg := testConfig(t)
+	if !releasedAt.IsZero() {
+		cfg.AgedReleaseDays = 14
+	}
 	clock := testutil.NewClock(time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC))
 	mediaPath := filepath.Join(cfg.MediaRoots[0], "Movie.mkv")
 	if err := os.WriteFile(mediaPath, []byte("media"), 0o640); err != nil {
@@ -58,7 +68,7 @@ func newResumeTestApp(t *testing.T, count int, languages ...domain.Language) res
 	if err != nil {
 		t.Fatal(err)
 	}
-	media := domain.Media{EntityID: 1, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 1}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 1, Size: info.Size(), ModTime: info.ModTime()}, Title: "Movie", Year: 2026}
+	media := domain.Media{EntityID: 1, Ref: domain.MediaRef{Instance: "tv", Kind: domain.MediaMovie, FileID: 1}, Fingerprint: domain.MediaFingerprint{Path: mediaPath, FileID: 1, Size: info.Size(), ModTime: info.ModTime()}, Title: "Movie", Year: 2026, ReleasedAt: releasedAt}
 	providerSpec := cfg.Providers["english"]
 	cfg.Providers = map[string]config.ProviderSpec{}
 	supplied := map[string]provider.Provider{}
@@ -156,20 +166,46 @@ func TestProviderResumeAcceptsTenProviderRoute(t *testing.T) {
 	}
 }
 
-func TestProviderResumeExpiresWithSearchCache(t *testing.T) {
+func TestProviderResumeExpiresAfterResumeTTLForNewImport(t *testing.T) {
 	h := newResumeTestApp(t, 3, "en")
 	h.providers[0].reset = h.clock.Now().Add(8 * time.Hour)
 	h.run(t)
 	if ids, _ := h.resume(t, "en"); !slices.Equal(ids, []string{"p1", "p2"}) {
 		t.Fatalf("resume = %v", ids)
 	}
-	// The cooldown outlasts the six-hour search cache, so the providers that
-	// answered clean-empty are asked again instead of skipped on stale answers.
+	// A new import's list lasts Scheduler.ResumeTTL, 6 h, and the cooldown
+	// outlasts it, so the providers that answered clean-empty are asked again
+	// instead of skipped on stale answers.
 	h.clock.Advance(8 * time.Hour)
 	h.run(t)
 	for _, p := range h.providers {
 		if got := p.calls.Load(); got != 2 {
 			t.Errorf("%s calls = %d, want 2", p.id, got)
+		}
+	}
+}
+
+func TestProviderResumeKeepsListForAgedMediaPastSixHours(t *testing.T) {
+	// Released 30 days before the first search, past AgedReleaseDays (14):
+	// Scheduler.ResumeTTL is the weekly step (7 d), not 6 h.
+	releasedAt := time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC).Add(-30 * 24 * time.Hour)
+	h := newResumeTestAppReleased(t, releasedAt, 3, "en")
+	h.providers[0].reset = h.clock.Now().Add(8 * time.Hour)
+	h.run(t)
+	if ids, _ := h.resume(t, "en"); !slices.Equal(ids, []string{"p1", "p2"}) {
+		t.Fatalf("resume = %v", ids)
+	}
+	// 8 h later the cooldown is over and the list is older than 6 h but well
+	// within 7 d: only the provider that was throttled is asked again.
+	h.clock.Advance(8 * time.Hour)
+	h.run(t)
+	for i, p := range h.providers {
+		want := int64(1)
+		if i == 0 {
+			want = 2
+		}
+		if got := p.calls.Load(); got != want {
+			t.Errorf("%s calls = %d, want %d", p.id, got, want)
 		}
 	}
 }
