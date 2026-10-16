@@ -756,3 +756,37 @@ func TestDirectMembersRequireUniqueMatch(t *testing.T) {
 		t.Fatalf("direct absolute identity=%+v", got)
 	}
 }
+
+func TestDailyLimitOnSearchIsSearchQuota(t *testing.T) {
+	reset := time.Date(2026, 9, 5, 0, 15, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		operation, reason string
+		status            int
+	}{
+		{"search", "search_quota", http.StatusOK},
+		{"download", "download_quota", http.StatusForbidden},
+	} {
+		t.Run(tt.operation, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				io.WriteString(w, `{"status":false,"error":"daily_limit"}`)
+			}))
+			defer server.Close()
+			client, states := newTestClientWithState(t, server, 1<<20)
+			var err error
+			if tt.operation == "search" {
+				_, err = client.Search(context.Background(), baseprovider.SearchQuery{Media: episodeMedia(), Language: "en", Mode: baseprovider.SearchBroad})
+			} else {
+				_, err = client.Download(context.Background(), domain.Candidate{DownloadRef: "/subtitle/example.zip"}, io.Discard)
+			}
+			var quota *baseprovider.QuotaError
+			if !errors.As(err, &quota) || quota.Scope != baseprovider.Operation(tt.operation) || !quota.ResetAt.Equal(reset) {
+				t.Fatalf("error = %T %v; want a %s quota until %v", err, err, tt.operation, reset)
+			}
+			state, err := states.GetProviderState(context.Background(), "subdl-main", tt.operation)
+			if err != nil || state.Reason != tt.reason || !state.ResetAt.Equal(reset) {
+				t.Fatalf("saved state = %#v, %v; want reason %s until %v", state, err, tt.reason, reset)
+			}
+		})
+	}
+}

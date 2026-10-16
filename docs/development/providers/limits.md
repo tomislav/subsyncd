@@ -97,7 +97,7 @@ SubDL limit messages are read in a 200 `status: false` answer and in any 4xx JSO
 
 | Message | Kind | Pause |
 | --- | --- | --- |
-| `daily_limit`, `api_download_limit_exceeded`; or wording that names a limit or quota with `reached`, `exceeded` or `exhausted` and also names the day, downloads or a quota (`You have reached your daily download limit`, `Download limit reached`, `API quota exceeded`, `Quota exhausted`) | `download_quota` | Until SubDL's daily reset, 00:15 UTC |
+| `daily_limit`, `api_download_limit_exceeded`; or wording that names a limit or quota with `reached`, `exceeded` or `exhausted` and also names the day, downloads or a quota (`You have reached your daily download limit`, `Download limit reached`, `API quota exceeded`, `Quota exhausted`) | `search_quota` when a search received it, `download_quota` when a download did | Until SubDL's daily reset, 00:15 UTC |
 | `service_busy` | `service_busy` | 1 hour |
 | `rate_limit`; `too many requests` or `rate limit` wording; a reached limit that names none of the above (`Request limit reached`, `You have reached your limit`) | `rate_limit` | 15 minutes |
 
@@ -172,6 +172,7 @@ When a provider gives no usable reset, these compiled values apply. They are cod
 | OpenSubtitles | Download quota (406, quota JSON, refusal) | 6 hours |
 | SubDL | Rate limit | 15 minutes |
 | SubDL | Daily download limit | Next 00:15 UTC |
+| SubDL | Daily search limit | Next 00:15 UTC |
 | SubDL | Service busy | 1 hour |
 | SubSource | Rate limit | 1 minute |
 | SubSource | Download quota (unreported hourly or daily cap) | 1 hour |

@@ -190,10 +190,10 @@ type providerHealthState struct {
 // provider, and it lasts until retry --provider or new credentials, so Until
 // is zero. Otherwise only exhausted states whose reset lies in the future
 // count, as in the provider gate:
-// quota_exhausted for the download_quota reason, the only quota the provider
-// layer records (a 429 keeps the header limit with nothing remaining, so
-// limit and remaining cannot tell a quota from a rate limit); cooling_down for
-// any other reset (rate limit headers, service busy, a blocked client, a
+// quota_exhausted for the download_quota and search_quota reasons, the only
+// quotas the provider layer records (a 429 keeps the header limit with
+// nothing remaining, so limit and remaining cannot tell a quota from a rate
+// limit); cooling_down for any other reset (rate limit headers, service busy, a blocked client, a
 // transient failure). The worst state wins in that order,
 // and Until is the latest reset among the states of that kind.
 func (a *App) providerHealth(ctx context.Context, providerID string, now time.Time) (providerHealthState, error) {
@@ -212,7 +212,7 @@ func (a *App) providerHealth(ctx context.Context, providerID string, now time.Ti
 			// The provider gate blocks only an exhausted window that has not
 			// reset; a window with requests left is a usable provider.
 			continue
-		case state.Reason == "download_quota":
+		case state.Reason == "download_quota" || state.Reason == "search_quota":
 			candidate.State, candidate.Until = providerQuotaExhausted, state.ResetAt.UTC()
 		default:
 			candidate.State, candidate.Until = providerCoolingDown, state.ResetAt.UTC()

@@ -766,10 +766,14 @@ func (c *Client) ownHost(response *http.Response) bool {
 func (c *Client) payloadLimit(ctx context.Context, operation baseprovider.Operation, code string, reset time.Time) error {
 	switch limitCode(code) {
 	case "daily_limit", "api_download_limit_exceeded":
-		if reset.IsZero() {
-			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", baseprovider.CooldownDownloadQuota)
+		kind := baseprovider.CooldownDownloadQuota
+		if operation == baseprovider.OperationSearch {
+			kind = baseprovider.CooldownSearchQuota
 		}
-		reset, err := c.transport.PersistCooldown(ctx, operation, baseprovider.CooldownDownloadQuota, reset)
+		if reset.IsZero() {
+			reset = baseprovider.FallbackReset(c.clock.Now(), "subdl", kind)
+		}
+		reset, err := c.transport.PersistCooldown(ctx, operation, kind, reset)
 		if err != nil {
 			return err
 		}

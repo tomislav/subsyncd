@@ -18,6 +18,7 @@ type CooldownKind string
 const (
 	CooldownRateLimit     CooldownKind = "rate_limit"
 	CooldownDownloadQuota CooldownKind = "download_quota"
+	CooldownSearchQuota   CooldownKind = "search_quota"
 	CooldownServiceBusy   CooldownKind = "service_busy"
 	// CooldownClientBlocked is a provider refusing this client rather than
 	// a limit: Titlovi's "unsupported plugin" placeholder.
@@ -265,7 +266,7 @@ func FallbackReset(now time.Time, providerType string, kind CooldownKind) time.T
 		switch kind {
 		case CooldownRateLimit:
 			return now.Add(15 * time.Minute)
-		case CooldownDownloadQuota:
+		case CooldownDownloadQuota, CooldownSearchQuota:
 			utc := now.UTC()
 			return time.Date(utc.Year(), utc.Month(), utc.Day()+1, 0, 15, 0, 0, time.UTC)
 		case CooldownServiceBusy:

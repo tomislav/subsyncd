@@ -391,3 +391,19 @@ func TestStatusHasNoAbsolutePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchQuotaIsQuotaExhausted(t *testing.T) {
+	application := newStatusApp(t, providersConfig)
+	ctx := t.Context()
+	now := application.Clock.Now()
+	if err := application.Repository.PutProviderState(ctx, store.ProviderState{ProviderID: "english", Scope: "search", Reason: "search_quota", ResetAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := application.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Providers) != 1 || status.Providers[0].ID != "english" || status.Providers[0].State != "quota_exhausted" || status.Providers[0].LastFailure != "search_quota" {
+		t.Fatalf("status providers = %+v", status.Providers)
+	}
+}

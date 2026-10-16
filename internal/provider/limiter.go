@@ -295,7 +295,7 @@ func (g *Gate) stateAttrs(providerID, scope string) []slog.Attr {
 
 func boundedProviderReason(reason string) string {
 	switch reason {
-	case "ratelimit", "x-ratelimit", "retry-after", "json", "fallback", "rate_limit", "download_quota", "service_busy", "client_blocked":
+	case "ratelimit", "x-ratelimit", "retry-after", "json", "fallback", "rate_limit", "download_quota", "search_quota", "service_busy", "client_blocked":
 		return reason
 	case "transient_network_error", "network_error":
 		return "network_error"
