@@ -1792,11 +1792,14 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	if len(checksum) > 12 {
 		checksum = checksum[:12]
 	}
-	attrs := []slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("replaced", installed), slog.Bool("fallback", s.fallbackTier), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}
+	// A reject replacement installs over the managed subtitle too, though it
+	// no longer counts as installed.
+	replaced := installed || request.replacing != nil
+	attrs := []slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int("score", prepared.score.Total), slog.Bool("replaced", replaced), slog.Bool("fallback", s.fallbackTier), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}
 	if checksum != "" {
 		attrs = append(attrs, slog.String("checksum_prefix", checksum))
 	}
-	if installed || request.replacing != nil {
+	if replaced {
 		attrs = append(attrs, previousInstallationAttrs(existing)...)
 	}
 	s.workflowEvents().Log(ctx, slog.LevelInfo, "subtitle.installed", "subtitle installed", attrs...)

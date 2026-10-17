@@ -246,7 +246,7 @@ A sync completion alone does not mean the candidate was installed: selection fol
 
 | Event | Level | Component | Key fields | Emitter |
 | --- | --- | --- | --- | --- |
-| `subtitle.installed` | info | workflow | `provider`, `candidate_id`, `score`, `replaced`, `fallback`, `duration_ms`, `checksum_prefix`; over a managed subtitle (an upgrade or a `reject` replacement) also `previous_provider`, `previous_candidate_id` and, when its stored score is readable, `previous_score` | `workflow/service.go` |
+| `subtitle.installed` | info | workflow | `provider`, `candidate_id`, `score`, `replaced`, `fallback`, `duration_ms`, `checksum_prefix`; over a managed subtitle (an upgrade or a `reject` replacement) `replaced=true` and also `previous_provider`, `previous_candidate_id` and, when its stored score is readable, `previous_score` | `workflow/service.go` |
 | `subtitle.install_failed` | error; warn for a validation rejection | workflow | `provider`, `candidate_id`, `duration_ms`, `error_kind=installation` | `workflow/service.go` |
 | `subtitle.provenance_refreshed` | info | workflow | `provider`, `candidate_id`, `score`, `exact_hash`, `duration_ms` | `workflow/service.go` |
 | `subtitle.provenance_refresh_failed` | error | workflow | `provider`, `candidate_id`, `score`, `duration_ms`, `error_kind=persistence` | `workflow/service.go` |

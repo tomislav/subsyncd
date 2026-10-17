@@ -360,7 +360,7 @@ func TestWorkflowLogsReplacedSubtitleOnReplaceInstalled(t *testing.T) {
 		t.Fatalf("Run() = %+v, %v", result, err)
 	}
 	installed := workflowEvents(workflowLogRecords(t, logs.String()), "subtitle.installed")
-	if len(installed) != 1 || installed[0]["previous_provider"] != "provider" || installed[0]["previous_candidate_id"] != "rejected" || installed[0]["previous_score"] != float64(100) {
+	if len(installed) != 1 || installed[0]["replaced"] != true || installed[0]["previous_provider"] != "provider" || installed[0]["previous_candidate_id"] != "rejected" || installed[0]["previous_score"] != float64(100) {
 		t.Fatalf("install event = %#v", installed)
 	}
 }
