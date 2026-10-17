@@ -12,6 +12,7 @@ import (
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
 	"subsyncd/internal/observability"
+	"subsyncd/internal/pack"
 	"subsyncd/internal/provider"
 	"subsyncd/internal/syncer"
 )
@@ -314,4 +315,81 @@ func workflowEventIndex(records []map[string]any, event string) int {
 		}
 	}
 	return -1
+}
+
+// An upgrade from a cached pack runs no search, so no provenance refresh
+// names the subtitle it replaces; the install event must.
+func TestWorkflowLogsReplacedSubtitleOnCachedPackUpgrade(t *testing.T) {
+	request, cached, repository := cachedUpgradeFixture(t, []byte(`{"total":12}`))
+	cachedPath := writeInstallFile(t, filepath.Join(t.TempDir(), "cached.srt"), installSRT)
+	cache := &fakePackCache{member: pack.CachedMember{Path: cachedPath, Candidate: cached}, found: true}
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := testService(t, managedSidecarInventory(repository.installation), &fakeSearcher{}, cache, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Repository = repository
+	service.Events = events
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || result.Candidate.ResultID != "cached-low" {
+		t.Fatalf("Run() = %+v, %v", result, err)
+	}
+	records := workflowLogRecords(t, logs.String())
+	if refreshed := workflowEvents(records, "subtitle.provenance_refreshed"); len(refreshed) != 0 {
+		t.Fatalf("cached upgrade refreshed provenance: %#v", refreshed)
+	}
+	installed := workflowEvents(records, "subtitle.installed")
+	if len(installed) != 1 || installed[0]["replaced"] != true || installed[0]["previous_provider"] != "provider" || installed[0]["previous_candidate_id"] != "installed" || installed[0]["previous_score"] != float64(12) {
+		t.Fatalf("install event = %#v", installed)
+	}
+}
+
+func TestWorkflowLogsReplacedSubtitleOnReplaceInstalled(t *testing.T) {
+	service, _, request, _ := replaceFixture(t, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("lower")}}})
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Events = events
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled {
+		t.Fatalf("Run() = %+v, %v", result, err)
+	}
+	installed := workflowEvents(workflowLogRecords(t, logs.String()), "subtitle.installed")
+	if len(installed) != 1 || installed[0]["previous_provider"] != "provider" || installed[0]["previous_candidate_id"] != "rejected" || installed[0]["previous_score"] != float64(100) {
+		t.Fatalf("install event = %#v", installed)
+	}
+}
+
+func TestWorkflowLogsNoPreviousSubtitleOnFirstInstall(t *testing.T) {
+	request := serviceRequest(t)
+	var logs bytes.Buffer
+	events, err := observability.New(&logs, observability.Options{Level: "info", Version: "test", MediaRoots: []string{filepath.Dir(request.Media.Fingerprint.Path)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{
+		provider.SearchExactHash: {Candidates: []domain.Candidate{exactCandidate("exact")}},
+		provider.SearchBroad:     {},
+	}}, nil, &fakeSynchronizer{}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	service.Events = events
+
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled {
+		t.Fatalf("Run() = %+v, %v", result, err)
+	}
+	installed := workflowEvents(workflowLogRecords(t, logs.String()), "subtitle.installed")
+	if len(installed) != 1 || installed[0]["replaced"] != false {
+		t.Fatalf("install event = %#v", installed)
+	}
+	for _, field := range []string{"previous_provider", "previous_candidate_id", "previous_score"} {
+		if _, found := installed[0][field]; found {
+			t.Fatalf("first install logged %s: %#v", field, installed[0])
+		}
+	}
 }

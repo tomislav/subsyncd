@@ -1796,6 +1796,9 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	if checksum != "" {
 		attrs = append(attrs, slog.String("checksum_prefix", checksum))
 	}
+	if installed || request.replacing != nil {
+		attrs = append(attrs, previousInstallationAttrs(existing)...)
+	}
 	s.workflowEvents().Log(ctx, slog.LevelInfo, "subtitle.installed", "subtitle installed", attrs...)
 	result.Outcome = OutcomeInstalled
 	result.Candidate = prepared.candidate
@@ -1804,6 +1807,20 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	result.Installation = installation
 	result.NextUpgrade = s.nextUpgradeAt(s.Clock.Now(), prepared.score, prepared.candidate)
 	return result, nil
+}
+
+// previousInstallationAttrs names the managed subtitle an install replaced.
+// A cached-pack upgrade runs no search, so no provenance refresh names it.
+// The score is left out when the stored one is missing or unreadable.
+func previousInstallationAttrs(previous store.Installation) []slog.Attr {
+	attrs := []slog.Attr{slog.String("previous_provider", observability.SafeText(previous.ProviderID)), slog.String("previous_candidate_id", observability.SafeText(previous.CandidateID))}
+	if len(previous.ScoreJSON) == 0 || string(previous.ScoreJSON) == "{}" {
+		return attrs
+	}
+	if score, _, err := installedScore(previous); err == nil {
+		attrs = append(attrs, slog.Int("previous_score", score.Total))
+	}
+	return attrs
 }
 
 func inventoryStopsSearch(current inventory.Inventory, language domain.Language, allowHearingImpaired bool, installed bool, installation store.Installation) bool {
