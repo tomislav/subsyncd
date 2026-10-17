@@ -46,6 +46,8 @@ Set `PUID` and `PGID` in the Compose `.env` file to a host user and group that c
 
 The Compose example limits the container to 2 GB of memory (`mem_limit`), two CPUs (`cpus`) and a 512 MB `/tmp`. LAPSE, the timing checker, uses most of it.
 
+The image includes LAPSE and a minimal FFprobe 8.1; the general-purpose `ffmpeg` command is not included.
+
 - **First check of a file is slow.** LAPSE decodes the media file's whole audio track the first time it checks a subtitle against it. It caches the result in `data/lapse-cache/`, so later checks of the same file take about a second. On network storage the first check reads the whole file over the network.
 - **Time limit.** One LAPSE run may take `sync.timeout` (30 minutes). For a large file the limit grows to the time needed to read it at `sync.min_read_rate` (4 MiB/s), up to `sync.max_timeout` (4 hours). A run that times out fails the search with reason `lapse_timeout`, and it is retried later. On slow storage, lower `min_read_rate` below the speed you actually get.
 - **`analyze-sync` always decodes.** It uses a throwaway cache, so every run reads the whole audio track.

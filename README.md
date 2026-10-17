@@ -6,28 +6,22 @@ subsyncd is a background service for people who run Sonarr or Radarr and want su
 
 ## Features
 
-- **Movies and TV shows** from one or more Sonarr and Radarr instances.
-- **Per-language provider order:** each language has its own list of providers, with optional fallbacks.
+- **Per-language provider order:** each language tries its own providers in order, with optional fallbacks.
 - **Checks what you already have:** embedded subtitle tracks and existing sidecar files count before anything is downloaded.
-- **Matching and synchronization:** candidates are scored against the media's identity and release, and the bundled [LAPSE](https://github.com/Schwponaco-org/lapse) checks and corrects timing when needed.
-- **Season packs:** takes the matching episode from ZIP and RAR downloads and skips ambiguous ones.
-- **Keeps searching:** missing subtitles are searched again on a schedule until one turns up.
+- **Matching and synchronization:** candidates are scored against the media's identity and release, including the right episode from a season pack, and the bundled [LAPSE](https://github.com/Schwponaco-org/lapse) checks and corrects timing when needed.
+- **Keeps searching:** missing subtitles are searched again on a schedule, across restarts, until one turns up.
 - **Safe upgrades:** replaces subtitles it installed with better matches, and never touches subtitles you added or edited.
-- **Command line beside the running service:** see what is missing and why, search one file now, or check recent activity, by title or path; `--json` output for scripts.
-- **Reject a wrong subtitle:** `reject` drops a subtitle it installed, never picks it again, and installs the next best one, or removes it when nothing else fits.
-- **Survives restarts:** search history, provider limits, and rejected results are kept in its database.
-- **Keeps Sonarr and Radarr current:** creates its own webhook in each instance and asks it to rescan a series or movie after a subtitle changes (`rescan_after_changes`).
-- **Optional Silo refresh:** asks Silo to rescan the folder after a subtitle is installed.
+- **Command line beside the running service:** see what is missing and why, search one file now, or reject a wrong subtitle so the next best one is installed; `--json` output for scripts.
 
 ## Supported services
 
 | Service | Integration |
 | --- | --- |
-| [Sonarr](https://github.com/sonarr/sonarr) | TV library, imports, upgrades, renames, and file and series deletions; series rescans after subtitle changes |
-| [Radarr](https://github.com/radarr/radarr) | Movie library, imports, upgrades, renames, and file and movie deletions; movie rescans after subtitle changes |
-| [Silo](https://github.com/Silo-Server/silo-server) | Subtitle inventory refresh through its native scan API (v2); see the [compatibility notes](docs/references/silo.md) |
+| [Sonarr](https://github.com/sonarr/sonarr) | TV library and its changes, followed through webhooks; series rescans after subtitle changes |
+| [Radarr](https://github.com/radarr/radarr) | Movie library and its changes, followed through webhooks; movie rescans after subtitle changes |
+| [Silo](https://github.com/Silo-Server/silo-server) | Optional folder rescan after a subtitle is installed or removed, through its scan API (v2); see the [compatibility notes](docs/references/silo.md) |
 
-Sonarr or Radarr supplies the library; subsyncd does not scan standalone folders. A TV file that holds consecutive episodes of one season (for example `S06E01-E02`) gets one subtitle covering the whole file. Files whose episodes span seasons or have gaps are skipped.
+Use one or more Sonarr and Radarr instances. They supply the library; subsyncd does not scan standalone folders.
 
 ## Subtitle providers
 
@@ -49,11 +43,11 @@ languages:
     providers: [titlovi-main]
 ```
 
-subsyncd checks every language/provider pair at startup. Provider account limits still apply. Hearing-impaired (SDH/HI) subtitles are excluded unless you set `allow_hearing_impaired: true`. The [provider guide](docs/providers.md) covers enabling SubSource and Gestdown, fallback providers, and matching settings.
+Startup stops if a listed provider does not support that language. Hearing-impaired (SDH/HI) subtitles are excluded unless you set `allow_hearing_impaired: true`. The [provider guide](docs/providers.md) covers enabling SubSource and Gestdown, fallback providers, and matching settings.
 
 ## Install with Docker Compose
 
-You need Docker with the Compose plugin, a Sonarr or Radarr instance, and at least one subtitle provider. The image runs on Linux amd64 and arm64 and includes LAPSE and a minimal FFprobe 8.1; the general-purpose `ffmpeg` command is not included.
+You need Docker with the Compose plugin, a Sonarr or Radarr instance, and at least one subtitle provider. The image runs on Linux amd64 and arm64 and includes LAPSE and FFprobe.
 
 ### 1. Get the configuration files
 
@@ -127,9 +121,7 @@ docker compose logs -f subsyncd
 
 On first start, subsyncd reads each Sonarr and Radarr library once and queues a subtitle check for every movie and episode file. After that it follows changes through webhooks and a history check every six hours.
 
-### 4. Sonarr and Radarr webhooks
-
-subsyncd creates and maintains its own webhook connection in each instance under **Settings → Connect**. It points the connection at `server.webhook_base_url`, which the example configuration sets to `http://subsyncd:8097`, and names it after that address: `subsyncd (subsyncd:8097)`. Sonarr and Radarr must be able to reach that address, including through an HTTP proxy if they use one. To add webhooks by hand instead, see [Webhook connections](docs/running.md#webhook-connections).
+You do not add the webhooks yourself: subsyncd creates its own connection in each instance under **Settings → Connect**, pointing at `server.webhook_base_url` (`http://subsyncd:8097` in the example configuration). Sonarr and Radarr must be able to reach that address, including through an HTTP proxy if they use one. To add webhooks by hand instead, see [Webhook connections](docs/running.md#webhook-connections).
 
 ## Everyday use
 
@@ -142,10 +134,10 @@ docker compose exec subsyncd subsyncd find --title "Show S01E02"   # one file's 
 docker compose exec subsyncd subsyncd search --title "Movie (2019)"
 docker compose exec subsyncd subsyncd reject --title "Movie (2019)" --language en --reason out_of_sync
 docker compose exec subsyncd subsyncd recent                       # what happened in the last day
-docker compose exec subsyncd subsyncd status
+docker compose exec subsyncd subsyncd status                     # daemon, queue, provider and Arr health
 ```
 
-Name files as your media player shows them: `Movie (2019)`, `Show S01E02`. After changing `config/config.yaml`, restart with `docker compose restart subsyncd`. A newly added language is then checked for media already in the library. The [command guide](docs/commands.md) lists every command, including [what to do when a subtitle is wrong](docs/commands.md#a-subtitle-is-wrong) and [scripting](docs/commands.md#scripting-and-automation).
+`--title` takes the name your media player shows, such as `Movie (2019)` or `Show S01E02`. After changing `config/config.yaml`, restart with `docker compose restart subsyncd`. A newly added language is then checked for media already in the library. The [command guide](docs/commands.md) lists every command, including [what to do when a subtitle is wrong](docs/commands.md#a-subtitle-is-wrong) and [scripting](docs/commands.md#scripting-and-automation).
 
 ## Updates
 
@@ -159,7 +151,7 @@ docker compose up -d
 docker compose exec subsyncd subsyncd doctor
 ```
 
-To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. [Upgrade, back up and uninstall](docs/upgrade-and-backup.md) covers rollback and upgrading from builds that used `webhook_token`.
+To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. [Upgrade, back up and uninstall](docs/upgrade-and-backup.md) covers rollback and restoring an older backup.
 
 ## Logs and troubleshooting
 
@@ -170,11 +162,6 @@ Read the logs with `docker compose logs subsyncd`. For more detail, set `logging
 - [Documentation index](docs/README.md): every guide below, and how they write commands and paths.
 - [Configuration example](config.example.yaml): every setting, with defaults; the [configuration reference](docs/configuration.md) lists allowed values.
 - [Running subsyncd](docs/running.md): permissions, resources, security, webhooks, Arr rescans, and Silo.
-- [Command guide](docs/commands.md): commands, manual searches, rejecting subtitles, and scripting.
-- [Troubleshooting](docs/troubleshooting.md): why a file has no subtitle, and what a warning means.
-- [Upgrade, back up and uninstall](docs/upgrade-and-backup.md): backups, upgrades, rollback, and removal.
-- [Provider guide](docs/providers.md): provider setup, languages, matching, synchronization, and retry schedules.
-- [Logging guide](docs/logging.md): log levels, following a search, warnings, and sharing diagnostics safely.
 - [Architecture](docs/architecture.md): system boundaries and the processing flow.
 - [Developer references](docs/development/README.md): implementation contracts for persistence, providers, notifications, and logging.
 
