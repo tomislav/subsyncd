@@ -1,6 +1,6 @@
 # LAPSE
 
-LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, and how its failures are classified. LAPSE v2.3.0 is the compatibility baseline; startup and `doctor` require it.
+LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.0; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, also v2.3.0 ([Upgrading LAPSE](#upgrading-lapse)).
 
 - [Synchronization policy](#synchronization-policy)
 - [Invocation](#invocation)
@@ -10,6 +10,7 @@ LAPSE is the only synchronization engine. This page covers when it runs, how can
 - [Time limits](#time-limits)
 - [LAPSE cache](#lapse-cache)
 - [Diagnostics](#diagnostics)
+- [Upgrading LAPSE](#upgrading-lapse)
 
 ## Synchronization policy
 
@@ -37,7 +38,7 @@ Rating and popularity can add points but never replace an anchor. Relaxing the s
 
 With `never`, eligibility, identity rejection, the minimum score, upgrade deltas, archive selection and subtitle validation are unchanged, and the bypass score and switches are ignored. Because versions are ranked by LAPSE confidence, a pack supplying more than one version of the episode is rejected as `pack_selection` (rule `versions_ambiguous_without_sync`) instead of installing an arbitrary member.
 
-The policy is part of the rejection tool signature, so changing it lets earlier timing and version-ambiguity rejections be reconsidered. So does a new LAPSE version. Rejections from subsyncd's own checks (`invalid_subtitle`, `language_mismatch`, `partial_coverage`) are kept; when those checks fail on LAPSE's output at installation, the rejection is a `lapse_*` one and is reconsidered. `candidate.selected` logs `selection_mode` (`exact_hash`, `score_bypass`, `sync_disabled` or `lapse`), and `explain` shows the stored verdict.
+The policy is part of the rejection tool signature, so changing it lets earlier timing and version-ambiguity rejections be reconsidered. So does moving the LAPSE rejection baseline ([below](#upgrading-lapse)). Rejections from subsyncd's own checks (`invalid_subtitle`, `language_mismatch`, `partial_coverage`) are kept; when those checks fail on LAPSE's output at installation, the rejection is a `lapse_*` one and is reconsidered. `candidate.selected` logs `selection_mode` (`exact_hash`, `score_bypass`, `sync_disabled` or `lapse`), and `explain` shows the stored verdict.
 
 ## Invocation
 
@@ -87,9 +88,9 @@ Migration 013 adds `candidate_lapse_failures`, a bounded strike for the only pro
 
 - A strike is recorded only when a selected artifact with a checksum gets a direct or unary `%w`-wrapped `ProcessExitError` with exit code 2 and completely empty stdout and stderr (`exit_2_empty_output`).
 - The first observation stays a technical failure on the ordinary backoff.
-- A second observation in a separate workflow attempt with the identical media fingerprint, candidate and member identity, artifact checksum, LAPSE compatibility and policy signature, and failure signature atomically writes the permanent rejection `lapse_repeated_empty_exit` and deletes the strike. The workflow then advances to the next version, candidate or provider without another invocation.
+- A second observation in a separate workflow attempt with the identical media fingerprint, candidate and member identity, artifact checksum, rejection baseline and policy signature, and failure signature atomically writes the permanent rejection `lapse_repeated_empty_exit` and deletes the strike. The workflow then advances to the next version, candidate or provider without another invocation.
 - One rejection and artifact identity is prepared and counted at most once per workflow attempt across pack cache, exact, broad, preferred and fallback acquisition, so a cache and provider duplicate cannot confirm its own strike.
-- Changed media, candidate, member scope, artifact, LAPSE version or policy starts a fresh first strike.
+- Changed media, candidate, member scope, artifact, rejection baseline or policy starts a fresh first strike.
 - `search --retry-rejected` and every rejection reset clear strikes for the selected media and language; routine searches leave them alone. `explain` reports only confirmed rejections.
 
 ## Time limits
@@ -116,3 +117,18 @@ Speech profiles live in `<data_dir>/lapse-cache`, so later candidates for unchan
 ## Diagnostics
 
 `subsyncd analyze-sync --media PATH --subtitle PATH` runs a read-only `--dry-run` on a private copy with a throwaway cache, so it always decodes the whole audio track, and never installs a sidecar.
+
+## Upgrading LAPSE
+
+Three constants in `internal/syncer/lapse.go` describe the LAPSE this build ships:
+
+- `CompatibilityVersion` is the LAPSE version this build is pinned to and tested with. `TestDockerfilesPinCompatibilityVersion` checks that it matches `LAPSE_VERSION` in both Dockerfiles. It is logged as `compatibility_version` on `lapse.*` events and shown by `doctor`; a native install running another LAPSE still reports the pinned version.
+- `RejectionBaseline` is the last LAPSE release whose verdicts subsyncd treats as new. `RejectionToolSignature()` uses it, so it decides when `lapse_*` and `pack_selection` rejections, and repeated-exit strikes, are reconsidered. The workflow requires the synchronizer to provide it (`rejectionBaseliner`); a synchronizer without one records `lapse-unknown`.
+- `RejectionBaselineReviewedFor` is the `CompatibilityVersion` the keep-or-move decision was made for. `TestRejectionBaselineWasReviewedForThisLAPSE` fails until it matches, so a bump cannot skip the decision.
+
+With every LAPSE update, decide whether to move the baseline to the new version, set `RejectionBaselineReviewedFor` to the new version either way, and say in the commit message which way it went and why.
+
+- **Diff the whole release**, `git diff vOLD..vNEW` in the LAPSE repository, not only the engine sources.
+- **Move it** for anything that can change a verdict or a crash: engine code (matching, splitting, drift, VAD, reference selection, confidence), bundled libraries and models (its FFmpeg, ONNX Runtime, the Silero model), build flags, the default of any flag subsyncd does not pass (such as `--confidence`), and crash fixes, because a repeated silent crash becomes a permanent rejection.
+- **Keep it** only when the diff is limited to docs, tests, CI, output formats subsyncd never requests, and report fields subsyncd does not read. `decodeReport` reads and validates every field of today's report, so only newly added fields qualify, and a new field still needs the parser change before the binary can ship.
+- **When unsure, move it.** Automatic rejections never expire, so wrongly keeping the baseline locks subtitles out silently and permanently. Wrongly moving it costs one more download and LAPSE run per affected candidate.

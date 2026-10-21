@@ -108,7 +108,7 @@ subsyncd explain --instance radarr-main --kind movie --file-id 42
 
 A title with no match gives an empty list, not an error.
 
-`explain` shows one file: existing tracks and sidecars, candidates, rejections, the installation, the next search, the pack cache and provider states. Without `--language` it covers every configured language. Rejections that do not apply any more (made under older rules, another LAPSE version for rejections LAPSE decided, or for a file since replaced) are left out and only counted, as `candidate_rejections_superseded` in text and `rejections_superseded` in JSON. The result has a `media_id`, which log lines carry too.
+`explain` shows one file: existing tracks and sidecars, candidates, rejections, the installation, the next search, the pack cache and provider states. Without `--language` it covers every configured language. Rejections that do not apply any more (made under older rules, before a LAPSE update that can change timing results for rejections LAPSE decided, or for a file since replaced) are left out and only counted, as `candidate_rejections_superseded` in text and `rejections_superseded` in JSON. The result has a `media_id`, which log lines carry too.
 
 ## search
 

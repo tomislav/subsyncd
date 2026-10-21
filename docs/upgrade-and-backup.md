@@ -53,7 +53,7 @@ docker compose exec subsyncd subsyncd doctor
 ```
 
 - A newer build may upgrade the database on its first start. Migrations are forward-only: an older build cannot open the upgraded database.
-- A build with a newer LAPSE checks candidates again that the old one rejected, including files whose synchronized result was too short or ran past the end. Your own rejections, and rejections for wrong language or a downloaded file that was already too short or invalid, stay. Expect more downloads and LAPSE runs for a while after such an upgrade. The upgrade to LAPSE 2.3.0 also re-checks, once, candidates rejected earlier for being too short or invalid.
+- A build whose LAPSE update can change timing results checks candidates again that the old LAPSE rejected, including files whose synchronized result was too short or ran past the end. Your own rejections, and rejections for wrong language or a downloaded file that was already too short or invalid, stay. Expect more downloads and LAPSE runs for a while after such an upgrade. The upgrade to LAPSE 2.3.0 also re-checks, once, candidates rejected earlier for being too short or invalid.
 - To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or a `sha-COMMIT` tag.
 - Let the container stop fully before starting another process against the same media. The Compose file allows 75 seconds, which covers both fixed 30-second shutdown windows; don't lower `stop_grace_period`.
 

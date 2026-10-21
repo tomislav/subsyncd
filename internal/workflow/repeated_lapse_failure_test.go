@@ -386,6 +386,10 @@ type versionedWorkflowSynchronizer struct {
 
 func (s versionedWorkflowSynchronizer) CompatibilityVersion() string { return s.version }
 
+// RejectionBaseline moves with the version, as when every LAPSE bump moves
+// the baseline.
+func (s versionedWorkflowSynchronizer) RejectionBaseline() string { return s.version }
+
 func repeatedLapseTestService(t *testing.T, request Request, repository WorkflowRepository, synchronizer CandidateSynchronizer, providerFake *fakeProvider, candidates []domain.Candidate) *Service {
 	t.Helper()
 	searcher := &fakeSearcher{results: map[provider.SearchMode]provider.SearchResult{

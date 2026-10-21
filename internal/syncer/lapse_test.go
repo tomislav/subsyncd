@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -138,12 +139,41 @@ func TestAnalyzeCandidateBypassesLapseForExactHash(t *testing.T) {
 	}
 }
 
-func TestLapseReportsTheCompatibilityVersionUsedByRejectionPolicy(t *testing.T) {
+func TestLapseReportsItsVersionAndRejectionBaseline(t *testing.T) {
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
 		return Execution{}, nil
 	}), t.TempDir())
 	if got := lapse.CompatibilityVersion(); got != "2.3.0" {
 		t.Fatalf("CompatibilityVersion() = %q, want 2.3.0", got)
+	}
+	if got := lapse.RejectionBaseline(); got != "2.3.0" {
+		t.Fatalf("RejectionBaseline() = %q, want 2.3.0", got)
+	}
+}
+
+// Every LAPSE bump must record a keep-or-move decision for the rejection
+// baseline; forgetting it would keep stale rejections silently.
+func TestRejectionBaselineWasReviewedForThisLAPSE(t *testing.T) {
+	if RejectionBaselineReviewedFor != CompatibilityVersion {
+		t.Fatalf("RejectionBaselineReviewedFor = %q, CompatibilityVersion = %q: decide whether LAPSE %s moves RejectionBaseline (see docs/development/providers/lapse.md#upgrading-lapse), then set RejectionBaselineReviewedFor to %q", RejectionBaselineReviewedFor, CompatibilityVersion, CompatibilityVersion, CompatibilityVersion)
+	}
+}
+
+func TestDockerfilesPinCompatibilityVersion(t *testing.T) {
+	for _, name := range []string{"Dockerfile", "Dockerfile.release"} {
+		payload, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pins := regexp.MustCompile(`(?m)^ARG LAPSE_VERSION=(\S+)$`).FindAllStringSubmatch(string(payload), -1)
+		if len(pins) == 0 {
+			t.Fatalf("%s has no ARG LAPSE_VERSION", name)
+		}
+		for _, pin := range pins {
+			if pin[1] != CompatibilityVersion {
+				t.Errorf("%s pins LAPSE %s, CompatibilityVersion is %s", name, pin[1], CompatibilityVersion)
+			}
+		}
 	}
 }
 

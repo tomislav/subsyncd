@@ -2074,14 +2074,15 @@ func TestUserRejectionSurvivesToolSignatureChange(t *testing.T) {
 	}
 }
 
-// After a LAPSE upgrade from 2.2.4 to 2.3.0, only the rejections LAPSE (or
-// the sync policy) decided stop counting; subsyncd's own checks still hold.
+// When the rejection baseline moves from 2.2.4 to 2.3.0, only the rejections
+// LAPSE (or the sync policy) decided stop counting; subsyncd's own checks
+// still hold.
 func TestRejectionActiveKeepsRejectionsLapseDidNotDecide(t *testing.T) {
 	request := serviceRequest(t)
 	before := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &versionedWorkflowSynchronizer{version: "2.2.4"}, &fakeInstaller{})
 	after := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &versionedWorkflowSynchronizer{version: "2.3.0"}, &fakeInstaller{})
 	if before.RejectionToolSignature() == after.RejectionToolSignature() {
-		t.Fatalf("tool signature %q did not change with the LAPSE version", after.RejectionToolSignature())
+		t.Fatalf("tool signature %q did not change with the rejection baseline", after.RejectionToolSignature())
 	}
 	fingerprint := request.Media.Fingerprint
 	for _, test := range []struct {
@@ -2105,7 +2106,7 @@ func TestRejectionActiveKeepsRejectionsLapseDidNotDecide(t *testing.T) {
 			MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(),
 		}
 		if got := after.RejectionActive(rejection, fingerprint); got != test.active {
-			t.Errorf("RejectionActive(%s%s from 2.2.4) under 2.3.0 = %v, want %v", test.reason, test.suffix, got, test.active)
+			t.Errorf("RejectionActive(%s%s from baseline 2.2.4) under baseline 2.3.0 = %v, want %v", test.reason, test.suffix, got, test.active)
 		}
 	}
 }
@@ -2169,3 +2170,67 @@ func TestInstallValidationOfLapseOutputIsALapseRejection(t *testing.T) {
 		})
 	}
 }
+
+type baselineWorkflowSynchronizer struct {
+	fakeSynchronizer
+	version, baseline string
+}
+
+func (s baselineWorkflowSynchronizer) CompatibilityVersion() string { return s.version }
+func (s baselineWorkflowSynchronizer) RejectionBaseline() string    { return s.baseline }
+
+// With the binary at 2.3.1 and the baseline still at 2.3.0, rejections
+// recorded under 2.3.0 hold. Moving the baseline to 2.3.1 reopens the ones
+// LAPSE decided; user and tool-independent rejections hold either way. Logs
+// keep reporting the binary version.
+func TestLapseUpdateKeepsRejectionsUntilTheBaselineMoves(t *testing.T) {
+	request := serviceRequest(t)
+	service := func(version, baseline string) *Service {
+		return testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &baselineWorkflowSynchronizer{version: version, baseline: baseline}, &fakeInstaller{})
+	}
+	recorded, patch, moved := service("2.3.0", "2.3.0"), service("2.3.1", "2.3.0"), service("2.3.1", "2.3.1")
+	if got := lapseCompatibilityVersion(patch); got != "2.3.1" {
+		t.Fatalf("logged compatibility_version = %q, want the binary version 2.3.1", got)
+	}
+	fingerprint := request.Media.Fingerprint
+	for _, test := range []struct {
+		reason, suffix      string
+		patchActive, moveOK bool
+	}{
+		{"lapse_unsure", "", true, false},
+		{"pack_selection", rejectionRulesVersion("pack_selection"), true, false},
+		{"language_mismatch", "", true, true},
+		{"partial_coverage", "", true, true},
+		{"invalid_subtitle", rejectionRulesVersion("invalid_subtitle"), true, true},
+		{"user_out_of_sync", "", true, true},
+	} {
+		rejection := store.CandidateRejection{
+			MediaID: request.MediaID, Language: "en", ProviderID: "provider", ResultID: "result",
+			CandidateSignature: "candidate" + test.suffix, ArtifactChecksum: "sum", ReasonCode: test.reason, ToolSignature: recorded.RejectionToolSignature(),
+			MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(),
+		}
+		if got := patch.RejectionActive(rejection, fingerprint); got != test.patchActive {
+			t.Errorf("%s under binary 2.3.1, baseline 2.3.0: active = %v, want %v", test.reason, got, test.patchActive)
+		}
+		if got := moved.RejectionActive(rejection, fingerprint); got != test.moveOK {
+			t.Errorf("%s under baseline 2.3.1: active = %v, want %v", test.reason, got, test.moveOK)
+		}
+	}
+}
+
+// A synchronizer that reports only its binary version has no rejection
+// baseline. Its rejections are not keyed to that version, which would hide a
+// wrapper that forgot to forward the baseline.
+func TestRejectionSignatureNeedsTheRejectionBaseline(t *testing.T) {
+	versionOnly := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &compatibilityOnlySynchronizer{version: "2.3.1"}, &fakeInstaller{})
+	if got := versionOnly.RejectionToolSignature(); !strings.HasPrefix(got, "lapse-unknown/") {
+		t.Fatalf("RejectionToolSignature() = %q, want lapse-unknown/…", got)
+	}
+}
+
+type compatibilityOnlySynchronizer struct {
+	fakeSynchronizer
+	version string
+}
+
+func (s compatibilityOnlySynchronizer) CompatibilityVersion() string { return s.version }

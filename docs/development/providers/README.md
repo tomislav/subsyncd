@@ -9,7 +9,7 @@ How subsyncd finds, scores, times and installs subtitles for one media file and 
 | [Limits](limits.md) | Rate limits, cooldowns, quotas, circuits, download refusals, the route gate, resume progress and the fallback reset table |
 | [Scheduling](scheduling.md) | When missing, failed and installed subtitles are searched again: the single source of truth for every retry schedule |
 | [Rejections](rejections.md) | Reason codes, search outcomes, rejection identity and versioning, and user rejections |
-| [LAPSE](lapse.md) | Synchronization policy, the score-tier tournament, timeouts, the LAPSE cache and the repeated-exit strike |
+| [LAPSE](lapse.md) | Synchronization policy, the score-tier tournament, timeouts, the LAPSE cache, the repeated-exit strike and upgrading LAPSE |
 
 ## Glossary
 

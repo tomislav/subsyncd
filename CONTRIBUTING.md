@@ -141,7 +141,7 @@ Both images:
 - check `ffprobe -version` and LAPSE's Silero load during the build;
 - run as UID/GID 1000 with `/config`, `/data` and `/media` owned by it (the Compose example also sets `read_only: true`), a `/readyz` healthcheck, and `serve --config /config/config.yaml` as the default command.
 
-When upgrading FFmpeg or LAPSE, change the version, checksums and runtime version labels together in both files. Keep the runtime rootless, keep the writable mounts limited to `/data`, the media roots and `/tmp`, and keep the Compose stop grace covering both 30-second shutdown windows.
+When upgrading FFmpeg or LAPSE, change the version, checksums and runtime version labels together in both files. A LAPSE upgrade also changes `CompatibilityVersion` and needs a keep-or-move decision on the rejection baseline ([Upgrading LAPSE](docs/development/providers/lapse.md#upgrading-lapse)). Keep the runtime rootless, keep the writable mounts limited to `/data`, the media roots and `/tmp`, and keep the Compose stop grace covering both 30-second shutdown windows.
 
 ## Releases
 

@@ -576,10 +576,14 @@ func TestExplainListsActiveCandidateRejections(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := application.Workflows["en"].RejectionToolSignature()
+	// The production synchronizer keys rejections to the rejection baseline.
+	if !strings.HasPrefix(tool, "lapse-"+syncer.RejectionBaseline+"/") {
+		t.Fatalf("RejectionToolSignature() = %q, want the rejection baseline %s", tool, syncer.RejectionBaseline)
+	}
 	if err := application.Repository.PutCandidateRejection(context.Background(), store.CandidateRejection{MediaID: mediaID, Language: "en", ProviderID: "english", ResultID: "bad-1", CandidateSignature: "candidate", ArtifactChecksum: "artifact", ReasonCode: "lapse_unsure", ToolSignature: tool, MediaPath: media.Fingerprint.Path, MediaFileID: 7, MediaSize: 100, MediaModTimeNS: now.UnixNano(), RejectedAt: now, ExpiresAt: now.Add(24 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	// Rows lookup ignores for another LAPSE version or policy, or for the
+	// Rows lookup ignores for another rejection baseline or policy, or for the
 	// media file before it was replaced, are superseded too.
 	for _, row := range []struct {
 		result, tool string

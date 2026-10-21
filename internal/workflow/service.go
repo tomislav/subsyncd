@@ -1436,12 +1436,20 @@ func candidateSignature(candidate domain.Candidate, media ...domain.Media) (stri
 	return fmt.Sprintf("%x", sum[:]), nil
 }
 
-// RejectionToolSignature names the LAPSE version and policy that candidate
-// rejections are recorded under; a rejection counts only under the same one.
+// rejectionBaseliner is a synchronizer that names its LAPSE rejection
+// baseline. The production synchronizer must be one; the binary version is
+// never a substitute.
+type rejectionBaseliner interface{ RejectionBaseline() string }
+
+var _ rejectionBaseliner = (*syncer.Lapse)(nil)
+
+// RejectionToolSignature names the LAPSE rejection baseline and policy that
+// candidate rejections are recorded under; a rejection that follows the tool
+// counts only under the same one.
 func (s *Service) RejectionToolSignature() string {
 	version := "unknown"
-	if versioned, ok := s.Synchronizer.(interface{ CompatibilityVersion() string }); ok {
-		version = versioned.CompatibilityVersion()
+	if baselined, ok := s.Synchronizer.(rejectionBaseliner); ok {
+		version = baselined.RejectionBaseline()
 	}
 	payload, _ := json.Marshal(s.LapsePolicy.normalized())
 	sum := sha256.Sum256(payload)

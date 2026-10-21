@@ -31,6 +31,24 @@ const (
 
 func (l *Lapse) CompatibilityVersion() string { return CompatibilityVersion }
 
+// RejectionBaseline is the last LAPSE release whose verdicts subsyncd treats
+// as new. Rejection and strike signatures use it instead of the binary
+// version, so a LAPSE update that cannot change outcomes reopens nothing.
+// Move it with every LAPSE update unless the whole release diff is limited to
+// docs, tests, CI, output formats subsyncd never requests and report fields it
+// does not read. Engine code, bundled libraries and models, build flags, the
+// defaults of flags subsyncd does not pass, and crash fixes all count as
+// verdict changes. When unsure, move it
+// (docs/development/providers/lapse.md#upgrading-lapse).
+const RejectionBaseline = "2.3.0"
+
+// RejectionBaselineReviewedFor is the CompatibilityVersion for which the
+// keep-or-move decision on RejectionBaseline was made. A test fails until it
+// matches, so a LAPSE bump cannot skip the decision.
+const RejectionBaselineReviewedFor = "2.3.0"
+
+func (l *Lapse) RejectionBaseline() string { return RejectionBaseline }
+
 type Options struct {
 	Path               string
 	CacheDir           string
