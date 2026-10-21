@@ -966,7 +966,7 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 		event = "candidate.skipped"
 		level = slog.LevelInfo
 		switch decision.Reason {
-		case "pack_selection", "invalid_subtitle", "partial_coverage", "language_mismatch", "lapse_unsure", "lapse_nothing", "lapse_invalid_output":
+		case "pack_selection", "invalid_subtitle", "partial_coverage", "language_mismatch", "lapse_unsure", "lapse_nothing", "lapse_invalid_output", "lapse_partial_coverage":
 			decision.ReasonCode = decision.Reason
 		default:
 			decision.ReasonCode = "retained_rejection"
@@ -1841,6 +1841,7 @@ func (s *Service) install(ctx context.Context, request Request, prepared prepare
 	}
 	installation, err := s.Installer.Install(ctx, InstallRequest{MediaID: request.MediaID, Media: request.Media, Language: request.Language, Fallback: s.fallbackTier, SourcePath: prepared.output, DestinationPath: destination, Candidate: prepared.candidate, Score: prepared.score, SyncResult: prepared.sync, CandidateSignature: identity.CandidateSignature, ArtifactChecksum: identity.ArtifactChecksum})
 	if err != nil {
+		err = syncedOutputFailure(err, prepared)
 		attrs := append([]slog.Attr{slog.String("provider", prepared.candidate.ProviderID), slog.String("candidate_id", prepared.candidate.ResultID), slog.Int64("duration_ms", time.Since(startedAt).Milliseconds())}, s.workflowEvents().ErrorAttrs("installation", err)...)
 		// A subtitle that fails installation validation is a candidate
 		// rejection (recorded and skipped), not an operational error.

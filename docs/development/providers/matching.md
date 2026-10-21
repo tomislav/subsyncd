@@ -271,6 +271,6 @@ Rules:
 - Whole-season packs never cover a range: they cannot show a combined member, and downloading them would spend quota on a near-certain `pack_selection` rejection.
 - The episode-conflict check accepts any candidate episode inside the range; anything else is rejected at score time.
 - `pack.Select` for ranges accepts only a unique filename range covering the target, and any other episode token in the name must fall inside it. A lone non-pack file is accepted when its filename does not contradict the range (`single_range`).
-- Before LAPSE and again at installation, a range subtitle must end at or after 75% of the runtime, else `partial_coverage`.
+- Before LAPSE and again at installation, a range subtitle must end at or after 75% of the runtime, else `partial_coverage` (`lapse_partial_coverage` when the installed file is LAPSE's output).
 - Providers declaring `SingleEpisodeOnly` (Gestdown) are excluded through `provider.SupportsMedia`. When only such providers could still download, the route gate pauses just the multi-episode files of the route (`RangesPaused`, `RouteKey.RangesOnly`).
 - Range fields join the candidate signature only for ranges, so single-episode signatures are unaffected.

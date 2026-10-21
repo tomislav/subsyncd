@@ -37,7 +37,7 @@ Rating and popularity can add points but never replace an anchor. Relaxing the s
 
 With `never`, eligibility, identity rejection, the minimum score, upgrade deltas, archive selection and subtitle validation are unchanged, and the bypass score and switches are ignored. Because versions are ranked by LAPSE confidence, a pack supplying more than one version of the episode is rejected as `pack_selection` (rule `versions_ambiguous_without_sync`) instead of installing an arbitrary member.
 
-The policy is part of the rejection tool signature, so changing it lets earlier timing and version-ambiguity rejections be reconsidered. So does a new LAPSE version. Rejections from subsyncd's own checks (`invalid_subtitle`, `language_mismatch`, `partial_coverage`) are kept. `candidate.selected` logs `selection_mode` (`exact_hash`, `score_bypass`, `sync_disabled` or `lapse`), and `explain` shows the stored verdict.
+The policy is part of the rejection tool signature, so changing it lets earlier timing and version-ambiguity rejections be reconsidered. So does a new LAPSE version. Rejections from subsyncd's own checks (`invalid_subtitle`, `language_mismatch`, `partial_coverage`) are kept; when those checks fail on LAPSE's output at installation, the rejection is a `lapse_*` one and is reconsidered. `candidate.selected` logs `selection_mode` (`exact_hash`, `score_bypass`, `sync_disabled` or `lapse`), and `explain` shows the stored verdict.
 
 ## Invocation
 
@@ -64,7 +64,7 @@ With distinct scores and a successful leader, one invocation is expected; three 
 | Failure | Classification |
 | --- | --- |
 | `unsure` or `nothing` verdict | Candidate rejection (`lapse_unsure`, `lapse_nothing`), after the media is re-checked readable. Unreadable media ends the search as media-unavailable instead |
-| Invalid generated subtitle content | `lapse_invalid_output` rejection |
+| Invalid generated subtitle content, or LAPSE's output failing installation validation | `lapse_invalid_output` rejection; `lapse_partial_coverage` when a range file's output ends too early |
 | The second identical silent exit | `lapse_repeated_empty_exit` rejection ([below](#repeated-empty-exit)) |
 | Direct no-speech result | A media-validation failure, not evidence against the subtitle |
 | Timeouts, crashes, diagnostic-bearing or malformed output, other exit codes, cancellation, runner, protocol and filesystem failures, missing checksums | Technical failure on the failure schedule; the candidate is not quarantined |

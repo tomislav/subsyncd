@@ -46,7 +46,7 @@ Start with [CONTRIBUTING](../../CONTRIBUTING.md) for setup, tests, CI and commit
 | `internal/selection` | Parses and normalizes typed titles (`Show S01E02`, `Movie (2019)`) for media selection |
 | `internal/store` | SQLite persistence and embedded migrations: media, searches, leases, installations, provider state, caches, webhooks, notifications, rejections, history |
 | `internal/subtitleorder` | Sorts cues and applies timing repairs on raw records without reserializing |
-| `internal/syncer` | Runs LAPSE with time limits, output limits and the speech-profile cache; capability checks for `doctor` |
+| `internal/syncer` | Runs LAPSE with time limits, output limits and the LAPSE cache; capability checks for `doctor` |
 | `internal/testutil` | Test helpers, such as a controllable clock |
 | `internal/version` | The build version (set with `-ldflags`) |
 | `internal/watermark` | Strips subtitle-site advert cues from SRT payloads |

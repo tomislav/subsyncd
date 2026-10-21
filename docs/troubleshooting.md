@@ -45,7 +45,7 @@ Start with the commands, then the logs. Commands are written as `subsyncd COMMAN
    subsyncd explain --title "Show S01E02" --language en
    ```
 
-   Rejection reasons tell you what went wrong: `lapse_unsure` or `lapse_nothing` (timing could not be verified), `language_mismatch`, `partial_coverage` (too short for the file), and so on. `search --retry-rejected` reconsiders subsyncd's own rejections once the cause is fixed.
+   Rejection reasons tell you what went wrong: `lapse_unsure` or `lapse_nothing` (timing could not be verified), `language_mismatch`, `partial_coverage` (too short for the file; `lapse_partial_coverage` when LAPSE's timing made it so), and so on. `search --retry-rejected` reconsiders subsyncd's own rejections once the cause is fixed.
 
 4. **Check the logs** for that search: see the next section.
 

@@ -83,7 +83,7 @@ func TestBroadInstallationContentFailureFallsBack(t *testing.T) {
 				t.Fatalf("Run=%+v,%v", result, err)
 			}
 			rejections := service.Repository.(*workflowRepository).rejections
-			if len(rejections) != 1 || rejections[0].ResultID != "first" || rejections[0].ReasonCode != "invalid_subtitle" || rejections[0].ArtifactChecksum != synchronizer.firstChecksum {
+			if len(rejections) != 1 || rejections[0].ResultID != "first" || rejections[0].ReasonCode != "lapse_invalid_output" || rejections[0].ArtifactChecksum != synchronizer.firstChecksum {
 				t.Fatalf("rejections=%+v", rejections)
 			}
 			early := 0
@@ -246,7 +246,7 @@ func TestCachedInstallationFallbackPreservesImmutableMember(t *testing.T) {
 				}
 			}
 			if kind == "content" {
-				if len(repository.rejections) != 1 || repository.rejections[0].ArtifactChecksum != checksum || repository.rejections[0].ResultID != "first" || repository.rejections[0].ReasonCode != "invalid_subtitle" {
+				if len(repository.rejections) != 1 || repository.rejections[0].ArtifactChecksum != checksum || repository.rejections[0].ResultID != "first" || repository.rejections[0].ReasonCode != "lapse_invalid_output" {
 					t.Fatalf("member rejection=%+v", repository.rejections)
 				}
 			} else if len(repository.rejections) != 0 {

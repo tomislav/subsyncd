@@ -35,12 +35,13 @@ Deterministic candidate failures are retained in `candidate_rejections` (`reject
 | Code | Cause | Versioned |
 | --- | --- | --- |
 | `lapse_unsure`, `lapse_nothing` | A LAPSE verdict other than `solid`, after the media was re-checked readable | No |
-| `lapse_invalid_output` | LAPSE's written subtitle failed size, encoding, syntax or timestamp validation (invalid timestamps even when LAPSE reported solid). Only the direct typed content-validation failure qualifies | No |
+| `lapse_invalid_output` | LAPSE's written subtitle failed size, encoding, syntax or timestamp validation (invalid timestamps even when LAPSE reported solid), or failed installation validation, such as ending more than five minutes past the media duration. Only the direct typed content-validation failure qualifies | No |
+| `lapse_partial_coverage` | LAPSE's output for a range file ends before 75% of the runtime at installation, although the source passed the check before LAPSE | No |
 | `lapse_repeated_empty_exit` | The second identical silent exit (see [LAPSE](lapse.md#repeated-empty-exit)) | No |
-| `invalid_subtitle` | The content rules rejected the payload: invalid or oversized, unreadable, overlapping, negative timings (see [Normalization](matching.md#subtitle-normalization)) | `/subtitle-rules-vN` |
+| `invalid_subtitle` | The content rules rejected the payload: invalid or oversized, unreadable, overlapping, negative timings (see [Normalization](matching.md#subtitle-normalization)), or a source installed without LAPSE failed installation validation | `/subtitle-rules-vN` |
 | `pack_selection` | No unique member for the episode, ambiguous versions, disc markers, `versions_exhausted`; a release-numbered candidate or release-name member under a sync policy that would skip LAPSE (rules `release_numbered`, `release_episode_token`) | `/pack-selection-vN` |
 | `language_mismatch` | The [language check](matching.md#language-check) found another language | No |
-| `partial_coverage` | A range subtitle ends before 75% of the runtime | No |
+| `partial_coverage` | A range subtitle ends before 75% of the runtime, before LAPSE or as a source installed without LAPSE | No |
 | `user_out_of_sync`, `user_wrong_language`, `user_wrong_release`, `user_poor_quality`, `user_other` | The owner's `reject --reason` ([below](#user-rejections)) | Never invalidated by tools or rules |
 
 `candidate.skipped` (info) logs `reason_code=retained_rejection` (or the stored code) when an existing rejection removes a candidate; `candidate.rejected` (info) logs a new one.
@@ -54,7 +55,7 @@ A rejection is scoped to one media, language and provider result. It applies onl
 - the media fingerprint: path, Arr file ID, size and mtime;
 - the candidate signature: stable release metadata, Sonarr season, episode, absolute episode and episode title, range fields for range targets, provider-specific evidence such as the OpenSubtitles `download_version`, and `/member-<checksum>` for a pack member;
 - the selected artifact checksum when known;
-- for `lapse_*` and `pack_selection` rejections, the tool signature: LAPSE compatibility version and synchronization policy. `invalid_subtitle`, `language_mismatch` and `partial_coverage` come from subsyncd's own checks and match under any tool signature (`toolIndependentRejectionReasons`); any other reason is bound to it.
+- for `lapse_*` and `pack_selection` rejections, the tool signature: LAPSE compatibility version and synchronization policy. `invalid_subtitle`, `language_mismatch` and `partial_coverage` come from subsyncd's own checks and match under any tool signature (`toolIndependentRejectionReasons`); any other reason is bound to it. When installation validation fails on LAPSE's output, the failure is recorded as `lapse_invalid_output` or `lapse_partial_coverage` instead (`syncedOutputFailure`), because LAPSE's offset or ratio caused it. A source installed without LAPSE (exact hash, score bypass, `sync.policy: never`) keeps the plain code, so a later policy change does not reopen it. Changing `langcheck` or `minimumRangeCoverage` reopens nothing either; `search --retry-rejected` does.
 
 Volatile rating, popularity, download counts and temporary download URLs are not part of it. Set-like release names and direct-member evidence are sorted and deduplicated before hashing, without mutating provider results, so reordering or duplicates never cause a redownload.
 

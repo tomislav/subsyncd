@@ -49,6 +49,25 @@ const minimumRangeCoverage = 0.75
 
 func (e *subtitleValidationError) Error() string { return e.reason }
 
+// syncedOutputFailure relabels an installation validation failure of a
+// LAPSE-synchronized output as a LAPSE rejection. The source already passed
+// these checks before LAPSE, so the overrun or short range coverage comes from
+// LAPSE's offset or ratio, and a new LAPSE version must reconsider it. A
+// source installed without LAPSE keeps subsyncd's own reason code.
+func syncedOutputFailure(err error, prepared preparedCandidate) error {
+	validation, ok := err.(*subtitleValidationError)
+	if !ok || prepared.bypass {
+		return err
+	}
+	switch validation.code {
+	case "":
+		return &subtitleValidationError{reason: validation.reason, code: "lapse_invalid_output"}
+	case "partial_coverage":
+		return &subtitleValidationError{reason: validation.reason, code: "lapse_partial_coverage"}
+	}
+	return err
+}
+
 type InstallStage string
 
 const (

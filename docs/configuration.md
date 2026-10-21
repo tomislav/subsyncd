@@ -133,7 +133,7 @@ A provider may appear only once per language, across both tiers. Startup checks 
 | --- | --- | --- | --- |
 | `pack_cache.ttl` | `24h` | positive duration | How long a downloaded season pack is kept for later episodes. |
 | `pack_cache.max_bytes` | `536870912` (512 MiB) | 1 or more | Total size of the pack cache. |
-| `lapse_cache.ttl` | `720h` (30 days) | positive duration | How long LAPSE speech-timing profiles are kept, counted from when they were written. Reading a profile does not extend it. |
+| `lapse_cache.ttl` | `720h` (30 days) | positive duration | How long LAPSE speech-timing profiles and embedded subtitle-track timings are kept, counted from the last time LAPSE wrote or reused the entry. |
 
 Expired LAPSE profiles are removed at startup and hourly while subsyncd runs, and are rebuilt when needed. Expiry never removes subtitles, resets schedules or clears rejections.
 

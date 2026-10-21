@@ -2096,6 +2096,7 @@ func TestRejectionActiveKeepsRejectionsLapseDidNotDecide(t *testing.T) {
 		{"lapse_nothing", "", false},
 		{"lapse_invalid_output", "", false},
 		{"lapse_repeated_empty_exit", "", false},
+		{"lapse_partial_coverage", "", false},
 		{"pack_selection", rejectionRulesVersion("pack_selection"), false},
 	} {
 		rejection := store.CandidateRejection{
@@ -2135,5 +2136,36 @@ func TestCandidateRejectionLookupPassesToolIndependentReasons(t *testing.T) {
 		if !slices.Equal(lookup.ToolIndependentReasonCodes, want) {
 			t.Errorf("lookup %d ToolIndependentReasonCodes = %v, want %v", i, lookup.ToolIndependentReasonCodes, want)
 		}
+	}
+}
+
+// Installation re-validates the file it installs. For a LAPSE-synchronized
+// output, an overrun or short range coverage comes from LAPSE's offset or
+// ratio, so it is recorded as a LAPSE rejection that a new LAPSE version
+// reconsiders. A source installed without LAPSE keeps subsyncd's own code.
+func TestInstallValidationOfLapseOutputIsALapseRejection(t *testing.T) {
+	overrun := &subtitleValidationError{reason: "installation source extends more than five minutes past media duration"}
+	short := &subtitleValidationError{reason: "subtitle ends at 1h5m0s of a 1h30m0s multi-episode file", code: "partial_coverage"}
+	for _, test := range []struct {
+		name, policy, want string
+		failure            error
+	}{
+		{"overrun after LAPSE", "always", "lapse_invalid_output", overrun},
+		{"short coverage after LAPSE", "always", "lapse_partial_coverage", short},
+		{"overrun without LAPSE", "never", "invalid_subtitle", overrun},
+		{"short coverage without LAPSE", "never", "partial_coverage", short},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := testService(t, inventory.Inventory{}, &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("first")}}}, nil, &fakeSynchronizer{}, &fakeInstaller{err: test.failure})
+			service.LapsePolicy.Mode = test.policy
+			service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+			if _, err := service.Run(context.Background(), serviceRequest(t)); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			rejections := service.Repository.(*workflowRepository).rejections
+			if len(rejections) != 1 || rejections[0].ReasonCode != test.want {
+				t.Fatalf("rejections = %+v, want one %s", rejections, test.want)
+			}
+		})
 	}
 }
