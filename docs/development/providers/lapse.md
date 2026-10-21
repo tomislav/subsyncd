@@ -42,7 +42,7 @@ The policy is part of the rejection tool signature, so changing it lets earlier 
 ## Invocation
 
 - Each required candidate is prepared once with a new explicit output: `--output`, `--no-backup`, `--json`, `--strict` and `--no-sidecar`, passed as an argument array. One invocation supplies both the decision metrics and the synchronized artifact.
-- Only a `solid` result with a valid written output can install. Malformed protocol output is a technical failure.
+- Only a `solid` result with a valid written output can install. Malformed protocol output is a technical failure. So is `unchanged: true` on the install run, because LAPSE then writes nothing. `unchanged` and `offsets` (LAPSE 2.3) are optional, so 2.2.4 reports still parse; when present, `offsets` has one entry per part.
 - Cancellation kills the whole LAPSE process group. Raw stdout, stderr and command lines are never exposed or logged.
 - Generated cues with valid intervals but decreasing start times are stably reordered (`subtitleorder.Reorder`) before final validation; equal-start cues keep their order. Negative or reversed intervals reject as `lapse_invalid_output`.
 - `lapse.sync_started` (info) precedes the call; `lapse.sync_completed` (info for `solid`, warn otherwise) or `lapse.failed` follows with the verdict metrics (see [Logging](../logging.md#lapse)).

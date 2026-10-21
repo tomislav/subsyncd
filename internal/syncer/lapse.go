@@ -241,6 +241,9 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 	if !report.Written {
 		return domain.SyncResult{}, fmt.Errorf("LAPSE reported a solid result without writing output")
 	}
+	if report.Unchanged {
+		return domain.SyncResult{}, fmt.Errorf("LAPSE left the subtitle unchanged instead of writing output")
+	}
 	if !samePath(report.Output, outputPath) {
 		return domain.SyncResult{}, fmt.Errorf("LAPSE reported an unexpected output path")
 	}
@@ -347,6 +350,10 @@ type lapseReport struct {
 	Why         string
 	Output      string
 	Splits      []int
+	// Unchanged and Offsets arrived in LAPSE 2.3 and are zero when an older
+	// report omits them.
+	Unchanged bool
+	Offsets   []int
 }
 
 type rawReport struct {
@@ -368,6 +375,8 @@ type rawReport struct {
 	Why         *string  `json:"why,omitempty"`
 	Output      *string  `json:"output"`
 	Splits      *[]int   `json:"splits"`
+	Unchanged   *bool    `json:"unchanged"`
+	Offsets     *[]int   `json:"offsets"`
 }
 
 func parseReport(payload []byte) (domain.SyncResult, error) {
@@ -399,6 +408,12 @@ func decodeReport(payload []byte) (lapseReport, error) {
 	if raw.Why != nil {
 		report.Why = *raw.Why
 	}
+	if raw.Unchanged != nil {
+		report.Unchanged = *raw.Unchanged
+	}
+	if raw.Offsets != nil {
+		report.Offsets = append([]int{}, (*raw.Offsets)...)
+	}
 	if err := report.validate(); err != nil {
 		return lapseReport{}, err
 	}
@@ -421,6 +436,12 @@ func (r lapseReport) validate() error {
 	}
 	if r.Cues <= 0 || r.IgnoredCues < 0 || r.Parts < 1 || len(r.Splits) != r.Parts-1 || r.Snapped < 0 || r.Snapped > r.Cues {
 		return &reportCheckError{"LAPSE JSON contains inconsistent cue or part counts"}
+	}
+	if r.Offsets != nil && len(r.Offsets) != r.Parts {
+		return &reportCheckError{"LAPSE JSON contains inconsistent part offsets"}
+	}
+	if r.Unchanged && !r.Written {
+		return &reportCheckError{"LAPSE JSON reports unchanged output that was not written"}
 	}
 	previous := 0
 	// Split positions are ascending cue indexes. LAPSE numbers them by the

@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,16 @@ func TestParseReportAcceptsDocumentedSolidResult(t *testing.T) {
 	}
 }
 
+func TestParseReportAcceptsVersion230Report(t *testing.T) {
+	result, err := parseReport(fixture(t, "solid-v2.3.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != "solid" || result.OffsetMS != 22 || result.Splits != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestParseReportRejectsMalformedOrUnsafeResults(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -43,6 +54,10 @@ func TestParseReportRejectsMalformedOrUnsafeResults(t *testing.T) {
 		{"negative snapped", strings.Replace(string(fixture(t, "solid.json")), `"snapped":0`, `"snapped":-1`, 1)},
 		{"snapped above cues", strings.Replace(string(fixture(t, "solid.json")), `"snapped":0`, `"snapped":1579`, 1)},
 		{"parts mismatch", strings.Replace(string(fixture(t, "solid.json")), `"parts":1`, `"parts":2`, 1)},
+		{"offsets count mismatch", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[22,30]`, 1)},
+		{"empty offsets", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[]`, 1)},
+		{"unchanged without write", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"written":true,"unchanged":false`, `"written":false,"unchanged":true`, 1)},
+		{"unknown field in v2.3 report", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[22],"surprise":true`, 1)},
 		{"unordered split", ""},
 	}
 	// Construct the split case separately to keep the fixture mutation clear.
@@ -90,6 +105,20 @@ func TestAnalyzeUsesSafeFlagsAndRequiresSolidVerdict(t *testing.T) {
 	var verdictErr *VerdictError
 	if !errors.As(err, &verdictErr) || verdictErr.Verdict != "unsure" {
 		t.Fatalf("weak Analyze() error = %T %v", err, err)
+	}
+}
+
+func TestAnalyzeAcceptsAnUnchangedDryRun(t *testing.T) {
+	media, subtitle := testFiles(t)
+	// A dry run of an already synchronized subtitle: LAPSE 2.3 reports it
+	// written and unchanged.
+	payload := strings.Replace(string(fixture(t, "solid-v2.3.json")), `"unchanged":false`, `"unchanged":true`, 1)
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stdout: []byte(payload), ExitCode: 0}, nil
+	}), filepath.Dir(media))
+	result, err := lapse.Analyze(context.Background(), media, subtitle)
+	if err != nil || result.Verdict != "solid" {
+		t.Fatalf("Analyze() = %#v, %v", result, err)
 	}
 }
 
@@ -205,6 +234,8 @@ func TestSynchronizeRequiresSolidReportAndValidatedOutput(t *testing.T) {
 		t.Fatalf("Synchronize() = %#v, %v", result, err)
 	}
 
+	// json.Marshal sorts the keys, so "written" comes last.
+	unchanged := bytes.Replace(reportJSON(t, "solid", output, true), []byte(`"written":true`), []byte(`"unchanged":true,"written":true`), 1)
 	for _, test := range []struct {
 		name   string
 		write  string
@@ -212,6 +243,7 @@ func TestSynchronizeRequiresSolidReportAndValidatedOutput(t *testing.T) {
 		exit   int
 	}{
 		{"missing output", "", reportJSON(t, "solid", output, true), 0},
+		{"reported unchanged", testSRT, unchanged, 0},
 		{"invalid output", "not a subtitle", reportJSON(t, "solid", output, true), 0},
 		{"reported unwritten", testSRT, reportJSON(t, "solid", output, false), 0},
 		{"wrong reported path", testSRT, reportJSON(t, "solid", output+".other", true), 0},
@@ -433,6 +465,18 @@ func TestSynchronizeReadsAVerdictWhoseSplitsFollowInputCues(t *testing.T) {
 	media, subtitle := testFiles(t)
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
 		return Execution{Stdout: fixture(t, "nothing-recut.json"), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+	var verdict *VerdictError
+	if !errors.As(err, &verdict) || verdict.Verdict != "nothing" || verdict.Result.Splits != 2 {
+		t.Fatalf("Synchronize() error = %T %v, want nothing verdict with two splits", err, err)
+	}
+}
+
+func TestSynchronizeReadsAVersion230RecutVerdict(t *testing.T) {
+	media, subtitle := testFiles(t)
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stdout: fixture(t, "nothing-recut-v2.3.json"), ExitCode: 2}, nil
 	}), filepath.Dir(media))
 	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
 	var verdict *VerdictError
