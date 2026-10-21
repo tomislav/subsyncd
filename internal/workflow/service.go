@@ -1123,8 +1123,11 @@ func (s *Service) handleCandidateFailure(ctx context.Context, request Request, c
 			return err
 		}
 		confirmed, err := s.Repository.RecordCandidateLapseFailure(ctx, store.CandidateLapseFailure{
-			Rejection:        rejection,
-			FailureSignature: "exit_2_empty_output",
+			Rejection: rejection,
+			// Both strikes must come from the same LAPSE binary: a silent exit
+			// is more likely a packaging or runtime fault than an engine one,
+			// so an update that keeps the rejection baseline starts afresh.
+			FailureSignature: "exit_2_empty_output@" + lapseCompatibilityVersion(s),
 			ObservedAt:       s.Clock.Now(),
 		})
 		if err != nil {

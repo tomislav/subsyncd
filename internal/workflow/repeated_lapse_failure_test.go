@@ -315,6 +315,11 @@ func TestRepeatedSilentLapseFailureDoesNotCrossChangedIdentity(t *testing.T) {
 		{name: "tool", second: func(_ *Request, _ *domain.Candidate, _ string, service **Service) {
 			(*service).Synchronizer = &versionedWorkflowSynchronizer{version: "2.0.6"}
 		}},
+		// A LAPSE update that keeps the rejection baseline is still another
+		// binary: a silent crash on each is two first strikes.
+		{name: "binary only", second: func(_ *Request, _ *domain.Candidate, _ string, service **Service) {
+			(*service).Synchronizer = &baselineWorkflowSynchronizer{version: "2.0.6", baseline: "2.0.5"}
+		}},
 		{
 			name:  "member scope",
 			first: func(request *Request) { request.memberScope = "member-one" },

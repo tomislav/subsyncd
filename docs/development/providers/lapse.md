@@ -86,11 +86,11 @@ The first `syncer.TimeoutError` in a workflow attempt is latched on the request 
 
 Migration 013 adds `candidate_lapse_failures`, a bounded strike for the only process failure that can become a rejection.
 
-- A strike is recorded only when a selected artifact with a checksum gets a direct or unary `%w`-wrapped `ProcessExitError` with exit code 2 and completely empty stdout and stderr (`exit_2_empty_output`).
+- A strike is recorded only when a selected artifact with a checksum gets a direct or unary `%w`-wrapped `ProcessExitError` with exit code 2 and completely empty stdout and stderr. The failure signature is `exit_2_empty_output@<CompatibilityVersion>`, so both strikes must come from the same LAPSE binary.
 - The first observation stays a technical failure on the ordinary backoff.
 - A second observation in a separate workflow attempt with the identical media fingerprint, candidate and member identity, artifact checksum, rejection baseline and policy signature, and failure signature atomically writes the permanent rejection `lapse_repeated_empty_exit` and deletes the strike. The workflow then advances to the next version, candidate or provider without another invocation.
 - One rejection and artifact identity is prepared and counted at most once per workflow attempt across pack cache, exact, broad, preferred and fallback acquisition, so a cache and provider duplicate cannot confirm its own strike.
-- Changed media, candidate, member scope, artifact, rejection baseline or policy starts a fresh first strike.
+- Changed media, candidate, member scope, artifact, LAPSE binary, rejection baseline or policy starts a fresh first strike. A first strike recorded before the binary was part of the signature does not carry over either.
 - `search --retry-rejected` and every rejection reset clear strikes for the selected media and language; routine searches leave them alone. `explain` reports only confirmed rejections.
 
 ## Time limits
