@@ -84,7 +84,8 @@ func TestMigrationClearsExistingInvalidLapseOutputRejectionsOnce(t *testing.T) {
 		return result
 	}
 	queries := []string{
-		`SELECT * FROM candidate_rejections WHERE reason_code <> 'lapse_invalid_output' ORDER BY id`,
+		// Migration 025 clears invalid_subtitle and partial_coverage once.
+		`SELECT * FROM candidate_rejections WHERE reason_code <> 'lapse_invalid_output' AND reason_code NOT IN ('invalid_subtitle', 'partial_coverage') ORDER BY id`,
 		`SELECT id,media_id,language,state,attempt,failure_attempt,next_attempt_at_ns,last_outcome,lease_owner,lease_until_ns,priority,rerun_requested FROM search_states ORDER BY id`,
 	}
 	for _, table := range []string{"media", "installations", "provider_cache", "pack_cache", "pack_members", "notifications"} {

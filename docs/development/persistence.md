@@ -116,6 +116,7 @@ Migrations live in `internal/store/migrations/` and are embedded with `//go:embe
 | `022_managed_webhooks.sql` | Adds the instance webhook token and managed connection columns | [Webhook tokens](reconciliation.md#webhook-tokens) |
 | `023_live_control.sql` | Creates `search_history`; adds `installations.candidate_signature`, `artifact_checksum` and `search_states.replace_installed` | [Search history](queue-and-control.md#search-history), [Reject](installation-safety.md#reject-replacement-and-removal) |
 | `024_notification_finished_at.sql` | Adds `notifications.finished_at_ns` and `notifications_finished_idx`. **DATA.** Stamps finished rows with the migration time | [Retention](notifications.md#retention) |
+| `025_reopen_content_rejections.sql` | **DATA.** Deletes system `partial_coverage` and `invalid_subtitle` rejections once, because older rows cannot say whether LAPSE's output caused them | [Rejections](providers/rejections.md#clearing-rejections) |
 
 ## Adding a migration
 

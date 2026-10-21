@@ -94,3 +94,4 @@ Neither kind of rejection expires with time. The `expires_at_ns` column is alway
 | A changed media fingerprint | Every rejection for the old fingerprint stops matching |
 | Bumping a rules version | `invalid_subtitle` and `pack_selection` rejections of the old version |
 | Changing `sync.policy` or the LAPSE version | System rejections LAPSE or the policy decided (`lapse_*`, `pack_selection`) under the old tool signature |
+| Migration 025 (once, on upgrade) | Every system `partial_coverage` and `invalid_subtitle` rejection. Before `lapse_partial_coverage` existed, installation failures of LAPSE's output were stored under these codes, which now survive LAPSE upgrades |
