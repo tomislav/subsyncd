@@ -17,7 +17,7 @@ SQLite is the source of truth for media state, search scheduling, leases, reconc
 | --- | --- | --- |
 | `subsyncd.db` | `internal/app/app.go` | The SQLite database |
 | `subsyncd.db-wal`, `subsyncd.db-shm` | SQLite (WAL mode) | Write-ahead log and shared memory index; part of the database while it is open |
-| `lapse-cache/` | `internal/app/app.go` (`syncer.Options.CacheDir`) | LAPSE speech profiles, pruned after `lapse_cache.ttl` (see [LAPSE](providers/lapse.md#speech-profile-cache)) |
+| `lapse-cache/` | `internal/app/app.go` (`syncer.Options.CacheDir`) | LAPSE speech profiles and embedded subtitle-track timings, pruned after `lapse_cache.ttl` (see [LAPSE](providers/lapse.md#lapse-cache)) |
 | `pack-cache/` | `internal/app/app.go` (`pack.NewCache`) | Content-addressed season-pack manifests and members |
 | `subsyncd.lock` | `internal/app/app.go` | The [process lock](#process-lock) |
 | `subsyncd.sock` | `internal/control/protocol.go` (`SocketName`) | The daemon's [control socket](queue-and-control.md#control-socket) |

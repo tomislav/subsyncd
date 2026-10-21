@@ -13,7 +13,7 @@
 | Path | Holds | Back it up? |
 | --- | --- | --- |
 | `subsyncd.db`, `subsyncd.db-wal`, `subsyncd.db-shm` | The SQLite database: indexed media, searches and their schedules, installed subtitles, rejections, provider limits, 30 days of history, and each instance's webhook token. | Yes. This is the state that matters. |
-| `lapse-cache/` | LAPSE speech-timing profiles. | Optional. Without it, the next timing check of each file decodes its audio again. |
+| `lapse-cache/` | LAPSE speech-timing profiles and embedded subtitle-track timings. | Optional. Without it, the next timing check of each file decodes its audio again. |
 | `pack-cache/` | Season packs kept for later episodes (24 hours by default). | Optional. Missing entries are dropped and downloaded again when needed. |
 | `subsyncd.lock` | The lock that lets only one process change the state. | No. Never delete it while subsyncd runs. |
 | `subsyncd.sock` | The control socket the CLI uses. | No. |
@@ -53,6 +53,7 @@ docker compose exec subsyncd subsyncd doctor
 ```
 
 - A newer build may upgrade the database on its first start. Migrations are forward-only: an older build cannot open the upgraded database.
+- A build with a newer LAPSE checks candidates again whose timing the old one rejected. Your own rejections, and rejections for wrong language, short coverage or invalid files, stay. Expect more downloads and LAPSE runs for a while after such an upgrade.
 - To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or a `sha-COMMIT` tag.
 - Let the container stop fully before starting another process against the same media. The Compose file allows 75 seconds, which covers both fixed 30-second shutdown windows; don't lower `stop_grace_period`.
 

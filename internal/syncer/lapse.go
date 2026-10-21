@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	CompatibilityVersion   = "2.2.4"
+	CompatibilityVersion   = "2.3.0"
 	defaultTimeout         = 30 * time.Minute
 	defaultMaxTimeout      = 4 * time.Hour
 	maximumSubtitleBytes   = 100 << 20

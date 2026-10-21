@@ -10,8 +10,9 @@ import (
 	"time"
 )
 
-// PruneCache removes expired LAPSE v2.2.4 profiles by last-write time. A busy
-// cache is skipped until the next sweep, so cleanup never races a subprocess.
+// PruneCache removes expired LAPSE v2.3.0 cache entries (speech profiles and
+// embedded subtitle-track timings) by last-write time. A busy cache is skipped
+// until the next sweep, so cleanup never races a subprocess.
 // Unknown files, directories and symlinks are deliberately left untouched.
 func (l *Lapse) PruneCache(ctx context.Context, ttl time.Duration, now time.Time) (int, error) {
 	if err := ctx.Err(); err != nil {

@@ -1,6 +1,6 @@
 # LAPSE
 
-LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, and how its failures are classified. LAPSE v2.2.4 is the compatibility baseline; startup and `doctor` require it.
+LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, and how its failures are classified. LAPSE v2.3.0 is the compatibility baseline; startup and `doctor` require it.
 
 - [Synchronization policy](#synchronization-policy)
 - [Invocation](#invocation)
@@ -8,7 +8,7 @@ LAPSE is the only synchronization engine. This page covers when it runs, how can
 - [Failures](#failures)
 - [Repeated empty exit](#repeated-empty-exit)
 - [Time limits](#time-limits)
-- [Speech-profile cache](#speech-profile-cache)
+- [LAPSE cache](#lapse-cache)
 - [Diagnostics](#diagnostics)
 
 ## Synchronization policy
@@ -94,18 +94,20 @@ Migration 013 adds `candidate_lapse_failures`, a bounded strike for the only pro
 
 ## Time limits
 
-LAPSE makes no network request, but it reads the media to build a speech profile; on network storage the first run can read most of the file.
+LAPSE makes no network request, but it reads the media to build a speech profile; on network storage the first run can read most of the file. A video with a usable embedded subtitle track is read in full too, for that track's timings, and those are cached as well.
 
 - Each run is limited to `sync.timeout` (default 30 minutes) or, when larger, the media size divided by `sync.min_read_rate` (default 4 MiB/s), measured when the run starts.
 - That is capped at `sync.max_timeout` (default 4 hours, or `sync.timeout` if longer). A `sync.max_timeout` below `sync.timeout` is rejected at load.
 - The comparison is made in seconds before conversion, so extreme sizes or rates cannot overflow. An unreadable size keeps `sync.timeout`.
 - The whole search job has its own limit of twice the longest run (see [Job time limit](../queue-and-control.md#job-time-limit)).
 
-## Speech-profile cache
+## LAPSE cache
 
-Profiles live in `<data_dir>/lapse-cache`, so later candidates for unchanged media reuse them. The confidence bypass avoids the media read for strong first installs.
+Speech profiles live in `<data_dir>/lapse-cache`, so later candidates for unchanged media reuse them. The confidence bypass avoids the media read for strong first installs.
 
-- `lapse_cache.ttl` (default `720h`, must be positive) is measured from file mtime (the last profile write), with no refresh on cache hits.
+- Since v2.3.0 the cache also holds the timings of a video's embedded subtitle track, under the same `<16 hex>.spans` names. An empty entry records that the video has no usable track, so later runs go straight to the speech profile.
+- LAPSE treats a read error in the embedded track like the end of the file. A failed read on network storage can therefore leave incomplete timings, or a "no usable track" entry, cached until the video changes or the entry expires.
+- `lapse_cache.ttl` (default `720h`, must be positive) is measured from file mtime. LAPSE resets an entry's mtime each time it reuses it (`load_spans`, in v2.2.4 as well), so the TTL counts from the last use.
 - Mutating assembly prunes expired entries once; the daemon checks hourly. The shared LAPSE runner lock excludes cleanup; an active invocation postpones the sweep to the next check.
 - Cleanup uses rooted directory operations, validates the root's identity, rejects a symlink root, and removes only regular files named `<16 lowercase hex>.spans` or `.spans.tmp` at or past the cutoff. It does not traverse directories or follow entry symlinks.
 - Cleanup is best effort: `lapse.cache_cleanup_failed` (warn) or `lapse.cache_cleaned` (debug, `removed_count`), never with paths.
