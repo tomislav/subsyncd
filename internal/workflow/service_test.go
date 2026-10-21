@@ -1926,7 +1926,7 @@ func (r *workflowRepository) RecordCandidateLapseFailure(_ context.Context, fail
 
 func (r *workflowRepository) GetCandidateRejection(_ context.Context, lookup store.CandidateRejectionLookup) (store.CandidateRejection, bool, error) {
 	for _, rejection := range r.rejections {
-		if rejection.MediaID == lookup.MediaID && rejection.Language == lookup.Language && rejection.ProviderID == lookup.ProviderID && rejection.ResultID == lookup.ResultID && rejection.CandidateSignature == lookup.CandidateSignature && rejection.ToolSignature == lookup.ToolSignature && rejection.MediaPath == lookup.MediaPath && rejection.MediaFileID == lookup.MediaFileID && rejection.MediaSize == lookup.MediaSize && rejection.MediaModTimeNS == lookup.MediaModTimeNS && (lookup.ArtifactChecksum == "" || rejection.ArtifactChecksum == lookup.ArtifactChecksum) && !slices.Contains(lookup.ExcludeReasonCodes, rejection.ReasonCode) {
+		if rejection.MediaID == lookup.MediaID && rejection.Language == lookup.Language && rejection.ProviderID == lookup.ProviderID && rejection.ResultID == lookup.ResultID && rejection.CandidateSignature == lookup.CandidateSignature && (rejection.ToolSignature == lookup.ToolSignature || slices.Contains(lookup.ToolIndependentReasonCodes, rejection.ReasonCode)) && rejection.MediaPath == lookup.MediaPath && rejection.MediaFileID == lookup.MediaFileID && rejection.MediaSize == lookup.MediaSize && rejection.MediaModTimeNS == lookup.MediaModTimeNS && (lookup.ArtifactChecksum == "" || rejection.ArtifactChecksum == lookup.ArtifactChecksum) && !slices.Contains(lookup.ExcludeReasonCodes, rejection.ReasonCode) {
 			return rejection, true, nil
 		}
 	}
@@ -2071,5 +2071,69 @@ func TestUserRejectionSurvivesToolSignatureChange(t *testing.T) {
 	replaced.Size++
 	if service.RejectionActive(rejection, replaced) {
 		t.Fatal("a user rejection outlived the media file")
+	}
+}
+
+// After a LAPSE upgrade from 2.2.4 to 2.3.0, only the rejections LAPSE (or
+// the sync policy) decided stop counting; subsyncd's own checks still hold.
+func TestRejectionActiveKeepsRejectionsLapseDidNotDecide(t *testing.T) {
+	request := serviceRequest(t)
+	before := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &versionedWorkflowSynchronizer{version: "2.2.4"}, &fakeInstaller{})
+	after := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &versionedWorkflowSynchronizer{version: "2.3.0"}, &fakeInstaller{})
+	if before.RejectionToolSignature() == after.RejectionToolSignature() {
+		t.Fatalf("tool signature %q did not change with the LAPSE version", after.RejectionToolSignature())
+	}
+	fingerprint := request.Media.Fingerprint
+	for _, test := range []struct {
+		reason, suffix string
+		active         bool
+	}{
+		{"language_mismatch", "", true},
+		{"partial_coverage", "", true},
+		{"invalid_subtitle", rejectionRulesVersion("invalid_subtitle"), true},
+		{"invalid_subtitle", "/subtitle-rules-v1", false},
+		{"lapse_unsure", "", false},
+		{"lapse_nothing", "", false},
+		{"lapse_invalid_output", "", false},
+		{"lapse_repeated_empty_exit", "", false},
+		{"pack_selection", rejectionRulesVersion("pack_selection"), false},
+	} {
+		rejection := store.CandidateRejection{
+			MediaID: request.MediaID, Language: "en", ProviderID: "provider", ResultID: "result",
+			CandidateSignature: "candidate" + test.suffix, ArtifactChecksum: "sum", ReasonCode: test.reason, ToolSignature: before.RejectionToolSignature(),
+			MediaPath: fingerprint.Path, MediaFileID: fingerprint.FileID, MediaSize: fingerprint.Size, MediaModTimeNS: fingerprint.ModTime.UnixNano(),
+		}
+		if got := after.RejectionActive(rejection, fingerprint); got != test.active {
+			t.Errorf("RejectionActive(%s%s from 2.2.4) under 2.3.0 = %v, want %v", test.reason, test.suffix, got, test.active)
+		}
+	}
+}
+
+type lookupRecordingRepository struct {
+	*workflowRepository
+	lookups []store.CandidateRejectionLookup
+}
+
+func (r *lookupRecordingRepository) GetCandidateRejection(ctx context.Context, lookup store.CandidateRejectionLookup) (store.CandidateRejection, bool, error) {
+	r.lookups = append(r.lookups, lookup)
+	return r.workflowRepository.GetCandidateRejection(ctx, lookup)
+}
+
+func TestCandidateRejectionLookupPassesToolIndependentReasons(t *testing.T) {
+	request := serviceRequest(t)
+	repository := &lookupRecordingRepository{workflowRepository: &workflowRepository{}}
+	service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, nil, nil)
+	service.Repository = repository
+	if _, found, err := service.candidateRejection(t.Context(), request, broadCandidate("result"), "sum"); err != nil || found {
+		t.Fatalf("candidateRejection() = %v, %v", found, err)
+	}
+	if len(repository.lookups) < 2 {
+		t.Fatalf("lookups = %d, want the bare lookup and the rules-version retries", len(repository.lookups))
+	}
+	want := []string{"invalid_subtitle", "language_mismatch", "partial_coverage"}
+	for i, lookup := range repository.lookups {
+		if !slices.Equal(lookup.ToolIndependentReasonCodes, want) {
+			t.Errorf("lookup %d ToolIndependentReasonCodes = %v, want %v", i, lookup.ToolIndependentReasonCodes, want)
+		}
 	}
 }

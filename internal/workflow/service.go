@@ -1198,7 +1198,8 @@ func (s *Service) candidateRejection(ctx context.Context, request Request, candi
 		MediaPath: identity.MediaPath, MediaFileID: identity.MediaFileID, MediaSize: identity.MediaSize, MediaModTimeNS: identity.MediaModTimeNS, Now: s.Clock.Now(),
 		// A versioned reason recorded under the bare signature predates its
 		// rules version and no longer counts.
-		ExcludeReasonCodes: versionedRejectionReasons,
+		ExcludeReasonCodes:         versionedRejectionReasons,
+		ToolIndependentReasonCodes: toolIndependentRejectionReasons,
 	}
 	rejection, found, err := s.Repository.GetCandidateRejection(ctx, lookup)
 	if err != nil || found {
@@ -1218,11 +1219,23 @@ func (s *Service) candidateRejection(ctx context.Context, request Request, candi
 // normalization and pack selection rules rather than the media or LAPSE.
 var versionedRejectionReasons = []string{"invalid_subtitle", "pack_selection"}
 
+// toolIndependentRejectionReasons come from subsyncd's own checks, not from
+// LAPSE or the sync policy, so they count under any tool signature. Any other
+// reason, including one added later, is bound to the tool signature.
+var toolIndependentRejectionReasons = []string{"invalid_subtitle", "language_mismatch", "partial_coverage"}
+
+// rejectionFollowsTool reports whether a rejection for reasonCode stops
+// counting when the LAPSE version or sync policy changes.
+func rejectionFollowsTool(reasonCode string) bool {
+	return !slices.Contains(toolIndependentRejectionReasons, reasonCode)
+}
+
 // RejectionActive reports whether a stored rejection still counts for the
 // media file with fingerprint, as lookup decides: it must have been recorded
 // for that exact media file and, unless it is the owner's (user_*), which
 // holds across LAPSE and rule changes, under the current LAPSE tool signature
-// and, when its reason follows versioned rules, the current rules version.
+// when its reason follows the tool (rejectionFollowsTool) and, when its reason
+// follows versioned rules, the current rules version.
 // Other rows, including legacy bare-signature ones, are ignored by lookup.
 func (s *Service) RejectionActive(rejection store.CandidateRejection, fingerprint domain.MediaFingerprint) bool {
 	if rejection.MediaPath != fingerprint.Path || rejection.MediaFileID != fingerprint.FileID ||
@@ -1233,7 +1246,7 @@ func (s *Service) RejectionActive(rejection store.CandidateRejection, fingerprin
 	if store.IsUserRejection(rejection.ReasonCode) {
 		return true
 	}
-	if rejection.ToolSignature != s.RejectionToolSignature() || rejection.MediaPath != fingerprint.Path || rejection.MediaFileID != fingerprint.FileID ||
+	if (rejectionFollowsTool(rejection.ReasonCode) && rejection.ToolSignature != s.RejectionToolSignature()) || rejection.MediaPath != fingerprint.Path || rejection.MediaFileID != fingerprint.FileID ||
 		rejection.MediaSize != fingerprint.Size || rejection.MediaModTimeNS != fingerprint.ModTime.UnixNano() {
 		return false
 	}

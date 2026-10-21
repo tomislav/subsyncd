@@ -54,7 +54,7 @@ A rejection is scoped to one media, language and provider result. It applies onl
 - the media fingerprint: path, Arr file ID, size and mtime;
 - the candidate signature: stable release metadata, Sonarr season, episode, absolute episode and episode title, range fields for range targets, provider-specific evidence such as the OpenSubtitles `download_version`, and `/member-<checksum>` for a pack member;
 - the selected artifact checksum when known;
-- the tool signature: LAPSE compatibility version and synchronization policy.
+- for `lapse_*` and `pack_selection` rejections, the tool signature: LAPSE compatibility version and synchronization policy. `invalid_subtitle`, `language_mismatch` and `partial_coverage` come from subsyncd's own checks and match under any tool signature (`toolIndependentRejectionReasons`); any other reason is bound to it.
 
 Volatile rating, popularity, download counts and temporary download URLs are not part of it. Set-like release names and direct-member evidence are sorted and deduplicated before hashing, without mutating provider results, so reordering or duplicates never cause a redownload.
 
@@ -92,4 +92,4 @@ Neither kind of rejection expires with time. The `expires_at_ns` column is alway
 | `reject --undo` (`ClearUserRejections`) | Only the owner's rejections for the file and language, and `replace_installed`; runs no search |
 | A changed media fingerprint | Every rejection for the old fingerprint stops matching |
 | Bumping a rules version | `invalid_subtitle` and `pack_selection` rejections of the old version |
-| Changing `sync.policy` or the LAPSE version | System rejections under the old tool signature |
+| Changing `sync.policy` or the LAPSE version | System rejections LAPSE or the policy decided (`lapse_*`, `pack_selection`) under the old tool signature |

@@ -253,7 +253,10 @@ type CandidateRejectionLookup struct {
 	MediaModTimeNS     int64
 	// ExcludeReasonCodes skips rejections recorded for these reasons.
 	ExcludeReasonCodes []string
-	Now                time.Time
+	// ToolIndependentReasonCodes are system reasons that match under any tool
+	// signature, because neither LAPSE nor the sync policy decided them.
+	ToolIndependentReasonCodes []string
+	Now                        time.Time
 }
 
 // CandidateLapseFailure records one sanitized, strike-eligible LAPSE failure.
@@ -1551,10 +1554,20 @@ func candidateLapseFailureIdentityArgs(failure CandidateLapseFailure) []any {
 func (r *Repository) GetCandidateRejection(ctx context.Context, lookup CandidateRejectionLookup) (CandidateRejection, bool, error) {
 	// The owner's rejections hold under any LAPSE tool signature and for any
 	// artifact of the candidate; one recorded for an installation without a
-	// candidate signature matches every signature. All are bound to the file.
+	// candidate signature matches every signature. System rejections need the
+	// tool signature unless their reason is tool-independent. All are bound to
+	// the file.
 	query := `SELECT media_id, language, provider_id, result_id, candidate_signature, artifact_checksum, reason_code, tool_signature, media_path, media_file_id, media_size, media_mod_time_ns, rejected_at_ns, expires_at_ns FROM candidate_rejections WHERE media_id=? AND language=? AND provider_id=? AND result_id=? AND media_path=? AND media_file_id=? AND media_size=? AND media_mod_time_ns=?
- AND ((` + userReasonSQL + ` AND candidate_signature IN (?, ?)) OR (candidate_signature=? AND tool_signature=?`
+ AND ((` + userReasonSQL + ` AND candidate_signature IN (?, ?)) OR (candidate_signature=?`
 	args := []any{lookup.MediaID, lookup.Language, lookup.ProviderID, lookup.ResultID, lookup.MediaPath, lookup.MediaFileID, lookup.MediaSize, lookup.MediaModTimeNS, lookup.CandidateSignature, AnyCandidateSignature, lookup.CandidateSignature, lookup.ToolSignature}
+	if len(lookup.ToolIndependentReasonCodes) == 0 {
+		query += ` AND tool_signature=?`
+	} else {
+		query += ` AND (tool_signature=? OR reason_code IN (?` + strings.Repeat(`, ?`, len(lookup.ToolIndependentReasonCodes)-1) + `))`
+		for _, reason := range lookup.ToolIndependentReasonCodes {
+			args = append(args, reason)
+		}
+	}
 	if lookup.ArtifactChecksum != "" {
 		query += ` AND artifact_checksum=?`
 		args = append(args, lookup.ArtifactChecksum)

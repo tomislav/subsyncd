@@ -1477,6 +1477,51 @@ func TestCandidateRejectionMatchesTheSameCandidateArtifactAndMedia(t *testing.T)
 	}
 }
 
+func TestCandidateRejectionLookupIgnoresToolSignatureForIndependentReasons(t *testing.T) {
+	repo := openTestRepository(t)
+	media := testMedia()
+	mediaID, _, err := repo.UpsertMedia(context.Background(), media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	for _, row := range []struct{ signature, reason string }{{"candidate-a", "language_mismatch"}, {"candidate-b", "lapse_unsure"}} {
+		if err := repo.PutCandidateRejection(context.Background(), CandidateRejection{
+			MediaID: mediaID, Language: "en", ProviderID: "opensubtitles", ResultID: "result-1",
+			CandidateSignature: row.signature, ArtifactChecksum: "artifact", ReasonCode: row.reason, ToolSignature: "lapse-2.2.4/policy-a",
+			MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(),
+			RejectedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lookup := func(signature string) CandidateRejectionLookup {
+		return CandidateRejectionLookup{
+			MediaID: mediaID, Language: "en", ProviderID: "opensubtitles", ResultID: "result-1",
+			CandidateSignature: signature, ArtifactChecksum: "artifact", ToolSignature: "lapse-2.3.0/policy-a",
+			MediaPath: media.Fingerprint.Path, MediaFileID: media.Fingerprint.FileID, MediaSize: media.Fingerprint.Size, MediaModTimeNS: media.Fingerprint.ModTime.UnixNano(), Now: now,
+			ToolIndependentReasonCodes: []string{"language_mismatch"},
+		}
+	}
+
+	if got, found, err := repo.GetCandidateRejection(context.Background(), lookup("candidate-a")); err != nil || !found || got.ReasonCode != "language_mismatch" {
+		t.Fatalf("independent reason under the old tool = %#v/%v/%v, want found", got, found, err)
+	}
+	if _, found, err := repo.GetCandidateRejection(context.Background(), lookup("candidate-b")); err != nil || found {
+		t.Fatalf("LAPSE reason under the old tool = %v/%v, want not found", found, err)
+	}
+	excluded := lookup("candidate-a")
+	excluded.ExcludeReasonCodes = []string{"language_mismatch"}
+	if _, found, err := repo.GetCandidateRejection(context.Background(), excluded); err != nil || found {
+		t.Fatalf("excluded independent reason = %v/%v, want not found", found, err)
+	}
+	bound := lookup("candidate-a")
+	bound.ToolIndependentReasonCodes = nil
+	if _, found, err := repo.GetCandidateRejection(context.Background(), bound); err != nil || found {
+		t.Fatalf("lookup without independent reasons = %v/%v, want not found", found, err)
+	}
+}
+
 func TestCandidateRejectionsPersistAndCanBeClearedForManualRetry(t *testing.T) {
 	repo := openTestRepository(t)
 	media := testMedia()
