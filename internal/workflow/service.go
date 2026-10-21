@@ -47,7 +47,10 @@ type Request struct {
 	refusals           *refusalRun
 	// replacing holds the managed installation a ReplaceInstalled search
 	// installs over; it no longer counts as installed.
-	replacing            *store.Installation
+	replacing *store.Installation
+	// releaseMedia is the media under its release's own numbering, set when
+	// the broad phase also searched that (see releaseNumberedMedia).
+	releaseMedia         *domain.Media
 	MediaID              int64
 	Media                domain.Media
 	Language             domain.Language
@@ -593,13 +596,17 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 	}
 
 	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchBroad, SkipProviders: request.ResumeProviders})
-	if release, found := releaseNumberedMedia(request.Media); found {
+	// Only LAPSE confirms a release-numbered result fits the file, so under a
+	// policy that never runs it the second search is not made. A first search
+	// that already failed to persist, or a canceled job, makes none either.
+	if release, found := releaseNumberedMedia(request.Media); found && !s.LapsePolicy.syncDisabled() && searchPersistenceFailure(search.Errors) == nil && ctx.Err() == nil {
 		releaseSearch := s.Searcher.Search(ctx, provider.SearchQuery{Media: release, Language: request.Language, Mode: provider.SearchBroad, SkipProviders: request.ResumeProviders})
 		if err := searchPersistenceFailure(releaseSearch.Errors); err != nil {
 			return result, err
 		}
 		s.logReleaseNumberedSearch(ctx, release, releaseSearch)
-		search = mergeReleaseNumberedSearch(search, releaseSearch)
+		search = mergeReleaseNumberedSearch(search, releaseSearch, release.Season, request.Media.Season)
+		request.releaseMedia = &release
 	}
 	resume.consume(provider.SearchBroad, search)
 	s.logSearchPhase(ctx, provider.SearchBroad, search)
@@ -654,7 +661,7 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 	records := make([]store.CandidateRecord, 0, len(search.Candidates))
 	priorities := s.priorities()
 	for _, candidate := range search.Candidates {
-		score := s.evaluate(candidateMedia(request.Media, candidate), candidate, request.Language)
+		score := s.evaluate(request.candidateMedia(candidate), candidate, request.Language)
 		s.logCandidateEvaluation(ctx, request, candidate, score)
 		priority, exists := priorities[candidate.ProviderID]
 		if !exists {
@@ -1357,6 +1364,8 @@ func isMediaValidationRejection(failure error) bool {
 
 func candidateSignature(candidate domain.Candidate, media ...domain.Media) (string, error) {
 	safe := candidate
+	// Which search found a result does not change what it is.
+	safe.ReleaseNumbered = false
 	safe.DownloadRef = ""
 	safe.Rating = 0
 	safe.Popularity = 0
@@ -1533,7 +1542,7 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 	}
 	// A release-numbered result names its episode the release's way, so its
 	// members are matched against that numbering.
-	selectionMedia := candidateMedia(request.Media, candidate)
+	selectionMedia := request.candidateMedia(candidate)
 	var member pack.Member
 	var members []pack.Member
 	if request.Media.Ref.Kind == domain.MediaEpisode && candidate.Pack == nil && !runtimePack && len(manifest.Members) == 1 {

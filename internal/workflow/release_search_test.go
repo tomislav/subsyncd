@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"subsyncd/internal/domain"
 	"subsyncd/internal/inventory"
@@ -81,21 +82,58 @@ func TestSplitSeasonEpisodeInstallsFromTheReleaseSeasonPack(t *testing.T) {
 	}
 }
 
-// Under sync.policy never nothing checks a release-numbered candidate's
-// timing, so it is rejected instead of installed.
-func TestSplitSeasonCandidateIsRejectedWithoutLapse(t *testing.T) {
-	service, request, _, synchronizer, installer, _ := splitSeasonService(t, neverSyncPolicy())
-	repository := service.Repository.(*workflowRepository)
+// Under sync.policy never nothing would check a release-numbered result's
+// timing, so the search in the release's numbering is not made at all.
+func TestSplitSeasonIsNotSearchedWithoutLapse(t *testing.T) {
+	service, request, searcher, synchronizer, installer, _ := splitSeasonService(t, neverSyncPolicy())
 	result, err := service.Run(context.Background(), request)
 	if err != nil || result.Outcome == OutcomeInstalled || len(installer.payloads) != 0 || synchronizer.synchronizeCalls != 0 {
 		t.Fatalf("result=%+v err=%v installs=%q synchronize=%d", result, err, installer.payloads, synchronizer.synchronizeCalls)
 	}
-	var rejectedPartTwo bool
-	for _, rejection := range repository.rejections {
-		rejectedPartTwo = rejectedPartTwo || rejection.ResultID == "part-two"
+	for _, query := range searcher.queries {
+		if query.Media.Season != 1 {
+			t.Fatalf("searched the release's numbering under policy never: %+v", query.Media)
+		}
 	}
-	if !rejectedPartTwo {
-		t.Fatalf("rejections = %+v", repository.rejections)
+}
+
+// A provider that ignores the season returns the Part 2 pack for both
+// searches; the copy that names the release's season is the one kept.
+func TestSplitSeasonPackReturnedByBothSearchesIsReleaseNumbered(t *testing.T) {
+	service, request, searcher, _, installer, _ := splitSeasonService(t, DefaultLapsePolicy())
+	partTwo := searcher.broadBySeason[2].Candidates[0]
+	searcher.broadBySeason[1] = provider.SearchResult{Candidates: []domain.Candidate{searcher.broadBySeason[1].Candidates[0], partTwo}}
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeInstalled || len(installer.payloads) != 1 || !strings.Contains(installer.payloads[0], "part-two-episode-two") {
+		t.Fatalf("result=%+v err=%v installs=%q", result, err, installer.payloads)
+	}
+}
+
+// A provider on cooldown for the release-numbered search leaves the search
+// unfinished: with nothing else to try the job waits for the reset instead
+// of recording that nothing was found.
+func TestSplitSeasonReleaseSearchCooldownThrottles(t *testing.T) {
+	service, request, searcher, _, installer, _ := splitSeasonService(t, DefaultLapsePolicy())
+	reset := service.Clock.Now().Add(3 * time.Hour)
+	searcher.broadBySeason[1] = provider.SearchResult{}
+	searcher.broadBySeason[2] = provider.SearchResult{Errors: map[string]error{"provider": &provider.CooldownError{ProviderID: "provider", Scope: provider.OperationSearch, ResetAt: reset}}}
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeThrottled || !result.RetryAt.Equal(reset) || len(installer.payloads) != 0 {
+		t.Fatalf("result=%+v err=%v installs=%q, want throttled until %v", result, err, installer.payloads, reset)
+	}
+}
+
+func TestCandidateSignatureIgnoresWhichSearchFoundIt(t *testing.T) {
+	candidate := broadCandidate("part-two")
+	media := serviceRequest(t).Media
+	plain, err := candidateSignature(candidate, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.ReleaseNumbered = true
+	tagged, err := candidateSignature(candidate, media)
+	if err != nil || tagged != plain {
+		t.Fatalf("signatures %q and %q (%v)", plain, tagged, err)
 	}
 }
 

@@ -32,45 +32,71 @@ func releaseNumberedMedia(media domain.Media) (domain.Media, bool) {
 
 // candidateMedia is the media a candidate is scored and selected against: the
 // release's numbering for a release-numbered result, otherwise Arr's.
-func candidateMedia(media domain.Media, candidate domain.Candidate) domain.Media {
-	if candidate.ReleaseNumbered {
-		if release, found := releaseNumberedMedia(media); found {
-			return release
-		}
+func (r Request) candidateMedia(candidate domain.Candidate) domain.Media {
+	if candidate.ReleaseNumbered && r.releaseMedia != nil {
+		return *r.releaseMedia
 	}
-	return media
+	return r.Media
 }
 
 // mergeReleaseNumberedSearch adds the release-numbered search's results to the
-// search in Arr's numbering. A result both searches returned keeps its Arr
+// search in Arr's numbering and tags them. A result both searches returned is
+// tagged when it names the release's season (a provider that ignores the
+// season returns the Part 2 pack for both), and otherwise keeps its Arr
 // identity. A provider that found something under the release's numbering is
-// not empty. The release search's provider errors stay out: throttling and
-// resume follow the search in Arr's numbering.
-func mergeReleaseNumberedSearch(search, release provider.SearchResult) provider.SearchResult {
-	seen := make(map[[2]string]bool, len(search.Candidates))
-	for _, candidate := range search.Candidates {
-		seen[[2]string{candidate.ProviderID, candidate.ResultID}] = true
-	}
-	found := map[string]bool{}
+// not empty. Of the release search's provider errors only cooldowns and
+// quotas are kept, for providers the first search did not already fail: they
+// leave that search unfinished, so the job waits for the reset and the
+// provider is asked again. Technical failures there are only logged.
+func mergeReleaseNumberedSearch(search, release provider.SearchResult, releaseSeason, arrSeason int) provider.SearchResult {
 	merged := search
 	merged.Candidates = append([]domain.Candidate(nil), search.Candidates...)
+	index := make(map[[2]string]int, len(merged.Candidates))
+	for position, candidate := range merged.Candidates {
+		index[[2]string{candidate.ProviderID, candidate.ResultID}] = position
+	}
+	found := map[string]bool{}
 	for _, candidate := range release.Candidates {
 		key := [2]string{candidate.ProviderID, candidate.ResultID}
-		if seen[key] {
+		candidate.ReleaseNumbered = true
+		if position, duplicate := index[key]; duplicate {
+			if season := candidateSeason(candidate); season == releaseSeason && season != arrSeason {
+				merged.Candidates[position] = candidate
+				found[candidate.ProviderID] = true
+			}
 			continue
 		}
-		seen[key] = true
-		candidate.ReleaseNumbered = true
+		index[key] = len(merged.Candidates)
 		merged.Candidates = append(merged.Candidates, candidate)
 		found[candidate.ProviderID] = true
 	}
+	merged.Errors = make(map[string]error, len(search.Errors))
+	for providerID, err := range search.Errors {
+		merged.Errors[providerID] = err
+	}
+	for providerID, err := range release.Errors {
+		if _, failed := merged.Errors[providerID]; failed {
+			continue
+		}
+		if _, unavailable := unavailableReset(err); unavailable {
+			merged.Errors[providerID] = err
+		}
+	}
 	merged.EmptyProviders = nil
 	for _, providerID := range search.EmptyProviders {
-		if !found[providerID] {
+		if _, failed := merged.Errors[providerID]; !found[providerID] && !failed {
 			merged.EmptyProviders = append(merged.EmptyProviders, providerID)
 		}
 	}
 	return merged
+}
+
+// candidateSeason is the season a result names: its pack's, else its own.
+func candidateSeason(candidate domain.Candidate) int {
+	if candidate.Pack != nil && candidate.Pack.Season != 0 {
+		return candidate.Pack.Season
+	}
+	return candidate.Season
 }
 
 func (s *Service) logReleaseNumberedSearch(ctx context.Context, release domain.Media, search provider.SearchResult) {
