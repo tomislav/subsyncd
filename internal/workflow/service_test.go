@@ -1707,14 +1707,20 @@ func (f *fakeInventory) Refresh(context.Context, int64, domain.Media, bool) (inv
 type fakeSearcher struct {
 	result  provider.SearchResult
 	results map[provider.SearchMode]provider.SearchResult
-	calls   int
-	queries []provider.SearchQuery
+	// broadBySeason answers broad searches for these seasons, so a test can
+	// tell a search in Arr's numbering from one in the release's.
+	broadBySeason map[int]provider.SearchResult
+	calls         int
+	queries       []provider.SearchQuery
 }
 
 func (f *fakeSearcher) Search(_ context.Context, query provider.SearchQuery) provider.SearchResult {
 	f.calls++
 	f.queries = append(f.queries, query)
 	result, found := f.results[query.Mode]
+	if bySeason, ok := f.broadBySeason[query.Media.Season]; ok && query.Mode == provider.SearchBroad {
+		result, found = bySeason, true
+	}
 	if !found {
 		result = f.result
 	}

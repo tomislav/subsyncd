@@ -149,7 +149,7 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 			return selected, err
 		}
 	}
-	if season, episode, found := releaseEpisode(media); found && !packUsesArrNumbering(unfiltered, media.Season, season) {
+	if season, episode, found := ReleaseEpisode(media); found && !packUsesArrNumbering(unfiltered, media.Season, season) {
 		release := media
 		release.Season, release.Episode = season, episode
 		var releaseMatches []Member
@@ -193,12 +193,12 @@ func packUsesArrNumbering(members []Member, arrSeason, releaseSeason int) bool {
 	return arrLast > releaseLast
 }
 
-// releaseEpisode is the single episode the media file's release name gives
+// ReleaseEpisode is the single episode the media file's release name gives
 // in another season than Arr's, as when Sonarr's database numbers a show as
 // one long season that releases and subtitles split in two. A name with a
 // range or more than one episode token gives none. Sonarr fills the release
 // name and original filename from the same sceneName, so one is enough.
-func releaseEpisode(media domain.Media) (int, int, bool) {
+func ReleaseEpisode(media domain.Media) (int, int, bool) {
 	name := media.ReleaseName
 	if name == "" {
 		name = filepath.Base(media.OriginalFilename)

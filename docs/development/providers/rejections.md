@@ -38,7 +38,7 @@ Deterministic candidate failures are retained in `candidate_rejections` (`reject
 | `lapse_invalid_output` | LAPSE's written subtitle failed size, encoding, syntax or timestamp validation (invalid timestamps even when LAPSE reported solid). Only the direct typed content-validation failure qualifies | No |
 | `lapse_repeated_empty_exit` | The second identical silent exit (see [LAPSE](lapse.md#repeated-empty-exit)) | No |
 | `invalid_subtitle` | The content rules rejected the payload: invalid or oversized, unreadable, overlapping, negative timings (see [Normalization](matching.md#subtitle-normalization)) | `/subtitle-rules-vN` |
-| `pack_selection` | No unique member for the episode, ambiguous versions, disc markers, `versions_exhausted` | `/pack-selection-vN` |
+| `pack_selection` | No unique member for the episode, ambiguous versions, disc markers, `versions_exhausted`; a release-numbered candidate or release-name member under a sync policy that would skip LAPSE (rules `release_numbered`, `release_episode_token`) | `/pack-selection-vN` |
 | `language_mismatch` | The [language check](matching.md#language-check) found another language | No |
 | `partial_coverage` | A range subtitle ends before 75% of the runtime | No |
 | `user_out_of_sync`, `user_wrong_language`, `user_wrong_release`, `user_poor_quality`, `user_other` | The owner's `reject --reason` ([below](#user-rejections)) | Never invalidated by tools or rules |

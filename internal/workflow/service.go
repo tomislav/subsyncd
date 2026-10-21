@@ -593,6 +593,14 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 	}
 
 	search := s.Searcher.Search(ctx, provider.SearchQuery{Media: request.Media, Language: request.Language, Mode: provider.SearchBroad, SkipProviders: request.ResumeProviders})
+	if release, found := releaseNumberedMedia(request.Media); found {
+		releaseSearch := s.Searcher.Search(ctx, provider.SearchQuery{Media: release, Language: request.Language, Mode: provider.SearchBroad, SkipProviders: request.ResumeProviders})
+		if err := searchPersistenceFailure(releaseSearch.Errors); err != nil {
+			return result, err
+		}
+		s.logReleaseNumberedSearch(ctx, release, releaseSearch)
+		search = mergeReleaseNumberedSearch(search, releaseSearch)
+	}
 	resume.consume(provider.SearchBroad, search)
 	s.logSearchPhase(ctx, provider.SearchBroad, search)
 	if err := searchPersistenceFailure(search.Errors); err != nil {
@@ -646,7 +654,7 @@ func (s *Service) acquire(ctx context.Context, request Request, existing store.I
 	records := make([]store.CandidateRecord, 0, len(search.Candidates))
 	priorities := s.priorities()
 	for _, candidate := range search.Candidates {
-		score := s.evaluate(request.Media, candidate, request.Language)
+		score := s.evaluate(candidateMedia(request.Media, candidate), candidate, request.Language)
 		s.logCandidateEvaluation(ctx, request, candidate, score)
 		priority, exists := priorities[candidate.ProviderID]
 		if !exists {
@@ -1518,10 +1526,18 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 		classification = "runtime_pack"
 	}
 	s.workflowEvents().Log(ctx, slog.LevelDebug, "archive.classified", "subtitle archive classified", slog.String("archive_type", manifest.ArchiveType), slog.Int("subtitle_member_count", len(manifest.Members)), slog.String("classification", classification))
+	if candidate.ReleaseNumbered && s.LapsePolicy.syncDisabled() && !candidate.ExactHash {
+		// Only LAPSE can confirm a subtitle numbered the release's way fits
+		// the file, and this sync policy never runs it.
+		return nil, runtimePack, false, nil, &pack.SelectionError{Rule: "release_numbered", Reason: "a release-numbered candidate needs LAPSE, which the sync policy never runs", ArchiveType: manifest.ArchiveType, MemberCount: len(manifest.Members)}
+	}
+	// A release-numbered result names its episode the release's way, so its
+	// members are matched against that numbering.
+	selectionMedia := candidateMedia(request.Media, candidate)
 	var member pack.Member
 	var members []pack.Member
 	if request.Media.Ref.Kind == domain.MediaEpisode && candidate.Pack == nil && !runtimePack && len(manifest.Members) == 1 {
-		member, err = pack.SelectSingleEpisode(manifest, extractionCandidate, request.Media, false)
+		member, err = pack.SelectSingleEpisode(manifest, extractionCandidate, selectionMedia, false)
 		if err != nil {
 			return nil, runtimePack, false, nil, err
 		}
@@ -1532,7 +1548,7 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 			_, rejected, err := s.candidateRejection(ctx, memberRequest(request, member.Checksum), candidate, member.Checksum)
 			return rejected, err
 		}
-		members, moreVersions, err = pack.SelectUntriedAlternatives(manifest, extractionCandidate, request.Media, false, tried)
+		members, moreVersions, err = pack.SelectUntriedAlternatives(manifest, extractionCandidate, selectionMedia, false, tried)
 		if err != nil {
 			return nil, runtimePack, false, nil, err
 		}
@@ -1551,6 +1567,10 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 	if runtimePack {
 		_, cacheable = pack.RuntimeCacheSeason(manifest)
 	}
+	// The cache files packs under their season; a release-numbered pack's
+	// season is the release's, so a lookup in Arr's numbering could pick the
+	// wrong episodes from it.
+	cacheable = cacheable && !candidate.ReleaseNumbered
 	cacheOutcome := "not_pack"
 	if candidate.Pack != nil || runtimePack {
 		cacheOutcome = "unsafe_identity"
@@ -1615,7 +1635,7 @@ func (s *Service) prepareCandidate(ctx context.Context, request Request, item do
 	}
 	// A score is the same for every version of an archive, so versions are
 	// always ranked by LAPSE.
-	if !item.runtimePack && item.memberScope == "" && canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
+	if !item.runtimePack && item.memberScope == "" && !item.candidate.ReleaseNumbered && canBypassLapse(request.Media, item.candidate, item.score, installed, s.LapsePolicy.normalized()) {
 		return preparedCandidate{downloadedCandidate: item, output: item.path, sync: domain.SyncResult{Verdict: "score_bypass", Mode: "bypass", Reference: "release_evidence"}, bypass: true}, nil
 	}
 	// Cached preparation uses a negative range; broad candidates each reserve

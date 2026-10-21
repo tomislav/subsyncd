@@ -182,6 +182,7 @@ These come from the arrapi library's logger (`arrRetryHandler`); the name is cho
 | --- | --- | --- | --- | --- |
 | `search.started` | info | workflow | `media_id`, `media_kind`, `file_id`, `language`, `manual` | `workflow/service.go` |
 | `search.phase_completed` | debug | workflow | `search_mode`, `candidate_count`, `provider_error_count` | `workflow/service.go` |
+| `search.release_numbered` | info | workflow | `release_season`, `release_episode`, `candidate_count`, `provider_error_count`: the broad search repeated in the release's own numbering | `workflow/release_numbering.go` |
 | `search.completed` | info; warn for canceled, `removal_deferred` and `provider_unavailable`; error for failures such as `lapse_timeout` | workflow | `outcome`, `reason`, `candidate_count`, `provider_error_count`, `score`, `duration_ms`, `retry_at`, `next_upgrade_at` | `workflow/service.go` |
 | `search.resume_reset` | warn | store | `media_id`, `language` | `store/repository.go` |
 | `inventory.refresh_completed` | info | workflow | `track_count`, `embedded_count`, `sidecar_count`, `satisfied` | `workflow/service.go` |

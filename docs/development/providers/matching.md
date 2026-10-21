@@ -23,7 +23,7 @@ Provider tier comes before cache, exact and broad preference: the sequence below
 2. **Satisfied?** Stop for a full matching embedded track or a protected sidecar. Forced-only and unknown-language tracks do not satisfy a normal request.
 3. **Pack cache.** Try a reusable, checksummed season-pack member.
 4. **Exact phase.** Ask hash-capable providers one after another in configured order. Exact candidates are uncapped and downloaded one at a time; a forced, rejected, malformed or wrong-member candidate advances to the next. Stop at the first committed install.
-5. **Broad phase.** Ask every assigned provider and merge results in configured order. Duplicate `(provider_id, result_id)` rows collapse before caching, persistence, scoring or shortlisting; later duplicates fill missing identity fields, and conflicting values keep the first.
+5. **Broad phase.** Ask every assigned provider and merge results in configured order. Duplicate `(provider_id, result_id)` rows collapse before caching, persistence, scoring or shortlisting; later duplicates fill missing identity fields, and conflicting values keep the first. When the episode's release name gives another season (see [Release-numbered search](#release-numbered-search)), the broad phase runs again in that numbering and adds its results.
 6. **Persist evidence** (score and rejection) for every result, never a signed download URL or token.
 7. **Drop rejected candidates** before shortlisting, so later-ranked candidates advance.
 8. **Shortlist** the best three eligible broad candidates and split them into score tiers.
@@ -32,6 +32,17 @@ Provider tier comes before cache, exact and broad preference: the sequence below
 Download availability is checked before each phase and each download; see [Limits](limits.md#preflight-and-the-final-gate).
 
 Candidate downloads, extraction and LAPSE scratch use the system temporary directory. Raw archives and discarded candidates are released promptly; viable tied candidates stay available as installation fallbacks.
+
+### Release-numbered search
+
+Sonarr may number a show as one long season that releases and providers split in two: the file Sonarr calls S01E10 is released as `Show.S02E02…`, and providers file its subtitles under season 2. A search in Sonarr's numbering only finds season 1 packs. One Hundred Years of Solitude is numbered S01E01–E16 in Sonarr, while releases and Titlovi use S01 and S02 of 8.
+
+- **When.** `pack.ReleaseEpisode` gives a season different from Arr's: the release name holds exactly one complete episode token, no range, in another season. Episode ranges never qualify.
+- **What.** A second broad search (`search.release_numbered`) with the media under the release's numbering: season and episode replaced, absolute numbers cleared, file, identity and titles unchanged. It runs in each provider tier, with the same resume skips.
+- **Merging.** Its results are tagged `ReleaseNumbered` and appended; a result both searches returned keeps its Arr identity. A provider that found something under the release's numbering is not counted as empty. Its provider errors are only logged: throttling, resume and outcomes follow the search in Arr's numbering.
+- **Scoring and selection.** A tagged result is scored by the identity gates and score model, and its archive members selected, against the release's numbering, so the Part 2 pack's `S02E02` member matches through the ordinary `episode_token` rule.
+- **Safety.** A tagged result never takes the score bypass, so LAPSE always checks it against the file; under `sync.policy: never` it is rejected as `pack_selection` (rule `release_numbered`) instead. Its packs are never published to the pack cache, which files packs under their season. Installation, rejection identity and the destination path stay Arr's.
+- **Cost.** One more broad search per provider for such an episode. Exact-hash searches are not repeated: a hash identifies the file, not its numbering.
 
 ## Caches
 

@@ -53,4 +53,8 @@ type Candidate struct {
 	// Version of provider-side payload conversion, independent of temporary URLs.
 	DownloadVersion string    `json:"download_version,omitempty"`
 	Pack            *PackInfo `json:"pack,omitempty"`
+	// ReleaseNumbered marks a result found by searching the media release's
+	// own season and episode (Sonarr's S01E10 released as S02E02); it is
+	// scored and selected against that numbering and always timed by LAPSE.
+	ReleaseNumbered bool `json:"release_numbered,omitempty"`
 }
