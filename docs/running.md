@@ -21,7 +21,7 @@ docker compose exec subsyncd subsyncd doctor
 docker compose exec subsyncd subsyncd status
 ```
 
-- `doctor` checks the configuration, database, media folders, LAPSE and FFprobe. It does not contact Sonarr, Radarr, providers or Silo, so it cannot test their credentials. It reads the database without creating it, so start the service once first.
+- `doctor` checks the configuration, database, media folders, LAPSE and FFprobe. Its LAPSE line shows the version the image is pinned to and the rejection baseline (see [Upgrade](upgrade-and-backup.md#upgrade)). It does not contact Sonarr, Radarr, providers or Silo, so it cannot test their credentials. It reads the database without creating it, so start the service once first.
 - `status` shows the daemon, the queue, providers that cannot be used and each Arr instance. See [Commands](commands.md#status-and-providers).
 - The container health check calls `/readyz`, which checks the database and media folders. `/healthz` only reports that the HTTP service runs.
 

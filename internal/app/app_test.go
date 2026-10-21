@@ -1779,6 +1779,23 @@ func TestDoctorReportsWebhookManagement(t *testing.T) {
 	}
 }
 
+// Operators compare the rejection baseline across builds to know whether an
+// update re-checks timing rejections.
+func TestDoctorReportsLapseVersionAndRejectionBaseline(t *testing.T) {
+	application := newTokenApp(t, testConfig(t))
+	defer application.Close()
+	result, err := application.Doctor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LAPSEVersion != syncer.CompatibilityVersion || result.LAPSERejectionBaseline != syncer.RejectionBaseline {
+		t.Fatalf("doctor LAPSE = %q/%q, want %q/%q", result.LAPSEVersion, result.LAPSERejectionBaseline, syncer.CompatibilityVersion, syncer.RejectionBaseline)
+	}
+	if want := "LAPSE: compatible (pinned " + syncer.CompatibilityVersion + ", rejection baseline " + syncer.RejectionBaseline + ")"; !strings.Contains(result.Text(), want) {
+		t.Fatalf("doctor output = %q, want %q", result.Text(), want)
+	}
+}
+
 func explainArgs(instance, kind string, fileID int64, language string) control.ExplainArgs {
 	return control.ExplainArgs{Selection: control.Selection{Instance: instance, Kind: kind, FileID: fileID}, Language: language}
 }

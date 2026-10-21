@@ -1169,7 +1169,7 @@ func (a *App) Doctor(ctx context.Context) (control.DoctorResult, error) {
 	if a.Config.Server.WebhookBaseURL != "" {
 		webhooks = "managed (" + a.Config.Server.WebhookBaseURL + ")"
 	}
-	return control.DoctorResult{Configuration: "ok", SQLite: "ok", MediaRoots: len(a.Config.MediaRoots), LAPSE: "compatible", FFprobe: "available", Webhooks: webhooks}, nil
+	return control.DoctorResult{Configuration: "ok", SQLite: "ok", MediaRoots: len(a.Config.MediaRoots), LAPSE: "compatible", LAPSEVersion: syncer.CompatibilityVersion, LAPSERejectionBaseline: syncer.RejectionBaseline, FFprobe: "available", Webhooks: webhooks}, nil
 }
 
 func (a *App) AnalyzeSync(ctx context.Context, mediaPath, subtitlePath string) (control.AnalyzeSyncResult, error) {

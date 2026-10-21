@@ -46,7 +46,7 @@ The rest of this page writes commands as `subsyncd COMMAND`; add the `docker com
 
 | Command | What it does | With the daemon running |
 | --- | --- | --- |
-| `doctor` | Checks configuration, database, media folders, LAPSE and FFprobe. | Runs beside it |
+| `doctor` | Checks configuration, database, media folders, LAPSE and FFprobe, and shows the LAPSE version and rejection baseline. | Runs beside it |
 | `status` | Overview of the daemon, queue, unusable providers and Arr instances. | Runs beside it |
 | `providers` | Every provider with its languages, state and last 24 hours. | Runs beside it |
 | `coverage` | Per library and language: files, subtitles installed or already present, and missing ones by reason. | Runs beside it |
@@ -317,7 +317,7 @@ subsyncd doctor --json
 ```
 
 ```json
-{"schema":"subsyncd.cli/v1","command":"doctor","ok":true,"result":{"configuration":"ok","sqlite":"ok","media_roots":1,"lapse":"compatible","ffprobe":"available","webhooks":"manual"}}
+{"schema":"subsyncd.cli/v1","command":"doctor","ok":true,"result":{"configuration":"ok","sqlite":"ok","media_roots":1,"lapse":"compatible","lapse_version":"2.3.0","lapse_rejection_baseline":"2.3.0","ffprobe":"available","webhooks":"manual"}}
 ```
 
 A failure has `"ok":false` and an `error` with a stable `code` and a readable `message` instead of `result`. Times are RFC 3339 and field names are snake_case. Output never contains credentials or absolute paths, with two exceptions: `webhook-url` prints the token by design, and an error loading the configuration file can name that file's path.

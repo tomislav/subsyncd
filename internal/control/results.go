@@ -395,13 +395,22 @@ type DoctorResult struct {
 	SQLite        string `json:"sqlite"`
 	MediaRoots    int    `json:"media_roots"`
 	LAPSE         string `json:"lapse"`
-	FFprobe       string `json:"ffprobe"`
+	// LAPSEVersion is the LAPSE version the build is pinned to, and
+	// LAPSERejectionBaseline the release its timing rejections are keyed to.
+	// When the baseline differs between two builds, upgrading re-checks them.
+	LAPSEVersion           string `json:"lapse_version,omitempty"`
+	LAPSERejectionBaseline string `json:"lapse_rejection_baseline,omitempty"`
+	FFprobe                string `json:"ffprobe"`
 	// Webhooks is "manual" or "managed (<base URL>)".
 	Webhooks string `json:"webhooks"`
 }
 
 func (r DoctorResult) Text() string {
-	return fmt.Sprintf("configuration: %s\nsqlite: %s\nmedia roots: ok (%d)\nLAPSE: %s\nffprobe: %s\nwebhooks: %s", r.Configuration, r.SQLite, r.MediaRoots, r.LAPSE, r.FFprobe, r.Webhooks)
+	lapse := r.LAPSE
+	if r.LAPSEVersion != "" && r.LAPSERejectionBaseline != "" {
+		lapse += fmt.Sprintf(" (pinned %s, rejection baseline %s)", r.LAPSEVersion, r.LAPSERejectionBaseline)
+	}
+	return fmt.Sprintf("configuration: %s\nsqlite: %s\nmedia roots: ok (%d)\nLAPSE: %s\nffprobe: %s\nwebhooks: %s", r.Configuration, r.SQLite, r.MediaRoots, lapse, r.FFprobe, r.Webhooks)
 }
 
 // AnalyzeSyncResult carries LAPSE's analysis document.
