@@ -163,6 +163,11 @@ entriesLoop:
 		if triedErr != nil {
 			return CachedMember{}, false, triedErr
 		}
+		if err == nil && members[0].SelectionRule == "release_episode_token" {
+			// Release-name matches are made only from a fresh download, where
+			// the workflow can still require LAPSE for them.
+			err = selectionError(manifest, "none", 0, "no unique member identifies the target episode")
+		}
 		if err != nil {
 			selectionErr = err
 			continue

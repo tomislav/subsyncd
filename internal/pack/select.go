@@ -44,12 +44,12 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 	if media.IsEpisodeRange() {
 		return selectRange(manifest, members, media)
 	}
-	// The release-name fallback below judges conflicts against the release's
-	// own number, so it needs the members before this filter rewrites them.
-	unfiltered := append([]Member(nil), members...)
 	// Explicit conflicting coordinates veto every positive rule, including
 	// provider-direct and absolute matches. Keep other pack members eligible.
-	consistent := members[:0]
+	// The release-name fallback judges conflicts against the release's own
+	// number, so it keeps the unfiltered members.
+	unfiltered := members
+	consistent := make([]Member, 0, len(members))
 	for _, member := range members {
 		if !conflictingEpisodeEvidence(member.SafeName, media) {
 			consistent = append(consistent, member)
@@ -149,7 +149,7 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 			return selected, err
 		}
 	}
-	if season, episode, found := releaseEpisode(media); found {
+	if season, episode, found := releaseEpisode(media); found && !packUsesArrNumbering(unfiltered, media.Season, season) {
 		release := media
 		release.Season, release.Episode = season, episode
 		var releaseMatches []Member
@@ -171,34 +171,55 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 	return Member{}, selectionError(manifest, "none", 0, "no unique member identifies the target episode")
 }
 
-// releaseEpisode is the single episode the media file's release name gives
-// when it differs from Arr's numbering, as when Sonarr's database numbers a
-// show as one long season that releases and subtitles split in two. The
-// release name and original filename must not disagree, and a name with a
-// range or more than one episode token gives none.
-func releaseEpisode(media domain.Media) (int, int, bool) {
-	found := false
-	var season, episode int
-	for _, name := range []string{media.ReleaseName, filepath.Base(media.OriginalFilename)} {
-		if name == "" || name == "." {
+// packUsesArrNumbering reports a pack numbered the way Arr numbers the show:
+// a member in Arr's season with an episode past every episode the pack gives
+// the release's season. In such a pack the release's number names another
+// episode (Sonarr's S02E02 where the release calls Sonarr's S01E10 S02E02).
+func packUsesArrNumbering(members []Member, arrSeason, releaseSeason int) bool {
+	releaseLast, arrLast := 0, 0
+	for _, member := range members {
+		if _, _, _, ranged := episodeRange(member.SafeName); ranged {
 			continue
 		}
-		if hasInvalidOrAmbiguousRangeEvidence(name) {
-			return 0, 0, false
+		season, episode, found := episodeToken(member.SafeName)
+		switch {
+		case !found:
+		case season == releaseSeason && episode > releaseLast:
+			releaseLast = episode
+		case season == arrSeason && episode > arrLast:
+			arrLast = episode
 		}
-		if _, _, _, ranged := episodeRange(name); ranged {
-			return 0, 0, false
-		}
-		if len(episodeTokenPattern.FindAllStringIndex(name, -1)) != 1 {
-			return 0, 0, false
-		}
-		nameSeason, nameEpisode, ok := episodeToken(name)
-		if !ok || (found && (nameSeason != season || nameEpisode != episode)) {
-			return 0, 0, false
-		}
-		season, episode, found = nameSeason, nameEpisode, true
 	}
-	if !found || season == 0 || (season == media.Season && episode == media.Episode) {
+	return arrLast > releaseLast
+}
+
+// releaseEpisode is the single episode the media file's release name gives
+// in another season than Arr's, as when Sonarr's database numbers a show as
+// one long season that releases and subtitles split in two. A name with a
+// range or more than one episode token gives none. Sonarr fills the release
+// name and original filename from the same sceneName, so one is enough.
+func releaseEpisode(media domain.Media) (int, int, bool) {
+	name := media.ReleaseName
+	if name == "" {
+		name = filepath.Base(media.OriginalFilename)
+	}
+	if name == "" || name == "." || hasInvalidOrAmbiguousRangeEvidence(name) {
+		return 0, 0, false
+	}
+	if _, _, _, ranged := episodeRange(name); ranged {
+		return 0, 0, false
+	}
+	tokens := 0
+	for _, token := range episodeTokenPattern.FindAllStringIndex(name, -1) {
+		if completeRangeToken(name, token[0], token[1]) {
+			tokens++
+		}
+	}
+	if tokens != 1 {
+		return 0, 0, false
+	}
+	season, episode, found := episodeToken(name)
+	if !found || season == 0 || season == media.Season {
 		return 0, 0, false
 	}
 	return season, episode, true
@@ -209,8 +230,13 @@ func releaseEpisode(media domain.Media) (int, int, bool) {
 // evidence through the normal strict selector.
 func SelectSingleEpisode(manifest Manifest, candidate domain.Candidate, media domain.Media, wantForced bool) (Member, error) {
 	selected, err := Select(manifest, candidate, media, wantForced)
-	if err == nil {
+	if err == nil && selected.SelectionRule != "release_episode_token" {
 		return selected, nil
+	}
+	if err == nil {
+		// The release-name fallback is for packs; a lone file naming the
+		// release's number is conflicting evidence, as it was before.
+		err = selectionError(manifest, "none", 0, "no unique member identifies the target episode")
 	}
 	members := eligibleMembers(manifest.Members, wantForced)
 	if media.IsEpisodeRange() {

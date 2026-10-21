@@ -388,3 +388,33 @@ func openRepository(t *testing.T) *store.Repository {
 	t.Cleanup(func() { _ = database.Close() })
 	return database.Repository()
 }
+
+// A cached pack is served without a fresh download, so a member it could only
+// give through the release-name fallback is not served from the cache.
+func TestCacheFindDoesNotServeReleaseNameMatches(t *testing.T) {
+	ctx := context.Background()
+	repository := openRepository(t)
+	clock := testutil.NewClock(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	cache, err := NewCache(filepath.Join(t.TempDir(), "pack-cache"), repository, clock, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := cacheCandidate("release-numbered")
+	candidate.Pack.DirectMembers = nil
+	payload := zipPayload(t, []zipEntry{{name: "Show.S02E01.srt", body: validSRT}, {name: "Show.S02E02.srt", body: validSRT}})
+	manifest, err := Extract(ctx, candidate, strings.NewReader(string(payload)), int64(len(payload)), filepath.Join(t.TempDir(), "extracted"), testLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Put(ctx, manifest, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	media := cacheMedia()
+	media.Episode = 10
+	media.ReleaseName = "Show.S02E02.WEB-GROUP"
+	member, found, err := cache.Find(ctx, media, "en")
+	var selection *SelectionError
+	if found || !errors.As(err, &selection) {
+		t.Fatalf("Find() = %+v/%v/%v, want no cached member", member, found, err)
+	}
+}

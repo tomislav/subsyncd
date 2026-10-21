@@ -1536,6 +1536,11 @@ func (s *Service) downloadAndSelectMembers(ctx context.Context, request Request,
 		if err != nil {
 			return nil, runtimePack, false, nil, err
 		}
+		if members[0].SelectionRule == "release_episode_token" && s.lapseMaySkip(candidate, runtimePack, len(members)) {
+			// Only the media's release name ties this member to the episode, so
+			// it is installed only after LAPSE has checked its timing.
+			return nil, runtimePack, false, nil, &pack.SelectionError{Rule: "release_episode_token", Reason: "a release-name episode match needs LAPSE, which the sync policy would skip", ArchiveType: manifest.ArchiveType, MemberCount: len(manifest.Members), MatchingMemberCount: len(members)}
+		}
 	} else {
 		members, err = pack.SelectMovieAlternatives(manifest, extractionCandidate, false)
 		if err != nil {
@@ -1701,6 +1706,22 @@ func (p LapsePolicy) normalized() LapsePolicy {
 // nonexact candidate with its provider timing and never invoke LAPSE.
 func (p LapsePolicy) syncDisabled() bool {
 	return p.Mode == "never"
+}
+
+// lapseMaySkip reports whether the sync policy could install a downloaded
+// archive's selection without LAPSE: always under never, and under confidence
+// for a single member of a provider pack when lapse_for_packs is off (several
+// versions and runtime packs are always timed, see prepareCandidate). An exact
+// hash proves the subtitle belongs to the file, so it never counts.
+func (s *Service) lapseMaySkip(candidate domain.Candidate, runtimePack bool, members int) bool {
+	if candidate.ExactHash {
+		return false
+	}
+	policy := s.LapsePolicy.normalized()
+	if policy.syncDisabled() {
+		return true
+	}
+	return policy.Mode == "confidence" && !runtimePack && members == 1 && !(candidate.Pack != nil && policy.LapseForPacks)
 }
 
 func canBypassLapse(media domain.Media, candidate domain.Candidate, score domain.Score, installed bool, policy LapsePolicy) bool {

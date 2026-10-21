@@ -236,9 +236,13 @@ Members without episode tokens read as `N-EE …` (the prefix season must equal 
 
 The last episode rule, for a show whose Arr numbering differs from how its releases and subtitles are named. Sonarr follows its database, which may number a show as one 16-episode season that releases split into two seasons of 8: the file Sonarr calls S01E10 is released as `Show.S02E02…`, and every subtitle pack names it S02E02.
 
-- The media file's own release name (Sonarr's `sceneName`, stored as `ReleaseName` and `OriginalFilename`) must contain exactly one episode token and no range, the two names must not disagree, and that token must differ from Arr's season and episode.
+- The media file's release name (Sonarr's `sceneName`, stored as both `ReleaseName` and `OriginalFilename`) must hold exactly one complete episode token (resolutions such as `1920x1080` do not count) and no range, in a **different season** from Arr's. A release name in Arr's own season is ignored, so it can never pick another episode of the same season.
+- The pack must not follow Arr's numbering: if a member names Arr's season with an episode past every episode the pack gives the release's season, the rule does not run. In such a pack the release's number is another episode (Sonarr's own S02E02).
 - Members are judged against the release's number instead: a member whose tokens conflict with it, or that carries a range, is skipped; `Select` needs exactly one member naming that episode; `SelectAlternatives` allows up to three versions of it, as for episode tokens.
-- It runs only after every rule above found nothing for Arr's number, so a pack that names Arr's number still wins. LAPSE still checks the timing before anything is installed.
+- It runs only after every rule above found nothing for Arr's number, so a pack that names Arr's number still wins.
+- Packs only: `SelectSingleEpisode` does not accept a lone file through it, and the pack cache never serves a member through it.
+- A member chosen by it is installed only after LAPSE. When the sync policy could skip LAPSE (`sync.policy: never`, or a single provider-pack member with `sync.lapse_for_packs: false`), the workflow rejects the pack as `pack_selection` instead; the policy is part of the rejection identity, so changing it re-opens the rejection.
+- Not covered: a provider pack labelled with the release's season (season 2 for Sonarr's season 1) is rejected by the [identity gates](#identity-gates) before it is downloaded. Packs without a season label, or labelled with Arr's season, reach this rule.
 
 `single_generic` does not apply when extraction skipped a member, since that member may have held the archive's explicit evidence. Forced-only policy applies to every selected member, including a plain one-member movie payload.
 
