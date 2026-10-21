@@ -179,7 +179,7 @@ When records cannot be matched to the parsed cues (`ErrUnsafe`), the decoded tex
 
 ### Episode archives
 
-- `Select` requires a unique match. `SelectAlternatives` allows up to three (`maxEpisodeVersions`) distinct-content versions identified by explicit, consistent target-episode tokens or all by compact numbers. Identical checksums collapse first.
+- `Select` requires a unique match. `SelectAlternatives` allows up to three (`maxEpisodeVersions`) distinct-content versions identified by explicit, consistent target-episode tokens, all by compact numbers, or all by the [release-name number](#release-name-numbers-release_episode_token). Identical checksums collapse first.
 - With more matching versions, they are ordered by `match.ReleaseAffinity` (release group 25, source 15, edition 10, streaming service 5, resolution 5 against the media); ties keep name order, and only the first three are timed.
 - Versions already rejected for this media (member-scoped) are put after untried ones before the cut (`SelectUntriedAlternatives`). While untried versions remain beyond three, the pack is not recorded as exhausted; a later search downloads it again and times the next ones. The pack cache applies the same lookup (`pack.Eligibility.Rejected`) and records `versions_exhausted` when every selected version is rejected and none is left untried.
 - Provider-direct, range and title-only ambiguities are rejected.
@@ -231,6 +231,14 @@ A member with no other episode evidence that contains exactly one separated thre
 ### Numbered members (`numbered_episode`)
 
 Members without episode tokens read as `N-EE …` (the prefix season must equal the target season), or for season 1 `Part N` or a leading `N - Title`. It applies only when at least three members are numbered this way, and the match must be unique.
+
+### Release-name numbers (`release_episode_token`)
+
+The last episode rule, for a show whose Arr numbering differs from how its releases and subtitles are named. Sonarr follows its database, which may number a show as one 16-episode season that releases split into two seasons of 8: the file Sonarr calls S01E10 is released as `Show.S02E02…`, and every subtitle pack names it S02E02.
+
+- The media file's own release name (Sonarr's `sceneName`, stored as `ReleaseName` and `OriginalFilename`) must contain exactly one episode token and no range, the two names must not disagree, and that token must differ from Arr's season and episode.
+- Members are judged against the release's number instead: a member whose tokens conflict with it, or that carries a range, is skipped; `Select` needs exactly one member naming that episode; `SelectAlternatives` allows up to three versions of it, as for episode tokens.
+- It runs only after every rule above found nothing for Arr's number, so a pack that names Arr's number still wins. LAPSE still checks the timing before anything is installed.
 
 `single_generic` does not apply when extraction skipped a member, since that member may have held the archive's explicit evidence. Forced-only policy applies to every selected member, including a plain one-member movie payload.
 

@@ -36,7 +36,7 @@ func SelectUntriedAlternatives(manifest Manifest, candidate domain.Candidate, me
 		return []Member{member}, false, nil
 	}
 	var selection *SelectionError
-	if candidate.ExactHash || !errors.As(err, &selection) || selection.Rule != "episode_token" && selection.Rule != "compact_episode" {
+	if candidate.ExactHash || !errors.As(err, &selection) || selection.Rule != "episode_token" && selection.Rule != "compact_episode" && selection.Rule != "release_episode_token" {
 		return nil, false, err
 	}
 	var matches []Member

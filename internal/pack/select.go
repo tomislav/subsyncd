@@ -44,6 +44,9 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 	if media.IsEpisodeRange() {
 		return selectRange(manifest, members, media)
 	}
+	// The release-name fallback below judges conflicts against the release's
+	// own number, so it needs the members before this filter rewrites them.
+	unfiltered := append([]Member(nil), members...)
 	// Explicit conflicting coordinates veto every positive rule, including
 	// provider-direct and absolute matches. Keep other pack members eligible.
 	consistent := members[:0]
@@ -146,7 +149,59 @@ func Select(manifest Manifest, candidate domain.Candidate, media domain.Media, w
 			return selected, err
 		}
 	}
+	if season, episode, found := releaseEpisode(media); found {
+		release := media
+		release.Season, release.Episode = season, episode
+		var releaseMatches []Member
+		for _, member := range unfiltered {
+			if conflictingEpisodeEvidence(member.SafeName, release) {
+				continue
+			}
+			if _, _, _, ranged := episodeRange(member.SafeName); ranged {
+				continue
+			}
+			if memberSeason, memberEpisode, ok := episodeToken(member.SafeName); ok && memberSeason == season && memberEpisode == episode {
+				releaseMatches = append(releaseMatches, member)
+			}
+		}
+		if selected, done, err := uniqueRule(manifest, releaseMatches, "release_episode_token", fmt.Sprintf("filename identifies S%02dE%02d, the media release's own number", season, episode)); done {
+			return selected, err
+		}
+	}
 	return Member{}, selectionError(manifest, "none", 0, "no unique member identifies the target episode")
+}
+
+// releaseEpisode is the single episode the media file's release name gives
+// when it differs from Arr's numbering, as when Sonarr's database numbers a
+// show as one long season that releases and subtitles split in two. The
+// release name and original filename must not disagree, and a name with a
+// range or more than one episode token gives none.
+func releaseEpisode(media domain.Media) (int, int, bool) {
+	found := false
+	var season, episode int
+	for _, name := range []string{media.ReleaseName, filepath.Base(media.OriginalFilename)} {
+		if name == "" || name == "." {
+			continue
+		}
+		if hasInvalidOrAmbiguousRangeEvidence(name) {
+			return 0, 0, false
+		}
+		if _, _, _, ranged := episodeRange(name); ranged {
+			return 0, 0, false
+		}
+		if len(episodeTokenPattern.FindAllStringIndex(name, -1)) != 1 {
+			return 0, 0, false
+		}
+		nameSeason, nameEpisode, ok := episodeToken(name)
+		if !ok || (found && (nameSeason != season || nameEpisode != episode)) {
+			return 0, 0, false
+		}
+		season, episode, found = nameSeason, nameEpisode, true
+	}
+	if !found || season == 0 || (season == media.Season && episode == media.Episode) {
+		return 0, 0, false
+	}
+	return season, episode, true
 }
 
 // SelectSingleEpisode preserves compatibility with providers that return one

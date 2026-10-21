@@ -68,7 +68,7 @@ Rejections are candidate-local. They never throttle a provider; a rejected cache
 - `pack_selection`: `/pack-selection-vN` from `pack.SelectionRulesVersion`;
 - a `versions_exhausted` rejection (stored as `pack_selection`) can follow from versions rejected as `invalid_subtitle`, so it carries both: `/subtitle-rules-vN/pack-selection-vM`.
 
-Both constants are 2. A rejection with either reason under another version, including one recorded without a version (version 1), does not count. After changing a content or selection rule, bump the matching constant (in `internal/pack/manifest.go`) to re-open exactly the rejections the old rules made. Other reasons keep unversioned signatures.
+`SubtitleRulesVersion` is 2 and `SelectionRulesVersion` is 3 (raised for the [release-name fallback](matching.md#release-name-numbers-release_episode_token)). A rejection with either reason under another version, including one recorded without a version (version 1), does not count. After changing a content or selection rule, bump the matching constant (in `internal/pack/manifest.go`) to re-open exactly the rejections the old rules made. Other reasons keep unversioned signatures.
 
 ## No expiry
 

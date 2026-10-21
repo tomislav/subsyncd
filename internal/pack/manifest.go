@@ -10,7 +10,7 @@ import "subsyncd/internal/domain"
 // as version 1.
 const (
 	SubtitleRulesVersion  = 2
-	SelectionRulesVersion = 2
+	SelectionRulesVersion = 3
 )
 
 type Limits struct {
