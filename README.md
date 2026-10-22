@@ -141,7 +141,7 @@ docker compose exec subsyncd subsyncd status                     # daemon, queue
 
 ## Updates
 
-The Compose file uses `ghcr.io/tomislav/subsyncd:latest`. Before updating, stop the service and back up `data/`: it holds search history, caches, and records of installed subtitles, and a newer build may upgrade the database so an older one cannot read it.
+The Compose file uses `ghcr.io/tomislav/subsyncd:latest`, the newest [release](https://github.com/tomislav/subsyncd/releases). Before updating, stop the service and back up `data/`: it holds search history, caches, and records of installed subtitles, and a newer build may upgrade the database so an older one cannot read it.
 
 ```bash
 docker compose stop subsyncd
@@ -151,7 +151,7 @@ docker compose up -d
 docker compose exec subsyncd subsyncd doctor
 ```
 
-To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or `sha-<commit>` tag. [Upgrade, back up and uninstall](docs/upgrade-and-backup.md) covers rollback and restoring an older backup.
+To take only 1.x releases, set `SUBSYNCD_IMAGE_TAG=1` in `.env`; to stay on one build, set it to a version such as `1.0.0`. [Upgrade, back up and uninstall](docs/upgrade-and-backup.md) explains the [versions and image tags](docs/upgrade-and-backup.md#versioning), rollback and restoring an older backup.
 
 ## Logs and troubleshooting
 

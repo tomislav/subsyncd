@@ -8,7 +8,7 @@
 #   TZ=Etc/UTC                      # Time zone for log timestamps
 #   MOVIES_PATH=/srv/media/movies   # Host folder with your movies
 #   TV_PATH=/srv/media/tv           # Host folder with your TV shows
-#   SUBSYNCD_IMAGE_TAG=latest       # Pin a published version or sha-<commit> tag
+#   SUBSYNCD_IMAGE_TAG=latest       # Newest release; 1 for 1.x only, or 1.0.0 to pin
 #
 # Create config/ and data/ before the first start, and set the media paths:
 # Docker creates missing host folders as root, which the container cannot use.

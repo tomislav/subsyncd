@@ -2,6 +2,7 @@
 
 - [What is in data/](#what-is-in-data)
 - [Back up](#back-up)
+- [Versioning](#versioning)
 - [Upgrade](#upgrade)
 - [Roll back to an older build](#roll-back-to-an-older-build)
 - [Restoring an older backup](#restoring-an-older-backup)
@@ -40,9 +41,31 @@ To restore such a copy, stop subsyncd, put it in place as `data/subsyncd.db`, de
 
 Take a backup right before every upgrade. It is the only way back to the older build.
 
+## Versioning
+
+Releases are numbered `MAJOR.MINOR.PATCH` from 1.0.0 on:
+
+- A **major** release (2.0.0) may remove or rename configuration keys, commands or their flags, webhook paths or fields of the `--json` output, or drop support for a Sonarr, Radarr or Silo API version. Its release notes list what to change.
+- A **minor** release (1.3.0) adds features. A configuration that worked keeps working.
+- A **patch** release (1.2.4) fixes bugs.
+
+Any release may upgrade the database, because some fixes need a migration. The [release notes](https://github.com/tomislav/subsyncd/releases) say when one does; back up before every upgrade anyway.
+
+Image tags on `ghcr.io/tomislav/subsyncd`:
+
+| Tag | Points to |
+| --- | --- |
+| `latest` | The newest release. The Compose file uses it. |
+| `1` | The newest 1.x release: features and fixes, no major upgrade. |
+| `1.2` | The newest 1.2.x release: fixes only. |
+| `1.2.3` | Exactly that release. |
+| `1.3.0-rc.1` | A release candidate, for testing. It never moves `latest`, `1` or `1.3`. |
+| `edge` | The newest unreleased build of `main`. For testing only; it may migrate the database ahead of any release. |
+| `sha-COMMIT` | Exactly one build, of a release or of `main`. |
+
 ## Upgrade
 
-The Compose file uses `ghcr.io/tomislav/subsyncd:latest`.
+The Compose file uses `ghcr.io/tomislav/subsyncd:latest`, the newest release. The [release notes](https://github.com/tomislav/subsyncd/releases) list the changes and say when a release upgrades the database.
 
 ```bash
 docker compose stop subsyncd
@@ -54,7 +77,7 @@ docker compose exec subsyncd subsyncd doctor
 
 - A newer build may upgrade the database on its first start. Migrations are forward-only: an older build cannot open the upgraded database.
 - A build whose LAPSE update can change timing results checks candidates again that the old LAPSE rejected, including files whose synchronized result was too short or ran past the end. Your own rejections, and rejections for wrong language or a downloaded file that was already too short or invalid, stay. Expect more downloads and LAPSE runs for a while after such an upgrade. The upgrade to LAPSE 2.3.0 also re-checks, once, candidates rejected earlier for being too short or invalid. To see whether an upgrade does this, compare the `rejection baseline` on the `LAPSE:` line of `doctor` before and after: it changes only when the LAPSE update can change timing results.
-- To stay on one build, set `SUBSYNCD_IMAGE_TAG` in `.env` to a published version or a `sha-COMMIT` tag.
+- To take only 1.x releases, set `SUBSYNCD_IMAGE_TAG=1` in `.env`. To stay on one build, set it to a version such as `1.0.0` or a `sha-COMMIT` tag. See [Versioning](#versioning).
 - Let the container stop fully before starting another process against the same media. The Compose file allows 75 seconds, which covers both fixed 30-second shutdown windows; don't lower `stop_grace_period`.
 
 ## Roll back to an older build

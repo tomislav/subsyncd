@@ -121,9 +121,14 @@ docs: split the developer references
 **Publish** (after verify passes):
 
 - Builds `Dockerfile.release` for `linux/amd64` and `linux/arm64` with QEMU and Buildx and pushes to `ghcr.io/tomislav/subsyncd`.
-- Tags: `sha-<commit>` on every build; `latest` on every push to `main`; for a `v*` tag the semver tags `X.Y.Z`, `X.Y` and `X`, and also `latest` (through `flavor: latest=auto`), unless it is a pre-release version. The version label and `VERSION` build argument are `X.Y.Z` for a `v*` tag and `sha-<commit>` on `main`.
+- Tags: `sha-<commit>` on every build; `edge` on every push to `main`; for a `v*` tag the semver tags `X.Y.Z`, `X.Y` and `X`, and also `latest` (through `flavor: latest=auto`). A pre-release tag such as `v1.3.0-rc.1` publishes only `1.3.0-rc.1` and `sha-<commit>`. Only a release moves `latest`. The version label and `VERSION` build argument are `X.Y.Z` for a `v*` tag and `sha-<commit>` on `main`.
 - Requires the repository secret `OPENSUBTITLES_API_KEY`, passed as a BuildKit secret and embedded as the application key; the job fails early when it is empty.
 - Publishes SBOM and provenance attestations (`provenance: mode=max`, `sbom: true`).
+
+**Release** (after publish, `v*` tags only):
+
+- `scripts/release-notes.sh` writes the notes: the image and its digest, the `feat` and `fix` subjects since the previous stable tag (commits with `!` under Breaking changes), and a back-up warning when a file was added under `internal/store/migrations/`. Pre-release tags are never the baseline, so an rc and its final release list the same changes.
+- `gh release create` publishes a GitHub release for the tag, marked as a pre-release when the tag has a `-` suffix.
 
 ## Dockerfiles
 
@@ -145,12 +150,21 @@ When upgrading FFmpeg or LAPSE, change the version, checksums and runtime versio
 
 ## Releases
 
+Versions follow [Versioning](docs/upgrade-and-backup.md#versioning): a major release for anything that breaks a working configuration, command, webhook or `--json` output, a minor one for features, a patch for fixes. Release notes come from commit subjects, so write them for operators.
+
 1. Make sure `main` is green and the docs describe the release. Note any new migration: operators must back up before upgrading, because migrations are forward-only.
-2. Tag the commit and push the tag:
+2. Push a release candidate first:
+
+   ```sh
+   git tag v1.2.3-rc.1
+   git push origin v1.2.3-rc.1
+   ```
+
+   It publishes `:1.2.3-rc.1` and a GitHub pre-release without moving `latest`, `1` or `1.2`. Check both, then tag the same commit as the release:
 
    ```sh
    git tag v1.2.3
    git push origin v1.2.3
    ```
 
-3. CI verifies and publishes `ghcr.io/tomislav/subsyncd:1.2.3`, `:1.2`, `:1`, `:sha-<commit>` and `:latest`. Every push to `main` also publishes `latest` and `sha-<commit>`, so `latest` is whichever of the two came last.
+3. CI verifies and publishes `ghcr.io/tomislav/subsyncd:1.2.3`, `:1.2`, `:1`, `:sha-<commit>` and `:latest`, then creates the GitHub release with generated notes. Edit the notes on GitHub if they need context.
