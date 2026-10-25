@@ -48,6 +48,8 @@ The Compose example limits the container to 2 GB of memory (`mem_limit`), two CP
 
 The image includes LAPSE and a minimal FFprobe 8.1; the general-purpose `ffmpeg` command is not included.
 
+On amd64, LAPSE needs an x86-64-v3 CPU, one with AVX2. On the host, `grep -m1 -wo avx2 /proc/cpuinfo` prints `avx2` when the CPU has it; without it subsyncd does not start (see [Troubleshooting](troubleshooting.md#problems-by-symptom)). arm64 hosts have no such requirement.
+
 - **First check of a file is slow.** The first time LAPSE checks a subtitle against a file, it reads the whole file: it decodes the audio track or, when the file has a usable embedded subtitle track, reads that track's timings. It caches either result in `data/lapse-cache/`, so later checks of the same file take about a second. On network storage the first check reads the whole file over the network.
 - **Time limit.** One LAPSE run may take `sync.timeout` (30 minutes). For a large file the limit grows to the time needed to read it at `sync.min_read_rate` (4 MiB/s), up to `sync.max_timeout` (4 hours). A run that times out fails the search with reason `lapse_timeout`, and it is retried later. On slow storage, lower `min_read_rate` below the speed you actually get.
 - **`analyze-sync` always decodes.** It uses a throwaway cache, so every run reads the whole audio track.

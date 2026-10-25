@@ -86,6 +86,7 @@ Start with the commands, then the logs. Commands are written as `subsyncd COMMAN
 | Permission denied | `PUID`/`PGID` must read the configuration and media, and write `data/` and the subtitle folders. |
 | Files of one instance are never searched, with no error | Arr's path for them matches no `path_mappings` entry, or maps outside the media roots. Such files are skipped without an error; a webhook carrying only such files logs `webhook.applied` with `outcome` `ignored`. Compare `path_mappings` with Arr's paths and the Compose volumes. |
 | `analyze-sync` says "media path is outside configured roots" | The `--media` path must be a container path inside a media root. |
+| On amd64, startup or `doctor` fails with "LAPSE does not advertise required capability --json" | The CPU lacks AVX2 (x86-64-v3), which LAPSE needs, so LAPSE cannot start. `grep -m1 -wo avx2 /proc/cpuinfo` on the host prints nothing in that case. Run subsyncd on a newer amd64 host or on arm64, or pin an image with LAPSE 2.3.0 (its `org.opencontainers.image.lapse.version` label) through `SUBSYNCD_IMAGE_TAG`. |
 | Startup fails on a config key | Unknown keys stop startup. Check spelling against [Configuration](configuration.md). |
 | `busy` from a command | Another process holds the data directory. Stop the daemon only for `rotate-webhook-token` and `forget-instance --yes`. Never delete `data/subsyncd.lock`. |
 | A provider shows `auth_failed` | See [Provider credentials rejected](#provider-credentials-rejected). |

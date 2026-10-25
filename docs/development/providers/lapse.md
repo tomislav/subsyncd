@@ -1,6 +1,6 @@
 # LAPSE
 
-LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.1; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, also v2.3.1 ([Upgrading LAPSE](#upgrading-lapse)).
+LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.1, whose amd64 binary needs glibc 2.43 and an x86-64-v3 (AVX2) CPU; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, also v2.3.1 ([Upgrading LAPSE](#upgrading-lapse)).
 
 - [Synchronization policy](#synchronization-policy)
 - [Invocation](#invocation)
@@ -132,4 +132,5 @@ With every LAPSE update, decide whether to move the baseline to the new version,
 - **Diff the whole release**, `git diff vOLD..vNEW` in the LAPSE repository, not only the engine sources.
 - **Move it** for anything that can change a verdict or a crash: engine code (matching, splitting, drift, VAD, reference selection, confidence), bundled libraries and models (its FFmpeg, ONNX Runtime, the Silero model), build flags, the default of any flag subsyncd does not pass (such as `--confidence`), and crash fixes, because a repeated silent crash becomes a permanent rejection.
 - **Keep it** only when the diff is limited to docs, tests, CI, output formats subsyncd never requests, and report fields subsyncd does not read. `decodeReport` reads and validates every field of today's report, so only newly added fields qualify, and a new field still needs the parser change before the binary can ship.
+- **Check the binaries' platform floor.** For both Linux binaries, compare the newest `GLIBC_` symbol version (`strings -a lapse | grep -o '^GLIBC_2\.[0-9]*' | sort -uV | tail -1`) with the runtime base image's glibc, and the `x86 ISA needed` line of `readelf -n` with the amd64 CPU requirement in the README. The image's build-time Silero check catches a glibc mismatch on both architectures, but not a raised ISA level, because CI's amd64 runners support it; update the README, running, troubleshooting and upgrade pages when it changes.
 - **When unsure, move it.** Automatic rejections never expire, so wrongly keeping the baseline locks subtitles out silently and permanently. Wrongly moving it costs one more download and LAPSE run per affected candidate.

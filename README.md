@@ -47,7 +47,7 @@ Startup stops if a listed provider does not support that language. Hearing-impai
 
 ## Install with Docker Compose
 
-You need Docker with the Compose plugin, a Sonarr or Radarr instance, and at least one subtitle provider. The image runs on Linux amd64 and arm64 and includes LAPSE and FFprobe.
+You need Docker with the Compose plugin, a Sonarr or Radarr instance, and at least one subtitle provider. The image runs on Linux amd64 and arm64 and includes LAPSE and FFprobe. On amd64 the CPU must support x86-64-v3 (AVX2): Intel Haswell (2013) or AMD Excavator (2015) and newer, including every Ryzen. Many low-power Celeron, Pentium Silver and Atom chips do not, and subsyncd does not start on them ([check your CPU](docs/running.md#resources-and-lapse-run-time)).
 
 ### 1. Get the configuration files
 

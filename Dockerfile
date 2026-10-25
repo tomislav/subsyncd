@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
 ARG GO_VERSION=1.27.1
-ARG DEBIAN_VERSION=13.2-slim
+ARG UBUNTU_VERSION=26.04
+ARG UBUNTU_DIGEST=sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 FROM golang:${GO_VERSION}-bookworm AS go-build
 WORKDIR /src
@@ -23,7 +24,7 @@ RUN apk add --no-cache build-base clang lld nasm linux-headers pkgconf curl
 COPY scripts/build-ffprobe.sh /build-ffprobe.sh
 RUN sh /build-ffprobe.sh "${FFMPEG_VERSION}" "${FFMPEG_SHA256}" "${TARGETARCH}"
 
-FROM debian:${DEBIAN_VERSION} AS lapse-release
+FROM ubuntu:${UBUNTU_VERSION}@${UBUNTU_DIGEST} AS lapse-release
 ARG TARGETARCH
 ARG LAPSE_VERSION=2.3.1
 ARG LAPSE_AMD64_SHA256=029f0b178298728a416b9d6feb146a6546fa08f8d84c1a29bccbce3136e95a86
@@ -42,7 +43,7 @@ RUN set -eux; \
     tar -xzf /tmp/lapse.tar.gz --strip-components=1 -C /out/lapse; \
     rm /tmp/lapse.tar.gz
 
-FROM debian:${DEBIAN_VERSION} AS runtime
+FROM ubuntu:${UBUNTU_VERSION}@${UBUNTU_DIGEST} AS runtime
 ARG FFMPEG_VERSION=8.1
 ARG VERSION=dev
 ARG LAPSE_VERSION=2.3.1
@@ -51,9 +52,10 @@ LABEL org.opencontainers.image.title="subsyncd" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.lapse.version="${LAPSE_VERSION}" \
       org.opencontainers.image.ffmpeg.version="${FFMPEG_VERSION}"
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl libfftw3-double3 libstdc++6 tzdata \
     && rm -rf /var/lib/apt/lists/* \
+    && userdel --remove ubuntu \
     && groupadd --gid 1000 subsyncd \
     && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin subsyncd \
     && install -d -o 1000 -g 1000 -m 0750 /config /data /media
