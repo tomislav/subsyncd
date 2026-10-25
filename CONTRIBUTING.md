@@ -154,18 +154,20 @@ When upgrading FFmpeg or LAPSE, change the version, checksums and runtime versio
 Versions follow [Versioning](docs/upgrade-and-backup.md#versioning): a major release for anything that breaks a working configuration, command, webhook or `--json` output, a minor one for features, a patch for fixes. Release notes come from commit subjects, so write them for operators.
 
 1. Make sure `main` is green and the docs describe the release. Note any new migration: operators must back up before upgrading, because migrations are forward-only.
-2. Push a release candidate first:
+2. Release a commit that has already been published as `edge` and run on a real installation. Every push to `main` goes through the same verify and build jobs as a release, so `edge` is the release candidate. Tag that commit:
 
    ```sh
-   git tag v1.2.3-rc.1
-   git push origin v1.2.3-rc.1
+   git tag -a v1.2.3 -m v1.2.3 COMMIT
+   git push origin v1.2.3
    ```
 
-   It publishes `:1.2.3-rc.1` and a GitHub pre-release without moving `latest`, `1` or `1.2`. Check both, then tag the same commit as the release:
+   The tag build rebuilds the commit from source; it does not copy the `edge` image, so the release image has its own digest.
+
+   Push a release candidate first only when the tag path itself changed (the workflow's tag, label or release steps), or for a major release that others should try before `latest` moves. A candidate publishes `:1.2.3-rc.1` and a GitHub pre-release without moving `latest`, `1` or `1.2`:
 
    ```sh
-   git tag v1.2.3
-   git push origin v1.2.3
+   git tag -a v1.2.3-rc.1 -m v1.2.3-rc.1 COMMIT
+   git push origin v1.2.3-rc.1
    ```
 
 3. CI verifies and publishes `ghcr.io/tomislav/subsyncd:1.2.3`, `:1.2`, `:1`, `:sha-<commit>` and `:latest`, then creates the GitHub release with generated notes. Edit the notes on GitHub if they need context.
