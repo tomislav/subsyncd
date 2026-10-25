@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	CompatibilityVersion   = "2.3.0"
+	CompatibilityVersion   = "2.3.1"
 	defaultTimeout         = 30 * time.Minute
 	defaultMaxTimeout      = 4 * time.Hour
 	maximumSubtitleBytes   = 100 << 20
@@ -40,12 +40,12 @@ func (l *Lapse) CompatibilityVersion() string { return CompatibilityVersion }
 // defaults of flags subsyncd does not pass, and crash fixes all count as
 // verdict changes. When unsure, move it
 // (docs/development/providers/lapse.md#upgrading-lapse).
-const RejectionBaseline = "2.3.0"
+const RejectionBaseline = "2.3.1"
 
 // RejectionBaselineReviewedFor is the CompatibilityVersion for which the
 // keep-or-move decision on RejectionBaseline was made. A test fails until it
 // matches, so a LAPSE bump cannot skip the decision.
-const RejectionBaselineReviewedFor = "2.3.0"
+const RejectionBaselineReviewedFor = "2.3.1"
 
 func (l *Lapse) RejectionBaseline() string { return RejectionBaseline }
 
@@ -462,12 +462,10 @@ func (r lapseReport) validate() error {
 		return &reportCheckError{"LAPSE JSON reports unchanged output that was not written"}
 	}
 	previous := 0
-	// Split positions are ascending cue indexes. LAPSE numbers them by the
-	// input subtitle's cues while "cues" counts them after its own merging
-	// (203 input cues: "cues":201, "splits":[107,202]), so a split may lie
-	// past "cues"; only the number of splits feeds the result.
+	// Split positions are ascending cue indexes counted in file order, each
+	// below "cues" (the LAPSE 2.3.1 contract).
 	for _, split := range r.Splits {
-		if split <= previous {
+		if split <= previous || split >= r.Cues {
 			return &reportCheckError{"LAPSE JSON contains invalid split positions"}
 		}
 		previous = split

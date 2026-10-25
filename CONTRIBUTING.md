@@ -14,7 +14,7 @@ How to build subsyncd, run its tests, and get a change merged and released. How 
 ## Set up
 
 - **Go 1.27.1**, the version in `go.mod`. CI and both Dockerfiles pin the same version; change all of them together.
-- **FFprobe** and **LAPSE v2.3.0** to run the service natively. The tests do not need them.
+- **FFprobe** and **LAPSE v2.3.1** to run the service natively. The tests do not need them.
 - Enable the commit-message hook once per clone:
 
   ```sh

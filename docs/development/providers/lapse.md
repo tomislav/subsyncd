@@ -1,6 +1,6 @@
 # LAPSE
 
-LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.0; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, also v2.3.0 ([Upgrading LAPSE](#upgrading-lapse)).
+LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.1; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, also v2.3.1 ([Upgrading LAPSE](#upgrading-lapse)).
 
 - [Synchronization policy](#synchronization-policy)
 - [Invocation](#invocation)
@@ -107,6 +107,7 @@ LAPSE makes no network request, but it reads the media to build a speech profile
 Speech profiles live in `<data_dir>/lapse-cache`, so later candidates for unchanged media reuse them. The confidence bypass avoids the media read for strong first installs.
 
 - Since v2.3.0 the cache also holds the timings of a video's embedded subtitle track, under the same `<16 hex>.spans` names. An empty entry records that the video has no usable track, so later runs go straight to the speech profile.
+- Since v2.3.1 LAPSE rebuilds a cached speech profile that covers only part of the film, which older versions wrote, by listening to the whole film again. The first run on each such film after an upgrade reads the whole file.
 - LAPSE treats a read error in the embedded track like the end of the file. A failed read on network storage can therefore leave incomplete timings, or a "no usable track" entry, cached until the video changes or the entry expires.
 - `lapse_cache.ttl` (default `720h`, must be positive) is measured from file mtime. LAPSE resets an entry's mtime each time it reuses it (`load_spans`, in v2.2.4 as well), so the TTL counts from the last use.
 - Mutating assembly prunes expired entries once; the daemon checks hourly. The shared LAPSE runner lock excludes cleanup; an active invocation postpones the sweep to the next check.

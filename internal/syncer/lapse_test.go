@@ -60,9 +60,18 @@ func TestParseReportRejectsMalformedOrUnsafeResults(t *testing.T) {
 		{"unchanged without write", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"written":true,"unchanged":false`, `"written":false,"unchanged":true`, 1)},
 		{"unknown field in v2.3 report", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[22],"surprise":true`, 1)},
 		{"unordered split", ""},
+		{"solid split at cues", ""},
+		{"solid split past cues", ""},
+		{"split at zero", ""},
 	}
-	// Construct the split case separately to keep the fixture mutation clear.
-	tests[len(tests)-1].payload = strings.Replace(strings.Replace(string(fixture(t, "solid.json")), `"parts":1`, `"parts":3`, 1), `"splits":[]`, `"splits":[10,9]`, 1)
+	// Construct the split cases separately to keep the fixture mutations clear.
+	split := func(parts, splits string) string {
+		return strings.Replace(strings.Replace(string(fixture(t, "solid.json")), `"parts":1`, `"parts":`+parts, 1), `"splits":[]`, `"splits":`+splits, 1)
+	}
+	tests[len(tests)-4].payload = split("3", "[10,9]")
+	tests[len(tests)-3].payload = split("2", "[1578]")
+	tests[len(tests)-2].payload = split("2", "[1579]")
+	tests[len(tests)-1].payload = split("2", "[0]")
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := parseReport([]byte(test.payload)); err == nil {
@@ -143,11 +152,11 @@ func TestLapseReportsItsVersionAndRejectionBaseline(t *testing.T) {
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
 		return Execution{}, nil
 	}), t.TempDir())
-	if got := lapse.CompatibilityVersion(); got != "2.3.0" {
-		t.Fatalf("CompatibilityVersion() = %q, want 2.3.0", got)
+	if got := lapse.CompatibilityVersion(); got != "2.3.1" {
+		t.Fatalf("CompatibilityVersion() = %q, want 2.3.1", got)
 	}
-	if got := lapse.RejectionBaseline(); got != "2.3.0" {
-		t.Fatalf("RejectionBaseline() = %q, want 2.3.0", got)
+	if got := lapse.RejectionBaseline(); got != "2.3.1" {
+		t.Fatalf("RejectionBaseline() = %q, want 2.3.1", got)
 	}
 }
 
@@ -340,6 +349,7 @@ func TestLapseFailuresDoNotExposeRawProcessOutput(t *testing.T) {
 		{name: "no speech", execution: Execution{ExitCode: 1, Stderr: []byte("no speech found: " + sentinel)}, noSpeech: true},
 		{name: "reason", execution: Execution{ExitCode: 2, Stdout: report("why", sentinel)}, verdict: "unsure"},
 		{name: "nothing", execution: Execution{ExitCode: 3, Stdout: fixture(t, "nothing.json")}, verdict: "nothing"},
+		{name: "unsure kept back", execution: Execution{ExitCode: 3, Stdout: fixture(t, "unsure.json")}, verdict: "unsure"},
 		{name: "mode", execution: Execution{Stdout: report("mode", sentinel)}},
 		{name: "unknown field", execution: Execution{Stdout: report(sentinel, "value")}},
 		{name: "runner", runErr: errors.New(sentinel)},
@@ -488,25 +498,29 @@ func TestTimeoutIsTypedAndParentCancellationIsNot(t *testing.T) {
 	}
 }
 
-// LAPSE numbers splits by input cues while "cues" counts them after its
-// merging, so a report from a 203-cue subtitle reads "cues":201 with a split
-// at 202 (Malcolm in the Middle S06E08). It is a verdict, not a crash.
-func TestSynchronizeReadsAVerdictWhoseSplitsFollowInputCues(t *testing.T) {
+// LAPSE 2.3.1 counts splits by the cues in the file, so every split is below
+// "cues". The lapse#102 report from 2.3.0 ("cues":201, a split at 202, from a
+// 203-cue subtitle) is refused as a technical failure, never a verdict.
+func TestSynchronizeRefusesASplitPastTheLastCue(t *testing.T) {
 	media, subtitle := testFiles(t)
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
-		return Execution{Stdout: fixture(t, "nothing-recut.json"), ExitCode: 2}, nil
+		return Execution{Stdout: fixture(t, "nothing-recut.json"), ExitCode: 3}, nil
 	}), filepath.Dir(media))
 	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+	var processExit *ProcessExitError
+	if !errors.As(err, &processExit) || processExit.Report != "LAPSE JSON contains invalid split positions" {
+		t.Fatalf("Synchronize() error = %T %v, want a refused split report", err, err)
+	}
 	var verdict *VerdictError
-	if !errors.As(err, &verdict) || verdict.Verdict != "nothing" || verdict.Result.Splits != 2 {
-		t.Fatalf("Synchronize() error = %T %v, want nothing verdict with two splits", err, err)
+	if errors.As(err, &verdict) {
+		t.Fatalf("Synchronize() error = %v, want no verdict", err)
 	}
 }
 
-func TestSynchronizeReadsAVersion230RecutVerdict(t *testing.T) {
+func TestSynchronizeReadsARecutVerdict(t *testing.T) {
 	media, subtitle := testFiles(t)
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
-		return Execution{Stdout: fixture(t, "nothing-recut-v2.3.json"), ExitCode: 2}, nil
+		return Execution{Stdout: fixture(t, "nothing-recut-v2.3.json"), ExitCode: 3}, nil
 	}), filepath.Dir(media))
 	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
 	var verdict *VerdictError

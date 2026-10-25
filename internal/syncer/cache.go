@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// PruneCache removes expired LAPSE v2.3.0 cache entries (speech profiles and
+// PruneCache removes expired LAPSE v2.3.1 cache entries (speech profiles and
 // embedded subtitle-track timings) by last-write time. A busy cache is skipped
 // until the next sweep, so cleanup never races a subprocess.
 // Unknown files, directories and symlinks are deliberately left untouched.

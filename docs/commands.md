@@ -317,7 +317,7 @@ subsyncd doctor --json
 ```
 
 ```json
-{"schema":"subsyncd.cli/v1","command":"doctor","ok":true,"result":{"configuration":"ok","sqlite":"ok","media_roots":1,"lapse":"compatible","lapse_version":"2.3.0","lapse_rejection_baseline":"2.3.0","ffprobe":"available","webhooks":"manual"}}
+{"schema":"subsyncd.cli/v1","command":"doctor","ok":true,"result":{"configuration":"ok","sqlite":"ok","media_roots":1,"lapse":"compatible","lapse_version":"2.3.1","lapse_rejection_baseline":"2.3.1","ffprobe":"available","webhooks":"manual"}}
 ```
 
 A failure has `"ok":false` and an `error` with a stable `code` and a readable `message` instead of `result`. Times are RFC 3339 and field names are snake_case. Output never contains credentials or absolute paths, with two exceptions: `webhook-url` prints the token by design, and an error loading the configuration file can name that file's path.
