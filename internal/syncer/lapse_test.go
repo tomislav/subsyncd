@@ -59,23 +59,33 @@ func TestParseReportRejectsMalformedOrUnsafeResults(t *testing.T) {
 		{"empty offsets", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[]`, 1)},
 		{"unchanged without write", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"written":true,"unchanged":false`, `"written":false,"unchanged":true`, 1)},
 		{"unknown field in v2.3 report", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[22],"surprise":true`, 1)},
-		{"unordered split", ""},
-		{"solid split at cues", ""},
-		{"solid split past cues", ""},
-		{"split at zero", ""},
 	}
-	// Construct the split cases separately to keep the fixture mutations clear.
-	split := func(parts, splits string) string {
-		return strings.Replace(strings.Replace(string(fixture(t, "solid.json")), `"parts":1`, `"parts":`+parts, 1), `"splits":[]`, `"splits":`+splits, 1)
-	}
-	tests[len(tests)-4].payload = split("3", "[10,9]")
-	tests[len(tests)-3].payload = split("2", "[1578]")
-	tests[len(tests)-2].payload = split("2", "[1579]")
-	tests[len(tests)-1].payload = split("2", "[0]")
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := parseReport([]byte(test.payload)); err == nil {
 				t.Fatal("parseReport() error = nil")
+			}
+		})
+	}
+}
+
+// Splits must ascend and stay below "cues" (1578 in solid.json), and each
+// refusal must come from the split check itself, not an earlier one.
+func TestParseReportRefusesSplitsOutsideTheCues(t *testing.T) {
+	for _, test := range []struct {
+		name, parts, splits string
+	}{
+		{"unordered split", "3", "[10,9]"},
+		{"split at cues", "2", "[1578]"},
+		{"split past cues", "2", "[1579]"},
+		{"split at zero", "2", "[0]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := strings.Replace(strings.Replace(string(fixture(t, "solid.json")), `"parts":1`, `"parts":`+test.parts, 1), `"splits":[]`, `"splits":`+test.splits, 1)
+			_, err := parseReport([]byte(payload))
+			var check *reportCheckError
+			if !errors.As(err, &check) || check.message != "LAPSE JSON contains invalid split positions" {
+				t.Fatalf("parseReport() error = %v, want the split check", err)
 			}
 		})
 	}
@@ -500,20 +510,50 @@ func TestTimeoutIsTypedAndParentCancellationIsNot(t *testing.T) {
 
 // LAPSE 2.3.1 counts splits by the cues in the file, so every split is below
 // "cues". The lapse#102 report from 2.3.0 ("cues":201, a split at 202, from a
-// 203-cue subtitle) is refused as a technical failure, never a verdict.
+// 203-cue subtitle) is refused as a technical failure, never a verdict, at the
+// exit 2 a 2.3.0 binary used and the exit 3 of 2.3.1.
 func TestSynchronizeRefusesASplitPastTheLastCue(t *testing.T) {
 	media, subtitle := testFiles(t)
-	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
-		return Execution{Stdout: fixture(t, "nothing-recut.json"), ExitCode: 3}, nil
-	}), filepath.Dir(media))
-	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
-	var processExit *ProcessExitError
-	if !errors.As(err, &processExit) || processExit.Report != "LAPSE JSON contains invalid split positions" {
-		t.Fatalf("Synchronize() error = %T %v, want a refused split report", err, err)
+	for _, exitCode := range []int{2, 3} {
+		t.Run(fmt.Sprintf("exit %d", exitCode), func(t *testing.T) {
+			lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+				return Execution{Stdout: fixture(t, "nothing-recut.json"), ExitCode: exitCode}, nil
+			}), filepath.Dir(media))
+			_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+			var processExit *ProcessExitError
+			if !errors.As(err, &processExit) || processExit.Report != "LAPSE JSON contains invalid split positions" || processExit.ExitCode != exitCode || processExit.StdoutEmpty {
+				t.Fatalf("Synchronize() error = %T %#v, want a refused split report at exit %d", err, err, exitCode)
+			}
+			var verdict *VerdictError
+			if errors.As(err, &verdict) {
+				t.Fatalf("Synchronize() error = %v, want no verdict", err)
+			}
+		})
 	}
+}
+
+// A solid report with a split past the last cue is protocol data LAPSE
+// cannot produce: it is neither a verdict nor a process failure, and the
+// subtitle LAPSE already wrote is removed instead of reaching installation.
+func TestSynchronizeRemovesSolidOutputWithASplitPastTheLastCue(t *testing.T) {
+	media, subtitle := testFiles(t)
+	output := filepath.Join(t.TempDir(), "synced.srt")
+	// json.Marshal sorts the keys, so these fields keep their fixture spelling.
+	report := strings.Replace(strings.Replace(string(reportJSON(t, "solid", output, true)), `"parts":1`, `"parts":2`, 1), `"splits":[]`, `"splits":[1578]`, 1)
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		if err := os.WriteFile(output, []byte(testSRT), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Execution{Stdout: []byte(report), ExitCode: 0}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, output)
+	var processExit *ProcessExitError
 	var verdict *VerdictError
-	if errors.As(err, &verdict) {
-		t.Fatalf("Synchronize() error = %v, want no verdict", err)
+	if err == nil || errors.As(err, &processExit) || errors.As(err, &verdict) {
+		t.Fatalf("Synchronize() error = %T %v, want a protocol error", err, err)
+	}
+	if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output after refusal: %v, want it removed", statErr)
 	}
 }
 
