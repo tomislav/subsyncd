@@ -76,7 +76,7 @@ func TestInvalidLapseOutputIsRememberedAcrossRestart(t *testing.T) {
 }
 
 func TestTechnicalLapseFailuresNeverBecomeRejections(t *testing.T) {
-	for _, failure := range []error{errors.Join(&syncer.InvalidOutputError{}, context.Canceled), errors.Join(&syncer.InvalidOutputError{}, errors.New("cleanup failed")), context.Canceled, context.DeadlineExceeded, errors.New("LAPSE process failed"), errors.New("LAPSE returned invalid JSON protocol data"), errors.New("LAPSE output is missing or not a regular file"), &syncer.NoSpeechError{}} {
+	for _, failure := range []error{errors.Join(&syncer.InvalidOutputError{}, context.Canceled), errors.Join(&syncer.InvalidOutputError{}, errors.New("cleanup failed")), context.Canceled, context.DeadlineExceeded, errors.New("LAPSE process failed"), errors.New("LAPSE returned invalid JSON protocol data"), errors.New("LAPSE output is missing or not a regular file"), &syncer.NoSpeechError{}, errors.Join(&syncer.TooFewCuesError{Cues: 6}, context.Canceled)} {
 		service := testService(t, inventory.Inventory{}, &fakeSearcher{}, nil, &fakeSynchronizer{}, &fakeInstaller{})
 		recorded, err := service.recordCandidateRejection(context.Background(), serviceRequest(t), broadCandidate("candidate"), "checksum", failure)
 		if err != nil || recorded {

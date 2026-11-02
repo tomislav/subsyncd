@@ -966,7 +966,7 @@ func (s *Service) logWorkflowDecision(ctx context.Context, decision Decision) {
 		event = "candidate.skipped"
 		level = slog.LevelInfo
 		switch decision.Reason {
-		case "pack_selection", "invalid_subtitle", "partial_coverage", "language_mismatch", "lapse_unsure", "lapse_nothing", "lapse_invalid_output", "lapse_partial_coverage":
+		case "pack_selection", "invalid_subtitle", "partial_coverage", "language_mismatch", "lapse_unsure", "lapse_nothing", "lapse_too_few_cues", "lapse_invalid_output", "lapse_partial_coverage":
 			decision.ReasonCode = decision.Reason
 		default:
 			decision.ReasonCode = "retained_rejection"
@@ -1056,6 +1056,10 @@ func (s *Service) logLapseFailure(ctx context.Context, phase string, candidate d
 	if !hasProcessExitError(err) && errors.As(err, &verdict) {
 		result = verdict.Result
 		result.Verdict = verdict.Verdict
+		level = slog.LevelWarn
+	}
+	if _, tooFew := err.(*syncer.TooFewCuesError); tooFew {
+		result = domain.SyncResult{Verdict: "nothing", Reference: "none"}
 		level = slog.LevelWarn
 	}
 	attrs := lapseAttrs(s, phase, candidate, result, duration)
@@ -1317,9 +1321,12 @@ func rejectionReasonCode(failure error) string {
 	var content *pack.ContentError
 	installContent, isInstallContent := failure.(*subtitleValidationError)
 	_, invalidOutput := failure.(*syncer.InvalidOutputError)
+	_, tooFewCues := failure.(*syncer.TooFewCuesError)
 	switch {
 	case invalidOutput:
 		return "lapse_invalid_output"
+	case tooFewCues:
+		return "lapse_too_few_cues"
 	case errors.As(failure, &verdict) && (verdict.Verdict == "unsure" || verdict.Verdict == "nothing"):
 		return "lapse_" + verdict.Verdict
 	case errors.As(failure, &selection):
