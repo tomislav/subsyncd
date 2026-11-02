@@ -1058,11 +1058,15 @@ func (s *Service) logLapseFailure(ctx context.Context, phase string, candidate d
 		result.Verdict = verdict.Verdict
 		level = slog.LevelWarn
 	}
-	if _, tooFew := err.(*syncer.TooFewCuesError); tooFew {
+	tooFew, isTooFew := err.(*syncer.TooFewCuesError)
+	if isTooFew {
 		result = domain.SyncResult{Verdict: "nothing", Reference: "none"}
 		level = slog.LevelWarn
 	}
 	attrs := lapseAttrs(s, phase, candidate, result, duration)
+	if isTooFew {
+		attrs = append(attrs, slog.Int("cues", tooFew.Cues), slog.Int("ignored_cues", tooFew.IgnoredCues))
+	}
 	attrs = append(attrs, s.workflowEvents().ErrorAttrs("lapse_"+phase, err)...)
 	s.workflowEvents().Log(ctx, level, "lapse.failed", "LAPSE phase failed", attrs...)
 }
@@ -1103,6 +1107,9 @@ func lapseCompatibilityVersion(s *Service) string {
 func lapseFailureDecision(failure error) string {
 	if hasProcessExitError(failure) {
 		return "error"
+	}
+	if _, tooFew := failure.(*syncer.TooFewCuesError); tooFew {
+		return "non-solid"
 	}
 	var verdict *syncer.VerdictError
 	if errors.As(failure, &verdict) {

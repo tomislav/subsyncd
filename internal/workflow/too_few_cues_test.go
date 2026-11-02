@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,8 +74,7 @@ func TestTooFewCuesMovesOnToTheNextCandidate(t *testing.T) {
 	}
 }
 
-// LAPSE refuses before it reads the media, so unreadable media does not turn
-// the rejection into a media-unavailable deferral.
+// recordCandidateRejection does not re-check the media for this reason.
 func TestTooFewCuesRejectsWithoutReadingMedia(t *testing.T) {
 	ctx := context.Background()
 	request := serviceRequest(t)
@@ -88,6 +88,35 @@ func TestTooFewCuesRejectsWithoutReadingMedia(t *testing.T) {
 	}
 }
 
+// LAPSE refuses before it reads the media, so media that is present but
+// fails reads does not turn the rejection into a media-unavailable deferral.
+func TestTooFewCuesOnUnreadableMediaStillRejects(t *testing.T) {
+	previous := readMediaProbe
+	readMediaProbe = func(domain.Media) error { return &MediaUnavailableError{Err: errors.New("read failed")} }
+	t.Cleanup(func() { readMediaProbe = previous })
+	request := serviceRequest(t)
+	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("few")}}}
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{synchronizeErr: &syncer.TooFewCuesError{Cues: 6}}, &fakeInstaller{})
+	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
+	result, err := service.Run(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeRejected {
+		t.Fatalf("Run() = %+v, %v, want a rejection", result.Outcome, err)
+	}
+	rejections := service.Repository.(*workflowRepository).rejections
+	if len(rejections) != 1 || rejections[0].ReasonCode != "lapse_too_few_cues" {
+		t.Fatalf("rejections = %+v", rejections)
+	}
+}
+
+func TestTooFewCuesIsANonSolidDecision(t *testing.T) {
+	if got := lapseFailureDecision(&syncer.TooFewCuesError{Cues: 6}); got != "non-solid" {
+		t.Fatalf("lapseFailureDecision(too few cues) = %q, want non-solid", got)
+	}
+	if got := lapseFailureDecision(errors.Join(&syncer.TooFewCuesError{Cues: 6}, context.Canceled)); got != "error" {
+		t.Fatalf("lapseFailureDecision(joined) = %q, want error", got)
+	}
+}
+
 func TestTooFewCuesIsLoggedAsAWarning(t *testing.T) {
 	request := serviceRequest(t)
 	var logs bytes.Buffer
@@ -96,7 +125,7 @@ func TestTooFewCuesIsLoggedAsAWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	searcher := &fakeSearcher{result: provider.SearchResult{Candidates: []domain.Candidate{broadCandidate("few")}}}
-	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{synchronizeErr: &syncer.TooFewCuesError{Cues: 6}}, &fakeInstaller{})
+	service := testService(t, inventory.Inventory{}, searcher, nil, &fakeSynchronizer{synchronizeErr: &syncer.TooFewCuesError{Cues: 6, IgnoredCues: 2}}, &fakeInstaller{})
 	service.Providers = map[string]provider.Provider{"provider": &fakeProvider{id: "provider"}}
 	service.Events = events
 	if _, err := service.Run(context.Background(), request); err != nil {
@@ -104,7 +133,7 @@ func TestTooFewCuesIsLoggedAsAWarning(t *testing.T) {
 	}
 	records := workflowLogRecords(t, logs.String())
 	failed := workflowEvents(records, "lapse.failed")
-	if len(failed) != 1 || failed[0]["level"] != "warn" || failed[0]["verdict"] != "nothing" || failed[0]["reference"] != "none" {
+	if len(failed) != 1 || failed[0]["level"] != "warn" || failed[0]["verdict"] != "nothing" || failed[0]["reference"] != "none" || failed[0]["cues"] != float64(6) || failed[0]["ignored_cues"] != float64(2) {
 		t.Fatalf("lapse.failed = %#v", failed)
 	}
 	rejected := workflowEvents(records, "candidate.rejected")

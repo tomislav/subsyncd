@@ -35,7 +35,7 @@ Deterministic candidate failures are retained in `candidate_rejections` (`reject
 | Code | Cause | Versioned |
 | --- | --- | --- |
 | `lapse_unsure`, `lapse_nothing` | A LAPSE verdict other than `solid`, after the media was re-checked readable | No |
-| `lapse_too_few_cues` | LAPSE 2.3.2 or later refused the subtitle because it has too few dialogue cues to try. No media-readability check, because LAPSE refuses before it reads the media | No |
+| `lapse_too_few_cues` | LAPSE 2.3.2 or later refused the subtitle because it has too few dialogue cues to try. No media-readability check, because LAPSE refuses before it reads the media; a media file that is missing still ends the search as media-unavailable | No |
 | `lapse_invalid_output` | LAPSE's written subtitle failed size, encoding, syntax or timestamp validation (invalid timestamps even when LAPSE reported solid), or failed installation validation, such as ending more than five minutes past the media duration. Only the direct typed content-validation failure qualifies | No |
 | `lapse_partial_coverage` | LAPSE's output for a range file ends before 75% of the runtime at installation, although the source passed the check before LAPSE | No |
 | `lapse_repeated_empty_exit` | The second identical silent exit (see [LAPSE](lapse.md#repeated-empty-exit)) | No |

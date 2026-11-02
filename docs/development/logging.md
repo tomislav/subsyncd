@@ -231,13 +231,13 @@ These come from the arrapi library's logger (`arrRetryHandler`); the name is cho
 
 ### lapse
 
-`lapse.sync_started` and `lapse.sync_completed` are built as `"lapse." + phase + "_started"` / `"_completed"`; `sync` is the only phase. Completion and verdict `lapse.failed` records carry LAPSE's `verdict`, `mode`, `reference` (`embedded`, `vad`, …), `offset_ms`, `ratio`, `confidence`, `sigma`, `margin`, `agreement`, `coverage`, `parts` and `splits`, plus `phase`, `provider`, `candidate_id`, `duration_ms` and `compatibility_version`. `sigma` is on the scale of LAPSE's own `solid` bar (`--confidence`, default 8). Technical failures leave the metrics zero. A too-few-cues `lapse.failed` carries `verdict=nothing` and `reference=none`, with the other metrics zero.
+`lapse.sync_started` and `lapse.sync_completed` are built as `"lapse." + phase + "_started"` / `"_completed"`; `sync` is the only phase. Completion and verdict `lapse.failed` records carry LAPSE's `verdict`, `mode`, `reference` (`embedded`, `vad`, …), `offset_ms`, `ratio`, `confidence`, `sigma`, `margin`, `agreement`, `coverage`, `parts` and `splits`, plus `phase`, `provider`, `candidate_id`, `duration_ms` and `compatibility_version`. `sigma` is on the scale of LAPSE's own `solid` bar (`--confidence`, default 8). Technical failures leave the metrics zero. A too-few-cues `lapse.failed` carries `verdict=nothing` and `reference=none`, with the other metrics zero, and adds `cues` (every cue in the file) and `ignored_cues` (those LAPSE kept out of the measuring).
 
 | Event | Level | Component | Key fields | Emitter |
 | --- | --- | --- | --- | --- |
 | `lapse.sync_started` | info | workflow | `phase=sync`, `provider`, `candidate_id`, `compatibility_version`; no result fields | `workflow/service.go` |
 | `lapse.sync_completed` | info for `solid`; warn otherwise | workflow | verdict metrics | `workflow/service.go` |
-| `lapse.failed` | error; warn for a verdict or too few cues without a process exit | workflow | verdict metrics, `error_kind=lapse_sync` | `workflow/service.go` |
+| `lapse.failed` | error; warn for a verdict or too few cues without a process exit | workflow | verdict metrics, `error_kind=lapse_sync`; `cues` and `ignored_cues` for too few cues | `workflow/service.go` |
 | `lapse.cache_cleaned` | debug | app | `removed_count` | `app/lapse_cache.go` |
 | `lapse.cache_cleanup_failed` | warn | app | `removed_count` | `app/lapse_cache.go` |
 
