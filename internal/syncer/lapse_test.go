@@ -162,8 +162,8 @@ func TestLapseReportsItsVersionAndRejectionBaseline(t *testing.T) {
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
 		return Execution{}, nil
 	}), t.TempDir())
-	if got := lapse.CompatibilityVersion(); got != "2.3.1" {
-		t.Fatalf("CompatibilityVersion() = %q, want 2.3.1", got)
+	if got := lapse.CompatibilityVersion(); got != "2.3.2" {
+		t.Fatalf("CompatibilityVersion() = %q, want 2.3.2", got)
 	}
 	if got := lapse.RejectionBaseline(); got != "2.3.1" {
 		t.Fatalf("RejectionBaseline() = %q, want 2.3.1", got)

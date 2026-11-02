@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	CompatibilityVersion   = "2.3.1"
+	CompatibilityVersion   = "2.3.2"
 	defaultTimeout         = 30 * time.Minute
 	defaultMaxTimeout      = 4 * time.Hour
 	maximumSubtitleBytes   = 100 << 20
@@ -45,7 +45,7 @@ const RejectionBaseline = "2.3.1"
 // RejectionBaselineReviewedFor is the CompatibilityVersion for which the
 // keep-or-move decision on RejectionBaseline was made. A test fails until it
 // matches, so a LAPSE bump cannot skip the decision.
-const RejectionBaselineReviewedFor = "2.3.1"
+const RejectionBaselineReviewedFor = "2.3.2"
 
 func (l *Lapse) RejectionBaseline() string { return RejectionBaseline }
 

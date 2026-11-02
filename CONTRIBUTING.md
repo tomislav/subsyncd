@@ -14,7 +14,7 @@ How to build subsyncd, run its tests, and get a change merged and released. How 
 ## Set up
 
 - **Go 1.27.1**, the version in `go.mod`. CI and both Dockerfiles pin the same version; change all of them together.
-- **FFprobe** and **LAPSE v2.3.1** to run the service natively. The tests do not need them.
+- **FFprobe** and **LAPSE v2.3.2** to run the service natively. The tests do not need them.
 - Enable the commit-message hook once per clone:
 
   ```sh
@@ -141,7 +141,7 @@ Change `Dockerfile` first and mirror the change in `Dockerfile.release`; `script
 
 Both images:
 
-- use a digest-pinned Ubuntu 26.04 LTS base for the LAPSE download and runtime stages, because LAPSE 2.3.1's amd64 build needs glibc 2.43; the runtime removes the base image's `ubuntu` user before creating UID/GID 1000;
+- use a digest-pinned Ubuntu 26.04 LTS base for the LAPSE download and runtime stages, because LAPSE's amd64 build needs glibc 2.43 (since 2.3.1); the runtime removes the base image's `ubuntu` user before creating UID/GID 1000;
 - build a static `ffprobe` from a checksummed FFmpeg source archive in a digest-pinned Alpine stage (`scripts/build-ffprobe.sh`), with only the local-file protocol and the demuxers, parsers and subtitle decoders inventory needs. The full `ffmpeg` command is not installed. The script checks the source digest and target architecture and writes the LGPL license and a CycloneDX inventory to `/usr/share/sbom/ffmpeg.cdx.json`;
 - download LAPSE by version and per-architecture checksum; LAPSE keeps its own FFmpeg libraries, ONNX Runtime and Silero model, and `libstdc++6` stays a runtime dependency;
 - check `ffprobe -version` and LAPSE's Silero load during the build;

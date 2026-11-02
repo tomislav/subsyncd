@@ -1,6 +1,6 @@
 # LAPSE
 
-LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.1, whose amd64 binary needs glibc 2.43 and an x86-64-v3 (AVX2) CPU; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, also v2.3.1 ([Upgrading LAPSE](#upgrading-lapse)).
+LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.2, whose amd64 binary needs glibc 2.43 and an x86-64-v3 (AVX2) CPU; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, v2.3.1 ([Upgrading LAPSE](#upgrading-lapse)).
 
 - [Synchronization policy](#synchronization-policy)
 - [Invocation](#invocation)
