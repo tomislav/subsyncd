@@ -678,6 +678,17 @@ func TestTooFewCuesShapeIsExact(t *testing.T) {
 		{name: "unknown field", exitCode: 2, edit: set("secret", "Hello"), refused: true},
 		{name: "second document", exitCode: 2, suffix: "{}", refused: true},
 		{name: "another output path", exitCode: 2, edit: set("output", "/elsewhere/output.srt")},
+		{name: "an offset in milliseconds", exitCode: 2, edit: set("offset_ms", 1500), refused: true},
+		{name: "a stretch", exitCode: 2, edit: set("ratio", 1.001), refused: true},
+		{name: "confidence", exitCode: 2, edit: set("confidence", 0.9), refused: true},
+		{name: "a margin", exitCode: 2, edit: set("margin", 0.2), refused: true},
+		{name: "sigma", exitCode: 2, edit: set("sigma", 12), refused: true},
+		{name: "agreement", exitCode: 2, edit: set("agreement", 0.5), refused: true},
+		{name: "partial coverage", exitCode: 2, edit: set("coverage", 0.4), refused: true},
+		{name: "snapped cues", exitCode: 2, edit: set("snapped", 1), refused: true},
+		{name: "more ignored than cues", exitCode: 2, edit: set("ignored_cues", 7), refused: true},
+		{name: "no reason", exitCode: 2, edit: func(report map[string]any) { delete(report, "why") }, refused: true},
+		{name: "a blank reason", exitCode: 2, edit: set("why", " "), refused: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

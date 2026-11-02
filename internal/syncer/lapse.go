@@ -35,8 +35,10 @@ func (l *Lapse) CompatibilityVersion() string { return CompatibilityVersion }
 // as new. Rejection and strike signatures use it instead of the binary
 // version, so a LAPSE update that cannot change outcomes reopens nothing.
 // Move it with every LAPSE update unless the whole release diff is limited to
-// docs, tests, CI, output formats subsyncd never requests and report fields it
-// does not read. Engine code, bundled libraries and models, build flags, the
+// docs, tests, CI, output formats subsyncd never requests, report fields it
+// does not read, code confined to subtitle formats it never passes, and a new
+// report for a case that was never a rejection once the parser handles it.
+// Other engine code, bundled libraries and models, build flags, the
 // defaults of flags subsyncd does not pass, and crash fixes all count as
 // verdict changes. When unsure, move it
 // (docs/development/providers/lapse.md#upgrading-lapse).
@@ -468,7 +470,12 @@ func decodeTooFewCues(payload []byte) (*TooFewCuesError, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if *raw.Reference != "none" || *raw.Verdict != "nothing" || *raw.Written || raw.Unchanged != nil && *raw.Unchanged || *raw.Parts != 1 || len(*raw.Splits) != 0 || raw.Offsets != nil && len(*raw.Offsets) != 0 || *raw.Cues < 1 || *raw.IgnoredCues < 0 || strings.TrimSpace(*raw.Output) == "" {
+	if *raw.Reference != "none" || *raw.Verdict != "nothing" || *raw.Written || raw.Unchanged != nil && *raw.Unchanged || *raw.Parts != 1 || len(*raw.Splits) != 0 || raw.Offsets != nil && len(*raw.Offsets) != 0 || *raw.Cues < 1 || *raw.IgnoredCues < 0 || *raw.IgnoredCues > *raw.Cues || strings.TrimSpace(*raw.Output) == "" {
+		return nil, false
+	}
+	// LAPSE measured nothing, so every metric keeps its default. The reason is
+	// required but never kept.
+	if *raw.OffsetMS != 0 || *raw.Ratio != 1 || *raw.Confidence != 0 || *raw.Margin != 0 || *raw.Sigma != 0 || *raw.Agreement != 0 || *raw.Coverage != 1 || *raw.Snapped != 0 || raw.Why == nil || strings.TrimSpace(*raw.Why) == "" {
 		return nil, false
 	}
 	return &TooFewCuesError{Cues: *raw.Cues, IgnoredCues: *raw.IgnoredCues, output: *raw.Output}, true
