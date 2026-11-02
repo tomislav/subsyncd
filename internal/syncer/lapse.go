@@ -161,6 +161,21 @@ func (e *NoSpeechError) Error() string {
 	return "LAPSE found no usable speech: " + e.Detail
 }
 
+// TooFewCuesError reports that LAPSE refused a subtitle with too few
+// dialogue cues to try (LAPSE 2.3.2 and later). It is deterministic for the
+// subtitle file. Its message is fixed text; LAPSE's own reason is never kept.
+type TooFewCuesError struct {
+	// Cues counts every cue in the file, IgnoredCues those LAPSE kept out of
+	// the measuring.
+	Cues        int
+	IgnoredCues int
+	output      string
+}
+
+func (e *TooFewCuesError) Error() string {
+	return "LAPSE found too few dialogue cues to synchronize"
+}
+
 func New(options Options) (*Lapse, error) {
 	if strings.TrimSpace(options.Path) == "" {
 		return nil, fmt.Errorf("LAPSE executable path is required")
@@ -221,6 +236,10 @@ func (l *Lapse) Analyze(ctx context.Context, mediaPath, subtitlePath string) (do
 		return domain.SyncResult{}, err
 	}
 	result, report, err := l.interpret(execution)
+	var tooFew *TooFewCuesError
+	if errors.As(err, &tooFew) && !samePath(tooFew.output, copiedSubtitle) {
+		return domain.SyncResult{}, fmt.Errorf("LAPSE reported too few cues for an unexpected output path")
+	}
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
@@ -250,6 +269,15 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 		return domain.SyncResult{}, err
 	}
 	result, report, err := l.interpret(execution)
+	var tooFew *TooFewCuesError
+	if errors.As(err, &tooFew) {
+		if !samePath(tooFew.output, outputPath) {
+			return domain.SyncResult{}, fmt.Errorf("LAPSE reported too few cues for an unexpected output path")
+		}
+		if _, statErr := os.Lstat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
+			return domain.SyncResult{}, fmt.Errorf("LAPSE reported too few cues but left output behind")
+		}
+	}
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
@@ -319,6 +347,11 @@ func (l *Lapse) timeoutFor(mediaPath string, configured time.Duration) time.Dura
 func (l *Lapse) interpret(execution Execution) (domain.SyncResult, lapseReport, error) {
 	if execution.StdoutTruncated {
 		return domain.SyncResult{}, lapseReport{}, fmt.Errorf("LAPSE JSON output exceeded the configured limit")
+	}
+	if execution.ExitCode == 2 {
+		if tooFew, ok := decodeTooFewCues(execution.Stdout); ok {
+			return domain.SyncResult{}, lapseReport{}, tooFew
+		}
 	}
 	report, err := decodeReport(execution.Stdout)
 	if err != nil {
@@ -405,22 +438,46 @@ func parseReport(payload []byte) (domain.SyncResult, error) {
 	return report.syncResult(), nil
 }
 
-func decodeReport(payload []byte) (lapseReport, error) {
+// decodeRawReport decodes exactly one LAPSE JSON report with every field a
+// report always carries.
+func decodeRawReport(payload []byte) (rawReport, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var raw rawReport
 	if err := decoder.Decode(&raw); err != nil {
-		return lapseReport{}, err
+		return rawReport{}, err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return lapseReport{}, fmt.Errorf("multiple JSON documents")
+			return rawReport{}, fmt.Errorf("multiple JSON documents")
 		}
-		return lapseReport{}, fmt.Errorf("trailing JSON: %w", err)
+		return rawReport{}, fmt.Errorf("trailing JSON: %w", err)
 	}
 	if raw.Mode == nil || raw.Reference == nil || raw.OffsetMS == nil || raw.Ratio == nil || raw.Confidence == nil || raw.Margin == nil || raw.Sigma == nil || raw.Agreement == nil || raw.Verdict == nil || raw.Coverage == nil || raw.Cues == nil || raw.IgnoredCues == nil || raw.Parts == nil || raw.Snapped == nil || raw.Written == nil || raw.Output == nil || raw.Splits == nil {
-		return lapseReport{}, &reportCheckError{"LAPSE JSON is missing required fields"}
+		return rawReport{}, &reportCheckError{"LAPSE JSON is missing required fields"}
+	}
+	return raw, nil
+}
+
+// decodeTooFewCues recognises only the exact report LAPSE 2.3.2 prints at
+// exit 2 for a subtitle with too few cues to try (lapse#126). The mode is
+// whatever was requested. Anything else is left to decodeReport.
+func decodeTooFewCues(payload []byte) (*TooFewCuesError, bool) {
+	raw, err := decodeRawReport(payload)
+	if err != nil {
+		return nil, false
+	}
+	if *raw.Reference != "none" || *raw.Verdict != "nothing" || *raw.Written || raw.Unchanged != nil && *raw.Unchanged || *raw.Parts != 1 || len(*raw.Splits) != 0 || raw.Offsets != nil && len(*raw.Offsets) != 0 || *raw.Cues < 1 || *raw.IgnoredCues < 0 || strings.TrimSpace(*raw.Output) == "" {
+		return nil, false
+	}
+	return &TooFewCuesError{Cues: *raw.Cues, IgnoredCues: *raw.IgnoredCues, output: *raw.Output}, true
+}
+
+func decodeReport(payload []byte) (lapseReport, error) {
+	raw, err := decodeRawReport(payload)
+	if err != nil {
+		return lapseReport{}, err
 	}
 	report := lapseReport{Mode: *raw.Mode, Reference: *raw.Reference, OffsetMS: *raw.OffsetMS, Ratio: *raw.Ratio, Confidence: *raw.Confidence, Margin: *raw.Margin, Sigma: *raw.Sigma, Agreement: *raw.Agreement, Verdict: *raw.Verdict, Coverage: *raw.Coverage, Cues: *raw.Cues, IgnoredCues: *raw.IgnoredCues, Parts: *raw.Parts, Snapped: *raw.Snapped, Written: *raw.Written, Output: *raw.Output, Splits: append([]int(nil), (*raw.Splits)...)}
 	if raw.Why != nil {

@@ -592,3 +592,155 @@ func TestRefusedReportNamesTheFailedCheckOnly(t *testing.T) {
 		t.Fatalf("unknown field error = %T %v", err, err)
 	}
 }
+
+// tooFewCuesReport is the LAPSE 2.3.2 too-few-cues report (lapse#126) with
+// output set to path and then edited.
+func tooFewCuesReport(t *testing.T, path string, edit func(map[string]any)) []byte {
+	t.Helper()
+	var value map[string]any
+	if err := json.Unmarshal(fixture(t, "too-few-cues-v2.3.2.json"), &value); err != nil {
+		t.Fatal(err)
+	}
+	value["output"] = path
+	if edit != nil {
+		edit(value)
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func TestSynchronizeReadsTooFewCues(t *testing.T) {
+	media, subtitle := testFiles(t)
+	output := filepath.Join(t.TempDir(), "output.srt")
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stdout: tooFewCuesReport(t, output, nil), Stderr: []byte("Only 4 cues in " + subtitle), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, output)
+	var tooFew *TooFewCuesError
+	if !errors.As(err, &tooFew) || tooFew.Cues != 6 || tooFew.IgnoredCues != 2 {
+		t.Fatalf("Synchronize() error = %T %#v, want too few cues (6, 2 ignored)", err, err)
+	}
+	var processExit *ProcessExitError
+	var verdict *VerdictError
+	if errors.As(err, &processExit) || errors.As(err, &verdict) {
+		t.Fatalf("Synchronize() error = %T %v, want neither a process exit nor a verdict", err, err)
+	}
+	if message := err.Error(); strings.Contains(message, "only 4 cues") || strings.Contains(message, media) || strings.Contains(message, subtitle) || strings.Contains(message, output) {
+		t.Fatalf("error leaked LAPSE text or a path: %q", message)
+	}
+}
+
+// A dry run has no --output, so LAPSE reports the private copy it was given.
+func TestAnalyzeReadsTooFewCues(t *testing.T) {
+	media, subtitle := testFiles(t)
+	lapse := newTestLapse(t, runnerFunc(func(_ context.Context, command Command) (Execution, error) {
+		return Execution{Stdout: tooFewCuesReport(t, command.Args[1], nil), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Analyze(context.Background(), media, subtitle)
+	var tooFew *TooFewCuesError
+	if !errors.As(err, &tooFew) || tooFew.Cues != 6 {
+		t.Fatalf("Analyze() error = %T %v, want too few cues", err, err)
+	}
+}
+
+func TestTooFewCuesShapeIsExact(t *testing.T) {
+	media, subtitle := testFiles(t)
+	set := func(key string, value any) func(map[string]any) {
+		return func(report map[string]any) { report[key] = value }
+	}
+	tests := []struct {
+		name     string
+		exitCode int
+		edit     func(map[string]any)
+		suffix   string
+		// refused is true when the report must come back as a refused
+		// report on a process exit.
+		refused bool
+	}{
+		{name: "exit 3", exitCode: 3, refused: true},
+		{name: "exit 0", exitCode: 0},
+		{name: "written", exitCode: 2, edit: set("written", true), refused: true},
+		{name: "unchanged", exitCode: 2, edit: set("unchanged", true), refused: true},
+		{name: "unsure verdict", exitCode: 2, edit: set("verdict", "unsure"), refused: true},
+		{name: "vad reference", exitCode: 2, edit: set("reference", "vad"), refused: true},
+		{name: "two parts", exitCode: 2, edit: func(report map[string]any) {
+			report["parts"], report["splits"], report["offsets"] = 2, []int{3}, []int{0, 0}
+		}, refused: true},
+		{name: "split with one part", exitCode: 2, edit: set("splits", []int{3}), refused: true},
+		{name: "an offset", exitCode: 2, edit: set("offsets", []int{0}), refused: true},
+		{name: "no cues", exitCode: 2, edit: set("cues", 0), refused: true},
+		{name: "negative ignored cues", exitCode: 2, edit: set("ignored_cues", -1), refused: true},
+		{name: "blank output", exitCode: 2, edit: set("output", " "), refused: true},
+		{name: "missing mode", exitCode: 2, edit: func(report map[string]any) { delete(report, "mode") }, refused: true},
+		{name: "unknown field", exitCode: 2, edit: set("secret", "Hello"), refused: true},
+		{name: "second document", exitCode: 2, suffix: "{}", refused: true},
+		{name: "another output path", exitCode: 2, edit: set("output", "/elsewhere/output.srt")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "output.srt")
+			stdout := append(tooFewCuesReport(t, output, test.edit), test.suffix...)
+			lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+				return Execution{Stdout: stdout, ExitCode: test.exitCode}, nil
+			}), filepath.Dir(media))
+			_, err := lapse.Synchronize(context.Background(), media, subtitle, output)
+			var tooFew *TooFewCuesError
+			var verdict *VerdictError
+			if err == nil || errors.As(err, &tooFew) || errors.As(err, &verdict) {
+				t.Fatalf("Synchronize() error = %T %v, want a technical failure", err, err)
+			}
+			var processExit *ProcessExitError
+			if test.refused && (!errors.As(err, &processExit) || processExit.Report == "") {
+				t.Fatalf("Synchronize() error = %T %v, want a refused report", err, err)
+			}
+		})
+	}
+}
+
+// LAPSE echoes the mode it was asked for.
+func TestTooFewCuesAcceptsAnyRequestedMode(t *testing.T) {
+	media, subtitle := testFiles(t)
+	output := filepath.Join(t.TempDir(), "output.srt")
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stdout: tooFewCuesReport(t, output, func(report map[string]any) { report["mode"] = "nosplit" }), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, output)
+	var tooFew *TooFewCuesError
+	if !errors.As(err, &tooFew) {
+		t.Fatalf("Synchronize() error = %T %v, want too few cues", err, err)
+	}
+}
+
+func TestSynchronizeTooFewCuesWithOutputOnDiskIsTechnical(t *testing.T) {
+	media, subtitle := testFiles(t)
+	output := filepath.Join(t.TempDir(), "output.srt")
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		if err := os.WriteFile(output, []byte(testSRT), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Execution{Stdout: tooFewCuesReport(t, output, nil), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, output)
+	var tooFew *TooFewCuesError
+	if err == nil || errors.As(err, &tooFew) {
+		t.Fatalf("Synchronize() error = %T %v, want a technical failure", err, err)
+	}
+	if _, statErr := os.Lstat(output); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output left behind: %v", statErr)
+	}
+}
+
+func TestSynchronizeTooFewCuesFrom231StaysTechnical(t *testing.T) {
+	media, subtitle := testFiles(t)
+	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+		return Execution{Stderr: []byte("Only 4 cues in /x.srt, that is not enough to go on."), ExitCode: 2}, nil
+	}), filepath.Dir(media))
+	_, err := lapse.Synchronize(context.Background(), media, subtitle, filepath.Join(t.TempDir(), "output.srt"))
+	var processExit *ProcessExitError
+	if !errors.As(err, &processExit) || processExit.ExitCode != 2 || !processExit.StdoutEmpty || processExit.StderrEmpty {
+		t.Fatalf("Synchronize() error = %T %#v, want a stderr-only exit 2", err, err)
+	}
+}
