@@ -121,6 +121,7 @@ Events marked warn or error usually need a look; info events are listed because 
 | `scan.completed` | info | A `scan` run by the daemon finished, with `media`, `deferred` and `probe_skipped`. Logged even when the command stopped waiting. |
 | `scan.failed` | warn | A daemon scan failed; at info with `outcome=canceled` when shutdown canceled it. |
 | `instance.forgotten` | info | `forget-instance --yes` deleted a removed instance's records, with counts. |
+| `media.moved` | info | `move-media --yes` moved media records to another instance, with counts. |
 
 ### Notifications to Arr and Silo
 

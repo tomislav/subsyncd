@@ -234,3 +234,15 @@ The image runs as UID/GID `1000:1000` by default and stays rootless: it creates 
 - `/config/config.yaml` must be readable; `/data` writable; every media root readable for probing and writable for sidecars; `/tmp` writable.
 - `install.file_mode` (default `0644`, an octal non-executable mode) is applied before publication. `install.uid` and `install.gid` chown the sidecar only when set; unprivileged containers leave them unset.
 - Compose resolves `PUID` and `PGID` before the container starts, from `.env` or the shell, and applies them to `user:` and the `/tmp` tmpfs.
+
+## Media moved to another instance
+
+`move-media` (`store.Repository.MoveMedia`, `app.App.MoveMedia`) moves a file's `media` row to another Arr instance in place, after the operator renamed the media folder into the other library. The row keeps its `id`, so every child row stays attached. In one transaction, with foreign keys required and every entry validated first:
+
+- `media` takes the target's `instance`, `entity_id`, `file_id`, `series_id` and `path`.
+- Each installation takes the new `media_path` and `media_file_id` (unknown provenance, `0` and `''`, stays unknown) and its sidecar and rollback copy names in the new folder. An installation recorded for an earlier file or path refuses the move: the reconciler must settle it first.
+- External tracks, `media_hashes`, `candidate_rejections` and `candidate_lapse_failures` recorded for the source path and file ID follow it. They are evidence about the same bytes: the command checks that the file at the new path has the recorded size, is gone from the old path, and that every sidecar has its recorded checksum.
+- `invalidate_inventory_probe` drops the probe, so the next inventory refresh probes the file once. `media_search_order` does not fire (titles and numbering are unchanged); `search_states.instance_rank` takes the target's queue priority.
+- Audit `events` and `search_history` keep the source instance's identity. Undelivered notifications are not rewritten.
+
+After the move the installation matches the target's catalog exactly (same file ID, size and media path), so `ReconcileInstallation` takes the same-file branch and keeps it. The source catalog's deletes and discovery find no row. `TestReconcileKeepsInstallationsAfterMoveMedia` covers both.

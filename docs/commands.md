@@ -22,6 +22,7 @@ The rest of this page writes commands as `subsyncd COMMAND`; add the `docker com
 - [A subtitle is wrong](#a-subtitle-is-wrong)
 - [analyze-sync](#analyze-sync)
 - [Remove an instance for good](#remove-an-instance-for-good)
+- [Move files to another instance](#move-files-to-another-instance)
 - [Machine-readable output](#machine-readable-output)
 - [Scripting and automation](#scripting-and-automation)
 
@@ -62,6 +63,7 @@ The rest of this page writes commands as `subsyncd COMMAND`; add the `docker com
 | `webhook-url` | Prints an instance's webhook URL, token included. | Runs beside it |
 | `rotate-webhook-token` | Replaces an instance's webhook token. | Stop it first |
 | `forget-instance` | Previews, or with `--yes` deletes, a removed instance's records. | Preview beside it; stop it for `--yes` |
+| `move-media` | Previews, or with `--yes` moves, the records of files moved to another instance's library. | Preview beside it; stop it for `--yes` |
 
 `webhook-url` and `rotate-webhook-token` are covered in [Webhook connections](running.md#webhook-connections).
 
@@ -75,7 +77,7 @@ Only one process may change subsyncd's saved state at a time; `data/subsyncd.loc
 docker compose run --rm --no-deps subsyncd search --title "Movie (2019)"
 ```
 
-`rotate-webhook-token` and `forget-instance --yes` need the daemon stopped. Run them with `docker compose stop subsyncd`, then `docker compose run --rm --no-deps subsyncd COMMAND ...`, then `docker compose up -d`.
+`rotate-webhook-token`, `forget-instance --yes` and `move-media --yes` need the daemon stopped. Run them with `docker compose stop subsyncd`, then `docker compose run --rm --no-deps subsyncd COMMAND ...`, then `docker compose up -d`.
 
 ## Choosing a file
 
@@ -308,6 +310,41 @@ docker compose up -d
 - Subtitle files stay on disk. subsyncd has no record of writing them, so if those media files are indexed again it treats them as your own.
 - `rollback_copies` counts hidden `.subsyncd-rollback-*` copies still recorded (normally 0). Nothing cleans them up afterwards; delete them by hand.
 
+## Move files to another instance
+
+When files move from one Sonarr or Radarr instance's library to another's (for example, the sub-4K movies of a 4K Radarr move to a new `radarr-1080p`), the new instance gives them new IDs, and subsyncd would no longer know the subtitles it installed for them. `move-media` moves their records to the new instance in place, so each file keeps its installed subtitles, searches, rejections and history.
+
+1. Add the new instance to `config/config.yaml`, then stop subsyncd before the new instance has run: if it has already indexed the files, its records block the move.
+2. Move each media folder by renaming it into the new library, sidecars included, keeping the file names. Let the new instance import the files.
+3. Write a plan listing each file, in a folder the container can read (the read-only `config/` folder works):
+
+   ```json
+   {"entries": [
+     {"kind": "movie", "tmdb_id": 438631, "to_entity_id": 12, "to_file_id": 34, "to_path": "/movies-1080p/Dune (2021)/Dune.mkv"},
+     {"kind": "episode", "tvdb_id": 81189, "season": 1, "episode": 2, "to_series_id": 5, "to_entity_id": 56, "to_file_id": 78, "to_path": "/tv-1080p/Show/Season 01/Show S01E02.mkv"}
+   ]}
+   ```
+
+   - `kind` is `movie` or `episode`, matching both instances' type.
+   - The file in the old instance is found by `tmdb_id` (movies) or the series' `tvdb_id` with `season` and `episode` (the first episode of a multi-episode file). `from_file_id`, the old instance's file ID, can name it instead, or be given as well, when it must also match.
+   - `to_entity_id` is the movie or episode ID and `to_file_id` the file ID in the new instance; episodes also need `to_series_id`.
+   - `to_path` is the file's path as the new instance reports it, translated by its `path_mappings`, or the path inside the container.
+
+4. Preview, then move:
+
+   ```bash
+   docker compose run --rm --no-deps subsyncd move-media --from radarr --to radarr-1080p --map /config/move-1080p.json
+   docker compose run --rm --no-deps subsyncd move-media --from radarr --to radarr-1080p --map /config/move-1080p.json --yes
+   docker compose up -d
+   ```
+
+- The preview only reads and can run beside the daemon (`docker compose exec`). It lists every entry with its title, file IDs and installations, and each problem found; `ready: false` means it would move nothing.
+- For each entry, it checks that the file is at `to_path` (a regular file in a media root, with the recorded size) and no longer at its old path, that each installed subtitle is beside it under the same name with the content subsyncd installed, that the new instance has no record with that file or movie/episode ID yet (deleted ones included), and that no interrupted install is waiting for recovery.
+- `--to` must be configured. `--from` may be removed from the configuration already, as long as the database has its records. The new instance's record is created at the next start if this is its first.
+- With `--yes` it moves every entry in one step, or nothing: any problem fails with `move_refused`.
+- The moved files' subtitles and rejections stay attached. Each moved file's tracks are probed again once. The search history keeps the old instance's name, so `recent --instance` for the new one starts at the move. Undelivered Silo notifications about a moved file are left as they are; the preview counts them.
+- After the move, the new instance's reconciliation keeps every subtitle, and the old instance no longer listing the files changes nothing.
+
 ## Machine-readable output
 
 Every command except `serve` and `version` accepts `--json`. Standard output then carries exactly one JSON object, on success or failure; log lines still go to standard error. Help (`--help`, `help COMMAND`) stays plain text even with `--json`.
@@ -327,7 +364,7 @@ A failure has `"ok":false` and an `error` with a stable `code` and a readable `m
 | Code | Meaning |
 | --- | --- |
 | `usage` | A flag or value is missing, unknown or invalid for the command. |
-| `unknown_instance` | The instance is not configured (for `forget-instance`: the database has no records for it; for `webhook-url` and `rotate-webhook-token`: it has no webhook token yet, because subsyncd has not started since it was added). |
+| `unknown_instance` | The instance is not configured (for `forget-instance`, and `move-media --from`: the database has no records for it; for `webhook-url` and `rotate-webhook-token`: it has no webhook token yet, because subsyncd has not started since it was added). |
 | `unknown_provider` | The provider is not configured. |
 | `unknown_language` | The language tag is invalid or not configured. |
 | `media_not_found` | `--title` or `--path` matched no indexed file, or `--file-id` is not indexed (except for `search`). |
@@ -338,6 +375,7 @@ A failure has `"ok":false` and an `error` with a stable `code` and a readable `m
 | `daemon_stopping` | The daemon is shutting down. A search or scan it was running is canceled (a search stays queued, and a `reject` stands). Retry once it is back. |
 | `protocol_mismatch` | The CLI and the daemon are different builds. Run the CLI from the daemon's image. |
 | `arr_unreachable` | Sonarr or Radarr did not answer `search`'s lookup. Check the instance `url`. |
+| `move_refused` | `move-media --yes` found a problem in at least one plan entry and moved nothing. Run it without `--yes` for the report. |
 | `internal` | Anything else. The message is redacted; the logs on standard error have the detail. |
 
 Treat an unrecognized code as a failure.
@@ -353,4 +391,4 @@ ssh HOST 'cd COMPOSE_DIR && docker compose exec -T subsyncd subsyncd search --ti
 - Commands never prompt and never pick a file on their own: an ambiguous title fails with `ambiguous_media`.
 - Give `--timeout` a value inside your own time limit. A `running` result exits 0 and the work carries on in the daemon, even if the connection drops.
 - Branch on `error.code`: `busy` and `daemon_stopping` are worth retrying later.
-- `rotate-webhook-token` and `forget-instance --yes` need the daemon stopped, so a script has to stop and start it around them.
+- `rotate-webhook-token`, `forget-instance --yes` and `move-media --yes` need the daemon stopped, so a script has to stop and start it around them.

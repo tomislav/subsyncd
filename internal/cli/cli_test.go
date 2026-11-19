@@ -107,6 +107,13 @@ func (f *fakeBackend) ForgetInstance(_ context.Context, instance string, apply b
 	}
 	return control.ForgetInstanceResult{Instance: instance, Applied: apply}, f.err
 }
+func (f *fakeBackend) MoveMedia(_ context.Context, from, to, planPath string, apply bool) (control.MoveMediaResult, error) {
+	f.call = "move:" + from + ":" + to + ":" + planPath
+	if apply {
+		f.call += ":yes"
+	}
+	return control.MoveMediaResult{From: from, To: to, Applied: apply, Ready: true}, f.err
+}
 func (f *fakeBackend) AnalyzeSync(_ context.Context, media, subtitle string) (control.AnalyzeSyncResult, error) {
 	f.call = "analyze:" + media + ":" + subtitle
 	return control.AnalyzeSyncResult{Analysis: json.RawMessage(`{"verdict":"solid"}`)}, f.err
@@ -136,6 +143,7 @@ func TestCommandSurface(t *testing.T) {
 		{"coverage defaults", []string{"coverage"}, "coverage::", "sonarr hr: 10 files, 7 covered (5 installed, 2 existing), 3 missing\n  missing: providers_cooling_down 2, no_candidates 1\n"},
 		{"doctor", []string{"doctor", "--config", "/data/config.yaml"}, "doctor", "configuration: ok\nsqlite: ok\nmedia roots: ok (1)\nLAPSE: compatible\nffprobe: available\nwebhooks: manual\n"},
 		{"forget", []string{"forget-instance", "--instance", "old", "--yes"}, "forget:old:yes", "forget-instance complete: instance=old media=0 searches=0 installations=0 rollback_copies=0 candidates=0 rejections=0 notifications=0 events=0 replays=0 history=0\nsubtitle files installed for this instance stay on disk and will no longer be managed\n"},
+		{"move-media", []string{"move-media", "--from", "radarr", "--to", "radarr-1080p", "--map", "/config/plan.json", "--yes"}, "move:radarr:radarr-1080p:/config/plan.json:yes", "move-media complete: from=radarr to=radarr-1080p media=0 installations=0 tracks=0 problems=0\n"},
 		{"webhook-url", []string{"webhook-url", "--instance", "tv", "--base", "http://x"}, "webhook-url:tv:http://x", "http://h/webhooks/tv?token=t\n"},
 		{"rotate-webhook-token", []string{"rotate-webhook-token", "--instance", "tv"}, "rotate:tv", "webhook token rotated for instance tv; start subsyncd now: the Arr connection is updated in Arr at that start.\n"},
 		{"analyze", []string{"analyze-sync", "--media", "/media/a.mkv", "--subtitle", "/tmp/a.srt"}, "analyze:/media/a.mkv:/tmp/a.srt", "{\n  \"verdict\": \"solid\"\n}\n"},
@@ -176,6 +184,21 @@ func TestForgetInstancePreviewOpensAsDiagnostic(t *testing.T) {
 	}
 }
 
+func TestMoveMediaPreviewOpensAsDiagnostic(t *testing.T) {
+	backend := &fakeBackend{}
+	var opened string
+	command := Command{Open: func(_ context.Context, _ string, openedCommand string) (Backend, error) {
+		opened = openedCommand
+		return backend, nil
+	}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if code := command.Run(context.Background(), []string{"move-media", "--from", "a", "--to", "b", "--map", "p.json"}); code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if opened != "move-media-preview" || backend.call != "move:a:b:p.json" {
+		t.Fatalf("opened/call = %q/%q", opened, backend.call)
+	}
+}
+
 func TestVersionDoesNotOpenBackend(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Version: "1.2.3", Open: func(context.Context, string, string) (Backend, error) { t.Fatal("backend opened"); return nil, nil }, Stdout: &stdout, Stderr: &stderr}
@@ -197,6 +220,8 @@ func TestUsageAndOperationExitCodes(t *testing.T) {
 		{"bad kind", []string{"search", "--instance", "tv", "--kind", "track", "--file-id", "1", "--language", "en"}, nil, ExitUsage, "movie or episode"},
 		{"unrelated flag", []string{"serve", "--provider", "x"}, nil, ExitUsage, "not valid for serve"},
 		{"forget without instance", []string{"forget-instance", "--yes"}, nil, ExitUsage, "--instance is required"},
+		{"move without map", []string{"move-media", "--from", "a", "--to", "b"}, nil, ExitUsage, "--map is required"},
+		{"move with instance", []string{"move-media", "--from", "a", "--to", "b", "--map", "p", "--instance", "x"}, nil, ExitUsage, "--instance is not valid for move-media"},
 		{"yes outside forget", []string{"scan", "--instance", "tv", "--yes"}, nil, ExitUsage, "not valid for scan"},
 		{"open failure", []string{"doctor", "--config", "/bad"}, func(context.Context, string, string) (Backend, error) {
 			return nil, errors.New("invalid configuration")
@@ -571,6 +596,7 @@ func TestHelpWording(t *testing.T) {
 		{"retry", "Without a daemon, this process clears the stored state", ""},
 		{"webhook-url", "usage (also for an invalid --base), unknown_instance (also for a configured instance without a token", ""},
 		{"forget-instance", "usage (also for an instance still in the configuration)", ""},
+		{"move-media", "move_refused (--yes with a problem; nothing was moved)", ""},
 	} {
 		text := commandHelpText(t, tc.command, "--help")
 		if !strings.Contains(text, tc.want) || (tc.not != "" && strings.Contains(text, tc.not)) {

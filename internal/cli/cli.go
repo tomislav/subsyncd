@@ -39,6 +39,7 @@ type Backend interface {
 	Doctor(context.Context) (control.DoctorResult, error)
 	AnalyzeSync(context.Context, string, string) (control.AnalyzeSyncResult, error)
 	ForgetInstance(context.Context, string, bool) (control.ForgetInstanceResult, error)
+	MoveMedia(ctx context.Context, from, to, planPath string, apply bool) (control.MoveMediaResult, error)
 	WebhookURL(ctx context.Context, instance, base string) (control.WebhookURLResult, error)
 	RotateWebhookToken(ctx context.Context, instance string) (control.RotateTokenResult, error)
 }
@@ -155,7 +156,10 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	media := flags.String("media", "", "media file path")
 	subtitle := flags.String("subtitle", "", "subtitle file path")
 	base := flags.String("base", "", "webhook base URL overriding server.webhook_base_url")
-	yes := flags.Bool("yes", false, "delete the records instead of previewing them")
+	yes := flags.Bool("yes", false, "apply the change instead of previewing it")
+	fromInstance := flags.String("from", "", "instance the media rows move from")
+	toInstance := flags.String("to", "", "instance the media rows move to")
+	movePlan := flags.String("map", "", "move plan JSON file")
 	timeout := flags.Duration("timeout", 0, "how long to wait for the outcome (default 5m); needs a running daemon")
 	noWait := flags.Bool("no-wait", false, "return once the daemon has accepted the request; needs a running daemon")
 	flags.Bool("json", false, "write one JSON object to stdout instead of text")
@@ -224,6 +228,12 @@ func (c Command) Run(ctx context.Context, args []string) int {
 			validateErr = fmt.Errorf("--limit must not be negative")
 		case outcomeGiven:
 			outcomes, validateErr = parseOutcomes(*outcome)
+		}
+	case "move-media":
+		if validateErr = require("--from", *fromInstance); validateErr == nil {
+			if validateErr = require("--to", *toInstance); validateErr == nil {
+				validateErr = require("--map", *movePlan)
+			}
 		}
 	case "retry":
 		validateErr = require("--provider", *provider)
@@ -299,6 +309,9 @@ func (c Command) Run(ctx context.Context, args []string) int {
 	if command == "forget-instance" && !*yes {
 		openCommand = "forget-instance-preview"
 	}
+	if command == "move-media" && !*yes {
+		openCommand = "move-media-preview"
+	}
 	backend, err := c.Open(ctx, *configPath, openCommand)
 	if err != nil {
 		return c.failure(ctx, command, jsonMode, nil, err)
@@ -344,6 +357,8 @@ func (c Command) Run(ctx context.Context, args []string) int {
 		result, err = wrap(backend.AnalyzeSync(ctx, *media, *subtitle))
 	case "forget-instance":
 		result, err = wrap(backend.ForgetInstance(ctx, *instance, *yes))
+	case "move-media":
+		result, err = wrap(backend.MoveMedia(ctx, *fromInstance, *toInstance, *movePlan, *yes))
 	case "webhook-url":
 		result, err = wrap(backend.WebhookURL(ctx, *instance, *base))
 	case "rotate-webhook-token":
@@ -474,6 +489,8 @@ func commandFlags(command string) map[string]bool {
 		names = []string{"media", "subtitle"}
 	case "forget-instance":
 		names = []string{"instance", "yes"}
+	case "move-media":
+		names = []string{"from", "to", "map", "yes"}
 	case "webhook-url":
 		names = []string{"instance", "base"}
 	case "rotate-webhook-token":
@@ -713,6 +730,10 @@ Error codes: usage, internal.`,
 Remove the instance from the configuration first. Without --yes it only previews what would be deleted; --yes deletes it.
 Result fields: instance, applied, media, searches, installations, rollback_copies, candidates, rejections, notifications, events, replays, history.
 Error codes: usage (also for an instance still in the configuration), unknown_instance (the database has no records for it), busy, internal.`,
+	"move-media": `Preview or move media records to another instance.
+For files moved on disk (renamed, sidecars beside them, same file names) into a library another instance now manages. Each record keeps its installations, searches and history. --map is a JSON plan: {"entries": [...]}, one entry per file, see docs/commands.md. Without --yes it only checks and reports; --yes moves the records in one transaction and needs the daemon stopped. Any problem in any entry moves nothing.
+Result fields: from, to, applied, ready, media, installations, tracks, problems, entries[] (entry, kind, title, year, season, episode, media_id, from_file_id, to_file_id, to_entity_id, installations, tracks, pending_notifications, problems[]).
+Error codes: usage (also for a bad plan), unknown_instance (--to is not configured, or the database has no records for --from), move_refused (--yes with a problem; nothing was moved), busy, internal.`,
 	"webhook-url": `Print the webhook URL to enter in Arr.
 The result includes the token.
 Result fields: instance, url.
@@ -732,7 +753,7 @@ var commandGroups = []struct {
 	{"Daemon", []string{"serve"}},
 	{"Inspect", []string{"status", "providers", "coverage", "missing", "recent", "find", "explain", "doctor", "analyze-sync"}},
 	{"Act", []string{"search", "reject", "retry", "scan"}},
-	{"Set up", []string{"webhook-url", "rotate-webhook-token", "forget-instance"}},
+	{"Set up", []string{"webhook-url", "rotate-webhook-token", "forget-instance", "move-media"}},
 }
 
 // helpWidth is the column the help text wraps at.

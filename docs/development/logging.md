@@ -156,6 +156,7 @@ These come from the arrapi library's logger (`arrRetryHandler`); the name is cho
 | `scan.completed` | info | app | `instance`, `media`, `deferred`, `probe_skipped`, `force_probe`, `duration_ms` | `app/scan.go` |
 | `scan.failed` | warn (`outcome=failed`, `error_kind=scan`); info (`outcome=canceled` by shutdown) | app | `instance`, `force_probe`, `duration_ms`, `outcome` | `app/scan.go` |
 | `instance.forgotten` | info | app | `instance`, `media_count`, `search_count`, `installation_count`, `rollback_copy_count`, `candidate_count`, `rejection_count`, `notification_count`, `event_count`, `replay_count`, `history_count` | `app/forget_instance.go` |
+| `media.moved` | info | app | `from`, `to`, `media_count`, `installation_count`, `track_count` | `app/move_media.go` |
 
 ### queue, job and worker
 

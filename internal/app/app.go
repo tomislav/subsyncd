@@ -257,7 +257,7 @@ func Open(ctx context.Context, configPath string, options OpenOptions) (*App, er
 // without the process lock, migrations or startup writes.
 func readOnlyCommand(command string) bool {
 	switch command {
-	case "explain", "find", "missing", "coverage", "recent", "status", "providers", "doctor", "analyze-sync", "forget-instance-preview", "webhook-url":
+	case "explain", "find", "missing", "coverage", "recent", "status", "providers", "doctor", "analyze-sync", "forget-instance-preview", "move-media-preview", "webhook-url":
 		return true
 	}
 	return false

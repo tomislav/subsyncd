@@ -39,6 +39,7 @@ const (
 	CodeDaemonStopping   = "daemon_stopping"
 	CodeProtocolMismatch = "protocol_mismatch"
 	CodeArrUnreachable   = "arr_unreachable"
+	CodeMoveRefused      = "move_refused"
 	CodeInternal         = "internal"
 )
 

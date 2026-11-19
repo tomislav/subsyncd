@@ -41,7 +41,7 @@ Startup never backfills data and never makes a network request. New columns get 
 
 ## Process lock
 
-Mutating assembly (`serve`, `scan`, `search`, `reject`, `retry`, `rotate-webhook-token`, `forget-instance --yes`) takes `subsyncd.lock` before migrations or any durable initialization and keeps it until the application closes.
+Mutating assembly (`serve`, `scan`, `search`, `reject`, `retry`, `rotate-webhook-token`, `forget-instance --yes`, `move-media --yes`) takes `subsyncd.lock` before migrations or any durable initialization and keeps it until the application closes.
 
 - `(*App).acquireLock` (`internal/app/app.go`) opens the file with mode 0600 and takes an exclusive, nonblocking `flock` (`LOCK_EX|LOCK_NB`).
 - A second mutator fails before changing anything, with code `busy`:

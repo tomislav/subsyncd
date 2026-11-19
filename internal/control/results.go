@@ -456,6 +456,76 @@ func (r ForgetInstanceResult) Text() string {
 	return fmt.Sprintf("forget-instance complete: instance=%s %s\n%s", r.Instance, counts, leftOnDisk)
 }
 
+// MoveMediaResult reports a move of media rows from one instance to another,
+// written when Applied and only checked otherwise. Ready is false when any
+// entry has a problem; then nothing is moved.
+type MoveMediaResult struct {
+	From          string           `json:"from"`
+	To            string           `json:"to"`
+	Applied       bool             `json:"applied"`
+	Ready         bool             `json:"ready"`
+	Media         int              `json:"media"`
+	Installations int              `json:"installations"`
+	Tracks        int              `json:"tracks"`
+	Problems      int              `json:"problems"`
+	Entries       []MoveMediaEntry `json:"entries"`
+}
+
+// MoveMediaEntry is one plan entry of a media move. MediaID and the From
+// fields are empty when no source row matched.
+type MoveMediaEntry struct {
+	Entry                int      `json:"entry"`
+	Kind                 string   `json:"kind"`
+	Title                string   `json:"title,omitempty"`
+	Year                 int      `json:"year,omitempty"`
+	Season               int      `json:"season,omitempty"`
+	Episode              int      `json:"episode,omitempty"`
+	MediaID              int64    `json:"media_id,omitempty"`
+	FromFileID           int64    `json:"from_file_id,omitempty"`
+	ToFileID             int64    `json:"to_file_id"`
+	ToEntityID           int64    `json:"to_entity_id"`
+	Installations        int      `json:"installations"`
+	Tracks               int      `json:"tracks"`
+	PendingNotifications int      `json:"pending_notifications"`
+	Problems             []string `json:"problems"`
+}
+
+func (r MoveMediaResult) Text() string {
+	var out strings.Builder
+	for _, entry := range r.Entries {
+		name := entry.Title
+		switch {
+		case name == "":
+			name = "(no match)"
+		case entry.Kind == "episode":
+			name = fmt.Sprintf("%s S%02dE%02d", name, entry.Season, entry.Episode)
+		case entry.Year > 0:
+			name = fmt.Sprintf("%s (%d)", name, entry.Year)
+		}
+		status := "ok"
+		if len(entry.Problems) > 0 {
+			status = "PROBLEM"
+		}
+		fmt.Fprintf(&out, "%d. %s %s: file %d -> %d, installations=%d tracks=%d\n", entry.Entry, status, name, entry.FromFileID, entry.ToFileID, entry.Installations, entry.Tracks)
+		for _, problem := range entry.Problems {
+			fmt.Fprintf(&out, "   - %s\n", problem)
+		}
+		if entry.PendingNotifications > 0 {
+			fmt.Fprintf(&out, "   note: %d undelivered notifications still name the old file\n", entry.PendingNotifications)
+		}
+	}
+	counts := fmt.Sprintf("from=%s to=%s media=%d installations=%d tracks=%d problems=%d", r.From, r.To, r.Media, r.Installations, r.Tracks, r.Problems)
+	switch {
+	case r.Applied:
+		fmt.Fprintf(&out, "move-media complete: %s", counts)
+	case !r.Ready:
+		fmt.Fprintf(&out, "move-media preview: %s\nnot ready: fix the problems above; nothing was moved", counts)
+	default:
+		fmt.Fprintf(&out, "move-media preview: %s\nnothing was moved; stop the daemon and rerun with --yes to move these records", counts)
+	}
+	return out.String()
+}
+
 // WebhookURLResult carries the URL to enter in Arr; it includes the token.
 type WebhookURLResult struct {
 	Instance string `json:"instance"`
