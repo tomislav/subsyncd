@@ -116,6 +116,9 @@ func (a *App) MoveMedia(ctx context.Context, from, to, planPath string, apply bo
 		defer release()
 	}
 	items, err := a.Repository.MoveMedia(ctx, from, to, entries, a.checkMovedFiles, apply)
+	if errors.Is(err, store.ErrMediaMoveWebhooksWaiting) {
+		return control.MoveMediaResult{}, &control.Error{Code: control.CodeMoveRefused, Message: fmt.Sprintf("move refused: webhooks from %s or %s are stored but not applied yet; nothing was moved. Start subsyncd with the files still in place to apply them, then stop it and move the files", from, to)}
+	}
 	refused := errors.Is(err, store.ErrMediaMoveRefused)
 	if err != nil && !refused {
 		return control.MoveMediaResult{}, err
@@ -222,6 +225,8 @@ func (a *App) checkMovedFiles(_ context.Context, item *store.MediaMoveItem) {
 	}
 	if _, err := os.Lstat(item.FromPath); err == nil {
 		problem("the media file is still at its old path; move it first")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		problem("the old media path cannot be checked (%v)", observability.PathErrorCause(err))
 	}
 	for _, sidecar := range item.Sidecars {
 		if err := fileHasChecksum(sidecar.To, sidecar.Checksum); err != nil {

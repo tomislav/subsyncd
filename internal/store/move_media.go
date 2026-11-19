@@ -15,6 +15,10 @@ import (
 // problem, so nothing was moved. The returned items say which and why.
 var ErrMediaMoveRefused = errors.New("media move refused")
 
+// ErrMediaMoveWebhooksWaiting reports stored webhooks of either instance that
+// the daemon has not applied yet; nothing was moved.
+var ErrMediaMoveWebhooksWaiting = errors.New("stored webhooks are waiting")
+
 // MediaMoveEntry is one entry of a move plan: which file of the source
 // instance it is, and its identity and local path under the target instance.
 // A movie is named by TMDBID, an episode by TVDBID (the series), Season and
@@ -102,6 +106,15 @@ func (r *Repository) MoveMedia(ctx context.Context, from, to string, entries []M
 	}
 	if foreignKeys != 1 {
 		return nil, errors.New("media move requires SQLite foreign key enforcement")
+	}
+	// A stored webhook of either instance applied after the move would see
+	// the files under identities the move just changed.
+	var waiting int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM webhook_inbox WHERE instance IN (?, ?)`, from, to).Scan(&waiting); err != nil {
+		return nil, fmt.Errorf("check waiting webhooks: %w", err)
+	}
+	if waiting > 0 {
+		return nil, fmt.Errorf("%w: %d", ErrMediaMoveWebhooksWaiting, waiting)
 	}
 
 	items := make([]MediaMoveItem, len(entries))
@@ -290,7 +303,7 @@ func loadMoveSource(ctx context.Context, tx *sql.Tx, from, to string, item *Medi
 		case sidecar.RollbackFrom != "" && filepath.Dir(filepath.Clean(sidecar.RollbackFrom)) != filepath.Dir(filepath.Clean(item.FromPath)):
 			item.Problems = append(item.Problems, fmt.Sprintf("the %s rollback copy is not in the media folder", sidecar.Language))
 		}
-		sidecar.To = moveSiblingPath(sidecar.From, entry.ToPath)
+		sidecar.To = movedSidecarPath(sidecar.From, item.FromPath, entry.ToPath)
 		if sidecar.RollbackFrom != "" {
 			sidecar.RollbackTo = moveSiblingPath(sidecar.RollbackFrom, entry.ToPath)
 		}
@@ -300,6 +313,17 @@ func loadMoveSource(ctx context.Context, tx *sql.Tx, from, to string, item *Medi
 		return fmt.Errorf("list installations to move: %w", err)
 	}
 	return nil
+}
+
+// movedSidecarPath names a sidecar of oldMediaPath after newMediaPath: in the
+// new folder, under the new media stem when the media file was renamed
+// (inventory only reads sidecars named after the media file). A file not
+// named after the old stem keeps its name.
+func movedSidecarPath(sidecar, oldMediaPath, newMediaPath string) string {
+	if renamed := RebaseSidecarPath(sidecar, oldMediaPath, newMediaPath); renamed != sidecar {
+		return renamed
+	}
+	return moveSiblingPath(sidecar, newMediaPath)
 }
 
 // moveSiblingPath names path, a file beside the old media file, in the folder

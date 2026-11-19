@@ -314,8 +314,8 @@ docker compose up -d
 
 When files move from one Sonarr or Radarr instance's library to another's (for example, the sub-4K movies of a 4K Radarr move to a new `radarr-1080p`), the new instance gives them new IDs, and subsyncd would no longer know the subtitles it installed for them. `move-media` moves their records to the new instance in place, so each file keeps its installed subtitles, searches, rejections and history.
 
-1. Add the new instance to `config/config.yaml`, then stop subsyncd before the new instance has run: if it has already indexed the files, its records block the move.
-2. Move each media folder by renaming it into the new library, sidecars included, keeping the file names. Let the new instance import the files.
+1. Stop subsyncd and add the new instance to `config/config.yaml`. Don't start subsyncd again until the move is done: once it indexes the files under the new instance, those records block the move.
+2. Move each media folder by renaming it into the new library, sidecars included. Let the new instance import the files, and make the old instance stop listing them (remove the movies or series there, or let it rescan) before subsyncd starts again; otherwise the old instance's next reconciliation indexes them again at their old paths. If the new instance renames a media file on import, rename its subtitles to match (`New Name.en.srt` beside `New Name.mkv`).
 3. Write a plan listing each file, in a folder the container can read (the read-only `config/` folder works):
 
    ```json
@@ -339,9 +339,10 @@ When files move from one Sonarr or Radarr instance's library to another's (for e
    ```
 
 - The preview only reads and can run beside the daemon (`docker compose exec`). It lists every entry with its title, file IDs and installations, and each problem found; `ready: false` means it would move nothing.
-- For each entry, it checks that the file is at `to_path` (a regular file in a media root, with the recorded size) and no longer at its old path, that each installed subtitle is beside it under the same name with the content subsyncd installed, that the new instance has no record with that file or movie/episode ID yet (deleted ones included), and that no interrupted install is waiting for recovery.
+- For each entry, it checks that the file is at `to_path` (a regular file in a media root, with the recorded size) and no longer at its old path, that each installed subtitle is beside it, named after the media file, with the content subsyncd installed, that the new instance has no record with that file or movie/episode ID yet (deleted ones included), and that no interrupted install is waiting for recovery.
 - `--to` must be configured. `--from` may be removed from the configuration already, as long as the database has its records. The new instance's record is created at the next start if this is its first.
 - With `--yes` it moves every entry in one step, or nothing: any problem fails with `move_refused`.
+- Webhooks of either instance that subsyncd stored but has not applied yet refuse the move (`move_refused`). Start subsyncd with the files still in place to apply them, then stop it and move the files.
 - The moved files' subtitles and rejections stay attached. Each moved file's tracks are probed again once. The search history keeps the old instance's name, so `recent --instance` for the new one starts at the move. Undelivered Silo notifications about a moved file are left as they are; the preview counts them.
 - After the move, the new instance's reconciliation keeps every subtitle, and the old instance no longer listing the files changes nothing.
 

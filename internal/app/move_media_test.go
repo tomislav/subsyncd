@@ -203,3 +203,24 @@ func TestMoveMediaPreviewRunsWhileDaemonHoldsLock(t *testing.T) {
 		t.Fatal("read-only application moved records")
 	}
 }
+
+func TestMoveMediaExpectsSidecarsUnderARenamedMediaName(t *testing.T) {
+	f := newMoveFixture(t)
+	folder := filepath.Dir(f.newMedia)
+	renamed := filepath.Join(folder, "Dune (2021) Bluray-1080p.mkv")
+	if err := os.Rename(f.newMedia, renamed); err != nil {
+		t.Fatal(err)
+	}
+	writeMoveFile(t, f.plan, `{"entries":[{"kind":"movie","tmdb_id":438631,"to_entity_id":30,"to_file_id":70,"to_path":"/movies-1080p/Dune (2021)/Dune (2021) Bluray-1080p.mkv"}]}`)
+	// The sidecar kept its old name: inventory would no longer see it.
+	preview, err := f.app.MoveMedia(t.Context(), "radarr", "radarr-1080p", f.plan, false)
+	if err != nil || preview.Ready || !strings.Contains(strings.Join(preview.Entries[0].Problems, "; "), "Dune (2021) Bluray-1080p.en.srt: is not at the new path") {
+		t.Fatalf("preview = %#v/%v, want the renamed sidecar missing", preview, err)
+	}
+	if err := os.Rename(filepath.Join(folder, "Dune.en.srt"), filepath.Join(folder, "Dune (2021) Bluray-1080p.en.srt")); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := f.app.MoveMedia(t.Context(), "radarr", "radarr-1080p", f.plan, true); err != nil || !result.Applied {
+		t.Fatalf("move = %#v/%v", result, err)
+	}
+}

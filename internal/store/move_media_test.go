@@ -219,3 +219,36 @@ func TestMoveMediaRefusesWithoutForeignKeys(t *testing.T) {
 		t.Fatalf("err = %v, want foreign key refusal", err)
 	}
 }
+
+func TestMoveMediaNamesSidecarsAfterARenamedMediaFile(t *testing.T) {
+	repo := openTestRepository(t)
+	seedMovieToMove(t, repo)
+	move := duneMove()
+	move.ToPath = "/media/movies-1080p/Dune (2021)/Dune (2021) Bluray-1080p.mkv"
+	items, err := repo.MoveMedia(t.Context(), "radarr", "radarr-1080p", []MediaMoveEntry{move}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := items[0].Sidecars[0]
+	if sidecar.To != "/media/movies-1080p/Dune (2021)/Dune (2021) Bluray-1080p.en.srt" || sidecar.RollbackTo != "/media/movies-1080p/Dune (2021)/.subsyncd-rollback-1" {
+		t.Fatalf("sidecar = %#v, want it named after the new media file", sidecar)
+	}
+}
+
+func TestMoveMediaRefusesWhileWebhooksWait(t *testing.T) {
+	for _, instance := range []string{"radarr", "radarr-1080p"} {
+		t.Run(instance, func(t *testing.T) {
+			repo := openTestRepository(t)
+			mediaID := seedMovieToMove(t, repo)
+			if _, err := repo.EnqueueWebhook(t.Context(), instance, []byte(`{}`), time.Unix(1, 0)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.MoveMedia(t.Context(), "radarr", "radarr-1080p", []MediaMoveEntry{duneMove()}, nil, true); !errors.Is(err, ErrMediaMoveWebhooksWaiting) {
+				t.Fatalf("err = %v, want waiting webhooks", err)
+			}
+			if got := queryString(t, repo, `SELECT instance FROM media WHERE id=?`, mediaID); got != "radarr" {
+				t.Fatalf("media instance = %q", got)
+			}
+		})
+	}
+}
