@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -38,6 +39,8 @@ func newMoveFixture(t *testing.T) *moveFixture {
 	t.Helper()
 	cfg := testConfig(t)
 	root := cfg.MediaRoots[0]
+	// A second root standing in for a mount the library symlinks point into.
+	cfg.MediaRoots = append(cfg.MediaRoots, t.TempDir())
 	cfg.Instances = []config.InstanceConfig{
 		{Name: "radarr", Type: "radarr", URL: "http://radarr.invalid", APIKey: "api"},
 		{Name: "radarr-1080p", Type: "radarr", URL: "http://radarr-1080p.invalid", APIKey: "api", PathMappings: []config.PathMapping{{Remote: "/movies-1080p", Local: filepath.Join(root, "movies-1080p")}}},
@@ -109,6 +112,65 @@ func TestMoveMediaChecksFilesThenMoves(t *testing.T) {
 	}
 }
 
+// symlinkMovedMedia turns the moved media file into a library symlink to a
+// file of the same size under target (a folder name in the mount root, or an
+// absolute folder outside every root).
+func symlinkMovedMedia(t *testing.T, f *moveFixture, target string) {
+	t.Helper()
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(f.cfg.MediaRoots[1], target)
+	}
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(target, "Dune.mkv")
+	writeMoveFile(t, file, "media")
+	if err := os.Remove(f.newMedia); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(file, f.newMedia); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// planWithContainerPath rewrites the plan's to_path as the path in this
+// container instead of the one radarr-1080p reports.
+func planWithContainerPath(t *testing.T, f *moveFixture) {
+	t.Helper()
+	plan, err := json.Marshal(map[string]any{"entries": []map[string]any{{"kind": "movie", "tmdb_id": 438631, "to_entity_id": 30, "to_file_id": 70, "to_path": f.newMedia}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMoveFile(t, f.plan, string(plan))
+}
+
+func TestMoveMediaFollowsLibrarySymlinks(t *testing.T) {
+	for _, containerPath := range []bool{false, true} {
+		t.Run(map[bool]string{false: "mapped path", true: "container path"}[containerPath], func(t *testing.T) {
+			testMoveMediaFollowsSymlink(t, containerPath)
+		})
+	}
+}
+
+func testMoveMediaFollowsSymlink(t *testing.T, containerPath bool) {
+	f := newMoveFixture(t)
+	symlinkMovedMedia(t, f, "movies/Dune.2021.1080p")
+	if containerPath {
+		planWithContainerPath(t, f)
+	}
+	preview, err := f.app.MoveMedia(t.Context(), "radarr", "radarr-1080p", f.plan, false)
+	if err != nil || !preview.Ready || preview.Problems != 0 {
+		t.Fatalf("preview = %#v/%v", preview, err)
+	}
+	result, err := f.app.MoveMedia(t.Context(), "radarr", "radarr-1080p", f.plan, true)
+	if err != nil || !result.Applied {
+		t.Fatalf("move = %#v/%v", result, err)
+	}
+	if _, media, err := f.app.Repository.FindMedia(t.Context(), domain.MediaRef{Instance: "radarr-1080p", Kind: domain.MediaMovie, FileID: 70}); err != nil || media.Fingerprint.Path != f.newMedia {
+		t.Fatalf("moved media = %#v/%v, want the symlink path %s", media, err, f.newMedia)
+	}
+}
+
 func TestMoveMediaRefusesWhenFilesAreNotInPlace(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -124,6 +186,33 @@ func TestMoveMediaRefusesWhenFilesAreNotInPlace(t *testing.T) {
 		{"sidecar edited", func(t *testing.T, f *moveFixture) {
 			writeMoveFile(t, filepath.Join(filepath.Dir(f.newMedia), "Dune.en.srt"), "edited")
 		}, "has changed since subsyncd installed it"},
+		// A mapped to_path is resolved, symlink included, by the path mapping,
+		// which refuses a target outside the roots like the daemon does; a
+		// to_path given as a container path is checked by move-media itself.
+		{"dangling symlink", func(t *testing.T, f *moveFixture) {
+			_ = os.Remove(f.newMedia)
+			if err := os.Symlink(filepath.Join(f.cfg.MediaRoots[1], "gone.mkv"), f.newMedia); err != nil {
+				t.Fatal(err)
+			}
+		}, "outside the configured media roots"},
+		{"dangling symlink, container path", func(t *testing.T, f *moveFixture) {
+			_ = os.Remove(f.newMedia)
+			if err := os.Symlink(filepath.Join(f.cfg.MediaRoots[1], "gone.mkv"), f.newMedia); err != nil {
+				t.Fatal(err)
+			}
+			planWithContainerPath(t, f)
+		}, "the media file is not at to_path"},
+		{"symlink out of the media roots", func(t *testing.T, f *moveFixture) { symlinkMovedMedia(t, f, t.TempDir()) }, "outside the configured media roots"},
+		{"symlink out of the media roots, container path", func(t *testing.T, f *moveFixture) {
+			symlinkMovedMedia(t, f, t.TempDir())
+			planWithContainerPath(t, f)
+		}, "symlink to a file outside the configured media roots"},
+		{"symlink to a folder", func(t *testing.T, f *moveFixture) {
+			_ = os.Remove(f.newMedia)
+			if err := os.Symlink(f.cfg.MediaRoots[1], f.newMedia); err != nil {
+				t.Fatal(err)
+			}
+		}, "not a regular file or a symlink to one"},
 		{"outside media roots", func(t *testing.T, f *moveFixture) {
 			writeMoveFile(t, f.plan, `{"entries":[{"kind":"movie","tmdb_id":438631,"to_entity_id":30,"to_file_id":70,"to_path":"/elsewhere/Dune.mkv"}]}`)
 		}, "outside the configured media roots"},

@@ -339,7 +339,7 @@ When files move from one Sonarr or Radarr instance's library to another's (for e
    ```
 
 - The preview only reads and can run beside the daemon (`docker compose exec`). It lists every entry with its title, file IDs and installations, and each problem found; `ready: false` means it would move nothing.
-- For each entry, it checks that the file is at `to_path` (a regular file in a media root, with the recorded size) and no longer at its old path, that each installed subtitle is beside it, named after the media file, with the content subsyncd installed, that the new instance has no record with that file or movie/episode ID yet (deleted ones included), and that no interrupted install is waiting for recovery.
+- For each entry, it checks that the file is at `to_path` (a regular file, or a symlink to one such as a library symlink into a mount, inside a media root and with the recorded size) and no longer at its old path, that each installed subtitle is beside it, named after the media file, with the content subsyncd installed, that the new instance has no record with that file or movie/episode ID yet (deleted ones included), and that no interrupted install is waiting for recovery.
 - `--to` must be configured. `--from` may be removed from the configuration already, as long as the database has its records. The new instance's record is created at the next start if this is its first.
 - With `--yes` it moves every entry in one step, or nothing: any problem fails with `move_refused`.
 - Webhooks of either instance that subsyncd stored but has not applied yet refuse the move (`move_refused`). Start subsyncd with the files still in place to apply them, then stop it and move the files.

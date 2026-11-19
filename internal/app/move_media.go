@@ -203,7 +203,8 @@ func (a *App) localMovePath(path string, mappings []config.PathMapping) string {
 }
 
 // checkMovedFiles checks the files of a move on disk: the media file is at
-// its new path (a regular file in a media root, the recorded size) and gone
+// its new path (a regular file or a symlink to one, in a media root, the
+// recorded size) and gone
 // from the old one, and every sidecar is at its new path with the recorded
 // checksum, as is any rollback copy.
 func (a *App) checkMovedFiles(_ context.Context, item *store.MediaMoveItem) {
@@ -214,14 +215,20 @@ func (a *App) checkMovedFiles(_ context.Context, item *store.MediaMoveItem) {
 		problem("to_path is outside the configured media roots")
 		return
 	}
-	info, err := os.Lstat(item.ToPath)
+	// Library files are often symlinks into a mount (altmount, rclone):
+	// follow them as the inventory does, and keep the target in a media root.
+	info, err := os.Stat(item.ToPath)
 	switch {
 	case err != nil:
 		problem("the media file is not at to_path (%v)", observability.PathErrorCause(err))
 	case !info.Mode().IsRegular():
-		problem("to_path is not a regular file")
+		problem("to_path is not a regular file or a symlink to one")
 	case info.Size() != item.Size:
 		problem("the file at to_path has %d bytes, the recorded file %d", info.Size(), item.Size)
+	default:
+		if target, err := filepath.EvalSymlinks(item.ToPath); err != nil || !a.inMediaRoot(target) {
+			problem("to_path is a symlink to a file outside the configured media roots")
+		}
 	}
 	if _, err := os.Lstat(item.FromPath); err == nil {
 		problem("the media file is still at its old path; move it first")
