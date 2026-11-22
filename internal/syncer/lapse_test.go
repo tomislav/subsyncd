@@ -40,6 +40,18 @@ func TestParseReportAcceptsVersion230Report(t *testing.T) {
 	}
 }
 
+// LAPSE 2.5 reports a dry run as not written and can name the
+// auto/drifting+recut mode.
+func TestParseReportAcceptsVersion251DryRun(t *testing.T) {
+	result, err := parseReport(fixture(t, "solid-dry-run-v2.5.1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != "solid" || result.Mode != "auto/drifting+recut" || result.Parts != 2 || result.Splits != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestParseReportRejectsMalformedOrUnsafeResults(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -57,7 +69,7 @@ func TestParseReportRejectsMalformedOrUnsafeResults(t *testing.T) {
 		{"parts mismatch", strings.Replace(string(fixture(t, "solid.json")), `"parts":1`, `"parts":2`, 1)},
 		{"offsets count mismatch", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[22,30]`, 1)},
 		{"empty offsets", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[]`, 1)},
-		{"unchanged without write", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"written":true,"unchanged":false`, `"written":false,"unchanged":true`, 1)},
+		{"shift mode", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"auto/shifted"`, `"shift"`, 1)},
 		{"unknown field in v2.3 report", strings.Replace(string(fixture(t, "solid-v2.3.json")), `"offsets":[22]`, `"offsets":[22],"surprise":true`, 1)},
 	}
 	for _, test := range tests {
@@ -130,14 +142,68 @@ func TestAnalyzeUsesSafeFlagsAndRequiresSolidVerdict(t *testing.T) {
 
 func TestAnalyzeAcceptsAnUnchangedDryRun(t *testing.T) {
 	media, subtitle := testFiles(t)
-	// A dry run of an already synchronized subtitle: LAPSE 2.3 reports it
-	// written and unchanged.
-	payload := strings.Replace(string(fixture(t, "solid-v2.3.json")), `"unchanged":false`, `"unchanged":true`, 1)
+	// A dry run of an already synchronized subtitle. LAPSE 2.3 reports it
+	// written and unchanged; LAPSE 2.5 reports a dry run as not written.
+	for _, test := range []struct{ name, from, to string }{
+		{"v2.3", `"unchanged":false`, `"unchanged":true`},
+		{"v2.5.1", `"written":true,"unchanged":false`, `"written":false,"unchanged":true`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := strings.Replace(string(fixture(t, "solid-v2.3.json")), test.from, test.to, 1)
+			lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
+				return Execution{Stdout: []byte(payload), ExitCode: 0}, nil
+			}), filepath.Dir(media))
+			result, err := lapse.Analyze(context.Background(), media, subtitle)
+			if err != nil || result.Verdict != "solid" {
+				t.Fatalf("Analyze() = %#v, %v", result, err)
+			}
+		})
+	}
+}
+
+// The written flag of a dry run differs between LAPSE versions, so Analyze
+// checks the workspace itself: only the untouched copy may remain.
+func TestAnalyzeRefusesADryRunThatWrote(t *testing.T) {
+	media, subtitle := testFiles(t)
+	for _, test := range []struct {
+		name  string
+		write func(t *testing.T, command Command)
+	}{
+		{"changed input", func(t *testing.T, command Command) {
+			if err := os.WriteFile(command.Args[1], []byte(testSRT+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"removed input", func(t *testing.T, command Command) {
+			if err := os.Remove(command.Args[1]); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"sidecar", func(t *testing.T, command Command) {
+			if err := os.WriteFile(filepath.Join(command.Dir, "candidate.lapse-unsure.srt"), []byte(testSRT), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lapse := newTestLapse(t, runnerFunc(func(_ context.Context, command Command) (Execution, error) {
+				test.write(t, command)
+				return Execution{Stdout: fixture(t, "solid-dry-run-v2.5.1.json"), ExitCode: 0}, nil
+			}), filepath.Dir(media))
+			if _, err := lapse.Analyze(context.Background(), media, subtitle); err == nil || !strings.Contains(err.Error(), "dry run") {
+				t.Fatalf("Analyze() error = %v, want a dry-run write refusal", err)
+			}
+		})
+	}
+}
+
+func TestAnalyzeAcceptsAVersion251DryRun(t *testing.T) {
+	media, subtitle := testFiles(t)
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
-		return Execution{Stdout: []byte(payload), ExitCode: 0}, nil
+		return Execution{Stdout: fixture(t, "solid-dry-run-v2.5.1.json"), ExitCode: 0}, nil
 	}), filepath.Dir(media))
 	result, err := lapse.Analyze(context.Background(), media, subtitle)
-	if err != nil || result.Verdict != "solid" {
+	if err != nil || result.Verdict != "solid" || result.Mode != "auto/drifting+recut" {
 		t.Fatalf("Analyze() = %#v, %v", result, err)
 	}
 }
@@ -162,11 +228,11 @@ func TestLapseReportsItsVersionAndRejectionBaseline(t *testing.T) {
 	lapse := newTestLapse(t, runnerFunc(func(context.Context, Command) (Execution, error) {
 		return Execution{}, nil
 	}), t.TempDir())
-	if got := lapse.CompatibilityVersion(); got != "2.3.2" {
-		t.Fatalf("CompatibilityVersion() = %q, want 2.3.2", got)
+	if got := lapse.CompatibilityVersion(); got != "2.5.1" {
+		t.Fatalf("CompatibilityVersion() = %q, want 2.5.1", got)
 	}
-	if got := lapse.RejectionBaseline(); got != "2.3.1" {
-		t.Fatalf("RejectionBaseline() = %q, want 2.3.1", got)
+	if got := lapse.RejectionBaseline(); got != "2.5.1" {
+		t.Fatalf("RejectionBaseline() = %q, want 2.5.1", got)
 	}
 }
 
@@ -285,6 +351,7 @@ func TestSynchronizeRequiresSolidReportAndValidatedOutput(t *testing.T) {
 
 	// json.Marshal sorts the keys, so "written" comes last.
 	unchanged := bytes.Replace(reportJSON(t, "solid", output, true), []byte(`"written":true`), []byte(`"unchanged":true,"written":true`), 1)
+	unchangedUnwritten := bytes.Replace(reportJSON(t, "solid", output, false), []byte(`"written":false`), []byte(`"unchanged":true,"written":false`), 1)
 	for _, test := range []struct {
 		name   string
 		write  string
@@ -293,6 +360,7 @@ func TestSynchronizeRequiresSolidReportAndValidatedOutput(t *testing.T) {
 	}{
 		{"missing output", "", reportJSON(t, "solid", output, true), 0},
 		{"reported unchanged", testSRT, unchanged, 0},
+		{"reported unchanged and unwritten", testSRT, unchangedUnwritten, 0},
 		{"invalid output", "not a subtitle", reportJSON(t, "solid", output, true), 0},
 		{"reported unwritten", testSRT, reportJSON(t, "solid", output, false), 0},
 		{"wrong reported path", testSRT, reportJSON(t, "solid", output+".other", true), 0},

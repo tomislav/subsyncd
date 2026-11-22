@@ -1,6 +1,6 @@
 # LAPSE
 
-LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.3.2, whose amd64 binary needs glibc 2.43 and an x86-64-v3 (AVX2) CPU; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, v2.3.1 ([Upgrading LAPSE](#upgrading-lapse)).
+LAPSE is the only synchronization engine. This page covers when it runs, how candidates are compared, its time limits and cache, how its failures are classified, and how to upgrade it. This build is pinned to and tested with LAPSE v2.5.1, whose Linux binaries need glibc 2.35 and, on amd64, only a baseline x86-64 CPU; startup and `doctor` check only that the binary advertises the flags subsyncd passes. Rejections follow the LAPSE rejection baseline, v2.5.1 ([Upgrading LAPSE](#upgrading-lapse)).
 
 - [Synchronization policy](#synchronization-policy)
 - [Invocation](#invocation)
@@ -43,7 +43,7 @@ The policy is part of the rejection tool signature, so changing it lets earlier 
 ## Invocation
 
 - Each required candidate is prepared once with a new explicit output: `--output`, `--no-backup`, `--json`, `--strict` and `--no-sidecar`, passed as an argument array. One invocation supplies both the decision metrics and the synchronized artifact.
-- Only a `solid` result with a valid written output can install. Malformed protocol output is a technical failure. So is `unchanged: true` on the install run, because LAPSE then writes nothing. `unchanged` and `offsets` (LAPSE 2.3) are optional, so 2.2.4 reports still parse; when present, `offsets` has one entry per part.
+- Only a `solid` result with a valid written output can install. Malformed protocol output is a technical failure. So is `unchanged: true` on the install run, because LAPSE then writes nothing. `unchanged` and `offsets` (LAPSE 2.3) are optional, so 2.2.4 reports still parse; when present, `offsets` has one entry per part. The analysis dry run ignores `written`: LAPSE 2.3 reports a dry run as written, LAPSE 2.5 as not written, and either may report `unchanged: true` for a subtitle that is already in sync. Instead, after the run, the private workspace must still hold only the copied subtitle, byte for byte; anything else is a technical failure. The `shift` mode, which only `--shift` produces, is refused.
 - Cancellation kills the whole LAPSE process group. Raw stdout, stderr and command lines are never exposed or logged.
 - Generated cues with valid intervals but decreasing start times are stably reordered (`subtitleorder.Reorder`) before final validation; equal-start cues keep their order. Negative or reversed intervals reject as `lapse_invalid_output`.
 - `lapse.sync_started` (info) precedes the call; `lapse.sync_completed` (info for `solid`, warn otherwise) or `lapse.failed` follows with the verdict metrics (see [Logging](../logging.md#lapse)).
@@ -105,14 +105,14 @@ LAPSE makes no network request, but it reads the media to build a speech profile
 
 ## LAPSE cache
 
-Speech profiles live in `<data_dir>/lapse-cache`, so later candidates for unchanged media reuse them. The confidence bypass avoids the media read for strong first installs.
+Speech profiles live in `<data_dir>/lapse-cache/lapse-<generation>` (`SpeechCacheGeneration`, see [Upgrading LAPSE](#upgrading-lapse)), so later candidates for unchanged media reuse them. LAPSE keys an entry by the film alone, not by its own version, so a new generation directory is how an upgraded LAPSE stops reusing profiles an older one built. LAPSE 2.3.2 and older wrote entries straight into `lapse-cache/`. The confidence bypass avoids the media read for strong first installs.
 
 - Since v2.3.0 the cache also holds the timings of a video's embedded subtitle track, under the same `<16 hex>.spans` names. An empty entry records that the video has no usable track, so later runs go straight to the speech profile.
 - Since v2.3.1 LAPSE rebuilds a cached speech profile that covers only part of the film, which older versions wrote, by listening to the whole film again. The first run on each such film after an upgrade reads the whole file.
 - LAPSE treats a read error in the embedded track like the end of the file. A failed read on network storage can therefore leave incomplete timings, or a "no usable track" entry, cached until the video changes or the entry expires.
 - `lapse_cache.ttl` (default `720h`, must be positive) is measured from file mtime. LAPSE resets an entry's mtime each time it reuses it (`load_spans`, in v2.2.4 as well), so the TTL counts from the last use.
 - Mutating assembly prunes expired entries once; the daemon checks hourly. The shared LAPSE runner lock excludes cleanup; an active invocation postpones the sweep to the next check.
-- Cleanup uses rooted directory operations, validates the root's identity, rejects a symlink root, and removes only regular files named `<16 lowercase hex>.spans` or `.spans.tmp` at or past the cutoff. It does not traverse directories or follow entry symlinks.
+- Cleanup uses rooted directory operations, validates the root's identity, rejects a symlink root, and removes only regular files named `<16 lowercase hex>.spans` or `.spans.tmp` at or past the cutoff. It sweeps the cache root (entries from LAPSE 2.3.2 and older) and each real `lapse-<major>.<minor>.<patch>` directory, opened as its own root, and removes an older generation directory once it is empty. It traverses nothing else, follows no entry symlinks, and never removes the current generation's directory. Startup refuses a current generation that is a symlink or not a directory.
 - Cleanup is best effort: `lapse.cache_cleanup_failed` (warn) or `lapse.cache_cleaned` (debug, `removed_count`), never with paths.
 - Read-only commands never prune profiles.
 
@@ -122,13 +122,15 @@ Speech profiles live in `<data_dir>/lapse-cache`, so later candidates for unchan
 
 ## Upgrading LAPSE
 
-Three constants in `internal/syncer/lapse.go` describe the LAPSE this build ships:
+Five constants in `internal/syncer/lapse.go` describe the LAPSE this build ships:
 
 - `CompatibilityVersion` is the LAPSE version this build is pinned to and tested with. `TestDockerfilesPinCompatibilityVersion` checks that it matches `LAPSE_VERSION` in both Dockerfiles. It is logged as `compatibility_version` on `lapse.*` events and shown by `doctor`; a native install running another LAPSE still reports the pinned version.
 - `RejectionBaseline` is the last LAPSE release whose verdicts subsyncd treats as new. `RejectionToolSignature()` uses it, so it decides when `lapse_*` and `pack_selection` rejections, and repeated-exit strikes, are reconsidered. The workflow requires the synchronizer to provide it (`rejectionBaseliner`); a synchronizer without one records `lapse-unknown`.
 - `RejectionBaselineReviewedFor` is the `CompatibilityVersion` the keep-or-move decision was made for. `TestRejectionBaselineWasReviewedForThisLAPSE` fails until it matches, so a bump cannot skip the decision.
+- `SpeechCacheGeneration` names the speech-cache directory, `lapse-<generation>`. Moving it makes every film's next check read the whole file once and lets the old generation expire.
+- `SpeechCacheGenerationReviewedFor` is the `CompatibilityVersion` that decision was made for; `TestSpeechCacheGenerationWasReviewedForThisLAPSE` fails until it matches.
 
-With every LAPSE update, decide whether to move the baseline to the new version, set `RejectionBaselineReviewedFor` to the new version either way, and say in the commit message which way it went and why.
+With every LAPSE update, decide whether to move the baseline and the speech-cache generation to the new version, set both `ReviewedFor` constants to the new version either way, and say in the commit message which way each went and why. Move the generation for anything that can change what a cached entry holds: decoding, mixing, loudness, VAD, the Silero model, bundled FFmpeg or ONNX Runtime, embedded-track reading, or the cache format. A matching-only change keeps it. When unsure, move it: a stale profile can turn a re-check after a baseline move into a permanent rejection, while moving costs one full read per film.
 
 - **Diff the whole release**, `git diff vOLD..vNEW` in the LAPSE repository, not only the engine sources.
 - **Move it** for anything that can change a verdict or a crash: engine code (matching, splitting, drift, VAD, reference selection, confidence), bundled libraries and models (its FFmpeg, ONNX Runtime, the Silero model), build flags, the default of any flag subsyncd does not pass (such as `--confidence`), and crash fixes, because a repeated silent crash becomes a permanent rejection.

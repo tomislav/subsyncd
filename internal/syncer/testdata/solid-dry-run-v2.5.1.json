@@ -1,0 +1,1 @@
+{"mode":"auto/drifting+recut","reference":"vad","offset_ms":22,"ratio":1.0004,"confidence":0.61,"margin":0.14,"sigma":18.2,"agreement":0.8,"verdict":"solid","coverage":0.97,"cues":1578,"ignored_cues":3,"parts":2,"snapped":4,"written":false,"unchanged":false,"output":"/temporary/input.srt","splits":[812],"offsets":[22,47130]}

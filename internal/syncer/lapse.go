@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	CompatibilityVersion   = "2.3.2"
+	CompatibilityVersion   = "2.5.1"
 	defaultTimeout         = 30 * time.Minute
 	defaultMaxTimeout      = 4 * time.Hour
 	maximumSubtitleBytes   = 100 << 20
@@ -42,14 +42,33 @@ func (l *Lapse) CompatibilityVersion() string { return CompatibilityVersion }
 // defaults of flags subsyncd does not pass, and crash fixes all count as
 // verdict changes. When unsure, move it
 // (docs/development/providers/lapse.md#upgrading-lapse).
-const RejectionBaseline = "2.3.1"
+const RejectionBaseline = "2.5.1"
 
 // RejectionBaselineReviewedFor is the CompatibilityVersion for which the
 // keep-or-move decision on RejectionBaseline was made. A test fails until it
 // matches, so a LAPSE bump cannot skip the decision.
-const RejectionBaselineReviewedFor = "2.3.2"
+const RejectionBaselineReviewedFor = "2.5.1"
 
 func (l *Lapse) RejectionBaseline() string { return RejectionBaseline }
+
+// SpeechCacheGeneration names the speech-cache directory LAPSE runs with,
+// lapse-<generation> under the cache root. LAPSE keys a cached speech profile
+// or embedded-track timing by the film alone, so without a new generation an
+// upgraded LAPSE would keep using profiles an older one built. Move it with
+// every LAPSE update that can change what a cached entry holds: decoding,
+// mixing, loudness, VAD, the Silero model, bundled FFmpeg or ONNX Runtime,
+// embedded-track reading, or the cache format. When unsure, move it; the cost
+// is one full read of each film. Older generations expire by TTL like any
+// entry and are removed once empty
+// (docs/development/providers/lapse.md#upgrading-lapse).
+const SpeechCacheGeneration = "2.5.1"
+
+// SpeechCacheGenerationReviewedFor is the CompatibilityVersion for which the
+// keep-or-move decision on SpeechCacheGeneration was made. A test fails until
+// it matches, so a LAPSE bump cannot skip the decision.
+const SpeechCacheGenerationReviewedFor = "2.5.1"
+
+const speechCacheGenerationPrefix = "lapse-"
 
 type Options struct {
 	Path               string
@@ -71,7 +90,8 @@ type Options struct {
 type Lapse struct {
 	cacheMu            sync.RWMutex
 	path               string
-	cacheDir           string
+	cacheDir           string // the cache root PruneCache sweeps
+	speechDir          string // the current generation LAPSE writes
 	analyzeTimeout     time.Duration
 	synchronizeTimeout time.Duration
 	minReadRate        int64
@@ -201,6 +221,13 @@ func New(options Options) (*Lapse, error) {
 	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create LAPSE speech cache: %w", err)
 	}
+	speechDir := filepath.Join(cacheDir, speechCacheGenerationPrefix+SpeechCacheGeneration)
+	if err := os.Mkdir(speechDir, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("create LAPSE speech cache generation")
+	}
+	if info, err := os.Lstat(speechDir); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("LAPSE speech cache generation is not a directory")
+	}
 	roots := make([]string, 0, len(options.MediaRoots))
 	for _, root := range options.MediaRoots {
 		absolute, err := filepath.Abs(root)
@@ -209,7 +236,7 @@ func New(options Options) (*Lapse, error) {
 		}
 		roots = append(roots, filepath.Clean(absolute))
 	}
-	return &Lapse{path: options.Path, cacheDir: cacheDir, analyzeTimeout: options.AnalyzeTimeout, synchronizeTimeout: options.SynchronizeTimeout, minReadRate: options.MinReadRate, maxTimeout: options.MaxTimeout, mediaRoots: roots, runner: options.Runner}, nil
+	return &Lapse{path: options.Path, cacheDir: cacheDir, speechDir: speechDir, analyzeTimeout: options.AnalyzeTimeout, synchronizeTimeout: options.SynchronizeTimeout, minReadRate: options.MinReadRate, maxTimeout: options.MaxTimeout, mediaRoots: roots, runner: options.Runner}, nil
 }
 
 func (l *Lapse) AnalyzeCandidate(ctx context.Context, candidate domain.Candidate, mediaPath, subtitlePath string) (domain.SyncResult, error) {
@@ -227,14 +254,17 @@ func (l *Lapse) SynchronizeCandidate(ctx context.Context, candidate domain.Candi
 }
 
 func (l *Lapse) Analyze(ctx context.Context, mediaPath, subtitlePath string) (domain.SyncResult, error) {
-	workspace, copiedSubtitle, err := analysisCopy(subtitlePath)
+	workspace, copiedSubtitle, payload, err := analysisCopy(subtitlePath)
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
 	defer os.RemoveAll(workspace)
 	arguments := []string{mediaPath, copiedSubtitle, "--dry-run", "--json", "--strict", "--no-sidecar"}
-	execution, err := l.execute(ctx, l.timeoutFor(mediaPath, l.analyzeTimeout), Command{Path: l.path, Args: arguments, Dir: workspace, Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
+	execution, err := l.execute(ctx, l.timeoutFor(mediaPath, l.analyzeTimeout), Command{Path: l.path, Args: arguments, Dir: workspace, Env: []string{speechCacheEnvVariable + "=" + l.speechDir}})
 	if err != nil {
+		return domain.SyncResult{}, err
+	}
+	if err := dryRunLeftCopyAlone(workspace, copiedSubtitle, payload); err != nil {
 		return domain.SyncResult{}, err
 	}
 	result, report, err := l.interpret(execution)
@@ -266,7 +296,7 @@ func (l *Lapse) Synchronize(ctx context.Context, mediaPath, subtitlePath, output
 		}
 	}()
 	arguments := []string{mediaPath, subtitlePath, "--output", outputPath, "--no-backup", "--json", "--strict", "--no-sidecar"}
-	execution, err := l.execute(ctx, l.timeoutFor(mediaPath, l.synchronizeTimeout), Command{Path: l.path, Args: arguments, Dir: filepath.Dir(outputPath), Env: []string{speechCacheEnvVariable + "=" + l.cacheDir}})
+	execution, err := l.execute(ctx, l.timeoutFor(mediaPath, l.synchronizeTimeout), Command{Path: l.path, Args: arguments, Dir: filepath.Dir(outputPath), Env: []string{speechCacheEnvVariable + "=" + l.speechDir}})
 	if err != nil {
 		return domain.SyncResult{}, err
 	}
@@ -503,7 +533,7 @@ func decodeReport(payload []byte) (lapseReport, error) {
 }
 
 func (r lapseReport) validate() error {
-	validModes := map[string]bool{"ols": true, "nosplit": true, "split": true, "auto/restart": true, "auto/joined": true, "auto/shifted": true, "auto/shifted+split": true, "auto/drifting": true, "auto/drifting+split": true, "auto/recut": true}
+	validModes := map[string]bool{"ols": true, "nosplit": true, "split": true, "auto/restart": true, "auto/joined": true, "auto/shifted": true, "auto/shifted+split": true, "auto/drifting": true, "auto/drifting+split": true, "auto/drifting+recut": true, "auto/recut": true}
 	if !validModes[r.Mode] {
 		return &reportCheckError{"unknown LAPSE mode"}
 	}
@@ -522,12 +552,9 @@ func (r lapseReport) validate() error {
 	if r.Offsets != nil && len(r.Offsets) != r.Parts {
 		return &reportCheckError{"LAPSE JSON contains inconsistent part offsets"}
 	}
-	if r.Unchanged && !r.Written {
-		return &reportCheckError{"LAPSE JSON reports unchanged output that was not written"}
-	}
 	previous := 0
 	// Split positions are ascending cue indexes counted in file order, each
-	// below "cues" (the LAPSE 2.3.1 contract).
+	// below "cues" (the LAPSE 2.3.1 contract, unchanged through 2.5.1).
 	for _, split := range r.Splits {
 		if split <= previous || split >= r.Cues {
 			return &reportCheckError{"LAPSE JSON contains invalid split positions"}
@@ -544,31 +571,60 @@ func (r lapseReport) syncResult() domain.SyncResult {
 	return domain.SyncResult{Verdict: r.Verdict, Mode: r.Mode, Reference: r.Reference, OffsetMS: r.OffsetMS, Ratio: r.Ratio, Confidence: r.Confidence, Sigma: r.Sigma, Margin: r.Margin, Agreement: r.Agreement, Coverage: r.Coverage, Parts: r.Parts, Splits: len(r.Splits)}
 }
 
-func analysisCopy(source string) (string, string, error) {
+// analysisCopy copies source into a private workspace for a dry run and
+// returns the workspace, the copy's path and the copied bytes.
+func analysisCopy(source string) (string, string, []byte, error) {
 	if !supportedTextExtension(source) {
-		return "", "", fmt.Errorf("LAPSE input must use a supported text subtitle extension")
+		return "", "", nil, fmt.Errorf("LAPSE input must use a supported text subtitle extension")
 	}
 	info, err := os.Lstat(source)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", "", fmt.Errorf("LAPSE input is not a regular file")
+		return "", "", nil, fmt.Errorf("LAPSE input is not a regular file")
 	}
 	if info.Size() <= 0 || info.Size() > maximumSubtitleBytes {
-		return "", "", fmt.Errorf("LAPSE input size is invalid")
+		return "", "", nil, fmt.Errorf("LAPSE input size is invalid")
 	}
 	payload, err := os.ReadFile(source)
 	if err != nil {
-		return "", "", fmt.Errorf("read LAPSE input: %w", err)
+		return "", "", nil, fmt.Errorf("read LAPSE input: %w", err)
 	}
 	workspace, err := os.MkdirTemp("", "subsyncd-lapse-analyze-")
 	if err != nil {
-		return "", "", fmt.Errorf("create LAPSE analysis workspace: %w", err)
+		return "", "", nil, fmt.Errorf("create LAPSE analysis workspace: %w", err)
 	}
 	destination := filepath.Join(workspace, "candidate"+strings.ToLower(filepath.Ext(source)))
 	if err := os.WriteFile(destination, payload, 0o600); err != nil {
 		_ = os.RemoveAll(workspace)
-		return "", "", fmt.Errorf("copy LAPSE input: %w", err)
+		return "", "", nil, fmt.Errorf("copy LAPSE input: %w", err)
 	}
-	return workspace, destination, nil
+	return workspace, destination, payload, nil
+}
+
+// dryRunLeftCopyAlone checks that a dry run wrote nothing: the workspace must
+// still hold only the copy, as a regular file with the copied bytes. The
+// report's written flag cannot show this, because LAPSE 2.3 reports a dry run
+// as written and LAPSE 2.5 as not written.
+func dryRunLeftCopyAlone(workspace, copied string, payload []byte) error {
+	refused := fmt.Errorf("LAPSE dry run wrote to its workspace")
+	entries, err := os.ReadDir(workspace)
+	if err != nil {
+		return fmt.Errorf("read LAPSE analysis workspace")
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(copied) {
+		return refused
+	}
+	info, err := os.Lstat(copied)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != int64(len(payload)) {
+		return refused
+	}
+	current, err := os.ReadFile(copied)
+	if err != nil {
+		return fmt.Errorf("read LAPSE analysis copy")
+	}
+	if !bytes.Equal(current, payload) {
+		return refused
+	}
+	return nil
 }
 
 func readOutput(path string) (*astisub.Subtitles, []byte, error) {
